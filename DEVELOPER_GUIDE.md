@@ -81,7 +81,7 @@ When you call `recall()`:
 ## Installation
 
 ```bash
-pip install mesh-memory
+pip install mesh-context-layer
 ```
 
 **First run** downloads `all-MiniLM-L6-v2` (~90 MB) once to your local model cache. After that, everything runs offline.

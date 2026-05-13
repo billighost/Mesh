@@ -1,6 +1,6 @@
 import threading
 
-VERSION = "0.4.2"
+VERSION = "0.4.4"
 PACKAGE_NAME = "mesh-context-layer"
 
 def get_latest_version():
@@ -25,12 +25,12 @@ def _run_check():
         l_parts = [int(p) for p in latest.split(".")]
         v_parts = [int(p) for p in VERSION.split(".")]
         if l_parts > v_parts:
-            print(f"\n📢 A new version of Mesh is available: {latest} (you have {VERSION})")
+            print(f"\n[UPDATE] A new version of Mesh is available: {latest} (you have {VERSION})")
             print(f"   Run 'pip install --upgrade {PACKAGE_NAME}' to update.\n")
     except (ValueError, IndexError):
         # Fallback to string compare if semver fails
         if latest != VERSION:
-             print(f"\n📢 Version {latest} is available on PyPI (you have {VERSION})\n")
+             print(f"\n[UPDATE] Version {latest} is available on PyPI (you have {VERSION})\n")
 
 def check_for_updates():
     """Check for updates in a background thread to avoid blocking CLI startup."""

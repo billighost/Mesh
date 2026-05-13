@@ -89,7 +89,7 @@ def namespaces_cmd():
             print("Cancelled.")
             return
         count = delete_namespace(name)
-        print(f"✓ Deleted namespace '{name}' ({count} memories removed)")
+        print(f"[OK] Deleted namespace '{name}' ({count} memories removed)")
 
     elif parsed.command == "rename":
         if len(parsed.args) < 2:
@@ -97,7 +97,7 @@ def namespaces_cmd():
             sys.exit(1)
         old, new = parsed.args[0], parsed.args[1]
         count = rename_namespace(old, new)
-        print(f"✓ Renamed '{old}' → '{new}' ({count} memories updated)")
+        print(f"[OK] Renamed '{old}' -> '{new}' ({count} memories updated)")
 
     elif parsed.command == "stats":
         if not parsed.args:
@@ -195,9 +195,9 @@ def add_cmd():
     private_note = " (private — will not be exported or synced)" if args.private else ""
     conflict_note = ""
     if result.get("conflict"):
-        conflict_note = f"\n⚠️  Possible conflict with existing memory:\n   \"{result['conflict']['existing_memory']}\""
+        conflict_note = f"\n[WARNING] Possible conflict with existing memory:\n   \"{result['conflict']['existing_memory']}\""
     
-    print(f"✓ Stored [{args.memory_type}] in namespace '{ns}'{private_note}{conflict_note}")
+    print(f"[OK] Stored [{args.memory_type}] in namespace '{ns}'{private_note}{conflict_note}")
     if result.get("memory_id"):
         print(f"  ID: {result['memory_id']}")
 
@@ -269,7 +269,7 @@ def why_cmd():
     
     print(f"\nAudit trail for namespace '{ns}' (most recent first):\n")
     for entry in entries:
-        action_icon = "📖" if entry["action"] == "recall" else "✏️"
+        action_icon = "R" if entry["action"] == "recall" else "W"
         print(f"  {action_icon} [{entry['timestamp'][:19]}] {entry['agent_id']}")
         if entry["action"] == "recall":
             print(f"     asked: \"{entry['query']}\"")
