@@ -28,7 +28,7 @@ results = agent_b.recall("what are the API constraints?")
 ## Installation
 
 ```bash
-pip install mesh-memory
+pip install mesh-context-layer
 ```
 
 ## MCP Server (Claude Desktop + Cursor)

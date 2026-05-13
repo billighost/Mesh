@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mesh-context-layer"
-version = "0.4.2"
+version = "0.4.4"
 description = "Shared memory layer for AI agents — MCP server and Python library"
 readme = "README.md"
 requires-python = ">=3.10"
