@@ -1,0 +1,100 @@
+﻿============================= test session starts =============================
+platform win32 -- Python 3.14.0, pytest-9.0.2, pluggy-1.6.0
+rootdir: C:\Users\bb201\Desktop\Mesh\mesh
+configfile: pyproject.toml
+plugins: anyio-4.12.0, Flask-Dance-7.1.0, cov-7.0.0
+collected 1 item
+
+tests\test_v03.py F                                                      [100%]
+
+================================== FAILURES ===================================
+_________________________ test_local_only_flag_stored _________________________
+tests\test_v03.py:17: in test_local_only_flag_stored
+    mesh.learn("my secret API key is abc123", local_only=True)
+mesh\memory.py:121: in learn
+    embedding = _embed(content)
+                ^^^^^^^^^^^^^^^
+mesh\memory.py:29: in _embed
+    return _get_model().encode(text, show_progress_bar=False).tolist()
+           ^^^^^^^^^^^^
+mesh\memory.py:24: in _get_model
+    _model = SentenceTransformer(_MODEL_NAME)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\..\AppData\Roaming\Python\Python314\site-packages\sentence_transformers\util\decorators.py:41: in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+..\..\..\AppData\Roaming\Python\Python314\site-packages\sentence_transformers\sentence_transformer\model.py:183: in __init__
+    super().__init__(
+..\..\..\AppData\Roaming\Python\Python314\site-packages\sentence_transformers\base\model.py:198: in __init__
+    modules, self.module_kwargs = self._load_modules(
+..\..\..\AppData\Roaming\Python\Python314\site-packages\sentence_transformers\base\model.py:974: in _load_modules
+    return self._load_config_modules(model_name_or_path, **load_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\..\AppData\Roaming\Python\Python314\site-packages\sentence_transformers\base\model.py:1165: in _load_config_modules
+    module = module_class.load(
+..\..\..\AppData\Roaming\Python\Python314\site-packages\sentence_transformers\base\modules\transformer.py:1708: in load
+    return cls(model_name_or_path=model_name_or_path, **init_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\..\AppData\Roaming\Python\Python314\site-packages\sentence_transformers\util\decorators.py:87: in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+..\..\..\AppData\Roaming\Python\Python314\site-packages\sentence_transformers\base\modules\transformer.py:628: in __init__
+    config, is_peft_model = self._load_config(model_name_or_path, backend, config_kwargs)
+                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\..\AppData\Roaming\Python\Python314\site-packages\sentence_transformers\base\modules\transformer.py:1354: in _load_config
+    adapter_config_file = find_adapter_config_file(
+..\..\..\AppData\Roaming\Python\Python314\site-packages\transformers\utils\peft_utils.py:83: in find_adapter_config_file
+    adapter_cached_filename = cached_file(
+..\..\..\AppData\Roaming\Python\Python314\site-packages\transformers\utils\hub.py:276: in cached_file
+    file = cached_files(path_or_repo_id=path_or_repo_id, filenames=[filename], **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\..\AppData\Roaming\Python\Python314\site-packages\transformers\utils\hub.py:507: in cached_files
+    raise e
+..\..\..\AppData\Roaming\Python\Python314\site-packages\transformers\utils\hub.py:419: in cached_files
+    hf_hub_download(
+..\..\..\AppData\Roaming\Python\Python314\site-packages\huggingface_hub\utils\_validators.py:89: in _inner_fn
+    return fn(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^
+..\..\..\AppData\Roaming\Python\Python314\site-packages\huggingface_hub\file_download.py:1032: in hf_hub_download
+    return _hf_hub_download_to_cache_dir(
+..\..\..\AppData\Roaming\Python\Python314\site-packages\huggingface_hub\file_download.py:1165: in _hf_hub_download_to_cache_dir
+    _get_metadata_or_catch_error(
+..\..\..\AppData\Roaming\Python\Python314\site-packages\huggingface_hub\file_download.py:1699: in _get_metadata_or_catch_error
+    metadata = get_hf_file_metadata(
+..\..\..\AppData\Roaming\Python\Python314\site-packages\huggingface_hub\utils\_validators.py:89: in _inner_fn
+    return fn(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^
+..\..\..\AppData\Roaming\Python\Python314\site-packages\huggingface_hub\file_download.py:1622: in get_hf_file_metadata
+    response = _httpx_follow_relative_redirects(
+..\..\..\AppData\Roaming\Python\Python314\site-packages\huggingface_hub\file_download.py:302: in _httpx_follow_relative_redirects
+    response = http_backoff(
+..\..\..\AppData\Roaming\Python\Python314\site-packages\huggingface_hub\utils\_http.py:506: in http_backoff
+    return next(
+..\..\..\AppData\Roaming\Python\Python314\site-packages\huggingface_hub\utils\_http.py:414: in _http_backoff_base
+    response = client.request(method=method, url=url, **kwargs)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\..\AppData\Roaming\Python\Python314\site-packages\httpx\_client.py:825: in request
+    return self.send(request, auth=auth, follow_redirects=follow_redirects)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+..\..\..\AppData\Roaming\Python\Python314\site-packages\httpx\_client.py:901: in send
+    raise RuntimeError("Cannot send a request, as the client has been closed.")
+E   RuntimeError: Cannot send a request, as the client has been closed.
+---------------------------- Captured stderr call -----------------------------
+'[WinError 10054] An existing connection was forcibly closed by the remote host' thrown while requesting HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/adapter_config.json
+Retrying in 1s [Retry 1/5].
+------------------------------ Captured log call ------------------------------
+WARNING  huggingface_hub.utils._http:_http.py:420 '[WinError 10054] An existing connection was forcibly closed by the remote host' thrown while requesting HEAD https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/adapter_config.json
+WARNING  huggingface_hub.utils._http:_http.py:433 Retrying in 1s [Retry 1/5].
+============================== warnings summary ===============================
+..\..\..\AppData\Roaming\Python\Python314\site-packages\chromadb\telemetry\opentelemetry\__init__.py:128
+  C:\Users\bb201\AppData\Roaming\Python\Python314\site-packages\chromadb\telemetry\opentelemetry\__init__.py:128: DeprecationWarning: 'asyncio.iscoroutinefunction' is deprecated and slated for removal in Python 3.16; use inspect.iscoroutinefunction() instead
+    if asyncio.iscoroutinefunction(f):
+
+tests/test_v03.py::test_local_only_flag_stored
+  C:\Users\bb201\Desktop\Mesh\mesh\mesh\memory.py:119: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    now = datetime.utcnow().isoformat()
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_v03.py::test_local_only_flag_stored - RuntimeError: Cannot ...
+================== 1 failed, 2 warnings in 174.23s (0:02:54) ==================
