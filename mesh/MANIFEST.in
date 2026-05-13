@@ -1,0 +1,4 @@
+include LICENSE
+include README.md
+recursive-include mesh *.py
+recursive-include tests *.py
