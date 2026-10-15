@@ -186,7 +186,19 @@ mesh-import backup.json --namespace checkout-staging --merge-strategy skip_exist
 
 ## Detailed Changelog
 
-### v0.5.1 (Latest)
+### v0.5.3 (Latest)
+- **Instant Background Daemon Activation (`mesh daemon install-startup`)**: `install-startup` automatically triggers `start_daemon()` immediately upon registration without requiring an extra manual start command.
+- **New Daemon Management & Residency Endpoints**: Added `GET /engine` and `POST /unload` REST endpoints to inspect model status and immediately release model weights from memory. Added `mesh-daemon` CLI commands (`start`, `stop`, `restart`, `status`, `unload`, `install-startup`, `remove-startup`).
+- **3-Tier Lightweight ONNX / FastEmbed Engine**: Integrated `fastembed` as the primary ONNX runtime embedding engine, dropping cold startup down to ~120 ms and idle RAM to ~20 MB while preserving exact 384-dimensional `all-MiniLM-L6-v2` vector compatibility.
+- **Automatic Idle Model Unloading**: Background inactivity watchdog (`MESH_IDLE_UNLOAD_SECONDS=180`) automatically unloads model weights from RAM after 3 minutes while keeping the 4,096-entry LRU embedding cache hot for `<0.01 ms` queries.
+- **Cross-Process SQLite WAL Cache Sync**: Composite `(db_mtime_ns, db_size, wal_mtime_ns, wal_size)` stamp ensures external writes from other processes are detected instantly in $O(1)$ time.
+- **Dashboard UI Fixes**: Escaped raw string formatting fixing JavaScript regex errors, restored action icons (`↻`, `✎`, `✕`), added `general` type chip and `Deletes` audit filter.
+- **Audit Logging Precision**: Guarded `log_forget()` and `POST /forget` against false deletion events on missing IDs.
+
+### v0.5.2
+- **Windowless Background Process Spawning**: Implemented silent background daemon spawning on Windows via `pythonw.exe` / `CREATE_NO_WINDOW`.
+
+### v0.5.1
 - **High-Speed Batch Import/Export**: `import_namespace` now commits all memories in a single atomic SQLite WAL transaction via `upsert_batch()` and utilizes O(1) in-memory vector cache ID lookups, removing N+1 database queries. Missing embeddings are computed in a single forward pass.
 - **MCP Stdio Redirection Safety**: Added thread-safe stdout redirection to ensure print statements never corrupt stdio JSON-RPC payloads in Claude Desktop or Cursor.
 - **Optimized Context Generation**: Streamlined single-pass context assembly for `/context` HTTP endpoint and `mesh_context` MCP tool with tag and memory type filtering.

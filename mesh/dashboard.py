@@ -21,10 +21,11 @@ from pydantic import BaseModel, Field
 from .audit import get_audit_log, log_forget, log_learn, log_recall, log_update
 from .digest import generate_digest
 from .io import export_namespace
-from .memory import VALID_MEMORY_TYPES, Mesh, warmup_model
+from .memory import VALID_MEMORY_TYPES, Mesh, get_engine_status, warmup_model
 from .namespaces import delete_namespace, list_namespaces, namespace_stats
+from .version import VERSION
 
-api = FastAPI(title="Mesh Dashboard", version="0.4.4")
+api = FastAPI(title="Mesh Dashboard", version=VERSION)
 
 _MESH_LOCK = threading.RLock()
 _MESH_CACHE: dict[str, Mesh] = {}
@@ -48,7 +49,8 @@ def get_mesh(namespace: Optional[str] = None) -> Mesh:
         return inst
 
 
-# ── Request models ──────────────────────────────────────────────────────────
+# --- Request models ---
+
 
 class CreateMemoryRequest(BaseModel):
     content: str
@@ -70,7 +72,8 @@ class UpdateMemoryRequest(BaseModel):
     namespace: Optional[str] = None
 
 
-# ── REST API endpoints ──────────────────────────────────────────────────────
+# --- REST API endpoints ---
+
 
 @api.get("/api/stats")
 def get_stats(namespace: Optional[str] = None) -> dict[str, Any]:
@@ -84,6 +87,7 @@ def get_stats(namespace: Optional[str] = None) -> dict[str, Any]:
         "memory_gaps": len(patterns["memory_gaps"]),
         "stale_memories": len(patterns["stale_memories"]),
         "unused_memories": len(patterns["unused_memories"]),
+        "engine": get_engine_status(),
     }
 
 
@@ -145,9 +149,10 @@ def update_memory(memory_id: str, req: UpdateMemoryRequest) -> dict[str, Any]:
 @api.delete("/api/memories/{memory_id}")
 def delete_memory(memory_id: str, namespace: Optional[str] = None) -> dict[str, str]:
     mesh = get_mesh(namespace)
-    mesh.forget(memory_id)
-    log_forget(memory_id=memory_id, namespace=mesh.namespace, agent_id="dashboard")
-    return {"status": "deleted", "memory_id": memory_id}
+    deleted = mesh.forget(memory_id)
+    if deleted:
+        log_forget(memory_id=memory_id, namespace=mesh.namespace, agent_id="dashboard")
+    return {"status": "deleted" if deleted else "not_found", "memory_id": memory_id}
 
 
 @api.get("/api/patterns")
@@ -191,8 +196,11 @@ def get_namespace_stats(namespace: str) -> dict[str, Any]:
 
 @api.delete("/api/namespaces/{namespace}")
 def api_delete_namespace(namespace: str) -> dict[str, Any]:
+    global _mesh
     with _MESH_LOCK:
         _MESH_CACHE.pop(namespace, None)
+        if _mesh is not None and _mesh.namespace == namespace:
+            _mesh = None
     count = delete_namespace(namespace)
     return {"deleted": True, "memories_removed": count}
 
@@ -218,9 +226,9 @@ async def get_digest(namespace: Optional[str] = None, hours: int = 24) -> dict[s
     return generate_digest(namespace=mesh.namespace, hours=hours)
 
 
-# ── Minimal, Responsive Dashboard HTML ──────────────────────────────────────
+# --- Minimal, Responsive Dashboard HTML (RAW STRING to preserve JS regex backslashes) ---
 
-DASHBOARD_HTML = """<!DOCTYPE html>
+DASHBOARD_HTML = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -268,7 +276,7 @@ html, body {
   padding: 0 16px 40px;
 }
 
-/* ── Top Bar ── */
+/* Top Bar */
 header {
   display: flex;
   align-items: center;
@@ -319,6 +327,7 @@ header {
   max-width: 360px;
   position: relative;
 }
+
 .search-wrap input {
   width: 100%;
   background: var(--surface);
@@ -332,6 +341,7 @@ header {
 }
 .search-wrap input:focus { border-color: var(--accent); }
 .search-wrap input::placeholder { color: var(--subtle); }
+
 .search-kbd {
   position: absolute;
   right: 7px;
@@ -354,11 +364,13 @@ header {
   font-size: 12px;
   color: var(--muted);
 }
+
 .metric-pill {
   display: inline-flex;
   align-items: center;
   gap: 4px;
 }
+
 .metric-val {
   font-family: var(--mono);
   font-weight: 600;
@@ -384,6 +396,7 @@ header {
   white-space: nowrap;
 }
 .btn:hover { background: var(--surface2); border-color: var(--border2); }
+
 .btn-primary {
   background: var(--accent);
   color: #04130d;
@@ -391,10 +404,11 @@ header {
   font-weight: 600;
 }
 .btn-primary:hover { background: #0ea572; border-color: transparent; }
+
 .btn-danger { color: var(--red); border-color: rgba(239, 68, 68, 0.25); }
 .btn-danger:hover { background: rgba(239, 68, 68, 0.1); }
 
-/* ── Sub-navigation & Toolbar ── */
+/* Sub-navigation & Toolbar */
 .subnav {
   display: flex;
   align-items: center;
@@ -411,6 +425,7 @@ header {
   gap: 2px;
   overflow-x: auto;
 }
+
 .tab {
   padding: 4px 10px;
   border-radius: 5px;
@@ -427,6 +442,7 @@ header {
 }
 .tab:hover { color: var(--text); background: var(--surface); }
 .tab.active { color: var(--text); background: var(--surface2); }
+
 .tab-count {
   font-family: var(--mono);
   font-size: 10.5px;
@@ -441,6 +457,7 @@ header {
   margin-bottom: 10px;
   flex-wrap: wrap;
 }
+
 .chip {
   padding: 3px 8px;
   border-radius: 4px;
@@ -468,7 +485,7 @@ header {
   outline: none;
 }
 
-/* ── Panels & Compact Rows ── */
+/* Panels & Compact Rows */
 .panel { display: none; }
 .panel.active { display: block; }
 
@@ -494,6 +511,7 @@ header {
 .row:hover { background: rgba(255, 255, 255, 0.018); }
 
 .row-main { flex: 1; min-width: 0; }
+
 .row-top {
   display: flex;
   align-items: baseline;
@@ -538,6 +556,7 @@ header {
 .type-pill.process     { color: #38bdf8; background: rgba(56,189,248,0.12); }
 .type-pill.decision    { color: #f472b6; background: rgba(244,114,182,0.12); }
 .type-pill.error       { color: #f87171; background: rgba(248,113,113,0.12); }
+.type-pill.general     { color: #94a3b8; background: rgba(148,163,184,0.12); }
 
 .tag {
   font-family: var(--mono);
@@ -584,7 +603,7 @@ header {
 .icon-btn:hover { background: var(--surface2); border-color: var(--border2); color: var(--text); }
 .icon-btn.del:hover { color: var(--red); border-color: rgba(239,68,68,0.3); }
 
-/* ── Sections & Grids ── */
+/* Sections & Grids */
 .section-label {
   font-size: 11px;
   font-weight: 600;
@@ -603,6 +622,7 @@ header {
   gap: 8px;
   margin-top: 6px;
 }
+
 .conflict-box {
   padding: 8px 10px;
   border-radius: 6px;
@@ -624,7 +644,7 @@ header {
   background: var(--surface);
 }
 
-/* ── Minimal Modal ── */
+/* Minimal Modal */
 .backdrop {
   position: fixed;
   inset: 0;
@@ -646,6 +666,7 @@ header {
   padding: 16px;
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
 }
+
 .modal-head {
   display: flex;
   justify-content: space-between;
@@ -654,6 +675,7 @@ header {
   font-weight: 600;
   font-size: 13.5px;
 }
+
 .field { margin-bottom: 10px; display: flex; flex-direction: column; gap: 4px; }
 .field label { font-size: 11px; color: var(--muted); font-weight: 500; }
 .field textarea, .field input[type="text"], .field input[type="number"], .field select {
@@ -672,7 +694,9 @@ header {
   resize: vertical;
 }
 .field textarea:focus, .field input:focus, .field select:focus { border-color: var(--accent); }
+
 .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+
 .modal-foot { display: flex; justify-content: flex-end; gap: 6px; margin-top: 12px; }
 
 #toast {
@@ -700,28 +724,23 @@ header {
 </head>
 <body>
 <div class="app">
-
   <header>
     <div class="brand">
       <span class="brand-dot"></span>
       <span>Mesh</span>
     </div>
-
     <select id="ns-select" class="ns-select" onchange="switchNamespace(this.value)" title="Switch Namespace"></select>
-
     <div class="search-wrap">
       <input type="text" id="search-input" placeholder="Search memories (semantic + keyword)..." oninput="onSearch(this.value)">
       <span class="search-kbd">/</span>
     </div>
-
     <div class="metrics-inline">
       <span class="metric-pill">Memories <span class="metric-val" id="m-total">0</span></span>
       <span class="metric-pill">Stale <span class="metric-val warn" id="m-stale">0</span></span>
       <span class="metric-pill">Conflicts <span class="metric-val danger" id="m-conflicts">0</span></span>
       <span class="metric-pill">Gaps <span class="metric-val" id="m-gaps">0</span></span>
     </div>
-
-    <button class="btn" onclick="refreshAll()" title="Refresh">↻</button>
+    <button class="btn" onclick="refreshAll()" title="Refresh">&#x21bb;</button>
     <button class="btn btn-primary" onclick="openModal()">+ New</button>
   </header>
 
@@ -749,6 +768,7 @@ header {
       <button class="chip" onclick="setType('context', this)">Context</button>
       <button class="chip" onclick="setType('result', this)">Result</button>
       <button class="chip" onclick="setType('error', this)">Error</button>
+      <button class="chip" onclick="setType('general', this)">General</button>
       <select class="sort-select" onchange="setSort(this.value)">
         <option value="accessed">Sort: Recent access</option>
         <option value="created">Sort: Created</option>
@@ -780,6 +800,7 @@ header {
       <button class="chip" onclick="loadAudit('read', this)">Reads</button>
       <button class="chip" onclick="loadAudit('write', this)">Writes</button>
       <button class="chip" onclick="loadAudit('update', this)">Updates</button>
+      <button class="chip" onclick="loadAudit('forget', this)">Deletes</button>
     </div>
     <div id="audit-list"></div>
   </div>
@@ -793,7 +814,6 @@ header {
   <div class="panel" id="panel-digest">
     <div id="digest-list"></div>
   </div>
-
 </div>
 
 <!-- Add / Edit Modal -->
@@ -801,7 +821,7 @@ header {
   <div class="modal">
     <div class="modal-head">
       <span id="modal-title">New Memory</span>
-      <button class="icon-btn" onclick="closeModal()">✕</button>
+      <button class="icon-btn" onclick="closeModal()" title="Close">&#x2715;</button>
     </div>
     <div class="field">
       <label>Content</label>
@@ -823,7 +843,7 @@ header {
         </select>
       </div>
       <div class="field">
-        <label>Confidence (0.0 – 1.0)</label>
+        <label>Confidence (0.0 - 1.0)</label>
         <input type="number" id="f-conf" min="0" max="1" step="0.05" value="1.0">
       </div>
     </div>
@@ -838,7 +858,7 @@ header {
       </div>
     </div>
     <label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer;margin-top:2px">
-      <input type="checkbox" id="f-private"> Private (local_only — exclude from exports)
+      <input type="checkbox" id="f-private"> Private (local_only - exclude from exports)
     </label>
     <div class="modal-foot">
       <button class="btn" onclick="closeModal()">Cancel</button>
@@ -854,6 +874,8 @@ let ns = new URLSearchParams(location.search).get('ns') || '';
 let memories = [];
 let searchResults = null;
 let activeType = 'all';
+let activeTab = 'memories';
+let activeAuditFilter = 'all';
 let sortBy = 'accessed';
 let editId = null;
 let debounceTimer = null;
@@ -882,6 +904,11 @@ async function refreshAll() {
   }
   await populateNamespaceDropdown();
   await loadMemories();
+  if (activeTab === 'conflicts') await loadConflicts();
+  else if (activeTab === 'patterns') await loadPatterns();
+  else if (activeTab === 'audit') await loadAudit(activeAuditFilter);
+  else if (activeTab === 'namespaces') await loadNamespaces();
+  else if (activeTab === 'digest') await loadDigest();
 }
 
 async function populateNamespaceDropdown() {
@@ -918,16 +945,18 @@ function parseTags(m) {
 
 function renderMemories() {
   let list = searchResults !== null ? [...searchResults] : [...memories];
-
   if (activeType !== 'all') {
     list = list.filter(m => (m.memory_type || 'fact') === activeType);
   }
-
   if (searchResults === null) {
-    if (sortBy === 'created') list.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
-    else if (sortBy === 'confidence') list.sort((a, b) => (b.effective_confidence ?? b.confidence ?? 1) - (a.effective_confidence ?? a.confidence ?? 1));
+    if (sortBy === 'accessed') {
+      list.sort((a, b) => (b.accessed_at || b.created_at || '').localeCompare(a.accessed_at || a.created_at || ''));
+    } else if (sortBy === 'created') {
+      list.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+    } else if (sortBy === 'confidence') {
+      list.sort((a, b) => (b.effective_confidence ?? b.confidence ?? 1) - (a.effective_confidence ?? a.confidence ?? 1));
+    }
   }
-
   document.getElementById('shown-count').textContent =
     searchResults !== null ? `${list.length} matches` : `${list.length} items`;
 
@@ -936,7 +965,6 @@ function renderMemories() {
     root.innerHTML = `<div class="empty">No memories match the current view.</div>`;
     return;
   }
-
   root.innerHTML = `<div class="list">` + list.map(m => {
     const t = m.memory_type || 'fact';
     const tags = parseTags(m);
@@ -944,7 +972,6 @@ function renderMemories() {
     const sim = m.similarity !== undefined ? `<span class="flag sim">${Math.round(m.similarity * 100)}% match</span>` : '';
     const stale = m.is_stale ? `<span class="flag stale">stale</span>` : '';
     const priv = m.local_only ? `<span class="flag private">private</span>` : '';
-
     return `<div class="row">
       <div class="row-main">
         <div class="row-top">
@@ -955,14 +982,14 @@ function renderMemories() {
           ${sim}${stale}${priv}
           <span>conf ${conf}</span>
           <span>by ${esc(m.source_agent || 'agent')}</span>
-          ${m.access_count ? `<span>${m.access_count}× read</span>` : ''}
+          ${m.access_count ? `<span>${m.access_count}x read</span>` : ''}
           ${m.created_at ? `<span>${relTime(m.created_at)}</span>` : ''}
           ${tags.map(tag => `<span class="tag">#${esc(tag)}</span>`).join('')}
         </div>
       </div>
       <div class="row-actions">
-        <button class="icon-btn" title="Edit" onclick="openEdit('${escAttr(m.id)}')">✎</button>
-        <button class="icon-btn del" title="Delete" onclick="delMemory('${escAttr(m.id)}')">✕</button>
+        <button class="icon-btn" title="Edit" onclick="openEdit('${escAttr(m.id)}')">&#x270e;</button>
+        <button class="icon-btn del" title="Delete" onclick="delMemory('${escAttr(m.id)}')">&#x2715;</button>
       </div>
     </div>`;
   }).join('') + `</div>`;
@@ -994,7 +1021,6 @@ function onSearch(val) {
     parseTags(m).some(t => t.toLowerCase().includes(ql))
   );
   renderMemories();
-
   if (q.length >= 2) {
     debounceTimer = setTimeout(async () => {
       const res = await apiFetch(`/api/search?q=${encodeURIComponent(q)}&n=25&namespace=${encodeURIComponent(ns)}`);
@@ -1042,7 +1068,6 @@ function closeModal() {
 async function saveMemory() {
   const content = document.getElementById('f-content').value.trim();
   if (!content) return notify('Content is required');
-
   const tags = document.getElementById('f-tags').value.split(',').map(s => s.trim()).filter(Boolean);
   const ttlRaw = document.getElementById('f-ttl').value;
   const payload = {
@@ -1054,7 +1079,6 @@ async function saveMemory() {
     local_only: document.getElementById('f-private').checked,
     namespace: ns
   };
-
   const url = editId ? `/api/memories/${encodeURIComponent(editId)}` : '/api/memories';
   const method = editId ? 'PUT' : 'POST';
   const res = await fetch(url, {
@@ -1062,12 +1086,12 @@ async function saveMemory() {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
   });
-
   if (res.ok) {
+    const wasEdit = Boolean(editId);
     closeModal();
     searchResults = null;
     document.getElementById('search-input').value = '';
-    notify(editId ? 'Memory updated' : 'Memory saved');
+    notify(wasEdit ? 'Memory updated' : 'Memory saved');
     await refreshAll();
   } else {
     notify('Failed to save memory');
@@ -1095,7 +1119,7 @@ async function loadConflicts() {
   }
   el.innerHTML = `<div class="list">` + list.map(c => `<div class="row" style="flex-direction:column">
     <div style="display:flex;justify-content:space-between;width:100%;align-items:center">
-      <span class="row-meta"><span class="flag stale">conflict</span> similarity ${(c.similarity || 0).toFixed(2)} · ${relTime(c.detected_at)}</span>
+      <span class="row-meta"><span class="flag stale">conflict</span> similarity ${(c.similarity || 0).toFixed(2)} &middot; ${relTime(c.detected_at)}</span>
       <button class="btn" onclick="resolveConflict('${escAttr(c.id)}')">Mark Resolved</button>
     </div>
     <div class="conflict-grid" style="width:100%">
@@ -1115,12 +1139,11 @@ async function resolveConflict(id) {
 async function loadPatterns() {
   const data = await apiFetch(`/api/patterns?namespace=${encodeURIComponent(ns)}`);
   if (!data) return;
-
   const tEl = document.getElementById('patterns-topics');
   tEl.innerHTML = (data.top_topics || []).length
     ? `<div class="list">` + data.top_topics.map(t => `<div class="row">
         <span class="row-content">${esc(t.query_text)}</span>
-        <span class="row-meta">${t.query_count} queries · avg sim ${(t.avg_similarity || 0).toFixed(2)}</span>
+        <span class="row-meta">${t.query_count} queries &middot; avg sim ${(t.avg_similarity || 0).toFixed(2)}</span>
       </div>`).join('') + `</div>`
     : `<div class="empty">No queries logged yet.</div>`;
 
@@ -1128,7 +1151,7 @@ async function loadPatterns() {
   gEl.innerHTML = (data.memory_gaps || []).length
     ? `<div class="list">` + data.memory_gaps.map(g => `<div class="row">
         <span class="row-content">${esc(g.query_text)}</span>
-        <span class="row-meta"><span class="flag stale">gap</span> asked ${g.query_count}× · avg sim ${(g.avg_similarity || 0).toFixed(2)}</span>
+        <span class="row-meta"><span class="flag stale">gap</span> asked ${g.query_count}x &middot; avg sim ${(g.avg_similarity || 0).toFixed(2)}</span>
       </div>`).join('') + `</div>`
     : `<div class="empty">No memory gaps detected.</div>`;
 
@@ -1136,17 +1159,18 @@ async function loadPatterns() {
   uEl.innerHTML = (data.unused_memories || []).length
     ? `<div class="list">` + data.unused_memories.map(m => `<div class="row">
         <span class="row-content">${esc(m.content)}</span>
-        <button class="icon-btn del" onclick="delMemory('${escAttr(m.id)}')">✕</button>
+        <button class="icon-btn del" title="Delete" onclick="delMemory('${escAttr(m.id)}')">&#x2715;</button>
       </div>`).join('') + `</div>`
     : `<div class="empty">No unused memories.</div>`;
 }
 
 async function loadAudit(filter = 'all', btn = null) {
+  activeAuditFilter = filter;
   if (btn) {
     document.querySelectorAll('#panel-audit .chip').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
   }
-  const list = await apiFetch(`/api/audit?namespace=${encodeURIComponent(ns)}&limit=100&action=${filter}`) || [];
+  const list = await apiFetch(`/api/audit?namespace=${encodeURIComponent(ns)}&limit=100&action=${encodeURIComponent(filter)}`) || [];
   const el = document.getElementById('audit-list');
   if (!list.length) {
     el.innerHTML = `<div class="empty">No audit activity recorded yet.</div>`;
@@ -1161,7 +1185,7 @@ async function loadAudit(filter = 'all', btn = null) {
       <div class="row-meta">
         <span>by ${esc(e.agent_id || 'agent')}</span>
         <span>${relTime(e.timestamp)}</span>
-        ${e.top_result ? `<span>→ "${esc(e.top_result.slice(0, 70))}"</span>` : ''}
+        ${e.top_result ? `<span>&rarr; "${esc(e.top_result.slice(0, 70))}"</span>` : ''}
       </div>
     </div>
   </div>`).join('') + `</div>`;
@@ -1206,9 +1230,13 @@ async function exportNs(targetNs) {
 async function deleteNs(targetNs) {
   if (!confirm(`Delete namespace '${targetNs}' and all its memories?`)) return;
   await fetch(`/api/namespaces/${encodeURIComponent(targetNs)}`, { method: 'DELETE' });
+  if (targetNs === ns) {
+    ns = '';
+    searchResults = null;
+  }
   notify(`Deleted ${targetNs}`);
-  loadNamespaces();
-  refreshAll();
+  await loadNamespaces();
+  await refreshAll();
 }
 
 async function loadDigest() {
@@ -1216,7 +1244,7 @@ async function loadDigest() {
   const el = document.getElementById('digest-list');
   if (!d) return;
   if (!d.new_count && !d.contradiction_count && !d.stale_count) {
-    el.innerHTML = `<div class="empty">All clear — no new activity or stale memories in the last 24h.</div>`;
+    el.innerHTML = `<div class="empty">All clear &mdash; no new activity or stale memories in the last 24h.</div>`;
     return;
   }
   const items = (d.new_memories || []).map(m => `<div class="row">
@@ -1225,18 +1253,19 @@ async function loadDigest() {
       <div class="row-meta"><span>by ${esc(m.source_agent)}</span><span>${relTime(m.created_at)}</span></div>
     </div>
   </div>`).join('');
-  el.innerHTML = `<div class="section-label">Last 24h: ${d.new_count} new · ${d.total_recalls} recalls · ${d.contradiction_count} conflicts</div>` +
+  el.innerHTML = `<div class="section-label">Last 24h: ${d.new_count} new &middot; ${d.total_recalls} recalls &middot; ${d.contradiction_count} conflicts</div>` +
     (items ? `<div class="list">${items}</div>` : '');
 }
 
 function showTab(name, btn) {
+  activeTab = name;
   document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   document.getElementById('panel-' + name).classList.add('active');
   btn.classList.add('active');
   if (name === 'conflicts') loadConflicts();
   if (name === 'patterns') loadPatterns();
-  if (name === 'audit') loadAudit();
+  if (name === 'audit') loadAudit(activeAuditFilter);
   if (name === 'namespaces') loadNamespaces();
   if (name === 'digest') loadDigest();
 }
@@ -1244,9 +1273,11 @@ function showTab(name, btn) {
 function esc(s) {
   return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
+
 function escAttr(s) {
   return String(s ?? '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 }
+
 function relTime(s) {
   if (!s || s === 'never') return 'never';
   const d = new Date(s);
@@ -1258,6 +1289,7 @@ function relTime(s) {
   if (sec < 604800) return Math.floor(sec / 86400) + 'd ago';
   return d.toLocaleDateString();
 }
+
 function notify(msg) {
   const t = document.getElementById('toast');
   t.textContent = msg;
@@ -1268,10 +1300,10 @@ function notify(msg) {
 
 document.addEventListener('keydown', e => {
   const activeTag = document.activeElement ? document.activeElement.tagName : '';
-  if (e.key === '/' && activeTag !== 'INPUT' && activeTag !== 'TEXTAREA') {
+  if (e.key === '/' && activeTag !== 'INPUT' && activeTag !== 'TEXTAREA' && activeTag !== 'SELECT') {
     e.preventDefault();
     document.getElementById('search-input').focus();
-  } else if (e.key === 'n' && !e.metaKey && !e.ctrlKey && activeTag !== 'INPUT' && activeTag !== 'TEXTAREA') {
+  } else if (e.key === 'n' && !e.metaKey && !e.ctrlKey && activeTag !== 'INPUT' && activeTag !== 'TEXTAREA' && activeTag !== 'SELECT') {
     e.preventDefault();
     openModal();
   } else if (e.key === 'Escape') {
@@ -1288,7 +1320,8 @@ def dashboard() -> str:
     return DASHBOARD_HTML
 
 
-# ── CLI entry point ─────────────────────────────────────────────────────────
+# --- CLI entry point ---
+
 
 @click.command()
 @click.option(
@@ -1304,7 +1337,7 @@ def run(namespace: str, port: int, no_browser: bool) -> None:
     global _mesh, _default_namespace
     _default_namespace = namespace
     _mesh = Mesh(namespace=namespace, agent_id="dashboard")
-    threading.Thread(target=warmup_model, daemon=True).start()
+    threading.Thread(target=warmup_model, args=(namespace,), daemon=True).start()
 
     url = f"http://localhost:{port}"
     print("\n  Mesh Dashboard")

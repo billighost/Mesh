@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .audit import _get_audit_db_path, evict_audit_cache
 from .store import (
     MESH_DIR,
     _CACHE_LOCK,
@@ -47,6 +48,7 @@ def _evict_namespace_caches(namespace: str, db_path: Path) -> None:
         stale_keys = [k for k in _TRANSIENT_EMBEDDINGS if k[0] == namespace]
         for k in stale_keys:
             _TRANSIENT_EMBEDDINGS.pop(k, None)
+    evict_audit_cache(namespace)
 
 
 def _remove_sqlite_files(db_path: Path) -> None:
@@ -127,12 +129,13 @@ def list_namespaces() -> list[dict[str, Any]]:
 
 def delete_namespace(namespace: str) -> int:
     """
-    Delete a namespace and ALL its memories.
+    Delete a namespace and ALL its memories (plus its isolated audit trail DB).
 
     Returns:
         Number of memories deleted.
     """
     db_path = MESH_DIR / f"mesh_{namespace}.db"
+    audit_db_path = _get_audit_db_path(namespace)
     count = 0
 
     _evict_namespace_caches(namespace, db_path)
@@ -156,6 +159,19 @@ def delete_namespace(namespace: str) -> int:
 
         _remove_sqlite_files(db_path)
 
+    if audit_db_path.exists():
+        conn_audit = sqlite3.connect(audit_db_path, timeout=5.0)
+        try:
+            try:
+                conn_audit.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except sqlite3.OperationalError:
+                pass
+        except Exception:
+            pass
+        finally:
+            conn_audit.close()
+        _remove_sqlite_files(audit_db_path)
+
     # Clean up legacy ChromaDB collection only if a chroma directory exists
     chroma_dir = MESH_DIR / "chroma"
     if chroma_dir.exists():
@@ -172,8 +188,8 @@ def delete_namespace(namespace: str) -> int:
 
 def rename_namespace(old_name: str, new_name: str) -> int:
     """
-    Rename a namespace. Copies all data (including embeddings) to the new namespace,
-    updates internal namespace columns, and deletes the old namespace.
+    Rename a namespace. Copies all data (including embeddings and audit logs) to the new
+    namespace, updates internal namespace columns, and deletes the old namespace files.
 
     Returns:
         Number of memories moved.
@@ -221,6 +237,33 @@ def rename_namespace(old_name: str, new_name: str) -> int:
         conn_new.close()
 
     _remove_sqlite_files(old_db)
+
+    # Also migrate the audit trail DB if it exists
+    old_audit = _get_audit_db_path(old_name)
+    new_audit = _get_audit_db_path(new_name)
+    if old_audit.exists():
+        conn_audit_old = sqlite3.connect(old_audit, timeout=5.0)
+        try:
+            try:
+                conn_audit_old.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except sqlite3.OperationalError:
+                pass
+        finally:
+            conn_audit_old.close()
+
+        shutil.copy2(old_audit, new_audit)
+        conn_audit_new = sqlite3.connect(new_audit, timeout=5.0)
+        try:
+            conn_audit_new.execute(
+                "UPDATE audit_log SET namespace = ? WHERE namespace = ?",
+                (new_name, old_name),
+            )
+            conn_audit_new.commit()
+        except Exception:
+            pass
+        finally:
+            conn_audit_new.close()
+        _remove_sqlite_files(old_audit)
 
     # Clean up legacy ChromaDB collection if present
     chroma_dir = MESH_DIR / "chroma"

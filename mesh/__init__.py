@@ -13,7 +13,14 @@ from .audit import (
 from .context_builder import build_context
 from .digest import generate_digest
 from .io import export_namespace, import_namespace
-from .memory import VALID_MEMORY_TYPES, Mesh, warmup_model
+from .memory import (
+    VALID_MEMORY_TYPES,
+    Mesh,
+    get_engine_status,
+    set_idle_unload_seconds,
+    unload_model,
+    warmup_model,
+)
 from .namespaces import (
     delete_namespace,
     list_namespaces,
@@ -27,6 +34,9 @@ __all__ = [
     "Mesh",
     "VALID_MEMORY_TYPES",
     "warmup_model",
+    "unload_model",
+    "get_engine_status",
+    "set_idle_unload_seconds",
     "export_namespace",
     "import_namespace",
     "list_namespaces",

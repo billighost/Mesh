@@ -4,12 +4,12 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mesh-context-layer"
-version = "0.5.1"
+version = "0.5.3"
 description = "High-speed shared semantic & hybrid memory layer for AI agents — MCP server, CLI, and Python library"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-keywords = ["ai", "agents", "memory", "mcp", "llm", "claude", "cursor", "hybrid-search"]
+keywords = ["ai", "agents", "memory", "mcp", "llm", "claude", "cursor", "hybrid-search", "fastembed"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -22,6 +22,7 @@ classifiers = [
 ]
 dependencies = [
     "numpy>=1.24.0",
+    "fastembed>=0.3.0",
     "sentence-transformers>=3.0.0",
     "mcp>=1.0.0",
     "click>=8.0.0",
@@ -53,9 +54,10 @@ mesh-server = "mesh.mcp_server:run"
 mesh-dashboard = "mesh.dashboard:run"
 mesh-export = "mesh.cli:export_cmd"
 mesh-import = "mesh.cli:import_cmd"
-mesh-namespaces = "mesh.cli:namespaces_cmd"
+mesh-namespaces = "mesh.namespaces:list_namespaces"
 mesh-http = "mesh.http_server:start"
 mesh-server-http = "mesh.http_server:start"
+mesh-daemon = "mesh.daemon:daemon_cmd"
 mesh-context = "mesh.cli:context_cmd"
 mesh-add = "mesh.cli:add_cmd"
 mesh-ask = "mesh.cli:ask_cmd"

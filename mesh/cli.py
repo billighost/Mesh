@@ -244,6 +244,7 @@ def add_cmd() -> None:
         local_only=args.private,
         ttl_days=args.ttl,
     )
+
     log_learn(
         content=args.content,
         namespace=ns,
@@ -251,7 +252,7 @@ def add_cmd() -> None:
         result=result,
     )
 
-    private_note = " (private — will not be exported or synced)" if args.private else ""
+    private_note = " (private - will not be exported or synced)" if args.private else ""
     dedup_note = " (deduplicated existing memory)" if result.get("deduplicated") else ""
     conflict_note = ""
     if result.get("conflict"):
@@ -303,6 +304,7 @@ def ask_cmd() -> None:
         memory_type=args.memory_type,
         tags=tags,
     )
+
     log_recall(
         query=args.query,
         namespace=ns,
@@ -322,7 +324,6 @@ def ask_cmd() -> None:
         private = " [PRIVATE]" if mem.get("local_only") else ""
         mem_tags = mem.get("tags") or []
         tags_str = f" #{' #'.join(mem_tags)}" if mem_tags else ""
-
         print(f"  {i}. {mem['content']}{stale}{private}")
         print(
             f"     id={mem.get('id', 'unknown')} | type={mem.get('memory_type', 'fact')} | "
@@ -400,9 +401,8 @@ def forget_cmd() -> None:
     ns = _resolve_namespace(args.namespace)
     mesh = Mesh(namespace=ns, agent_id="human-cli")
     deleted = mesh.forget(args.memory_id)
-    log_forget(memory_id=args.memory_id, namespace=ns, agent_id="human-cli")
-
     if deleted:
+        log_forget(memory_id=args.memory_id, namespace=ns, agent_id="human-cli")
         print(f"[OK] Deleted memory '{args.memory_id}' from namespace '{ns}'")
     else:
         print(f"Memory '{args.memory_id}' not found in namespace '{ns}'", file=sys.stderr)
@@ -419,7 +419,7 @@ def why_cmd() -> None:
     parser.add_argument("--namespace", default=None)
     parser.add_argument(
         "--action",
-        choices=["read", "write", "update", "forget", "all"],
+        choices=["read", "write", "update", "forget", "delete", "all"],
         default="all",
     )
     args = parser.parse_args()
@@ -466,7 +466,6 @@ def status_cmd() -> None:
     from .namespaces import list_namespaces, namespace_stats
 
     ns = _resolve_namespace(args.namespace)
-
     try:
         stats = namespace_stats(ns)
     except ValueError:
@@ -477,7 +476,7 @@ def status_cmd() -> None:
     recent = get_audit_log(namespace=ns, limit=5)
     last_activity = str(recent[0]["timestamp"])[:19] if recent else "never"
 
-    print(f"\nMesh Status — namespace: {ns}\n")
+    print(f"\nMesh Status - namespace: {ns}\n")
     print(
         f"  Memories:       {stats['memory_count']} total, "
         f"{stats['local_only_count']} private, "
@@ -508,6 +507,7 @@ def help_cmd() -> None:
     print("  mesh-status     Overview of namespaces and memory counts")
     print("  mesh-why        Show recent audit trail (who read/wrote what)")
     print("  mesh-context    Output memories as system prompt (for AI tools)")
+    print("  mesh-daemon     Manage the background daemon & auto-start on login")
     print("  mesh-server     Start the MCP server (for Claude/Cursor)")
     print("  mesh-dashboard  Open the web-based visualizer")
     print("  mesh-http       Start the REST API server")
@@ -534,6 +534,7 @@ def main() -> None:
     if cmd.startswith("mesh-"):
         cmd = cmd[5:]
 
+    from .daemon import daemon_cmd
     from .dashboard import run as dashboard_cmd
     from .digest import digest_cmd
     from .http_server import start as http_cmd
@@ -554,6 +555,7 @@ def main() -> None:
         "namespaces": namespaces_cmd,
         "capture": capture_cmd,
         "digest": digest_cmd,
+        "daemon": daemon_cmd,
         "server": server_cmd,
         "dashboard": dashboard_cmd,
         "http": http_cmd,

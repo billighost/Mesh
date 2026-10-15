@@ -376,7 +376,7 @@ Mesh.update(memory_id, content, memory_type, confidence, tags, ttl_days, reset_t
 
 ### `version.py`
 
-**Purpose:** Stores `VERSION = "0.5.1"` and runs a non-blocking background daemon check against PyPI (`check_for_updates()`) during `mesh-status` and `mesh-help` (can be disabled with `MESH_NO_UPDATE_CHECK=1`).
+**Purpose:** Stores `VERSION = "0.5.3"` and runs a non-blocking background daemon check against PyPI (`check_for_updates()`) during `mesh-status` and `mesh-help` (can be disabled with `MESH_NO_UPDATE_CHECK=1`).
 
 ---
 
