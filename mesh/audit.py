@@ -13,7 +13,7 @@ from typing import Any, Optional
 
 MESH_DIR = Path.home() / ".mesh"
 _AUDIT_LOCK = threading.RLock()
-_INITIALIZED_AUDIT_DBS: dict[Path, int] = {}
+_INITIALIZED_AUDIT_DBS: dict[Path, tuple[int, int, int, int]] = {}
 
 _AUDIT_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS audit_log (
@@ -39,6 +39,7 @@ _ACTION_FILTER_MAP = {
     "learn": "learn",
     "update": "update",
     "forget": "forget",
+    "delete": "forget",
 }
 
 
@@ -57,6 +58,30 @@ class _ManagedAuditConnection(sqlite3.Connection):
 
 def _get_audit_db_path(namespace: str) -> Path:
     return MESH_DIR / f"audit_{namespace}.db"
+
+
+def _get_audit_db_stamp(db_path: Path) -> Optional[tuple[int, int, int, int]]:
+    """Return a composite (db_mtime_ns, db_size, wal_mtime_ns, wal_size) stamp for WAL-safe sync."""
+    if not db_path.exists():
+        return None
+    try:
+        st = db_path.stat()
+        if st.st_size <= 0:
+            return None
+        wal_path = Path(f"{db_path}-wal")
+        if wal_path.exists():
+            wst = wal_path.stat()
+            return (st.st_mtime_ns, st.st_size, wst.st_mtime_ns, wst.st_size)
+        return (st.st_mtime_ns, st.st_size, 0, 0)
+    except OSError:
+        return None
+
+
+def evict_audit_cache(namespace: str) -> None:
+    """Evict tracked initialization state for a namespace's audit DB before delete/rename."""
+    db_path = _get_audit_db_path(namespace)
+    with _AUDIT_LOCK:
+        _INITIALIZED_AUDIT_DBS.pop(db_path, None)
 
 
 def _connect_audit(db_path: Path) -> sqlite3.Connection:
@@ -91,37 +116,25 @@ def _ensure_audit_db(namespace: str) -> Path:
     """Initialize the audit database schema once per file lifecycle."""
     db_path = _get_audit_db_path(namespace)
     with _AUDIT_LOCK:
-        if db_path.exists():
-            try:
-                stat = db_path.stat()
-                if stat.st_size > 0 and _INITIALIZED_AUDIT_DBS.get(db_path) == stat.st_mtime_ns:
-                    return db_path
-            except OSError:
-                pass
+        stamp = _get_audit_db_stamp(db_path)
+        if stamp is not None and _INITIALIZED_AUDIT_DBS.get(db_path) == stamp:
+            return db_path
         _init_audit_db(namespace)
-        if db_path.exists():
-            try:
-                _INITIALIZED_AUDIT_DBS[db_path] = db_path.stat().st_mtime_ns
-            except OSError:
-                pass
+        new_stamp = _get_audit_db_stamp(db_path)
+        if new_stamp is not None:
+            _INITIALIZED_AUDIT_DBS[db_path] = new_stamp
     return db_path
 
 
 def _write_audit_entry(namespace: str, sql: str, params: tuple[Any, ...]) -> None:
     """
     Execute an audit log INSERT in a single connection pass and refresh the
-    tracked file mtime so subsequent writes never re-run schema initialization.
+    tracked file stamp so subsequent writes never re-run schema initialization.
     """
     db_path = _get_audit_db_path(namespace)
     with _AUDIT_LOCK:
-        needs_init = True
-        if db_path.exists():
-            try:
-                stat = db_path.stat()
-                if stat.st_size > 0 and _INITIALIZED_AUDIT_DBS.get(db_path) == stat.st_mtime_ns:
-                    needs_init = False
-            except OSError:
-                needs_init = True
+        stamp = _get_audit_db_stamp(db_path)
+        needs_init = stamp is None or _INITIALIZED_AUDIT_DBS.get(db_path) != stamp
 
         with _connect_audit(db_path) as conn:
             if needs_init:
@@ -129,10 +142,9 @@ def _write_audit_entry(namespace: str, sql: str, params: tuple[Any, ...]) -> Non
             conn.execute(sql, params)
             conn.commit()
 
-        try:
-            _INITIALIZED_AUDIT_DBS[db_path] = db_path.stat().st_mtime_ns
-        except OSError:
-            pass
+        new_stamp = _get_audit_db_stamp(db_path)
+        if new_stamp is not None:
+            _INITIALIZED_AUDIT_DBS[db_path] = new_stamp
 
 
 def log_recall(
@@ -259,13 +271,15 @@ def get_audit_log(
         namespace: The namespace to query.
         limit: Max entries to return.
         action_filter: "all", "read" (maps to recall), "write" (maps to learn),
-                       or an explicit action ("recall", "learn", "update", "forget").
+                       "delete" (maps to forget), or an explicit action
+                       ("recall", "learn", "update", "forget").
     """
     db_path = _get_audit_db_path(namespace)
     if not db_path.exists():
         return []
 
-    action_sql = _ACTION_FILTER_MAP.get(action_filter)
+    action_sql = _ACTION_FILTER_MAP.get((action_filter or "all").strip().lower())
+
     with _connect_audit(db_path) as conn:
         conn.row_factory = sqlite3.Row
         if action_sql:
@@ -299,6 +313,8 @@ def get_audit_stats(namespace: str) -> dict[str, Any]:
         return {
             "total_recalls": 0,
             "total_learns": 0,
+            "total_updates": 0,
+            "total_forgets": 0,
             "agents": [],
             "conflicts_detected": 0,
             "last_activity": None,
@@ -308,11 +324,13 @@ def get_audit_stats(namespace: str) -> dict[str, Any]:
         conn.row_factory = sqlite3.Row
         cur_agg = conn.execute(
             """
-            SELECT
-                 COALESCE(SUM(CASE WHEN action = 'recall' THEN 1 ELSE 0 END), 0) AS recalls,
-                 COALESCE(SUM(CASE WHEN action = 'learn' THEN 1 ELSE 0 END), 0) AS learns,
-                 COALESCE(SUM(CASE WHEN had_conflict = 1 THEN 1 ELSE 0 END), 0) AS conflicts,
-                 MAX(timestamp) AS last_activity
+            SELECT 
+                COALESCE(SUM(CASE WHEN action = 'recall' THEN 1 ELSE 0 END), 0) AS recalls,
+                COALESCE(SUM(CASE WHEN action = 'learn' THEN 1 ELSE 0 END), 0) AS learns,
+                COALESCE(SUM(CASE WHEN action = 'update' THEN 1 ELSE 0 END), 0) AS updates,
+                COALESCE(SUM(CASE WHEN action = 'forget' THEN 1 ELSE 0 END), 0) AS forgets,
+                COALESCE(SUM(CASE WHEN had_conflict = 1 THEN 1 ELSE 0 END), 0) AS conflicts,
+                MAX(timestamp) AS last_activity
             FROM audit_log
             """
         )
@@ -328,6 +346,8 @@ def get_audit_stats(namespace: str) -> dict[str, Any]:
         return {
             "total_recalls": int(agg["recalls"]) if agg else 0,
             "total_learns": int(agg["learns"]) if agg else 0,
+            "total_updates": int(agg["updates"]) if agg else 0,
+            "total_forgets": int(agg["forgets"]) if agg else 0,
             "agents": agents,
             "conflicts_detected": int(agg["conflicts"]) if agg else 0,
             "last_activity": agg["last_activity"] if agg else None,

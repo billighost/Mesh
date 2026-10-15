@@ -1,11 +1,12 @@
 """
-mesh/http_server.py — High-speed HTTP REST API for Mesh.
+mesh/http_server.py — High-speed HTTP REST API & Background Daemon Server for Mesh.
 Runs on localhost:7701 by default. Separate from the dashboard (port 7433).
-Any tool or script that can make HTTP requests can use Mesh through this server.
+Any tool, script, or MCP stdio proxy can use Mesh through this server.
 """
 
 from __future__ import annotations
 
+import argparse
 import os
 import threading
 from datetime import datetime, timezone
@@ -17,8 +18,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from .audit import get_audit_log, log_forget, log_learn, log_recall, log_update
-from .context_builder import _format, build_context
-from .memory import Mesh, warmup_model
+from .context_builder import _format
+from .memory import (
+    Mesh,
+    get_engine_status,
+    set_idle_unload_seconds,
+    unload_model,
+    warmup_model,
+)
 
 app = FastAPI(
     title="Mesh HTTP API",
@@ -42,11 +49,9 @@ def get_mesh(namespace: Optional[str] = None, agent_id: Optional[str] = None) ->
     ns = (namespace or os.environ.get("MESH_NAMESPACE", "shared")).strip() or "shared"
     aid = (agent_id or os.environ.get("MESH_AGENT_ID", "http-client")).strip() or "http-client"
     key = (ns, aid)
-
     mesh = _MESH_REGISTRY.get(key)
     if mesh is not None:
         return mesh
-
     with _MESH_LOCK:
         mesh = _MESH_REGISTRY.get(key)
         if mesh is None:
@@ -72,6 +77,7 @@ class LearnRequest(BaseModel):
 class RecallRequest(BaseModel):
     query: str
     count: Optional[int] = 5
+    n: Optional[int] = None
     memory_type: Optional[str] = None
     tags: Optional[list[str]] = None
     source_agent: Optional[str] = None
@@ -115,17 +121,53 @@ class ContextRequest(BaseModel):
     tags: Optional[list[str]] = None
 
 
+class McpProxyRequest(BaseModel):
+    name: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    default_namespace: Optional[str] = None
+    agent_id: Optional[str] = None
+
+
 # --- Endpoints ---
 
 
 @app.get("/health")
-async def health() -> dict[str, str]:
+async def health() -> dict[str, Any]:
     """Health check. Returns ok if the server is running."""
     return {
         "status": "ok",
         "version": "0.4",
+        "pid": os.getpid(),
         "timestamp": datetime.now(timezone.utc).isoformat(),
+        "engine": get_engine_status(),
     }
+
+
+@app.get("/engine")
+async def engine_status() -> dict[str, Any]:
+    """Return current embedding engine and idle-unload status."""
+    return {"status": "ok", "engine": get_engine_status()}
+
+
+@app.post("/unload")
+async def unload_engine() -> dict[str, Any]:
+    """Explicitly unload the neural embedding model from RAM to free memory immediately."""
+    unloaded = unload_model()
+    return {"status": "ok", "unloaded": unloaded, "engine": get_engine_status()}
+
+
+@app.post("/mcp")
+async def mcp_proxy(req: McpProxyRequest) -> dict[str, Any]:
+    """Execute an MCP tool request in the shared daemon process."""
+    from .mcp_server import _execute_tool_sync
+
+    payload = _execute_tool_sync(
+        name=req.name,
+        arguments=req.arguments,
+        default_namespace=req.default_namespace,
+        agent_id=req.agent_id,
+    )
+    return {"status": "ok", "payload": payload}
 
 
 @app.post("/learn")
@@ -159,9 +201,10 @@ async def recall(req: RecallRequest) -> dict[str, Any]:
     """Retrieve memories relevant to a query using hybrid search."""
     try:
         mesh = get_mesh(req.namespace, req.agent_id)
+        limit_n = req.n if req.n is not None else (req.count or 5)
         results = mesh.recall(
             query=req.query,
-            n=req.count or 5,
+            n=limit_n,
             min_similarity=req.min_similarity or 0.0,
             min_confidence=req.min_confidence or 0.0,
             include_stale=True if req.include_stale is None else req.include_stale,
@@ -214,13 +257,17 @@ async def forget(req: ForgetRequest) -> dict[str, Any]:
     """Delete a memory by ID."""
     try:
         mesh = get_mesh(req.namespace, req.agent_id)
-        mesh.forget(req.memory_id)
-        log_forget(
-            memory_id=req.memory_id,
-            namespace=mesh.namespace,
-            agent_id=mesh.agent_id,
-        )
-        return {"status": "ok", "deleted": req.memory_id}
+        deleted = mesh.forget(req.memory_id)
+        if deleted:
+            log_forget(
+                memory_id=req.memory_id,
+                namespace=mesh.namespace,
+                agent_id=mesh.agent_id,
+            )
+        return {
+            "status": "ok" if deleted else "not_found",
+            "deleted": req.memory_id if deleted else None,
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -340,9 +387,36 @@ async def audit(
 
 def start() -> None:
     """Entry point for: mesh-http"""
-    threading.Thread(target=warmup_model, daemon=True).start()
-    port = int(os.environ.get("MESH_HTTP_PORT", 7701))
-    uvicorn.run("mesh.http_server:app", host="127.0.0.1", port=port, reload=False)
+    parser = argparse.ArgumentParser(description="Start the Mesh HTTP API server.")
+    parser.add_argument(
+        "--host",
+        default=os.environ.get("MESH_HTTP_HOST", "127.0.0.1"),
+        help="Host interface to bind (default: 127.0.0.1)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.environ.get("MESH_HTTP_PORT", 7701)),
+        help="Port to listen on (default: 7701)",
+    )
+    parser.add_argument(
+        "--idle-timeout",
+        type=float,
+        default=float(os.environ.get("MESH_IDLE_UNLOAD_SECONDS", "180")),
+        help="Seconds of inactivity before unloading the neural model from RAM (0 = never unload)",
+    )
+    parser.add_argument(
+        "--no-warmup",
+        action="store_true",
+        help="Start in lazy mode without loading the neural model until the first request arrives",
+    )
+    args, _ = parser.parse_known_args()
+
+    set_idle_unload_seconds(args.idle_timeout)
+    if not args.no_warmup:
+        threading.Thread(target=warmup_model, daemon=True).start()
+
+    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
 
 
 if __name__ == "__main__":

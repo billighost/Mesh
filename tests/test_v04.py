@@ -1,8 +1,9 @@
-"""Tests for Mesh v0.4 & v0.5: HTTP API, MCP server, context builder, CLI, audit trail, passive capture, digest."""
+"""Tests for Mesh v0.4 & v0.5+: HTTP API, MCP server, Dashboard, WAL sync, Idle Unload, Daemon, Context Builder, CLI, Audit, Passive Capture, Digest."""
 
 import asyncio
 import json
 import os
+import sqlite3
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -18,8 +19,14 @@ from mesh.audit import (
 )
 from mesh.context_builder import build_context
 from mesh.digest import generate_digest
-from mesh.memory import Mesh
-from mesh.namespaces import _remove_sqlite_files, delete_namespace
+from mesh.memory import (
+    Mesh,
+    _embed_cached,
+    get_engine_status,
+    set_idle_unload_seconds,
+    unload_model,
+)
+from mesh.namespaces import _remove_sqlite_files, delete_namespace, rename_namespace
 from mesh.passive import (
     _extract_local,
     _has_signal,
@@ -27,6 +34,7 @@ from mesh.passive import (
     detect_provider,
     extract_memories_from_log,
 )
+from mesh.store import _vector_to_blob
 
 
 def _cleanup_ns(ns: str) -> None:
@@ -93,17 +101,19 @@ def test_audit_log_learn_update_forget():
 
 
 def test_audit_filter_by_action():
-    """Audit log should support filtering by action type."""
+    """Audit log should support filtering by action type including delete/forget."""
     ns = "test_audit_filter"
     try:
         log_recall(query="test query", namespace=ns, agent_id="agent1", results=[])
         log_learn(content="test content", namespace=ns, agent_id="agent1", result={"memory_id": "x"})
-
+        log_forget(memory_id="x", namespace=ns, agent_id="agent1")
         recalls = get_audit_log(namespace=ns, action_filter="read")
         learns = get_audit_log(namespace=ns, action_filter="write")
-
+        deletes = get_audit_log(namespace=ns, action_filter="delete")
         assert all(e["action"] == "recall" for e in recalls)
         assert all(e["action"] == "learn" for e in learns)
+        assert len(deletes) == 1
+        assert deletes[0]["action"] == "forget"
     finally:
         _cleanup_ns(ns)
 
@@ -120,12 +130,185 @@ def test_audit_stats():
             agent_id="agent-a",
             result={"memory_id": "x", "conflict": True},
         )
-
+        log_update(memory_id="x", content="c2", namespace=ns, agent_id="agent-a")
+        log_forget(memory_id="x", namespace=ns, agent_id="agent-a")
         stats = get_audit_stats(ns)
         assert stats["total_recalls"] >= 2
         assert stats["total_learns"] >= 1
+        assert stats["total_updates"] >= 1
+        assert stats["total_forgets"] >= 1
         assert "agent-a" in stats["agents"]
         assert stats["conflicts_detected"] >= 1
+    finally:
+        _cleanup_ns(ns)
+
+
+# --- Namespace Audit DB Cleanup & Migration Tests ---
+
+
+def test_namespace_delete_and_rename_cleans_audit_db():
+    """delete_namespace and rename_namespace should clean up and migrate audit_<ns>.db files."""
+    ns_old = "test_audit_ns_old"
+    ns_new = "test_audit_ns_new"
+    try:
+        mesh = Mesh(namespace=ns_old, agent_id="test")
+        res = mesh.learn("fact inside old namespace")
+        log_learn("fact inside old namespace", namespace=ns_old, agent_id="test", result=res)
+        assert _get_audit_db_path(ns_old).exists()
+
+        rename_namespace(ns_old, ns_new)
+        assert not _get_audit_db_path(ns_old).exists()
+        assert _get_audit_db_path(ns_new).exists()
+        entries = get_audit_log(ns_new)
+        assert len(entries) == 1
+        assert entries[0]["namespace"] == ns_new
+
+        delete_namespace(ns_new)
+        assert not _get_audit_db_path(ns_new).exists()
+    finally:
+        _cleanup_ns(ns_old)
+        _cleanup_ns(ns_new)
+
+
+# --- Cross-Process SQLite WAL Synchronization Tests ---
+
+
+def test_wal_cross_process_cache_sync():
+    """MeshStore vector cache should detect external SQLite WAL writes immediately."""
+    ns = "test_wal_sync"
+    try:
+        mesh = Mesh(namespace=ns, agent_id="proc-1")
+        mesh.learn("Initial memory from process 1")
+        assert mesh.count() == 1
+
+        # Simulate a second external process writing directly to SQLite WAL
+        vec = list(_embed_cached("External memory written via WAL"))
+        blob = _vector_to_blob(vec)
+        conn = sqlite3.connect(mesh.store.db_path, timeout=5.0)
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute(
+                """
+                INSERT INTO memories
+                (id, namespace, content, confidence, memory_type, source_agent,
+                 tags, created_at, accessed_at, access_count, local_only, embedding)
+                VALUES (?, ?, ?, 1.0, 'fact', 'proc-2', '[]',
+                        '2026-10-15T00:00:00+00:00', '2026-10-15T00:00:00+00:00', 0, 0, ?)
+                """,
+                ("ext-wal-id-1", ns, "External memory written via WAL", blob),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        # Process 1 should detect the WAL change immediately without stale cache count
+        assert mesh.count() == 2
+        recalled = mesh.recall("External memory written via WAL", n=2)
+        assert any(r["id"] == "ext-wal-id-1" for r in recalled)
+    finally:
+        _cleanup_ns(ns)
+
+
+# --- Engine Idle Unload & LRU Cache Survival Tests ---
+
+
+def test_engine_idle_unload_and_lru_cache_survival():
+    """Unloading the model should free _model while keeping _EMBED_CACHE hits instant."""
+    ns = "test_engine_unload"
+    try:
+        mesh = Mesh(namespace=ns, agent_id="test")
+        mesh.learn("FastEmbed and idle unload test memory")
+
+        status_before = get_engine_status()
+        assert status_before["embed_cache_entries"] >= 1
+
+        # Unload the neural model from RAM
+        unload_model()
+        status_unloaded = get_engine_status()
+        assert status_unloaded["model_loaded"] is False
+        assert status_unloaded["backend"] == "unloaded"
+
+        # Repeated embedding lookup should hit _EMBED_CACHE without reloading the model
+        cached_vec = _embed_cached("FastEmbed and idle unload test memory")
+        assert len(cached_vec) == 384
+        assert get_engine_status()["model_loaded"] is False
+
+        # A brand-new uncached query should seamlessly reload the model on demand
+        results = mesh.recall("completely new uncached query string for reload test")
+        assert len(results) >= 1
+        assert get_engine_status()["model_loaded"] is True
+
+        set_idle_unload_seconds(180)
+    finally:
+        _cleanup_ns(ns)
+
+
+# --- Dashboard HTML/JS Regression & API Tests ---
+
+
+def test_dashboard_html_js_regex_and_icons_intact():
+    """DASHBOARD_HTML must be a raw string preserving JS regex escapes and action button icons."""
+    from mesh.dashboard import DASHBOARD_HTML
+
+    # Verify the fatal `/\/g` regex corruption is fixed and `escAttr` has valid JS `/\\/g`
+    assert r".replace(/\\/g, '\\\\')" in DASHBOARD_HTML
+    assert ".replace(/\\/g, '\\\\')" not in DASHBOARD_HTML.replace(r".replace(/\\/g, '\\\\')", "")
+    assert "&#x21bb;" in DASHBOARD_HTML  # Refresh icon
+    assert "&#x270e;" in DASHBOARD_HTML  # Edit icon
+    assert "&#x2715;" in DASHBOARD_HTML  # Close / Delete icon
+    assert "loadAudit('forget', this)" in DASHBOARD_HTML  # Deletes audit filter chip
+    assert "setType('general', this)" in DASHBOARD_HTML  # General memory type chip
+
+
+def test_dashboard_api_crud_and_namespace_deletion():
+    """Dashboard FastAPI endpoints should serve UI, perform CRUD, and cleanly delete active namespace."""
+    from fastapi.testclient import TestClient
+    from mesh.dashboard import api
+
+    ns = "test_dashboard_api"
+    client = TestClient(api)
+    try:
+        # 1. Root HTML loads
+        res_html = client.get("/")
+        assert res_html.status_code == 200
+        assert "<title>Mesh</title>" in res_html.text
+
+        # 2. Create memory via Dashboard API
+        res_create = client.post(
+            "/api/memories",
+            json={
+                "content": "Dashboard test fact on port 7433",
+                "memory_type": "fact",
+                "confidence": 0.95,
+                "tags": ["ui", "test"],
+                "namespace": ns,
+            },
+        )
+        assert res_create.status_code == 200
+        mid = res_create.json()["result"]["memory_id"]
+
+        # 3. Stats & Memories endpoints
+        res_stats = client.get(f"/api/stats?namespace={ns}")
+        assert res_stats.status_code == 200
+        assert res_stats.json()["total_memories"] == 1
+
+        # 4. Update memory via Dashboard API
+        res_update = client.put(
+            f"/api/memories/{mid}",
+            json={
+                "content": "Dashboard updated fact on port 7434",
+                "namespace": ns,
+            },
+        )
+        assert res_update.status_code == 200
+        assert res_update.json()["result"]["memory"]["content"] == "Dashboard updated fact on port 7434"
+
+        # 5. Delete active namespace and verify it does not resurrect in list_namespaces
+        res_del_ns = client.delete(f"/api/namespaces/{ns}")
+        assert res_del_ns.status_code == 200
+        assert res_del_ns.json()["deleted"] is True
+        ns_list = [x["namespace"] for x in client.get("/api/namespaces").json()]
+        assert ns not in ns_list
     finally:
         _cleanup_ns(ns)
 
@@ -140,7 +323,6 @@ def test_context_builder_returns_string():
         mesh = Mesh(namespace=ns, agent_id="test")
         mesh.learn("the deploy script is at ./scripts/deploy.sh", memory_type="instruction")
         mesh.learn("staging URL is staging.example.com", memory_type="fact")
-
         result = build_context(namespace=ns, count=5)
         assert isinstance(result, str)
         assert len(result) > 0
@@ -154,7 +336,6 @@ def test_context_builder_formats():
     try:
         mesh = Mesh(namespace=ns, agent_id="test")
         mesh.learn("format test memory")
-
         for fmt in ["markdown", "plain", "xml", "json"]:
             result = build_context(namespace=ns, format=fmt)
             assert isinstance(result, str)
@@ -207,7 +388,6 @@ def test_digest_counts_new_memories():
         mesh = Mesh(namespace=ns, agent_id="test")
         mesh.learn("digest test memory one")
         mesh.learn("digest test memory two")
-
         digest = generate_digest(namespace=ns, hours=1)
         assert digest["new_count"] >= 2
     finally:
@@ -225,12 +405,15 @@ def test_http_server_imports():
 
 
 def test_http_endpoints_exist():
-    """HTTP server should have all required endpoints."""
+    """HTTP server should have all required endpoints including /engine, /unload, and /mcp."""
     from mesh.http_server import app
 
     routes = [r.path for r in app.routes]
     required = [
         "/health",
+        "/engine",
+        "/unload",
+        "/mcp",
         "/learn",
         "/recall",
         "/update",
@@ -245,10 +428,9 @@ def test_http_endpoints_exist():
         assert endpoint in routes, f"Missing endpoint: {endpoint}"
 
 
-def test_http_health_endpoint():
-    """Health endpoint should return ok status."""
+def test_http_health_and_engine_endpoints():
+    """Health, engine, and unload endpoints should return ok status."""
     from fastapi.testclient import TestClient
-
     from mesh.http_server import app
 
     client = TestClient(app)
@@ -257,21 +439,27 @@ def test_http_health_endpoint():
     data = response.json()
     assert data["status"] == "ok"
     assert data["version"] == "0.4"
+    assert "engine" in data
+
+    eng_res = client.get("/engine")
+    assert eng_res.status_code == 200
+    assert eng_res.json()["status"] == "ok"
+
+    unload_res = client.post("/unload")
+    assert unload_res.status_code == 200
+    assert unload_res.json()["engine"]["model_loaded"] is False
 
 
 def test_http_learn_update_and_recall():
-    """HTTP learn, update, and recall should work end-to-end."""
+    """HTTP learn, update, and recall should work end-to-end (including 'n' alias)."""
     from fastapi.testclient import TestClient
-
     from mesh.http_server import app
 
     ns = "test_http_e2e"
     prev_ns = os.environ.get("MESH_NAMESPACE")
     os.environ["MESH_NAMESPACE"] = ns
     client = TestClient(app)
-
     try:
-        # Learn (including 'process' type from README)
         r = client.post(
             "/learn",
             json={
@@ -286,12 +474,12 @@ def test_http_learn_update_and_recall():
         assert learned_data["status"] == "ok"
         mem_id = learned_data["result"]["memory_id"]
 
-        # Recall with memory_type filter
+        # Recall with 'n' alias and memory_type filter
         r = client.post(
             "/recall",
             json={
                 "query": "what port is production?",
-                "count": 3,
+                "n": 3,
                 "memory_type": "process",
                 "namespace": ns,
             },
@@ -313,6 +501,16 @@ def test_http_learn_update_and_recall():
         )
         assert r_up.status_code == 200
         assert r_up.json()["result"]["memory"]["content"] == "HTTP test: production port is 9090"
+
+        # Forget non-existent ID should not record a false audit log
+        r_forget_missing = client.post(
+            "/forget",
+            json={"memory_id": "non-existent-id", "namespace": ns},
+        )
+        assert r_forget_missing.status_code == 200
+        assert r_forget_missing.json()["status"] == "not_found"
+        forgets = get_audit_log(ns, action_filter="forget")
+        assert len(forgets) == 0
     finally:
         if prev_ns is None:
             os.environ.pop("MESH_NAMESPACE", None)
@@ -324,12 +522,10 @@ def test_http_learn_update_and_recall():
 def test_http_local_only_stored():
     """HTTP learn with local_only should store private memory."""
     from fastapi.testclient import TestClient
-
     from mesh.http_server import app
 
     ns = "test_http_private"
     client = TestClient(app)
-
     try:
         r = client.post(
             "/learn",

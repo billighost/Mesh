@@ -4,7 +4,8 @@ mesh/store.py — High-performance unified persistence & hybrid search engine fo
 Storage architecture:
   - SQLite (WAL mode) single-source-of-truth per namespace (`~/.mesh/mesh_<namespace>.db`)
   - Normalized float32 vector embeddings stored as compact binary BLOBs in `memories`
-  - Process-local in-memory NumPy matrix cache with in-place O(1) mutations & file-stat sync
+  - Process-local in-memory NumPy matrix cache with in-place O(1) mutations & composite
+    (.db + .db-wal) file-stat synchronization across processes
   - SQLite FTS5 virtual table (`memories_fts`) for BM25 lexical & exact-keyword search
   - Automatic one-time migration from legacy ChromaDB collections if present
 """
@@ -33,6 +34,9 @@ _MEMORY_COLUMNS = (
 )
 
 _TOKEN_RE = re.compile(r"[a-zA-Z0-9_./:-]{2,}")
+
+# Composite file stamp: (db_mtime_ns, db_size, wal_mtime_ns, wal_size)
+DbStamp = tuple[int, int, int, int]
 
 
 class _ManagedConnection(sqlite3.Connection):
@@ -77,6 +81,29 @@ def _parse_iso_utc(ts: Optional[str]) -> Optional[datetime]:
         return None
 
 
+def _get_db_stamp(db_path: Path) -> Optional[DbStamp]:
+    """
+    Return a composite `(db_mtime_ns, db_size, wal_mtime_ns, wal_size)` stamp.
+    Tracking the `-wal` file alongside the main `.db` file guarantees that writes
+    from other processes (CLI, Dashboard, HTTP daemon, or MCP server) are detected
+    immediately in O(1) time even before SQLite checkpoints the WAL.
+    """
+    if not db_path.exists():
+        return None
+    try:
+        st = db_path.stat()
+        wal_path = Path(f"{db_path}-wal")
+        if wal_path.exists():
+            try:
+                wst = wal_path.stat()
+                return (st.st_mtime_ns, st.st_size, wst.st_mtime_ns, wst.st_size)
+            except OSError:
+                pass
+        return (st.st_mtime_ns, st.st_size, 0, 0)
+    except OSError:
+        return None
+
+
 def _normalize_vector(vec: list[float] | np.ndarray) -> np.ndarray:
     """Convert vector to contiguous 1D float32 NumPy array and L2-normalize it."""
     arr = np.asarray(vec, dtype=np.float32).reshape(-1)
@@ -99,18 +126,18 @@ def _blob_to_vector(blob: bytes) -> np.ndarray:
 class _VectorCacheEntry:
     """Holds the in-memory normalized embedding matrix and ID index for a single namespace."""
 
-    __slots__ = ("mtime_ns", "file_size", "ids", "id_to_idx", "matrix", "dim", "all_ids")
+    __slots__ = ("stamp", "mtime_ns", "file_size", "ids", "id_to_idx", "matrix", "dim", "all_ids")
 
     def __init__(
         self,
-        mtime_ns: int,
-        file_size: int,
+        stamp: DbStamp,
         ids: list[str],
         matrix: Optional[np.ndarray],
         all_ids: Optional[set[str]] = None,
     ):
-        self.mtime_ns = mtime_ns
-        self.file_size = file_size
+        self.stamp: DbStamp = stamp
+        self.mtime_ns: int = stamp[0]
+        self.file_size: int = stamp[1]
         self.ids = ids
         self.id_to_idx = {mid: idx for idx, mid in enumerate(ids)}
         self.matrix = matrix
@@ -121,6 +148,11 @@ class _VectorCacheEntry:
         )
         self.all_ids: set[str] = all_ids if all_ids is not None else set(ids)
 
+    def update_stamp(self, stamp: DbStamp) -> None:
+        self.stamp = stamp
+        self.mtime_ns = stamp[0]
+        self.file_size = stamp[1]
+
     def upsert_vector(self, memory_id: str, vec: Optional[np.ndarray]) -> bool:
         """
         Insert or update a normalized 1D float32 vector in-place.
@@ -129,10 +161,8 @@ class _VectorCacheEntry:
         self.all_ids.add(memory_id)
         if vec is None or vec.size == 0:
             return True
-
         vec_1d = np.ascontiguousarray(vec.reshape(-1), dtype=np.float32)
         existing_idx = self.id_to_idx.get(memory_id)
-
         if existing_idx is not None:
             if self.matrix is None or vec_1d.shape[0] != self.dim:
                 return False
@@ -163,11 +193,9 @@ class _VectorCacheEntry:
         idx = self.id_to_idx.pop(memory_id, None)
         if idx is None:
             return
-
         self.ids.pop(idx)
         for i in range(idx, len(self.ids)):
             self.id_to_idx[self.ids[i]] = i
-
         if not self.ids or self.matrix is None or self.matrix.shape[0] <= 1:
             self.matrix = None
             self.dim = 0
@@ -181,7 +209,7 @@ class _VectorCacheEntry:
 # Process-wide caches protected by a re-entrant lock
 _CACHE_LOCK = threading.RLock()
 _VECTOR_CACHE: dict[Path, _VectorCacheEntry] = {}
-_INITIALIZED_DBS: dict[Path, int] = {}
+_INITIALIZED_DBS: dict[Path, DbStamp] = {}
 _TRANSIENT_EMBEDDINGS: dict[tuple[str, str], np.ndarray] = {}
 
 
@@ -283,6 +311,7 @@ class _CollectionCompatShim:
                     blob = norm_vec.tobytes() if norm_vec is not None else None
                     if norm_vec is not None:
                         _TRANSIENT_EMBEDDINGS[(self._store.namespace, mid)] = norm_vec
+
                     tags_raw = meta.get("tags", "[]")
                     tags_str = tags_raw if isinstance(tags_raw, str) else json.dumps(tags_raw)
 
@@ -358,7 +387,7 @@ class MeshStore:
         self._ensure_initialized()
         self.collection = _CollectionCompatShim(self)
 
-    # ── Connection & Schema Management ──
+    # --- Connection & Schema Management ---
 
     def _connect(self) -> sqlite3.Connection:
         """Open a fast, concurrency-safe SQLite connection configured for WAL."""
@@ -377,16 +406,13 @@ class MeshStore:
         return conn
 
     def _is_cache_synced_locked(self) -> Optional[_VectorCacheEntry]:
-        """Return the active `_VectorCacheEntry` if it matches the current file stat on disk."""
+        """Return the active `_VectorCacheEntry` if its composite DB+WAL stamp matches disk."""
         cached = _VECTOR_CACHE.get(self.db_path)
-        if cached is None or not self.db_path.exists():
+        if cached is None:
             return None
-        try:
-            stat = self.db_path.stat()
-            if cached.mtime_ns == stat.st_mtime_ns and cached.file_size == stat.st_size:
-                return cached
-        except OSError:
-            pass
+        stamp = _get_db_stamp(self.db_path)
+        if stamp is not None and cached.stamp == stamp:
+            return cached
         return None
 
     def _refresh_stamps_after_write_locked(
@@ -394,39 +420,28 @@ class MeshStore:
         synced_cache: Optional[_VectorCacheEntry],
     ) -> None:
         """
-        Update `_INITIALIZED_DBS` and `synced_cache` file stats after an in-process write
+        Update `_INITIALIZED_DBS` and `synced_cache` composite file stamps after an in-process write
         so subsequent calls never mistake our own writes for external file modifications.
         """
-        if not self.db_path.exists():
+        stamp = _get_db_stamp(self.db_path)
+        if stamp is None:
             _INITIALIZED_DBS.pop(self.db_path, None)
             _VECTOR_CACHE.pop(self.db_path, None)
             return
-        try:
-            stat = self.db_path.stat()
-            _INITIALIZED_DBS[self.db_path] = stat.st_mtime_ns
-            if synced_cache is not None:
-                synced_cache.mtime_ns = stat.st_mtime_ns
-                synced_cache.file_size = stat.st_size
-        except OSError:
-            pass
+        _INITIALIZED_DBS[self.db_path] = stamp
+        if synced_cache is not None:
+            synced_cache.update_stamp(stamp)
 
     def _ensure_initialized(self) -> None:
         """Initialize schema once per DB file lifecycle."""
         with _CACHE_LOCK:
-            if self.db_path.exists():
-                try:
-                    stat = self.db_path.stat()
-                    if stat.st_size > 0 and _INITIALIZED_DBS.get(self.db_path) == stat.st_mtime_ns:
-                        return
-                except OSError:
-                    pass
+            stamp = _get_db_stamp(self.db_path)
+            if stamp is not None and stamp[1] > 0 and _INITIALIZED_DBS.get(self.db_path) == stamp:
+                return
             self._init_db()
-            if self.db_path.exists():
-                try:
-                    stat = self.db_path.stat()
-                    _INITIALIZED_DBS[self.db_path] = stat.st_mtime_ns
-                except OSError:
-                    pass
+            new_stamp = _get_db_stamp(self.db_path)
+            if new_stamp is not None:
+                _INITIALIZED_DBS[self.db_path] = new_stamp
 
     def _init_db(self) -> None:
         mem_count = 0
@@ -453,7 +468,6 @@ class MeshStore:
                 )
                 """
             )
-
             # Schema migrations for databases created by earlier Mesh versions
             for col_sql in (
                 "ALTER TABLE memories ADD COLUMN ttl_days REAL",
@@ -494,7 +508,6 @@ class MeshStore:
                 )
                 """
             )
-
             # Indexes for fast filtering and sorting
             conn.execute("CREATE INDEX IF NOT EXISTS idx_namespace ON memories (namespace)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_type ON memories (namespace, memory_type)")
@@ -545,18 +558,15 @@ class MeshStore:
             conn.close()
 
         # Seed an empty vector cache immediately for brand-new empty namespaces
-        if mem_count == 0 and self.db_path.exists():
-            try:
-                stat = self.db_path.stat()
+        if mem_count == 0:
+            stamp = _get_db_stamp(self.db_path)
+            if stamp is not None:
                 _VECTOR_CACHE[self.db_path] = _VectorCacheEntry(
-                    mtime_ns=stat.st_mtime_ns,
-                    file_size=stat.st_size,
+                    stamp=stamp,
                     ids=[],
                     matrix=None,
                     all_ids=set(),
                 )
-            except OSError:
-                pass
 
         # One-time silent migration from legacy ChromaDB storage if needed
         if mem_count > 0:
@@ -576,7 +586,6 @@ class MeshStore:
                 "SELECT id FROM memories WHERE namespace = ? AND embedding IS NULL",
                 (self.namespace,),
             ).fetchall()
-
         if not missing_rows:
             return
 
@@ -630,16 +639,14 @@ class MeshStore:
         except sqlite3.OperationalError:
             pass
 
-    # ── In-Memory Vector Matrix Cache ──
+    # --- In-Memory Vector Matrix Cache ---
 
     def _invalidate_cache(self) -> None:
         with _CACHE_LOCK:
             _VECTOR_CACHE.pop(self.db_path, None)
-            if self.db_path.exists():
-                try:
-                    _INITIALIZED_DBS[self.db_path] = self.db_path.stat().st_mtime_ns
-                except OSError:
-                    pass
+            stamp = _get_db_stamp(self.db_path)
+            if stamp is not None:
+                _INITIALIZED_DBS[self.db_path] = stamp
             else:
                 _INITIALIZED_DBS.pop(self.db_path, None)
 
@@ -647,18 +654,16 @@ class MeshStore:
         """
         Return the normalized float32 embedding matrix for this namespace.
         Uses in-memory cache when in sync; automatically reloads from SQLite if an external
-        process modified the DB file.
+        process modified either the `.db` or `.db-wal` file.
         """
         with _CACHE_LOCK:
             if not self.db_path.exists():
                 self._ensure_initialized()
-            stat = self.db_path.stat()
-            mtime_ns = stat.st_mtime_ns
-            file_size = stat.st_size
 
+            stamp = _get_db_stamp(self.db_path) or (0, 0, 0, 0)
             cached = _VECTOR_CACHE.get(self.db_path)
-            if cached is not None and cached.mtime_ns == mtime_ns and cached.file_size == file_size:
-                _INITIALIZED_DBS[self.db_path] = mtime_ns
+            if cached is not None and cached.stamp == stamp:
+                _INITIALIZED_DBS[self.db_path] = stamp
                 return cached
 
             with self._connect() as conn:
@@ -701,25 +706,22 @@ class MeshStore:
                             repaired_blobs,
                         )
                         conn.commit()
-                    stat = self.db_path.stat()
-                    mtime_ns = stat.st_mtime_ns
-                    file_size = stat.st_size
+                    stamp = _get_db_stamp(self.db_path) or stamp
                 except Exception:
                     pass
 
             matrix = np.ascontiguousarray(np.vstack(vecs), dtype=np.float32) if vecs else None
             entry = _VectorCacheEntry(
-                mtime_ns=mtime_ns,
-                file_size=file_size,
+                stamp=stamp,
                 ids=ids,
                 matrix=matrix,
                 all_ids=all_ids,
             )
             _VECTOR_CACHE[self.db_path] = entry
-            _INITIALIZED_DBS[self.db_path] = mtime_ns
+            _INITIALIZED_DBS[self.db_path] = stamp
             return entry
 
-    # ── Core Memory CRUD Operations ──
+    # --- Core Memory CRUD Operations ---
 
     def upsert(
         self,
@@ -741,6 +743,7 @@ class MeshStore:
 
         tags_raw = metadata.get("tags", [])
         tags_str = tags_raw if isinstance(tags_raw, str) else json.dumps(tags_raw)
+
         mem_type = str(metadata.get("memory_type", "fact"))
         source_agent = str(metadata.get("source_agent", "unknown"))
         confidence = float(metadata.get("confidence", 1.0))
@@ -866,7 +869,6 @@ class MeshStore:
                     if in_place_ok and synced_cache is not None:
                         if not synced_cache.upsert_vector(memory_id, norm_vec):
                             in_place_ok = False
-
                 conn.commit()
 
             if in_place_ok and synced_cache is not None:
@@ -1009,7 +1011,7 @@ class MeshStore:
                 "local_only": bool(new_local),
             }
 
-    # ── Vector & Hybrid Search Operations ──
+    # --- Vector & Hybrid Search Operations ---
 
     def query(self, embedding: list[float], n: int = 5) -> dict[str, list[list[Any]]]:
         """
@@ -1094,6 +1096,7 @@ class MeshStore:
         """
         if not self._fts_enabled or not query_text:
             return {}
+
         tokens = [t.lower() for t in _TOKEN_RE.findall(query_text)]
         if not tokens:
             return {}
@@ -1124,11 +1127,13 @@ class MeshStore:
                     rows = own_conn.execute(sql, (fts_query, limit)).fetchall()
             if not rows:
                 return {}
+
             # SQLite FTS5 bm25() returns negative numbers where more negative = better match
             raw_positives = [max(0.0, -float(r[1])) for r in rows]
             max_bm25 = max(raw_positives) if raw_positives else 0.0
             if max_bm25 <= 1e-9:
                 return {r[0]: 0.5 for r in rows}
+
             for (mid, _), pos in zip(rows, raw_positives):
                 # Calibrate BM25 relative to top hit and absolute saturation
                 rel_score = pos / max_bm25
@@ -1201,6 +1206,7 @@ class MeshStore:
         for r in rows:
             mid = r["id"]
             row_dict = dict(r)
+
             try:
                 parsed_tags = json.loads(row_dict.get("tags") or "[]")
                 if not isinstance(parsed_tags, list):
@@ -1246,13 +1252,12 @@ class MeshStore:
         results.sort(key=lambda x: x["similarity"], reverse=True)
         return results[:n]
 
-    # ── Deletion & Access Tracking ──
+    # --- Deletion & Access Tracking ---
 
     def delete(self, memory_id: str) -> bool:
         """Remove a memory from SQLite, FTS5, and the in-memory vector cache in-place."""
         self._ensure_initialized()
         _TRANSIENT_EMBEDDINGS.pop((self.namespace, memory_id), None)
-
         with _CACHE_LOCK:
             synced_cache = self._is_cache_synced_locked()
             with self._connect() as conn:
@@ -1272,7 +1277,6 @@ class MeshStore:
                     self._invalidate_cache()
             else:
                 self._refresh_stamps_after_write_locked(synced_cache)
-
         return deleted
 
     def increment_access(self, memory_id: str) -> None:
@@ -1363,6 +1367,7 @@ class MeshStore:
             synced_cache = self._is_cache_synced_locked()
             if synced_cache is not None:
                 return len(synced_cache.all_ids)
+
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT COUNT(*) FROM memories WHERE namespace = ?",
@@ -1447,23 +1452,19 @@ class MeshStore:
             for k in stale_keys:
                 _TRANSIENT_EMBEDDINGS.pop(k, None)
 
-            if self.db_path.exists():
-                try:
-                    stat = self.db_path.stat()
-                    _INITIALIZED_DBS[self.db_path] = stat.st_mtime_ns
-                    _VECTOR_CACHE[self.db_path] = _VectorCacheEntry(
-                        mtime_ns=stat.st_mtime_ns,
-                        file_size=stat.st_size,
-                        ids=[],
-                        matrix=None,
-                        all_ids=set(),
-                    )
-                    return
-                except OSError:
-                    pass
+            stamp = _get_db_stamp(self.db_path)
+            if stamp is not None:
+                _INITIALIZED_DBS[self.db_path] = stamp
+                _VECTOR_CACHE[self.db_path] = _VectorCacheEntry(
+                    stamp=stamp,
+                    ids=[],
+                    matrix=None,
+                    all_ids=set(),
+                )
+                return
             self._invalidate_cache()
 
-    # ── Query Logging (for pattern detection) ──
+    # --- Query Logging (for pattern detection) ---
 
     def log_query(
         self,
@@ -1497,7 +1498,7 @@ class MeshStore:
                 conn.commit()
             self._refresh_stamps_after_write_locked(synced_cache)
 
-    # ── Contradiction Tracking ──
+    # --- Contradiction Tracking ---
 
     def log_contradiction(
         self,
@@ -1561,7 +1562,7 @@ class MeshStore:
                 conn.commit()
             self._refresh_stamps_after_write_locked(synced_cache)
 
-    # ── Pattern Analysis ──
+    # --- Pattern Analysis ---
 
     def get_patterns(self) -> dict[str, list[dict[str, Any]]]:
         """
