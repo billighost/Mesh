@@ -466,7 +466,19 @@ curl -s -X POST http://localhost:7701/recall \
 You can invoke commands either via the unified `mesh <command>` entrypoint or the standalone `mesh-<command>` binaries:
 
 ```bash
-# Store a memory
+# Setup & daemon management
+mesh-setup                        # Instant setup: registers auto-start & launches background daemon
+mesh setup --namespace shared     # Unified CLI alias for setup
+mesh-daemon start                 # Start background HTTP daemon
+mesh-daemon stop                  # Stop background daemon
+mesh-daemon restart               # Restart background daemon
+mesh-daemon status                # Inspect daemon health & model memory residency
+mesh-daemon warmup                # Pre-download ONNX model & warm local daemon
+mesh-daemon unload                # Free neural model weights from RAM on demand
+mesh-daemon install-startup       # Register OS login auto-start (Windows, macOS, Linux)
+mesh-daemon remove-startup        # Remove OS login auto-start registration
+
+# Store a memory (automatically proxies through warm daemon)
 mesh-add "Production DB is PostgreSQL 16 on port 5432" --type fact --tags db,prod
 mesh-add "Staging API token: sk-stage-123" --type fact --private --ttl 30
 
@@ -524,11 +536,11 @@ mesh-dashboard --port 7433      # Web UI on localhost:7433
 ```python
 from mesh import build_context
 
-# Topic-focused context (uses 3-stage hybrid recall)
+# Topic-focused context (uses 3-stage hybrid recall; `count`, `max_memories`, or `n` specify memory limit)
 focused_block = build_context(
     query="authentication and JWT cookies",
     namespace="my-project",
-    count=5,
+    count=5,               # Aliases supported: max_memories=5 or n=5
     format="markdown",
     min_confidence=0.3,
     memory_type="instruction",
@@ -536,7 +548,7 @@ focused_block = build_context(
 )
 
 # General project context (pulls most-accessed high-confidence memories)
-general_block = build_context(namespace="my-project", count=10, format="markdown")
+general_block = build_context(namespace="my-project", max_memories=10, format="markdown")
 ```
 
 ---
@@ -694,6 +706,11 @@ Keyboard shortcuts inside the dashboard:
 | `MESH_NAMESPACE` | `shared` | Default namespace across CLI, MCP, HTTP, and Dashboard |
 | `MESH_AGENT_ID` | `mcp-agent` / `http-client` | Default agent identifier recorded on memories and audit logs |
 | `MESH_HTTP_PORT` | `7701` | Port for the `mesh-http` REST API server |
+| `MESH_IDLE_UNLOAD_SECONDS` | `180` | Inactivity seconds before neural model weights are unloaded from RAM (`0` to disable) |
+| `MESH_NO_AUTO_DAEMON` | `0` | Set to `1` or `true` to disable automatic background daemon auto-spawning |
+| `MESH_NO_DAEMON_PROXY` | `0` | Set to `1` or `true` to disable proxying CLI and MCP commands through the warm daemon |
+| `MESH_FORCE_PYTORCH` | `0` | Set to `1` or `true` to force `sentence-transformers` PyTorch backend over direct ONNX Runtime |
+| `HF_TOKEN` | — | Optional Hugging Face token for authenticated model mirror downloads |
 | `MESH_AI_PROVIDER` | *auto-detected* | Explicit passive capture provider (`anthropic`, `openai`, `groq`, `ollama`, `openai-compatible`, `local`) |
 | `MESH_AI_API_KEY` | — | Explicit API key override for passive capture |
 | `MESH_AI_MODEL` | *provider default* | Explicit LLM model override for passive capture |
