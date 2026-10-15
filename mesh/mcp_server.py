@@ -2,16 +2,16 @@
 mesh/mcp_server.py — Production MCP Server for Mesh.
 
 Tools exposed:
-  mesh_learn                 — store a memory (with deduplication & contradiction detection)
-  mesh_recall                — hybrid search (dense cosine + FTS5 BM25 + exact token match)
-  mesh_update                — update an existing memory in-place by ID
-  mesh_forget                — delete a memory by ID
-  mesh_inspect               — list memories in the namespace with optional filters
-  mesh_context               — generate a formatted system prompt context block
-  mesh_patterns              — surface top topics, memory gaps, unused & stale memories
-  mesh_contradictions        — list unresolved (or resolved) memory contradictions
-  mesh_resolve_contradiction — mark a conflict as resolved
-  mesh_sync                  — capture memories from session summary and incremental agent logs
+  mesh_learn                   store a memory (with deduplication & contradiction detection)
+  mesh_recall                  hybrid search (dense cosine + FTS5 BM25 + exact token match)
+  mesh_update                  update an existing memory in-place by ID
+  mesh_forget                  delete a memory by ID
+  mesh_inspect                 list memories in the namespace with optional filters
+  mesh_context                 generate a formatted system prompt context block
+  mesh_patterns                surface top topics, memory gaps, unused & stale memories
+  mesh_contradictions          list unresolved (or resolved) memory contradictions
+  mesh_resolve_contradiction   mark a conflict as resolved
+  mesh_sync                    capture memories from session summary and incremental agent logs
 """
 
 from __future__ import annotations
@@ -25,14 +25,14 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 from mcp import types
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 
 from .audit import log_forget, log_learn, log_recall, log_update
-from .context_builder import build_context
+from .context_builder import _format
 from .memory import VALID_MEMORY_TYPES, Mesh, warmup_model
 
 NAMESPACE = os.environ.get("MESH_NAMESPACE", "shared")
@@ -44,9 +44,38 @@ _MESH_LOCK = threading.RLock()
 _MESH_INSTANCES: dict[tuple[str, str], Mesh] = {}
 _mesh: Optional[Mesh] = None
 
+# Thread-safe reference-counted stdout redirection for MCP stdio safety
+_STDIO_REDIRECT_LOCK = threading.Lock()
+_STDIO_REDIRECT_DEPTH = 0
+_ORIG_STDOUT: Optional[Any] = None
+
 # Tracks (mtime_ns, byte_offset) per log file so passive sync only reads new log output
 _LOG_WATERMARKS: dict[str, tuple[int, int]] = {}
 _ALLOWED_LOG_EXTENSIONS = {".log", ".txt", ".jsonl", ".md"}
+_SORTED_MEMORY_TYPES = sorted(VALID_MEMORY_TYPES)
+
+
+@contextlib.contextmanager
+def _safe_redirect_stdout_to_stderr() -> Iterator[None]:
+    """
+    Thread-safe, reference-counted stdout-to-stderr redirector.
+    Prevents concurrent `asyncio.to_thread` tool executions or background sync workers
+    from corrupting the global `sys.stdout` used by `stdio_server`.
+    """
+    global _STDIO_REDIRECT_DEPTH, _ORIG_STDOUT
+    with _STDIO_REDIRECT_LOCK:
+        if _STDIO_REDIRECT_DEPTH == 0:
+            _ORIG_STDOUT = sys.stdout
+            sys.stdout = sys.stderr
+        _STDIO_REDIRECT_DEPTH += 1
+    try:
+        yield
+    finally:
+        with _STDIO_REDIRECT_LOCK:
+            _STDIO_REDIRECT_DEPTH -= 1
+            if _STDIO_REDIRECT_DEPTH == 0 and _ORIG_STDOUT is not None:
+                sys.stdout = _ORIG_STDOUT
+                _ORIG_STDOUT = None
 
 
 def get_mesh(namespace: Optional[str] = None, agent_id: Optional[str] = None) -> Mesh:
@@ -55,10 +84,17 @@ def get_mesh(namespace: Optional[str] = None, agent_id: Optional[str] = None) ->
     ns = (namespace or NAMESPACE).strip() or "shared"
     aid = (agent_id or AGENT_ID).strip() or "mcp-agent"
 
+    if ns == NAMESPACE and aid == AGENT_ID and _mesh is not None:
+        return _mesh
+
+    key = (ns, aid)
+    instance = _MESH_INSTANCES.get(key)
+    if instance is not None:
+        return instance
+
     with _MESH_LOCK:
         if ns == NAMESPACE and aid == AGENT_ID and _mesh is not None:
             return _mesh
-        key = (ns, aid)
         instance = _MESH_INSTANCES.get(key)
         if instance is None:
             instance = Mesh(namespace=ns, agent_id=aid)
@@ -101,15 +137,16 @@ def _collect_incremental_logs(
     Read newly appended content from log files inside `paths`.
     Uses `_LOG_WATERMARKS` so already-processed log segments are not re-ingested.
     """
-    candidate_files: list[tuple[int, Path]] = []
-
+    candidate_files: list[tuple[int, int, Path]] = []
     for raw_path in paths:
         p = Path(raw_path).expanduser()
         if not p.exists():
             continue
         if p.is_file():
             try:
-                candidate_files.append((p.stat().st_mtime_ns, p))
+                st = p.stat()
+                if _LOG_WATERMARKS.get(str(p)) != (st.st_mtime_ns, st.st_size):
+                    candidate_files.append((st.st_mtime_ns, st.st_size, p))
             except OSError:
                 pass
         elif p.is_dir():
@@ -120,7 +157,9 @@ def _collect_incremental_logs(
                         and child.suffix.lower() in _ALLOWED_LOG_EXTENSIONS
                     ):
                         try:
-                            candidate_files.append((child.stat().st_mtime_ns, child))
+                            st = child.stat()
+                            if _LOG_WATERMARKS.get(str(child)) != (st.st_mtime_ns, st.st_size):
+                                candidate_files.append((st.st_mtime_ns, st.st_size, child))
                         except OSError:
                             continue
             except OSError:
@@ -133,10 +172,9 @@ def _collect_incremental_logs(
     candidate_files.sort(key=lambda item: item[0], reverse=True)
     chunks: list[str] = []
 
-    for mtime_ns, file_path in candidate_files[:max_files]:
+    for mtime_ns, size, file_path in candidate_files[:max_files]:
         key = str(file_path)
         try:
-            size = file_path.stat().st_size
             prev_mtime, prev_offset = _LOG_WATERMARKS.get(key, (0, 0))
             if mtime_ns == prev_mtime and size == prev_offset:
                 continue
@@ -163,17 +201,19 @@ def background_sync_worker() -> None:
     """Periodically runs passive capture on newly appended agent logs."""
     from .passive import extract_memories_from_log
 
-    # Warm up the embedding model immediately on background thread start
-    warmup_model()
-    time.sleep(10)
+    # Warm up the embedding model and default namespace cache immediately on startup
+    with _safe_redirect_stdout_to_stderr():
+        warmup_model(NAMESPACE)
+        get_mesh(NAMESPACE, AGENT_ID)
 
+    time.sleep(10)
     while True:
         try:
             log_dirs = detect_agent_logs()
             if log_dirs:
                 log_text = _collect_incremental_logs(log_dirs)
                 if log_text:
-                    with contextlib.redirect_stdout(sys.stderr):
+                    with _safe_redirect_stdout_to_stderr():
                         extract_memories_from_log(
                             log_text,
                             namespace=NAMESPACE,
@@ -185,351 +225,354 @@ def background_sync_worker() -> None:
         time.sleep(120)
 
 
+_MCP_TOOLS: list[types.Tool] = [
+    types.Tool(
+        name="mesh_learn",
+        description=(
+            "Store information in shared agent memory. "
+            "Automatically deduplicates identical facts and checks for contradictions "
+            "with existing memories. If a conflicting memory is found, the new memory "
+            "is still stored and a conflict warning is returned for review. "
+            "Use ttl_days for time-sensitive facts (e.g. staging IPs, sprint goals)."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "string",
+                    "description": (
+                        "The specific fact, decision, process, or instruction to remember. "
+                        "Good: 'Production PostgreSQL runs on port 5432.' "
+                        "Bad: 'Database info.'"
+                    ),
+                },
+                "memory_type": {
+                    "type": "string",
+                    "enum": _SORTED_MEMORY_TYPES,
+                    "default": "fact",
+                    "description": (
+                        "fact: objective info | preference: user/system prefs | "
+                        "context: project background | result: task outcome | "
+                        "instruction: rules to follow | process: workflow steps | "
+                        "decision: architectural choice | error: bug/fix note | general: other."
+                    ),
+                },
+                "confidence": {
+                    "type": "number",
+                    "minimum": 0.0,
+                    "maximum": 1.0,
+                    "default": 1.0,
+                    "description": "Confidence score (0.0 to 1.0). Use <0.7 for tentative info.",
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional topic labels, e.g. ['api', 'auth', 'db'].",
+                },
+                "ttl_days": {
+                    "type": "number",
+                    "description": (
+                        "Optional days before confidence decays to 0. "
+                        "Example: 30 for a temporary server IP, 7 for a sprint goal."
+                    ),
+                },
+                "local_only": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Set true to mark private and exclude from exports/sync. "
+                        "Use for credentials, secrets, or local paths."
+                    ),
+                },
+                "namespace": {
+                    "type": "string",
+                    "description": "Optional namespace override (defaults to active namespace).",
+                },
+            },
+            "required": ["content"],
+        },
+    ),
+    types.Tool(
+        name="mesh_recall",
+        description=(
+            "Search shared agent memory using 3-stage hybrid search "
+            "(semantic meaning + BM25 keywords + exact identifiers). "
+            "Call this at the start of tasks to check what other agents have already discovered."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "What you want to find (natural language or exact keywords).",
+                },
+                "n": {
+                    "type": "integer",
+                    "default": 5,
+                    "minimum": 1,
+                    "maximum": 50,
+                    "description": "Maximum number of results to return.",
+                },
+                "min_similarity": {
+                    "type": "number",
+                    "default": 0.0,
+                    "minimum": 0.0,
+                    "maximum": 1.0,
+                    "description": "Minimum similarity threshold (0.0 to 1.0).",
+                },
+                "min_confidence": {
+                    "type": "number",
+                    "default": 0.0,
+                    "minimum": 0.0,
+                    "maximum": 1.0,
+                    "description": "Minimum effective confidence after decay (0.0 to 1.0).",
+                },
+                "include_stale": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Set false to exclude decayed/stale memories.",
+                },
+                "memory_type": {
+                    "type": "string",
+                    "enum": _SORTED_MEMORY_TYPES,
+                    "description": "Optional filter to restrict results to a single memory_type.",
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional filter requiring returned memories to have these tags.",
+                },
+                "source_agent": {
+                    "type": "string",
+                    "description": "Optional filter by the agent ID that stored the memory.",
+                },
+                "namespace": {
+                    "type": "string",
+                    "description": "Optional namespace override.",
+                },
+            },
+            "required": ["query"],
+        },
+    ),
+    types.Tool(
+        name="mesh_update",
+        description=(
+            "Update an existing memory in-place by its ID without losing its UUID, "
+            "creation timestamp, or access count. Only provide the fields you want to change."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "memory_id": {
+                    "type": "string",
+                    "description": "UUID of the memory to update.",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "New text content (re-embeds automatically if changed).",
+                },
+                "memory_type": {
+                    "type": "string",
+                    "enum": _SORTED_MEMORY_TYPES,
+                    "description": "Updated memory type.",
+                },
+                "confidence": {
+                    "type": "number",
+                    "minimum": 0.0,
+                    "maximum": 1.0,
+                    "description": "Updated confidence score.",
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Updated list of tags.",
+                },
+                "ttl_days": {
+                    "type": "number",
+                    "description": "Updated TTL in days (resets decay timer).",
+                },
+                "local_only": {
+                    "type": "boolean",
+                    "description": "Updated privacy flag.",
+                },
+                "namespace": {
+                    "type": "string",
+                    "description": "Optional namespace override.",
+                },
+            },
+            "required": ["memory_id"],
+        },
+    ),
+    types.Tool(
+        name="mesh_forget",
+        description="Delete a specific memory permanently by its ID.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "memory_id": {
+                    "type": "string",
+                    "description": "The UUID of the memory to delete.",
+                },
+                "namespace": {
+                    "type": "string",
+                    "description": "Optional namespace override.",
+                },
+            },
+            "required": ["memory_id"],
+        },
+    ),
+    types.Tool(
+        name="mesh_inspect",
+        description="List memories in the namespace sorted by most recently accessed.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "default": 10,
+                    "minimum": 1,
+                    "maximum": 200,
+                },
+                "memory_type": {
+                    "type": "string",
+                    "enum": _SORTED_MEMORY_TYPES,
+                    "description": "Optional filter by memory type.",
+                },
+                "tag": {
+                    "type": "string",
+                    "description": "Optional filter by a single tag.",
+                },
+                "namespace": {
+                    "type": "string",
+                    "description": "Optional namespace override.",
+                },
+            },
+        },
+    ),
+    types.Tool(
+        name="mesh_context",
+        description=(
+            "Generate a formatted context block of top project memories ready to prime "
+            "an agent session. Optionally focus it on a topic query."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Optional topic query to focus the context block.",
+                },
+                "count": {
+                    "type": "integer",
+                    "default": 10,
+                    "minimum": 1,
+                    "maximum": 50,
+                },
+                "format": {
+                    "type": "string",
+                    "enum": ["markdown", "plain", "xml", "json"],
+                    "default": "markdown",
+                },
+                "min_confidence": {
+                    "type": "number",
+                    "default": 0.3,
+                    "minimum": 0.0,
+                    "maximum": 1.0,
+                },
+                "namespace": {
+                    "type": "string",
+                    "description": "Optional namespace override.",
+                },
+            },
+        },
+    ),
+    types.Tool(
+        name="mesh_patterns",
+        description=(
+            "Analyse memory usage patterns across agents. "
+            "Returns top_topics, memory_gaps (frequently searched but poorly answered), "
+            "unused_memories, and stale_memories."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "namespace": {
+                    "type": "string",
+                    "description": "Optional namespace override.",
+                },
+            },
+        },
+    ),
+    types.Tool(
+        name="mesh_contradictions",
+        description="List unresolved (or resolved) contradictions between stored memories.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "resolved": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Set true to list already-resolved contradictions.",
+                },
+                "namespace": {
+                    "type": "string",
+                    "description": "Optional namespace override.",
+                },
+            },
+        },
+    ),
+    types.Tool(
+        name="mesh_resolve_contradiction",
+        description="Mark a specific contradiction ID as resolved after reviewing the conflict.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "contradiction_id": {
+                    "type": "string",
+                    "description": "UUID of the contradiction record to mark resolved.",
+                },
+                "namespace": {
+                    "type": "string",
+                    "description": "Optional namespace override.",
+                },
+            },
+            "required": ["contradiction_id"],
+        },
+    ),
+    types.Tool(
+        name="mesh_sync",
+        description=(
+            "Store a session turn summary and automatically capture concrete facts "
+            "from recent agent session logs into the namespace."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "summary": {
+                    "type": "string",
+                    "description": "A brief summary of discoveries or work completed in this turn.",
+                },
+                "namespace": {
+                    "type": "string",
+                    "description": "Optional namespace override.",
+                },
+            },
+        },
+    ),
+]
+
+
 @app.list_tools()
 async def list_tools() -> list[types.Tool]:
-    return [
-        types.Tool(
-            name="mesh_learn",
-            description=(
-                "Store information in shared agent memory. "
-                "Automatically deduplicates identical facts and checks for contradictions "
-                "with existing memories. If a conflicting memory is found, the new memory "
-                "is still stored and a conflict warning is returned for review. "
-                "Use ttl_days for time-sensitive facts (e.g. staging IPs, sprint goals)."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "content": {
-                        "type": "string",
-                        "description": (
-                            "The specific fact, decision, process, or instruction to remember. "
-                            "Good: 'Production PostgreSQL runs on port 5432.' "
-                            "Bad: 'Database info.'"
-                        ),
-                    },
-                    "memory_type": {
-                        "type": "string",
-                        "enum": sorted(VALID_MEMORY_TYPES),
-                        "default": "fact",
-                        "description": (
-                            "fact: objective info | preference: user/system prefs | "
-                            "context: project background | result: task outcome | "
-                            "instruction: rules to follow | process: workflow steps | "
-                            "decision: architectural choice | error: bug/fix note | general: other."
-                        ),
-                    },
-                    "confidence": {
-                        "type": "number",
-                        "minimum": 0.0,
-                        "maximum": 1.0,
-                        "default": 1.0,
-                        "description": "Confidence score (0.0 to 1.0). Use <0.7 for tentative info.",
-                    },
-                    "tags": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Optional topic labels, e.g. ['api', 'auth', 'db'].",
-                    },
-                    "ttl_days": {
-                        "type": "number",
-                        "description": (
-                            "Optional days before confidence decays to 0. "
-                            "Example: 30 for a temporary server IP, 7 for a sprint goal."
-                        ),
-                    },
-                    "local_only": {
-                        "type": "boolean",
-                        "default": False,
-                        "description": (
-                            "Set true to mark private and exclude from exports/sync. "
-                            "Use for credentials, secrets, or local paths."
-                        ),
-                    },
-                    "namespace": {
-                        "type": "string",
-                        "description": "Optional namespace override (defaults to active namespace).",
-                    },
-                },
-                "required": ["content"],
-            },
-        ),
-        types.Tool(
-            name="mesh_recall",
-            description=(
-                "Search shared agent memory using 3-stage hybrid search "
-                "(semantic meaning + BM25 keywords + exact identifiers). "
-                "Call this at the start of tasks to check what other agents have already discovered."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "What you want to find (natural language or exact keywords).",
-                    },
-                    "n": {
-                        "type": "integer",
-                        "default": 5,
-                        "minimum": 1,
-                        "maximum": 50,
-                        "description": "Maximum number of results to return.",
-                    },
-                    "min_similarity": {
-                        "type": "number",
-                        "default": 0.0,
-                        "minimum": 0.0,
-                        "maximum": 1.0,
-                        "description": "Minimum similarity threshold (0.0 to 1.0).",
-                    },
-                    "min_confidence": {
-                        "type": "number",
-                        "default": 0.0,
-                        "minimum": 0.0,
-                        "maximum": 1.0,
-                        "description": "Minimum effective confidence after decay (0.0 to 1.0).",
-                    },
-                    "include_stale": {
-                        "type": "boolean",
-                        "default": True,
-                        "description": "Set false to exclude decayed/stale memories.",
-                    },
-                    "memory_type": {
-                        "type": "string",
-                        "enum": sorted(VALID_MEMORY_TYPES),
-                        "description": "Optional filter to restrict results to a single memory_type.",
-                    },
-                    "tags": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Optional filter requiring returned memories to have these tags.",
-                    },
-                    "source_agent": {
-                        "type": "string",
-                        "description": "Optional filter by the agent ID that stored the memory.",
-                    },
-                    "namespace": {
-                        "type": "string",
-                        "description": "Optional namespace override.",
-                    },
-                },
-                "required": ["query"],
-            },
-        ),
-        types.Tool(
-            name="mesh_update",
-            description=(
-                "Update an existing memory in-place by its ID without losing its UUID, "
-                "creation timestamp, or access count. Only provide the fields you want to change."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "memory_id": {
-                        "type": "string",
-                        "description": "UUID of the memory to update.",
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "New text content (re-embeds automatically if changed).",
-                    },
-                    "memory_type": {
-                        "type": "string",
-                        "enum": sorted(VALID_MEMORY_TYPES),
-                        "description": "Updated memory type.",
-                    },
-                    "confidence": {
-                        "type": "number",
-                        "minimum": 0.0,
-                        "maximum": 1.0,
-                        "description": "Updated confidence score.",
-                    },
-                    "tags": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Updated list of tags.",
-                    },
-                    "ttl_days": {
-                        "type": "number",
-                        "description": "Updated TTL in days (resets decay timer).",
-                    },
-                    "local_only": {
-                        "type": "boolean",
-                        "description": "Updated privacy flag.",
-                    },
-                    "namespace": {
-                        "type": "string",
-                        "description": "Optional namespace override.",
-                    },
-                },
-                "required": ["memory_id"],
-            },
-        ),
-        types.Tool(
-            name="mesh_forget",
-            description="Delete a specific memory permanently by its ID.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "memory_id": {
-                        "type": "string",
-                        "description": "The UUID of the memory to delete.",
-                    },
-                    "namespace": {
-                        "type": "string",
-                        "description": "Optional namespace override.",
-                    },
-                },
-                "required": ["memory_id"],
-            },
-        ),
-        types.Tool(
-            name="mesh_inspect",
-            description="List memories in the namespace sorted by most recently accessed.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "limit": {
-                        "type": "integer",
-                        "default": 10,
-                        "minimum": 1,
-                        "maximum": 200,
-                    },
-                    "memory_type": {
-                        "type": "string",
-                        "enum": sorted(VALID_MEMORY_TYPES),
-                        "description": "Optional filter by memory type.",
-                    },
-                    "tag": {
-                        "type": "string",
-                        "description": "Optional filter by a single tag.",
-                    },
-                    "namespace": {
-                        "type": "string",
-                        "description": "Optional namespace override.",
-                    },
-                },
-            },
-        ),
-        types.Tool(
-            name="mesh_context",
-            description=(
-                "Generate a formatted context block of top project memories ready to prime "
-                "an agent session. Optionally focus it on a topic query."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Optional topic query to focus the context block.",
-                    },
-                    "count": {
-                        "type": "integer",
-                        "default": 10,
-                        "minimum": 1,
-                        "maximum": 50,
-                    },
-                    "format": {
-                        "type": "string",
-                        "enum": ["markdown", "plain", "xml", "json"],
-                        "default": "markdown",
-                    },
-                    "min_confidence": {
-                        "type": "number",
-                        "default": 0.3,
-                        "minimum": 0.0,
-                        "maximum": 1.0,
-                    },
-                    "namespace": {
-                        "type": "string",
-                        "description": "Optional namespace override.",
-                    },
-                },
-            },
-        ),
-        types.Tool(
-            name="mesh_patterns",
-            description=(
-                "Analyse memory usage patterns across agents. "
-                "Returns top_topics, memory_gaps (frequently searched but poorly answered), "
-                "unused_memories, and stale_memories."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "namespace": {
-                        "type": "string",
-                        "description": "Optional namespace override.",
-                    },
-                },
-            },
-        ),
-        types.Tool(
-            name="mesh_contradictions",
-            description="List unresolved (or resolved) contradictions between stored memories.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "resolved": {
-                        "type": "boolean",
-                        "default": False,
-                        "description": "Set true to list already-resolved contradictions.",
-                    },
-                    "namespace": {
-                        "type": "string",
-                        "description": "Optional namespace override.",
-                    },
-                },
-            },
-        ),
-        types.Tool(
-            name="mesh_resolve_contradiction",
-            description="Mark a specific contradiction ID as resolved after reviewing the conflict.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "contradiction_id": {
-                        "type": "string",
-                        "description": "UUID of the contradiction record to mark resolved.",
-                    },
-                    "namespace": {
-                        "type": "string",
-                        "description": "Optional namespace override.",
-                    },
-                },
-                "required": ["contradiction_id"],
-            },
-        ),
-        types.Tool(
-            name="mesh_sync",
-            description=(
-                "Store a session turn summary and automatically capture concrete facts "
-                "from recent agent session logs into the namespace."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "summary": {
-                        "type": "string",
-                        "description": "A brief summary of discoveries or work completed in this turn.",
-                    },
-                    "namespace": {
-                        "type": "string",
-                        "description": "Optional namespace override.",
-                    },
-                },
-            },
-        ),
-    ]
+    return _MCP_TOOLS
 
 
 def _execute_tool_sync(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    """Execute a tool synchronously with stdout redirected to stderr for MCP stdio safety."""
+    """Execute a tool synchronously with thread-safe stdout redirection for MCP stdio safety."""
     ns_override = arguments.get("namespace")
     mesh = get_mesh(namespace=ns_override)
 
-    with contextlib.redirect_stdout(sys.stderr):
+    with _safe_redirect_stdout_to_stderr():
         if name == "mesh_learn":
             result = mesh.learn(
                 content=arguments["content"],
@@ -552,6 +595,7 @@ def _execute_tool_sync(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
                     "Review and delete or update the old one if this new memory supersedes it."
                 )
                 response["conflict"] = result["conflict"]
+
             log_learn(
                 content=arguments["content"],
                 namespace=mesh.namespace,
@@ -635,17 +679,48 @@ def _execute_tool_sync(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
             }
 
         elif name == "mesh_context":
-            ctx = build_context(
-                query=arguments.get("query"),
-                namespace=mesh.namespace,
-                count=int(arguments.get("count", 10)),
-                format=arguments.get("format", "markdown"),
-                min_confidence=float(arguments.get("min_confidence", 0.3)),
-                agent_id=mesh.agent_id,
-            )
+            query = arguments.get("query")
+            count = int(arguments.get("count", 10))
+            fmt = arguments.get("format", "markdown")
+            min_conf = float(arguments.get("min_confidence", 0.3))
+            mtype = arguments.get("memory_type")
+            tags = arguments.get("tags")
+
+            if query:
+                memories = mesh.recall(
+                    query=query,
+                    n=count,
+                    min_confidence=min_conf,
+                    memory_type=mtype,
+                    tags=tags,
+                )
+            else:
+                raw_mems = mesh.inspect(limit=max(count * 3, 30), memory_type=mtype)
+                filtered = [
+                    m
+                    for m in raw_mems
+                    if float(m.get("effective_confidence", m.get("confidence", 1.0))) >= min_conf
+                ]
+                if tags:
+                    tag_set = {str(t).lower() for t in tags}
+                    filtered = [
+                        m
+                        for m in filtered
+                        if tag_set.issubset({str(t).lower() for t in m.get("tags_list", [])})
+                    ]
+                filtered.sort(
+                    key=lambda x: (
+                        int(x.get("access_count", 0)),
+                        float(x.get("effective_confidence", x.get("confidence", 1.0))),
+                    ),
+                    reverse=True,
+                )
+                memories = filtered[:count]
+
+            ctx = _format(memories, fmt, mesh.namespace) if memories else ""
             return {
                 "namespace": mesh.namespace,
-                "format": arguments.get("format", "markdown"),
+                "format": fmt,
                 "context": ctx,
             }
 

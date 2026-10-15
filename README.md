@@ -1,181 +1,211 @@
 # Mesh
 
-Shared memory for AI agents.
+**High-speed shared semantic & hybrid memory layer for AI agents.**
 
-When one agent learns something, every other agent can recall it — by meaning, not exact keywords.
+When one agent learns something, every other agent can recall it — by meaning, keyword, or exact identifier.
 
-## The problem
+[![PyPI version](https://img.shields.io/pypi/v/mesh-context-layer.svg)](https://pypi.org/project/mesh-context-layer/)
+[![Python versions](https://img.shields.io/pypi/pyversions/mesh-context-layer.svg)](https://pypi.org/project/mesh-context-layer/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
-Every AI agent starts each session with amnesia. Claude in your terminal doesn't know what Claude in your editor discovered. Your coding agent can't access what your review agent found. Every agent repeats work already done.
+---
 
-## The solution
+## The Problem
 
-Mesh is a shared semantic memory layer. Agents write memories. Agents read memories. They never need to communicate directly.
+Every AI agent starts each session with amnesia. Claude in your terminal doesn't know what Claude in your editor discovered. Your coding agent cannot access what your review agent found. Every agent repeats work already done.
 
-```python
-from mesh import Mesh
+## The Solution
 
-# Agent A learns something
-agent_a = Mesh(namespace="my-project", agent_id="coding-agent")
-agent_a.learn("The API rate limit is 100 requests/min")
+Mesh provides persistent, shared agent memory with:
+- **3-Stage Hybrid Search**: Dense Vector SIMD Cosine (`cache.matrix @ q_vec` in `<0.1 ms`) + SQLite FTS5 BM25 + Exact Token Overlap.
+- **Unified Local Storage**: Pure SQLite WAL per namespace — zero external database daemons, zero multi-process synchronization issues.
+- **Smart Deduplication & Contradiction Tracking**: Identical facts are reinforced in-place; contradictory facts are flagged for review without silent data loss.
+- **Time-to-Live (TTL) Confidence Decay**: Ephemeral facts gradually decay towards staleness.
+- **Multi-Interface**: MCP Server (10 tools for Claude Desktop, Cursor, Windsurf), Web Dashboard, HTTP REST API, and CLI.
 
-# Agent B recalls it — no direct communication
-agent_b = Mesh(namespace="my-project", agent_id="review-agent")
-results = agent_b.recall("what are the API constraints?")
-# → Returns the memory above with 0.91 similarity
-```
+---
 
-## Installation
+## Quickstart
+
+### 1. Installation
 
 ```bash
 pip install mesh-context-layer
 ```
 
-## MCP Server (Claude Desktop + Cursor)
-
-Add Mesh to your AI tools with one config change.
-
-**Claude Desktop** — edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "mesh": {
-      "command": "mesh-server"
-    }
-  }
-}
-```
-
-**Cursor** — create `.cursor/mcp.json` in your project:
-
-```json
-{
-  "mcpServers": {
-    "mesh": {
-      "command": "mesh-server"
-    }
-  }
-}
-```
-
-Restart the app. Your agents now have access to `mesh_learn`, `mesh_recall`, `mesh_forget`, and `mesh_inspect`.
-
-## Namespaces
-
-Agents sharing a namespace share memory. Agents in different namespaces are isolated.
+### 2. Python SDK
 
 ```python
-# Team A's agents
-Mesh(namespace="team-alpha")
+from mesh import Mesh
 
-# Team B's agents — cannot see Team A's memories
-Mesh(namespace="team-beta")
-
-# Set namespace for the MCP server via env var
-# MESH_NAMESPACE=my-project mesh-server
-```
-
-## Memory types
-
-| Type | When to use |
-|------|------------|
-| `fact` | Objective information |
-| `preference` | User or system preferences |
-| `context` | Situational background |
-| `result` | Outcomes of tasks |
-| `instruction` | Rules and guidelines |
-
-## Storage
-
-Memory lives in `~/.mesh/` on your machine. It persists across sessions and reboots. Nothing leaves your machine.
-
-## Features
-
-### v0.3 — Privacy, Portability, and Namespace Control
-
-**Privacy flags**
-Mark any memory as local-only to ensure it never leaves your machine:
-```python
-mesh.learn(
-    "Internal staging server is under heavy load",
-    local_only=True
+# Agent 1: Learns an architecture constraint
+agent_a = Mesh(namespace="checkout-service", agent_id="backend-agent")
+agent_a.learn(
+    "Production PostgreSQL 16 database runs on port 5432 with pgBouncer connection pooling",
+    memory_type="fact",
+    tags=["db", "postgres", "prod"]
 )
+
+# Agent 2: Recalls it without direct communication
+agent_b = Mesh(namespace="checkout-service", agent_id="frontend-agent")
+results = agent_b.recall("what port does production postgres use?", n=3)
+
+for r in results:
+    print(f"[{r['similarity']:.2f}] {r['content']} (from {r['source_agent']})")
 ```
 
-**Export and import**
+---
+
+## MCP Server (Claude Desktop, Cursor & Windsurf)
+
+Mesh provides **10 MCP tools** directly to your AI agents.
+
+### Claude Desktop Configuration
+Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (Mac) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
+
+```json
+{
+  "mcpServers": {
+    "mesh": {
+      "command": "mesh-server"
+    }
+  }
+}
+```
+
+### Cursor Configuration
+Create `.cursor/mcp.json` in your project root:
+
+```json
+{
+  "mcpServers": {
+    "mesh": {
+      "command": "mesh-server"
+    }
+  }
+}
+```
+
+### Available MCP Tools
+
+| MCP Tool | Description |
+| :--- | :--- |
+| `mesh_learn` | Store a fact, preference, instruction, or decision with deduplication and contradiction checking. |
+| `mesh_recall` | 3-stage hybrid search across shared memory with confidence filtering and score breakdown. |
+| `mesh_update` | Update existing memory content and tags in-place preserving UUID and history. |
+| `mesh_forget` | Remove a specific memory by its ID. |
+| `mesh_inspect` | Browse recent memories in a namespace with pagination and type filtering. |
+| `mesh_context` | Generate formatted context blocks (Markdown, XML, JSON, or Plain) for system prompts. |
+| `mesh_patterns` | Discover frequently accessed topics, memory gaps, and stale memories. |
+| `mesh_contradictions` | Inspect conflicting memories identified during learning. |
+| `mesh_resolve_contradiction`| Mark a contradiction as resolved after reviewing the conflict. |
+| `mesh_sync` | Save a turn summary and automatically capture facts from session transcripts. |
+
+---
+
+## Web Dashboard
+
+Launch the zero-build local visualizer:
+
 ```bash
-# Export all non-private memories from a namespace
-mesh-export backup.json --namespace shared
-
-# Import into a new machine or namespace
-mesh-import backup.json --namespace shared
-
-# Preview without writing
-mesh-import backup.json --dry-run
+mesh-dashboard --namespace checkout-service --port 7433
 ```
 
-**Namespace management**
+Open `http://localhost:7433` in your browser. Features:
+- **Real-Time Hybrid Search** with instant score breakdowns.
+- **Contradiction Inspector**: Review and resolve flagged memory conflicts.
+- **Memory Gaps & Patterns**: See queries agents asked that had low recall similarity.
+- **Audit Stream**: Real-time log of agent reads and writes.
+- **Keyboard Shortcuts**: `/` to focus search, `n` to create a memory, `Esc` to close modals.
+
+---
+
+## Memory Types
+
+| Type | Intended Purpose |
+| :--- | :--- |
+| `fact` | Objective project realities (e.g., ports, hostnames, library versions). |
+| `preference` | User preferences, code style requirements, framework conventions. |
+| `instruction` | Strict rules and guidelines agents must obey. |
+| `decision` | Architectural and technical decisions with rationale. |
+| `process` | Multi-step workflows and deployment sequences. |
+| `context` | Broad project background or domain context. |
+| `result` | Verification outcomes, benchmark results, test findings. |
+| `error` | Discovered bugs, root causes, and workarounds. |
+| `general` | General unstructured observations. |
+
+---
+
+## HTTP REST API
+
+Start the local background server:
+
 ```bash
-# List all namespaces
-mesh-namespaces list
-
-# Get detailed stats
-mesh-namespaces stats work
-
-# Delete a namespace
-mesh-namespaces delete old-project
-
-# Rename a namespace
-mesh-namespaces rename work work-archived
+mesh-http --port 7701
 ```
 
-## Using Mesh from any tool
+From any terminal, script, or language:
 
-Start the HTTP server:
-```bash
-mesh-http
-```
-
-Then from any tool that supports HTTP:
-
-**Shell:**
 ```bash
 # Store a memory
 curl -s -X POST http://localhost:7701/learn \
   -H "Content-Type: application/json" \
-  -d '{"content": "deploy uses ./scripts/deploy.sh", "memory_type": "process"}'
+  -d '{"content": "Auth service requires JWT RS256 signatures", "memory_type": "instruction"}'
 
 # Recall memories
 curl -s -X POST http://localhost:7701/recall \
   -H "Content-Type: application/json" \
-  -d '{"query": "how do we deploy?", "count": 3}'
+  -d '{"query": "auth JWT algorithm", "n": 3}'
 
-# Get formatted context for a system prompt
+# Format context directly into agent system prompts
 curl -s -X POST http://localhost:7701/context \
   -H "Content-Type: application/json" \
   -d '{"count": 10, "format": "markdown"}'
 ```
 
-**Python (no SDK needed):**
+---
+
+## Portability & Privacy
+
+### Privacy Flags
+Mark sensitive memories as `local_only=True` to guarantee they are never exported or synced:
 ```python
-import httpx
-
-# Recall
-r = httpx.post("http://localhost:7701/recall", json={"query": "deploy process"})
-memories = r.json()["results"]
+mesh.learn("Staging DB password: secret-pass", local_only=True, tags=["credentials"])
 ```
 
-**Node.js:**
-```javascript
-const res = await fetch("http://localhost:7701/recall", {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ query: "deploy process", count: 5 })
-});
-const { results } = await res.json();
+### Backup & Restore
+```bash
+# Export all public memories to JSON
+mesh-export backup.json --namespace checkout-service
+
+# High-speed batch import (with automatic deduplication)
+mesh-import backup.json --namespace checkout-staging --merge-strategy skip_existing
 ```
+
+---
+
+## Detailed Changelog
+
+### v0.5.1 (Latest)
+- **High-Speed Batch Import/Export**: `import_namespace` now commits all memories in a single atomic SQLite WAL transaction via `upsert_batch()` and utilizes O(1) in-memory vector cache ID lookups, removing N+1 database queries. Missing embeddings are computed in a single forward pass.
+- **MCP Stdio Redirection Safety**: Added thread-safe stdout redirection to ensure print statements never corrupt stdio JSON-RPC payloads in Claude Desktop or Cursor.
+- **Optimized Context Generation**: Streamlined single-pass context assembly for `/context` HTTP endpoint and `mesh_context` MCP tool with tag and memory type filtering.
+- **Fast-Path Registry**: Added lockless fast-path lookups to the HTTP server's Mesh instance registry.
+- **Showcase Suite**: Added `examples/full_showcase.py` verifying all 11 core engine stages end-to-end.
+- **Windows Console Resiliency**: Safe UTF-8 console output handling preventing CP1252 character map errors.
+
+### v0.5.0
+- **ChromaDB Removal**: Transitioned to a unified SQLite WAL + NumPy SIMD in-memory vector cache engine, eliminating external C++ dependencies, multi-database sync bugs, and heavy binary bloat.
+- **3-Stage Hybrid Search**: Combines Dense Cosine Similarity (`<0.1 ms`), SQLite FTS5 BM25 lexical ranking, and exact token overlap boosting.
+- **Automatic Deduplication Engine**: Near-identical memories ($\ge 0.985$ similarity) reinforce existing records rather than creating duplicate rows.
+- **Contradiction Tracking**: Conflicting statements ($\ge 0.82$ similarity with numeric/negation polarity changes) are stored and recorded in a contradiction log for review.
+- **Time-to-Live (TTL) & Confidence Decay**: Linear time-based confidence decay for temporary facts.
+- **Full 10-Tool MCP Server**: Complete tool suite for LLMs.
+- **Interactive Web Dashboard**: Single-file dark/light UI with search, contradiction management, pattern analysis, and audit trails.
+- **Passive Capture & Daily Digests**: Automated memory extraction from AI session logs (`mesh-capture`) and Markdown summary generation (`mesh-digest`).
+
+---
 
 ## License
 
-MIT
+MIT © [billighost](https://github.com/billighost)

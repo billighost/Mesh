@@ -9,7 +9,7 @@ import sys
 import threading
 from typing import Optional
 
-VERSION = "0.5.0"
+VERSION = "0.5.1"
 PACKAGE_NAME = "mesh-context-layer"
 
 

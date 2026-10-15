@@ -1,6 +1,6 @@
 # Mesh — Developer Guide
 
-> Shared semantic memory for AI agents. One agent learns, every agent recalls.
+> High-speed shared semantic & hybrid memory for AI agents. One agent learns, every agent recalls.
 
 ---
 
@@ -12,69 +12,70 @@
 4. [Core Concepts](#core-concepts)
    - [Namespaces](#namespaces)
    - [Memory Types](#memory-types)
-   - [Confidence & Decay](#confidence--decay)
-   - [Contradiction Detection](#contradiction-detection)
-   - [Privacy (local_only)](#privacy-local_only)
+   - [Confidence & TTL Decay](#confidence--ttl-decay)
+   - [Deduplication & Contradiction Detection](#deduplication--contradiction-detection)
+   - [Privacy (`local_only`)](#privacy-local_only)
 5. [Python API](#python-api)
-   - [learn()](#learn)
-   - [recall()](#recall)
-   - [forget()](#forget)
-   - [inspect()](#inspect)
-   - [patterns()](#patterns)
-   - [contradictions()](#contradictions)
-   - [resolve_contradiction()](#resolve_contradiction)
-6. [MCP Server (Claude Desktop & Cursor)](#mcp-server)
+   - [`learn()`](#learn)
+   - [`recall()`](#recall)
+   - [`update()`](#update)
+   - [`get()`](#get)
+   - [`forget()`](#forget)
+   - [`inspect()`](#inspect)
+   - [`patterns()`](#patterns)
+   - [`contradictions()` & `resolve_contradiction()`](#contradictions--resolve_contradiction)
+   - [`count()`, `clear()`, & `warmup_model()`](#count-clear--warmup_model)
+6. [MCP Server (Claude Desktop, Cursor, Windsurf)](#mcp-server)
 7. [HTTP REST API](#http-rest-api)
 8. [CLI Tools](#cli-tools)
 9. [Context Builder](#context-builder)
-10. [Passive Capture](#passive-capture)
+10. [Passive Log Capture](#passive-log-capture)
 11. [Audit Trail](#audit-trail)
 12. [Session Digest](#session-digest)
 13. [Export & Import](#export--import)
 14. [Namespace Management](#namespace-management)
-15. [Dashboard](#dashboard)
+15. [Web Dashboard](#web-dashboard)
 16. [Environment Variables](#environment-variables)
-17. [Recipes & Patterns](#recipes--patterns)
+17. [Recipes & Multi-Agent Patterns](#recipes--multi-agent-patterns)
 
 ---
 
 ## What Is Mesh?
 
-Every AI agent starts each session with amnesia. Claude in your terminal doesn't know what Claude in your editor just discovered. Your review agent can't see what your coding agent found an hour ago. Every tool repeats work that's already been done.
+Every AI agent starts each session with amnesia. Claude in your terminal doesn't know what Cursor in your editor just discovered. Your code-review agent can't see what your debugging agent found ten minutes ago. Every tool repeats work that has already been done.
 
-Mesh solves this by giving agents a shared, persistent, semantic memory layer. Agents write memories. Agents read memories. They never need to talk to each other directly.
+Mesh solves this by giving agents an ultra-fast, persistent, local hybrid memory layer. Agents write memories and recall them by meaning, keywords, or exact identifiers—without ever needing to communicate directly.
 
+```text
+Agent A ──learn()──► [Mesh Unified Store] ◄──recall()── Agent B
+Agent B ──update()─► [Mesh Unified Store] ◄──context()─ Agent C
 ```
-Agent A ──learn()──► [Mesh Store] ◄──recall()── Agent B
-Agent B ──learn()──► [Mesh Store] ◄──recall()── Agent C
-```
 
-All storage is **local** (`~/.mesh/`). Nothing leaves your machine.
+All storage is **100% local** (`~/.mesh/`). Nothing leaves your machine.
 
 ---
 
 ## How It Works
 
-Mesh has two storage layers working in tandem:
+Mesh combines three retrieval and storage mechanisms inside a single atomic SQLite WAL database per namespace (`~/.mesh/mesh_<namespace>.db`):
 
-**ChromaDB** handles the semantic layer — every memory is converted to a vector embedding using a local sentence transformer model (`all-MiniLM-L6-v2`). When you `recall()`, Mesh embeds your query and performs a cosine similarity search. This is why you can ask "what are the API rate limits?" and get back "The production API allows 100 requests per minute" — even though those exact words don't match.
+1. **In-Memory SIMD Vector Search (Semantic Meaning):** Every memory is embedded into a normalized 384-dimensional `float32` vector using `all-MiniLM-L6-v2` and cached in an in-memory NumPy matrix. Cosine similarity across thousands of memories runs in `<0.1 ms` via SIMD matrix-vector multiplication, with an LRU embedding cache (`4,096` entries) resolving repeated queries in `<0.01 ms`.
+2. **SQLite FTS5 BM25 Search (Keyword Relevance):** Every memory's content, tags, type, and source agent are indexed in an FTS5 virtual table (`memories_fts`) with Porter stemming for fast lexical matching.
+3. **Exact Token & Identifier Boost:** Exact matches on technical tokens (ports, error codes like `ERR_CODE_9482_XYZ`, file paths, environment variables) receive a deterministic score boost so exact identifiers always rank at the top.
 
-**SQLite** handles the metadata layer — every memory has a row in a local SQLite database (`~/.mesh/mesh_<namespace>.db`) that stores the content, type, confidence, tags, TTL, timestamps, access counts, and privacy flag.
+### What happens on `learn()`
+1. The content is normalized and embedded via the local `SentenceTransformer` model (or fetched instantly from the LRU cache).
+2. If the namespace has existing memories, Mesh checks the top 3 closest vectors:
+   - **Pass 1 (Deduplication):** If an existing memory is identical or near-identical (`similarity >= 0.985`) with the same numbers and negation polarity, Mesh reinforces the existing memory in-place (merging tags and taking the higher confidence) instead of creating a duplicate.
+   - **Pass 2 (Contradiction Check):** If an existing memory is highly similar (`similarity >= 0.82`) but contains conflicting numbers or negation polarity (e.g., `"rate limit is 100"` vs. `"rate limit is 200"`), Mesh logs a contradiction record and returns a conflict warning while still storing the new memory.
+3. The memory, metadata, FTS5 row, and normalized `float32` vector BLOB are committed in a single SQLite WAL transaction, and the in-memory vector matrix is updated in-place in $O(1)$ time.
 
-When you call `learn()`:
-1. The content is embedded with `SentenceTransformer`
-2. Existing memories are checked for contradictions (cosine similarity ≥ 0.82)
-3. The embedding is upserted into ChromaDB
-4. Metadata is written to SQLite
-5. A `dict` is returned with the memory ID and any conflict warning
-
-When you call `recall()`:
-1. The query is embedded
-2. ChromaDB returns the top N most similar memories
-3. Each result's confidence is multiplied by a decay factor (if TTL is set)
-4. Results are filtered by `min_similarity` and `min_confidence`
-5. Every query is logged to the `queries` table for pattern analysis
-6. Results are returned sorted by similarity, with full decay metadata
+### What happens on `recall()`
+1. The query is embedded (or resolved from the LRU cache).
+2. `MeshStore.hybrid_query()` fuses Dense SIMD Cosine similarity + FTS5 BM25 lexical scores + Exact Token Boost in a single database pass, pre-filtering by `memory_type`, `source_agent`, and `tags` if requested.
+3. Each candidate's `effective_confidence` is calculated in a single UTC timestamp pass if `ttl_days` is set.
+4. Results are filtered by `min_similarity`, `min_confidence`, and `include_stale`, then sorted by similarity descending.
+5. `access_count` increments and query pattern logging are committed in a single atomic transaction without invalidating the in-memory vector cache.
 
 ---
 
@@ -84,7 +85,13 @@ When you call `recall()`:
 pip install mesh-context-layer
 ```
 
-**First run** downloads `all-MiniLM-L6-v2` (~90 MB) once to your local model cache. After that, everything runs offline.
+For development and running the test suite:
+
+```bash
+pip install -e ".[test]"
+```
+
+On first use, Mesh downloads `all-MiniLM-L6-v2` (~90 MB) once to your local Hugging Face cache. After that, everything runs completely offline.
 
 ---
 
@@ -92,128 +99,102 @@ pip install mesh-context-layer
 
 ### Namespaces
 
-A namespace is an isolated memory partition. Agents sharing a namespace share memory. Agents in different namespaces are completely isolated.
+A namespace is an isolated memory partition stored in `~/.mesh/mesh_<namespace>.db`. Agents sharing a namespace share memory; agents in different namespaces cannot see each other's data.
 
 ```python
-# Two agents on the same project share memory
-agent_a = Mesh(namespace="my-project", agent_id="coder")
-agent_b = Mesh(namespace="my-project", agent_id="reviewer")
+from mesh import Mesh
 
-# This agent is isolated
-other = Mesh(namespace="other-project", agent_id="coder")
+# Two agents working on the same project share memory
+coder = Mesh(namespace="payments-service", agent_id="cursor-coder")
+reviewer = Mesh(namespace="payments-service", agent_id="claude-reviewer")
+
+# Completely isolated project namespace
+infra = Mesh(namespace="k8s-infra", agent_id="terraform-agent")
 ```
 
-Set the default namespace globally via environment variable:
+You can set the default namespace globally via environment variable:
 
 ```bash
-export MESH_NAMESPACE=my-project
+export MESH_NAMESPACE=payments-service
 ```
-
-**Storage:** each namespace gets its own SQLite file (`mesh_<namespace>.db`) and ChromaDB collection (`mesh_<namespace>`), both in `~/.mesh/`.
 
 ---
 
 ### Memory Types
 
-| Type | Use it for |
-|------|-----------|
-| `fact` | Objective, verifiable information |
-| `preference` | User or system preferences and settings |
-| `context` | Situational background and project state |
-| `result` | Outputs and outcomes of completed tasks |
-| `instruction` | Rules, guidelines, and constraints to follow |
+Mesh validates 9 canonical memory types across the Python API, CLI, MCP Server, HTTP API, Passive Capture, and Dashboard:
 
-```python
-mesh.learn("The API rate limit is 100 req/min", memory_type="fact")
-mesh.learn("User prefers tabs over spaces", memory_type="preference")
-mesh.learn("We're mid-sprint, focusing on auth", memory_type="context")
-mesh.learn("Refactored auth module, all tests pass", memory_type="result")
-mesh.learn("Always run tests before pushing to main", memory_type="instruction")
-```
-
-The type is stored in metadata and used for grouping in context output and filtering in recall.
+| Type | Use it for | Example |
+| :--- | :--- | :--- |
+| `fact` | Objective, verifiable project facts | `"Production PostgreSQL runs on port 5432"` |
+| `decision` | Architectural or product choices | `"We decided to use Redis Streams instead of Kafka"` |
+| `process` | Workflows, build steps, deploy commands | `"Deploy to staging by running ./scripts/deploy.sh"` |
+| `instruction` | Rules and constraints agents must follow | `"Always run pytest before opening a pull request"` |
+| `preference` | User or codebase style preferences | `"User prefers TypeScript strict mode and functional components"` |
+| `context` | Project background and current sprint state | `"Currently migrating auth service from v1 to v2"` |
+| `result` | Outcomes of completed tasks or benchmarks | `"Auth migration finished; p99 latency dropped to 4ms"` |
+| `error` | Bug root causes, incident notes, and fixes | `"ERR_CODE_9482_XYZ happens when Redis loses quorum"` |
+| `general` | General notes that don't fit another category | `"Team sync happens every Tuesday at 10am UTC"` |
 
 ---
 
-### Confidence & Decay
+### Confidence & TTL Decay
 
-Every memory has a **stored confidence** (0.0–1.0) and an **effective confidence** (confidence × decay_factor).
+Every memory has a **stored confidence** (`0.0` to `1.0`) and an **effective confidence** (`confidence * decay_factor`).
 
-**Stored confidence** represents how certain you are about the information at the time of storage. Use values below 0.7 for uncertain information:
-
-```python
-mesh.learn("I think staging runs on port 4000", confidence=0.6)
-```
-
-**TTL decay** (`ttl_days`) makes a memory's effective confidence decay linearly to 0 over the specified number of days. After `ttl_days` days, the memory is considered **stale** (effective_confidence < 0.3). Use this for information that goes out of date:
+- **Permanent Memories (`ttl_days=None`):** Never decay (`decay_factor = 1.0`, `is_stale = False`).
+- **Time-Sensitive Memories (`ttl_days=N`):** Confidence decays linearly from `1.0` to `0.0` over `N` days starting from `decay_start_at`:
+  $$\text{decay\_factor} = \max\left(0.0, \min\left(1.0, 1.0 - \frac{\text{days\_elapsed}}{\text{ttl\_days}}\right)\right)$$
+- **Staleness (`STALE_THRESHOLD = 0.3`):** When `effective_confidence < 0.3`, `is_stale` becomes `True`.
 
 ```python
-# Staging server IP — probably changes every few weeks
-mesh.learn("Staging IP is 192.168.1.100", ttl_days=14)
+# Temporary staging IP — decays over 14 days
+mesh.learn("Staging server IP is 10.24.1.50", memory_type="fact", ttl_days=14)
 
-# Sprint goal — stale after a week
-mesh.learn("Sprint goal: ship auth flow", ttl_days=7)
-
-# Permanent fact — no TTL
-mesh.learn("Python is our primary language")
+# Exclude stale memories during recall
+fresh_results = mesh.recall("staging server IP", include_stale=False)
 ```
 
-When you `recall()`, every result includes:
+---
+
+### Deduplication & Contradiction Detection
+
+When `mesh.learn()` is called with `deduplicate=True` (the default):
+
+1. **Automatic In-Place Deduplication:** If an agent stores `"Production Redis runs on port 6379"` with `tags=["redis"]` and another agent later stores `"Production Redis runs on port 6379"` with `tags=["cache"]`, Mesh merges the tags (`["redis", "cache"]`), keeps the original UUID and `access_count`, and returns `{"deduplicated": True, "conflict": None}`.
+2. **Conflict / Contradiction Detection:** If an agent stores `"The API rate limit is 100 requests per minute"` and another stores `"The API rate limit is 200 requests per minute"`, Mesh detects that the numbers differ despite high semantic similarity (`>= 0.82`). It stores the new memory, logs a contradiction record, and returns:
 
 ```python
 {
-    "confidence": 1.0,           # stored confidence
-    "effective_confidence": 0.6, # after decay
-    "decay_factor": 0.6,         # multiplier applied
-    "is_stale": False,           # True if effective_conf < 0.3
-    "days_until_stale": 4,       # estimated days remaining
+    "memory_id": "new-uuid",
+    "status": "stored_with_conflict",
+    "deduplicated": False,
+    "conflict": {
+        "existing_memory_id": "old-uuid",
+        "existing_content": "The API rate limit is 100 requests per minute",
+        "existing_memory": "The API rate limit is 100 requests per minute",
+        "similarity": 0.9612,
+        "stored_by": "coding-agent",
+        "stored_at": "2026-10-15T12:00:00+00:00",
+        "contradiction_id": "conflict-uuid"
+    }
 }
 ```
 
 ---
 
-### Contradiction Detection
+### Privacy (`local_only`)
 
-When you `learn()` something new, Mesh checks whether any existing memory has a cosine similarity ≥ 0.82. If so, it records a contradiction and returns a warning — but **still stores the new memory**. The agent decides what to do.
-
-```python
-mesh.learn("The API rate limit is 100 req/min")
-
-result = mesh.learn("The API rate limit is 200 req/min")
-# result["status"] == "stored_with_conflict"
-# result["conflict"] == {
-#     "existing_memory_id": "...",
-#     "existing_content": "The API rate limit is 100 req/min",
-#     "similarity": 0.91,
-#     "stored_by": "coder-agent",
-#     "contradiction_id": "..."
-# }
-```
-
-To list and resolve contradictions:
-
-```python
-# Get all unresolved contradictions
-conflicts = mesh.contradictions()
-
-# After reviewing, mark as resolved
-mesh.resolve_contradiction(conflict["id"])
-```
-
----
-
-### Privacy (local_only)
-
-Mark any memory as `local_only=True` to ensure it **never** appears in exports or future cloud syncs. Use this for credentials, API keys, and sensitive configuration:
+Set `local_only=True` (or `--private` in the CLI) for credentials, local paths, or sensitive tokens. Private memories can be recalled locally by your agents, but are **never included in `export_namespace()`** and are badged as `PRIVATE` in the CLI and Dashboard.
 
 ```python
 mesh.learn(
-    "Database password: hunter2",
-    local_only=True
+    "Local dev Postgres password is dev_secret_99",
+    memory_type="fact",
+    local_only=True,
+    tags=["credentials", "local"]
 )
 ```
-
-Local-only memories are stored and recalled normally — they're just excluded from `export_namespace()` output and flagged in the dashboard.
 
 ---
 
@@ -224,29 +205,16 @@ Local-only memories are stored and recalled normally — they're just excluded f
 ```python
 result = mesh.learn(
     content: str,
-    memory_type: str = "fact",      # fact | preference | context | result | instruction
-    confidence: float = 1.0,        # 0.0 – 1.0
-    tags: list[str] = [],           # optional labels
-    ttl_days: float = None,         # days before stale
-    local_only: bool = False        # exclude from exports
-) -> dict
+    memory_type: str = "fact",
+    confidence: float = 1.0,
+    tags: Optional[list[str]] = None,
+    ttl_days: Optional[float] = None,
+    local_only: bool = False,
+    deduplicate: bool = True,
+) -> dict[str, Any]
 ```
 
-**Returns:**
-
-```python
-{
-    "memory_id": "uuid",
-    "status": "stored" | "stored_with_conflict",
-    "conflict": None | {
-        "existing_memory_id": "...",
-        "existing_content": "...",
-        "similarity": 0.91,
-        "stored_by": "agent-name",
-        "contradiction_id": "..."
-    }
-}
-```
+Returns a dictionary with `"memory_id"`, `"status"` (`"stored"` or `"stored_with_conflict"`), `"deduplicated"` (`bool`), and `"conflict"` (`None` or conflict metadata dict).
 
 ---
 
@@ -255,114 +223,145 @@ result = mesh.learn(
 ```python
 results = mesh.recall(
     query: str,
-    n: int = 5,                     # max results to return
-    min_similarity: float = 0.0,    # filter below this
-    min_confidence: float = 0.0,    # filter below this effective confidence
-    include_stale: bool = True      # set False to exclude stale memories
-) -> list[dict]
+    n: int = 5,
+    min_similarity: float = 0.0,
+    min_confidence: float = 0.0,
+    include_stale: bool = True,
+    memory_type: Optional[str] = None,
+    tags: Optional[list[str]] = None,
+    source_agent: Optional[str] = None,
+) -> list[dict[str, Any]]
 ```
 
-**Each result:**
+Each returned dictionary contains:
 
 ```python
 {
     "id": "uuid",
-    "content": "The API rate limit is 100 req/min",
-    "similarity": 0.91,
-    "source_agent": "coder-agent",
+    "content": "Production PostgreSQL runs on port 5432",
+    "similarity": 0.9142,            # Fused hybrid similarity score
+    "semantic_similarity": 0.8810,   # Raw dense cosine similarity
+    "lexical_score": 0.7500,         # BM25 / exact token overlap score
+    "composite_score": 0.8421,       # Weighted similarity + confidence + usage boost
+    "source_agent": "coding-agent",
     "memory_type": "fact",
+    "tags": ["db", "postgres"],
     "confidence": 1.0,
-    "effective_confidence": 0.85,
-    "decay_factor": 0.85,
+    "effective_confidence": 1.0,
+    "decay_factor": 1.0,
     "is_stale": False,
-    "days_until_stale": 8,
+    "days_until_stale": None,
+    "ttl_days": None,
+    "access_count": 3,
     "local_only": False,
-    "created_at": "2025-01-15T10:30:00"
+    "created_at": "2026-10-15T09:30:00+00:00",
+    "accessed_at": "2026-10-15T14:10:00+00:00",
 }
 ```
 
-Results are sorted by similarity descending.
+---
+
+### `update()`
+
+Update an existing memory in-place by its UUID without losing its `id`, `created_at` timestamp, or `access_count`. The vector embedding is only recomputed if `content` changes.
+
+```python
+updated = mesh.update(
+    memory_id="uuid-here",
+    content="Production PostgreSQL runs on port 5433",
+    memory_type="fact",
+    confidence=0.95,
+    tags=["db", "postgres", "updated"],
+    ttl_days=30,
+    reset_ttl=True,
+    local_only=False,
+)
+# updated["status"] == "updated"
+# updated["memory"] -> full enriched memory dict
+```
+
+---
+
+### `get()`
+
+Fetch a single memory by ID with all decay and staleness fields calculated:
+
+```python
+mem = mesh.get("uuid-here")
+```
 
 ---
 
 ### `forget()`
 
-```python
-mesh.forget(memory_id: str) -> None
-```
+Permanently delete a memory by ID from SQLite, FTS5, and the in-memory vector cache:
 
-Deletes from both ChromaDB and SQLite. Permanent.
+```python
+deleted: bool = mesh.forget("uuid-here")
+```
 
 ---
 
 ### `inspect()`
 
-```python
-memories = mesh.inspect(limit: int = 20) -> list[dict]
-```
+List memories in the namespace sorted by most recently accessed (`accessed_at DESC`), with optional `memory_type` and `tag` filters:
 
-Returns all memories in the namespace, sorted by most recently accessed. Good for listing everything without a query.
+```python
+memories = mesh.inspect(limit=20, memory_type="decision", tag="arch")
+```
 
 ---
 
 ### `patterns()`
 
-```python
-patterns = mesh.patterns() -> dict
-```
-
-**Returns:**
+Analyze memory usage and query logs to identify top topics, knowledge gaps, unused memories, and stale memories:
 
 ```python
-{
-    "top_topics": [
-        {"query_text": "deploy process", "query_count": 8, "avg_similarity": 0.76}
-    ],
-    "memory_gaps": [
-        # Queries asked 2+ times with avg_similarity < 0.4
-        # These are things agents keep asking about but memory doesn't answer well
-        {"query_text": "auth flow", "query_count": 4, "avg_similarity": 0.28}
-    ],
-    "unused_memories": [
-        # Created 7+ days ago, access_count = 0
-        {"id": "...", "content": "...", "created_at": "..."}
-    ],
-    "stale_memories": [
-        # effective_confidence < 0.3
-        {"content": "...", "effective_confidence": 0.12}
-    ]
-}
+p = mesh.patterns()
+# {
+#     "top_topics": [{"query_text": "deploy", "query_count": 12, "avg_similarity": 0.84}],
+#     "memory_gaps": [{"query_text": "kafka certs", "query_count": 3, "avg_similarity": 0.21}],
+#     "unused_memories": [...],  # access_count == 0 and created > 7 days ago
+#     "stale_memories": [...],   # effective_confidence < 0.3
+# }
 ```
-
-Use `patterns()` to understand what agents are looking for and what's missing from your memory store.
 
 ---
 
-### `contradictions()`
+### `contradictions()` & `resolve_contradiction()`
 
 ```python
-conflicts = mesh.contradictions(resolved: bool = False) -> list[dict]
-```
+# List unresolved conflicts
+open_conflicts = mesh.contradictions(resolved=False)
 
-Returns unresolved (or resolved) contradiction records.
+# Mark a conflict as resolved
+mesh.resolve_contradiction(contradiction_id="conflict-uuid")
+```
 
 ---
 
-### `resolve_contradiction()`
+### `count()`, `clear()`, & `warmup_model()`
 
 ```python
-mesh.resolve_contradiction(contradiction_id: str) -> None
-```
+from mesh import Mesh, warmup_model
 
-Marks a contradiction as resolved. Does not delete either memory — you manage that separately with `forget()`.
+# Pre-load SentenceTransformer and warm the namespace vector cache in the background
+warmup_model("my-project")
+
+mesh = Mesh(namespace="my-project")
+total: int = mesh.count()   # O(1) when vector cache is hot
+mesh.clear()                # Wipes memories, queries, FTS, and contradictions in this namespace
+```
 
 ---
 
 ## MCP Server
 
-The MCP server exposes Mesh as tools directly inside Claude Desktop, Cursor, and any MCP-compatible client.
+The MCP server (`mesh-server`) exposes 10 tools over `stdio` for Claude Desktop, Cursor, Windsurf, and any MCP-compatible client. It also runs a background worker that warms up the embedding model on startup and incrementally captures concrete facts from agent logs.
 
-**Setup — Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+### Configuration
+
+**Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS or `%APPDATA%\Claude\claude_desktop_config.json` on Windows):
 
 ```json
 {
@@ -378,368 +377,219 @@ The MCP server exposes Mesh as tools directly inside Claude Desktop, Cursor, and
 }
 ```
 
-**Setup — Cursor** (`.cursor/mcp.json` in project root):
+**Cursor** (`.cursor/mcp.json` in your repository root):
 
 ```json
 {
   "mcpServers": {
     "mesh": {
       "command": "mesh-server",
-      "env": { "MESH_NAMESPACE": "my-project" }
+      "env": {
+        "MESH_NAMESPACE": "my-project",
+        "MESH_AGENT_ID": "cursor"
+      }
     }
   }
 }
 ```
 
-**Available MCP tools:**
+### Exposed MCP Tools (10 Tools)
 
-| Tool | Description |
-|------|-------------|
-| `mesh_learn` | Store a memory with optional type, confidence, tags, TTL, privacy flag |
-| `mesh_recall` | Semantic search with similarity and decay info |
-| `mesh_forget` | Delete a memory by ID |
-| `mesh_inspect` | List all memories in the namespace |
-| `mesh_patterns` | Surface gaps, stale/unused memories, top topics |
-| `mesh_resolve_contradiction` | Mark a conflict as resolved |
-
-**Prompt to give your agent:**
-
-```
-You have access to Mesh shared memory via the mesh_* tools.
-- At the start of each task, call mesh_recall to check what's already known.
-- When you discover something important (a decision, a fact, a preference), call mesh_learn.
-- If mesh_learn returns a conflict warning, review and resolve it.
-- Use local_only=true for any credentials or sensitive information.
-```
+| Tool Name | Description |
+| :--- | :--- |
+| `mesh_learn` | Store a memory with automatic deduplication, conflict detection, tags, TTL, and `local_only` privacy |
+| `mesh_recall` | 3-stage hybrid search (semantic + BM25 + exact token match) with type/tag/agent filters |
+| `mesh_update` | Update an existing memory in-place by `memory_id` while preserving its UUID and access stats |
+| `mesh_forget` | Delete a specific memory permanently by `memory_id` |
+| `mesh_inspect` | List memories in the namespace sorted by recent access, with optional `memory_type` and `tag` filters |
+| `mesh_context` | Generate a formatted system prompt context block (`markdown`, `plain`, `xml`, `json`) |
+| `mesh_patterns` | Surface `top_topics`, `memory_gaps`, `unused_memories`, and `stale_memories` |
+| `mesh_contradictions` | List unresolved (or resolved) contradictions between stored memories |
+| `mesh_resolve_contradiction` | Mark a specific `contradiction_id` as resolved |
+| `mesh_sync` | Store a session turn summary and incrementally extract facts from recent agent logs |
 
 ---
 
 ## HTTP REST API
 
-Mesh exposes a local REST API on port 7701. Start it with:
+Start the standalone HTTP API server on `http://127.0.0.1:7701`:
 
 ```bash
-mesh-server-http
-# or
-MESH_NAMESPACE=my-project uvicorn mesh.http_server:app --port 7701
+mesh-http
+# or via unified CLI:
+mesh http
 ```
-
-Any tool that can make HTTP requests can use Mesh through this API — shell scripts, curl, n8n, Zapier local, etc.
 
 ### Endpoints
 
-#### `POST /learn`
+| Method | Path | Description |
+| :--- | :--- | :--- |
+| `GET` | `/health` | Health check (`{"status": "ok", "version": "0.4", "timestamp": "..."}`) |
+| `POST` | `/learn` | Store a memory (`content`, `memory_type`, `confidence`, `tags`, `local_only`, `ttl_days`, `namespace`, `agent_id`) |
+| `POST` | `/recall` | Hybrid search (`query`, `count`, `memory_type`, `tags`, `source_agent`, `min_similarity`, `min_confidence`, `include_stale`, `namespace`, `agent_id`) |
+| `POST` | `/update` | Update a memory in-place (`memory_id`, `content`, `memory_type`, `confidence`, `tags`, `local_only`, `ttl_days`, `namespace`, `agent_id`) |
+| `POST` | `/forget` | Delete a memory by ID (`memory_id`, `namespace`, `agent_id`) |
+| `GET` | `/inspect` | List memories (`?namespace=...&limit=50&memory_type=...&tag=...`) |
+| `GET` | `/patterns` | Pattern & memory gap analysis (`?namespace=...`) |
+| `GET` | `/contradictions` | List contradictions (`?namespace=...&resolved=false`) |
+| `POST` | `/contradictions/resolve` | Resolve a contradiction (`contradiction_id`, `namespace`) |
+| `POST` | `/context` | Build a formatted system prompt block (`query`, `count`, `namespace`, `format`, `min_confidence`, `memory_type`, `tags`) |
+| `GET` | `/audit` | Query the audit trail (`?namespace=...&limit=50&action=all`) |
+
+**Example (`curl`):**
 
 ```bash
-curl -X POST http://localhost:7701/learn \
+# Store a memory
+curl -s -X POST http://localhost:7701/learn \
   -H "Content-Type: application/json" \
-  -d '{
-    "content": "Production DB is on port 5432",
-    "memory_type": "fact",
-    "namespace": "my-project",
-    "agent_id": "my-script"
-  }'
-```
+  -d '{"content": "Staging Redis runs on port 6380", "memory_type": "fact", "tags": ["redis", "staging"]}'
 
-```json
-{
-  "status": "ok",
-  "result": {
-    "memory_id": "...",
-    "status": "stored",
-    "conflict": null
-  }
-}
-```
-
-#### `POST /recall`
-
-```bash
-curl -X POST http://localhost:7701/recall \
+# Update in-place
+curl -s -X POST http://localhost:7701/update \
   -H "Content-Type: application/json" \
-  -d '{"query": "what port is the database on?", "count": 3, "namespace": "my-project"}'
-```
+  -d '{"memory_id": "<UUID>", "content": "Staging Redis runs on port 6381"}'
 
-```json
-{
-  "status": "ok",
-  "count": 1,
-  "results": [
-    {
-      "content": "Production DB is on port 5432",
-      "similarity": 0.89,
-      "memory_type": "fact",
-      "effective_confidence": 1.0,
-      "is_stale": false
-    }
-  ]
-}
-```
-
-#### `POST /forget`
-
-```bash
-curl -X POST http://localhost:7701/forget \
-  -d '{"memory_id": "uuid-here", "namespace": "my-project"}'
-```
-
-#### `GET /inspect?namespace=my-project&limit=20`
-
-Returns all memories in the namespace.
-
-#### `GET /patterns?namespace=my-project`
-
-Returns pattern analysis output.
-
-#### `GET /audit?namespace=my-project&limit=50`
-
-Returns the audit trail of reads and writes.
-
-#### `GET /health`
-
-```json
-{"status": "ok", "version": "0.4", "timestamp": "..."}
+# Recall with hybrid search
+curl -s -X POST http://localhost:7701/recall \
+  -H "Content-Type: application/json" \
+  -d '{"query": "port 6381", "count": 3}'
 ```
 
 ---
 
 ## CLI Tools
 
-### `mesh-add` — store a memory
+You can invoke commands either via the unified `mesh <command>` entrypoint or the standalone `mesh-<command>` binaries:
 
 ```bash
-# Basic usage
-mesh-add "The deploy script is at ./scripts/deploy.sh"
+# Store a memory
+mesh-add "Production DB is PostgreSQL 16 on port 5432" --type fact --tags db,prod
+mesh-add "Staging API token: sk-stage-123" --type fact --private --ttl 30
 
-# With type and tags
-mesh-add "Prod DB password rotated May 1" --type fact --tags db,security
+# Hybrid search
+mesh-ask "what port is Postgres on?" --count 5 --type fact --tags db --no-stale
 
-# Private (never exported)
-mesh-add "My API key is sk-abc123" --private
+# Update an existing memory in-place
+mesh-update <memory_id> --content "Production DB is PostgreSQL 16 on port 5433" --confidence 0.95
 
-# With TTL (goes stale after 14 days)
-mesh-add "Staging IP: 192.168.1.100" --ttl 14
+# Delete a memory by ID
+mesh-forget <memory_id> --namespace shared
 
-# Specific namespace
-mesh-add "Sprint goal: ship auth" --namespace my-project
-```
+# Generate a system prompt block
+mesh-context --query "database architecture" --format markdown --count 10
 
-### `mesh-ask` — search memories
+# Inspect the audit trail (who read/wrote/updated/deleted what)
+mesh-why --limit 25 --action all
 
-```bash
-# Basic search
-mesh-ask "what is the deploy process?"
+# Namespace status overview
+mesh-status --namespace shared
 
-# More results
-mesh-ask "authentication" --count 10
+# Manage namespaces
+mesh-namespaces list
+mesh-namespaces stats shared
+mesh-namespaces rename old-ns new-ns
+mesh-namespaces delete temp-ns
 
-# Filter by type
-mesh-ask "preferences" --type preference
+# Export and import
+mesh-export backup.json --namespace shared
+mesh-export readable.json --namespace shared --no-embeddings
+mesh-import backup.json --namespace restored --overwrite
+mesh-import backup.json --dry-run
 
-# Specific namespace
-mesh-ask "database config" --namespace my-project
-```
+# Passive log capture
+mesh-capture --file session.log --namespace shared --verbose
+cat agent_output.txt | mesh-capture --stdin --local-only
+mesh-capture --show-provider
 
-**Example output:**
+# Activity digest
+mesh-digest --hours 24 --namespace shared
+mesh-digest --hours 8 --json
 
-```
-Found 2 memories in namespace 'shared':
-
-  1. The deploy script is at ./scripts/deploy.sh
-     type=process | similarity=0.87 | confidence=1.00 | from=human-cli
-
-  2. Always run tests before deploying
-     type=instruction | similarity=0.71 | confidence=1.00 | from=coder-agent
-```
-
-### `mesh-context` — generate a system prompt block
-
-```bash
-# Pipe directly into an agent
-aider --system-prompt "$(mesh-context)" my-file.py
-
-# Focused context
-mesh-context --query "deploy process" --count 5
-
-# Different formats
-mesh-context --format xml
-mesh-context --format plain
-mesh-context --format json
-
-# Capture to variable
-CONTEXT=$(mesh-context --namespace my-project)
-```
-
-### `mesh-why` — audit trail
-
-```bash
-# Recent reads and writes
-mesh-why
-
-# Filter to reads only
-mesh-why --action read
-
-# More entries
-mesh-why --limit 50 --namespace my-project
-```
-
-### `mesh-status` — overview
-
-```bash
-mesh-status
-
-# Output:
-# Mesh Status — namespace: shared
-#   Memories:       12 total, 2 private, 1 stale
-#   Exportable:     10
-#   Total recalls:  47
-#   Last activity:  2025-01-15T14:22:00
-#   Types:          {'fact': 8, 'instruction': 3, 'preference': 1}
-```
-
-### `mesh-digest` — session summary
-
-```bash
-# Last 24 hours
-mesh-digest
-
-# Last 2 hours
-mesh-digest --hours 2
-
-# Machine-readable
-mesh-digest --json
+# Start servers & UI
+mesh-server                     # MCP stdio server
+mesh-http                       # REST API on localhost:7701
+mesh-dashboard --port 7433      # Web UI on localhost:7433
 ```
 
 ---
 
 ## Context Builder
 
-The context builder formats memories as a ready-to-paste system prompt block. Use it to prime any agent with relevant knowledge before a task.
+`build_context()` formats memories into a system prompt block (`markdown`, `plain`, `xml`, or `json`) ready to prime any agent session.
 
 ```python
 from mesh import build_context
 
-# General context (top memories by access frequency)
-prompt_block = build_context(namespace="my-project", count=10)
-
-# Focused on a topic
-prompt_block = build_context(
-    query="authentication and security",
+# Topic-focused context (uses 3-stage hybrid recall)
+focused_block = build_context(
+    query="authentication and JWT cookies",
     namespace="my-project",
     count=5,
-    format="markdown"   # markdown | plain | xml | json
+    format="markdown",
+    min_confidence=0.3,
+    memory_type="instruction",
+    tags=["auth"],
 )
 
-# Inject into your agent's system prompt
-system_prompt = f"""
-You are a helpful coding assistant.
-
-{prompt_block}
-
-Now help the user with their task.
-"""
-```
-
-**Markdown output example:**
-
-```
-<mesh_context>
-The following facts were stored by AI agents working on this project.
-Trust these as ground truth unless you have newer information.
-
-**Fact**
-- The API rate limit is 100 requests per minute
-- Production database is PostgreSQL 15 on port 5432
-
-**Instruction**
-- Always run tests before merging to main
-- Use feature branches, never push directly to main
-
-**Preference**
-- User prefers TypeScript over JavaScript for new code
-
-</mesh_context>
+# General project context (pulls most-accessed high-confidence memories)
+general_block = build_context(namespace="my-project", count=10, format="markdown")
 ```
 
 ---
 
-## Passive Capture
+## Passive Log Capture
 
-Passive capture extracts memories automatically from a conversation or session log — without the agent explicitly calling `learn()`.
+`extract_memories_from_log()` ingests raw conversation text, a `.log`/`.txt`/`.md`/`.jsonl` file path, or a directory of log files, extracts reusable facts, and stores them in Mesh.
 
 ```python
 from mesh import extract_memories_from_log
 
-# Feed in a raw conversation log
-log = """
-We decided to use Redis for session storage.
-The staging environment is at staging.acme.com.
-Note that the API keys expire every 90 days.
-Okay sure, let me know if you need anything else.
-"""
-
 result = extract_memories_from_log(
-    log_text=log,
+    log_text="./logs/claude_session.jsonl",  # Accepts raw text, file path, or directory path
     namespace="my-project",
-    dry_run=False,  # set True to preview without storing
-    verbose=True
+    agent_id="passive-capture",
+    dry_run=False,
+    verbose=True,
+    force_local=False,                       # Set True to force local regex extraction
 )
-# result["stored_count"] == 3
-# result["provider_used"] == "anthropic"
+# Returns: {"stored_count": ..., "skipped_count": ..., "provider_used": ..., "memories": [...]}
 ```
 
-**Provider detection order:**
-1. `MESH_AI_PROVIDER` env var (explicit override)
-2. `ANTHROPIC_API_KEY` → uses Claude Haiku
-3. `OPENAI_API_KEY` → uses OpenAI-compatible API
-4. `GROQ_API_KEY` → uses Llama3 on Groq
-5. Ollama running locally → uses detected model
-6. Local keyword extractor (no API required)
-
-The local extractor uses heuristics — it looks for sentences with signal words like "always", "decided", "the X is Y", "remember", etc. and filters out conversational filler. It also detects credential-like content and marks it `private`.
-
-**Shell pipeline:**
-
-```bash
-# Capture your terminal session and extract memories at the end
-script -q session.log
-# ... work ...
-mesh-passive session.log --namespace my-project
-```
+**Provider Detection Priority:**
+1. `MESH_AI_PROVIDER` explicit override (`anthropic`, `openai`, `groq`, `ollama`, `openai-compatible`, `local`)
+2. `ANTHROPIC_API_KEY` (`claude-haiku-4-5-20251001`)
+3. `OPENAI_API_KEY` (`gpt-4o-mini`)
+4. `GROQ_API_KEY` (`llama3-8b-8192`)
+5. Local Ollama server (`http://localhost:11434/v1`)
+6. Built-in local regex/heuristic extractor (`local-keyword-extractor` — free, offline, automatically marks credentials as `local_only=True`)
 
 ---
 
 ## Audit Trail
 
-Every `learn()` and `recall()` call is logged to a separate audit database (`~/.mesh/audit_<namespace>.db`).
+Every `recall`, `learn`, `update`, and `forget` event is logged to `~/.mesh/audit_<namespace>.db`.
 
 ```python
-from mesh import get_audit_log, get_audit_stats
+from mesh import (
+    get_audit_log,
+    get_audit_stats,
+    log_forget,
+    log_learn,
+    log_recall,
+    log_update,
+)
 
-# Recent entries
-entries = get_audit_log(namespace="my-project", limit=20)
-# entries[0] == {
-#     "timestamp": "2025-01-15T14:22:00",
-#     "action": "recall",
-#     "agent_id": "coder-agent",
-#     "query": "what is the deploy process?",
-#     "top_result": "The deploy script is at ./deploy.sh",
-#     "top_similarity": 0.87,
-#     "result_count": 3
-# }
+# Query recent audit events ("all", "read", "write", "recall", "learn", "update", "forget")
+entries = get_audit_log(namespace="my-project", limit=50, action_filter="all")
 
-# Filter by action
-recalls = get_audit_log(namespace="my-project", action_filter="read")
-learns  = get_audit_log(namespace="my-project", action_filter="write")
-
-# Aggregate stats
+# Aggregate statistics
 stats = get_audit_stats(namespace="my-project")
 # {
-#     "total_recalls": 47,
-#     "total_learns": 12,
-#     "agents": ["coder-agent", "review-agent", "claude-desktop"],
-#     "conflicts_detected": 2,
-#     "last_activity": "2025-01-15T14:22:00"
+#     "total_recalls": 42,
+#     "total_learns": 15,
+#     "agents": ["cursor", "claude-desktop", "human-cli"],
+#     "conflicts_detected": 1,
+#     "last_activity": "2026-10-15T14:20:00+00:00"
 # }
 ```
 
@@ -747,21 +597,24 @@ stats = get_audit_stats(namespace="my-project")
 
 ## Session Digest
 
-A digest summarizes activity over a time window — what was learned, contradictions detected, and what's going stale.
+Generate a timezone-safe UTC summary of recent activity over the last `N` hours:
 
 ```python
 from mesh import generate_digest
 
 digest = generate_digest(namespace="my-project", hours=24)
 # {
-#     "new_count": 8,
+#     "namespace": "my-project",
+#     "hours": 24,
+#     "since": "2026-10-14T14:20:00+00:00",
 #     "new_memories": [...],
-#     "contradiction_count": 1,
+#     "new_count": 6,
 #     "contradictions": [...],
-#     "stale_count": 2,
+#     "contradiction_count": 1,
 #     "stale_memories": [...],
-#     "total_recalls": 23,
-#     "agents_active": ["coder-agent", "claude-desktop"]
+#     "stale_count": 0,
+#     "total_recalls": 19,
+#     "agents_active": ["cursor", "claude-desktop"]
 # }
 ```
 
@@ -769,176 +622,123 @@ digest = generate_digest(namespace="my-project", hours=24)
 
 ## Export & Import
 
+Export public memories (`local_only=False`) to JSON and batch-import them into any namespace:
+
 ```python
 from mesh import export_namespace, import_namespace
 
-# Export all non-private memories to a file
-export_namespace(
+# Export with 384-dim embeddings included for instant re-import
+export_data = export_namespace(
     namespace="my-project",
     output_path="backup.json",
-    include_embeddings=True  # False = smaller, human-readable file
+    include_embeddings=True,
 )
 
-# Import on another machine or namespace
-import_namespace(
+# Import into another namespace ("skip_existing" or "overwrite")
+stats = import_namespace(
     input_path="backup.json",
-    target_namespace="my-project",   # override namespace from file
-    merge_strategy="skip_existing",  # or "overwrite"
-    dry_run=False
+    target_namespace="my-project-staging",
+    merge_strategy="skip_existing",
+    dry_run=False,
 )
+# stats == {"imported": 10, "skipped": 0, "errors": 0, "namespace": "my-project-staging"}
 ```
 
-**The export format:**
-
-```json
-{
-  "mesh_version": "0.3",
-  "exported_at": "2025-01-15T14:22:00Z",
-  "namespace": "my-project",
-  "memory_count": 10,
-  "skipped_local_only": 2,
-  "memories": [
-    {
-      "id": "uuid",
-      "content": "The API rate limit is 100 req/min",
-      "memory_type": "fact",
-      "confidence": 1.0,
-      "source_agent": "coder-agent",
-      "tags": ["api"],
-      "created_at": "2025-01-10T09:00:00",
-      "embedding": [0.023, -0.14, ...]
-    }
-  ]
-}
-```
-
-If `include_embeddings=False`, the embedding field is omitted. On import, missing embeddings are regenerated by re-running the sentence transformer.
+When `include_embeddings=False`, `import_namespace()` automatically batch-embeds all new texts in a single forward pass via `_embed_batch()` and commits all rows in one SQLite WAL transaction.
 
 ---
 
 ## Namespace Management
 
 ```python
-from mesh import list_namespaces, delete_namespace, rename_namespace, namespace_stats
+from mesh import delete_namespace, list_namespaces, namespace_stats, rename_namespace
 
-# List all namespaces
-namespaces = list_namespaces()
-# [{"namespace": "my-project", "memory_count": 10, "local_only_count": 2, "last_updated": "..."}]
+# List all namespaces on disk
+all_ns = list_namespaces()
 
-# Detailed stats for one namespace
+# Detailed breakdown (counts, types, avg confidence, recalls, stale count)
 stats = namespace_stats("my-project")
-# {"memory_count": 10, "type_breakdown": {"fact": 7, "instruction": 3}, ...}
 
-# Delete (irreversible)
-count = delete_namespace("old-project")
+# Rename a namespace atomically
+moved_count = rename_namespace("my-project", "my-project-v2")
 
-# Rename (copies data, deletes old)
-count = rename_namespace("my-project", "my-project-archived")
+# Delete a namespace and its SQLite files
+deleted_count = delete_namespace("my-project-v2")
 ```
 
 ---
 
-## Dashboard
+## Web Dashboard
+
+Launch the local web visualizer on `http://localhost:7433`:
 
 ```bash
-# Start with default namespace
-mesh-dashboard
-
-# Specific namespace and port
 mesh-dashboard --namespace my-project --port 7433
-
-# Don't auto-open browser
-mesh-dashboard --no-browser
 ```
 
-Opens at `http://localhost:7433`. The dashboard provides a full UI for browsing, searching, adding, editing, and deleting memories, viewing contradictions, patterns, audit logs, and digests.
+Keyboard shortcuts inside the dashboard:
+- `/` — Focus the hybrid search bar
+- `n` — Open the **New Memory** modal
+- `Esc` — Close the active modal
 
 ---
 
 ## Environment Variables
 
 | Variable | Default | Description |
-|----------|---------|-------------|
-| `MESH_NAMESPACE` | `shared` | Default namespace for all tools |
-| `MESH_AGENT_ID` | `mcp-agent` / `http-client` | Agent ID used in logs |
-| `MESH_HTTP_PORT` | `7701` | Port for the HTTP REST API |
-| `MESH_AI_PROVIDER` | auto-detected | Override passive capture AI provider (`anthropic`, `openai`, `groq`, `ollama`, `local`) |
-| `ANTHROPIC_API_KEY` | — | Used by passive capture for Claude Haiku |
-| `OPENAI_API_KEY` | — | Used by passive capture for OpenAI |
-| `GROQ_API_KEY` | — | Used by passive capture for Groq |
+| :--- | :--- | :--- |
+| `MESH_NAMESPACE` | `shared` | Default namespace across CLI, MCP, HTTP, and Dashboard |
+| `MESH_AGENT_ID` | `mcp-agent` / `http-client` | Default agent identifier recorded on memories and audit logs |
+| `MESH_HTTP_PORT` | `7701` | Port for the `mesh-http` REST API server |
+| `MESH_AI_PROVIDER` | *auto-detected* | Explicit passive capture provider (`anthropic`, `openai`, `groq`, `ollama`, `openai-compatible`, `local`) |
+| `MESH_AI_API_KEY` | — | Explicit API key override for passive capture |
+| `MESH_AI_MODEL` | *provider default* | Explicit LLM model override for passive capture |
+| `MESH_AI_BASE_URL` | *provider default* | Custom base URL for OpenAI-compatible or Ollama endpoints |
+| `ANTHROPIC_API_KEY` | — | Anthropic API key for passive log extraction |
+| `OPENAI_API_KEY` | — | OpenAI API key for passive log extraction |
+| `GROQ_API_KEY` | — | Groq API key for passive log extraction |
+| `MESH_NO_UPDATE_CHECK` | `0` | Set to `1` or `true` to disable the background PyPI version check |
 
 ---
 
-## Recipes & Patterns
+## Recipes & Multi-Agent Patterns
 
-### Multi-agent pipeline
+### 1. Multi-Agent Handoff (Zero Direct Coordination)
 
 ```python
-# Agent 1: discovery
-scout = Mesh(namespace="research-sprint", agent_id="scout")
-scout.learn("Found 3 competitor APIs: Stripe, Braintree, Adyen")
-scout.learn("Stripe has the best developer docs")
-scout.learn("Adyen requires manual approval to access sandbox")
+from mesh import Mesh
 
-# Agent 2: uses what Agent 1 learned — no direct communication
-analyst = Mesh(namespace="research-sprint", agent_id="analyst")
-results = analyst.recall("which payment APIs did we evaluate?")
-# Finds all three memories from scout automatically
+# Agent 1: Backend agent updates an API contract
+backend = Mesh(namespace="checkout-v2", agent_id="backend-agent")
+res = backend.learn(
+    "POST /v2/checkout requires an Idempotency-Key UUID header",
+    memory_type="instruction",
+    tags=["api", "checkout"],
+)
+mem_id = res["memory_id"]
+
+# Agent 2: Frontend agent recalls the contract before writing client code
+frontend = Mesh(namespace="checkout-v2", agent_id="frontend-agent")
+rules = frontend.recall("checkout endpoint headers", memory_type="instruction")
+for r in rules:
+    print(f"[{r['similarity']:.2f}] {r['content']} (from {r['source_agent']})")
 ```
 
-### Guard against stale credentials
+### 2. Updating Evolving Facts Without Losing History
 
 ```python
-mesh.learn(
-    "Staging API key: sk-staging-abc123",
-    local_only=True,
-    ttl_days=30,   # force review after a month
-    memory_type="fact",
-    tags=["credentials", "staging"]
+# When a port or config changes, update the existing memory in-place by ID
+# so its UUID, creation timestamp, and access_count are preserved:
+backend.update(
+    memory_id=mem_id,
+    content="POST /v2/checkout requires both Idempotency-Key and X-Tenant-ID headers",
+    tags=["api", "checkout", "multi-tenant"],
 )
 ```
 
-### Inject memory into every agent session
+### 3. Priming Any CLI Agent Session
 
 ```bash
-#!/bin/bash
-# wrapper.sh — inject Mesh context into any agentic tool
-
-CONTEXT=$(mesh-context --namespace my-project --count 10 --format plain)
-export AGENT_SYSTEM_PROMPT="$CONTEXT"
-exec "$@"
-```
-
-### Check memory before doing work
-
-```python
-mesh = Mesh(namespace="my-project", agent_id="my-agent")
-
-# Always check before duplicating work
-existing = mesh.recall("has the auth module been refactored?", n=1, min_similarity=0.7)
-if existing and existing[0]["is_stale"] is False:
-    print(f"Already done: {existing[0]['content']}")
-else:
-    # do the work...
-    mesh.learn("Refactored auth module — moved to JWT, all tests green", memory_type="result")
-```
-
-### Automated end-of-session digest
-
-```bash
-# Add to your project's .envrc or a post-session hook
-mesh-digest --namespace my-project --hours 8
-```
-
-### Shell one-liners
-
-```bash
-# What has my team's agents been storing?
-mesh-ask "recent decisions" --count 10 --namespace team-project
-
-# What keeps getting asked that we don't have memory for?
-mesh-namespaces stats my-project  # check stale + gap counts
-
-# Quick status before starting work
-mesh-status --namespace my-project && mesh-ask "current sprint goal"
+# Inject top project memories directly into Aider, Claude Code, or custom scripts:
+aider --system-prompt "$(mesh-context --namespace checkout-v2 --count 15)"
 ```
