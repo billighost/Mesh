@@ -3,7 +3,6 @@ mesh/http_server.py — High-speed HTTP REST API & Background Daemon Server for 
 Runs on localhost:7701 by default. Separate from the dashboard (port 7433).
 Any tool, script, or MCP stdio proxy can use Mesh through this server.
 """
-
 from __future__ import annotations
 
 import argparse
@@ -21,6 +20,7 @@ from .audit import get_audit_log, log_forget, log_learn, log_recall, log_update
 from .context_builder import _format
 from .memory import (
     Mesh,
+    ensure_model_downloaded,
     get_engine_status,
     set_idle_unload_seconds,
     unload_model,
@@ -30,7 +30,7 @@ from .memory import (
 app = FastAPI(
     title="Mesh HTTP API",
     description="Local HTTP interface for the Mesh shared agent memory layer.",
-    version="0.4",
+    version="0.6.0",
 )
 
 app.add_middleware(
@@ -114,6 +114,8 @@ class ResolveContradictionRequest(BaseModel):
 class ContextRequest(BaseModel):
     query: Optional[str] = None
     count: Optional[int] = 10
+    max_memories: Optional[int] = None
+    n: Optional[int] = None
     namespace: Optional[str] = None
     format: Optional[str] = "markdown"  # "markdown" | "plain" | "xml" | "json"
     min_confidence: Optional[float] = 0.3
@@ -332,7 +334,12 @@ async def context(req: ContextRequest) -> dict[str, Any]:
     """
     try:
         mesh = get_mesh(req.namespace, "http-context")
-        count = req.count or 10
+        raw_limit = (
+            req.max_memories
+            if req.max_memories is not None
+            else (req.n if req.n is not None else (req.count or 10))
+        )
+        count = max(1, int(raw_limit))
         min_conf = req.min_confidence if req.min_confidence is not None else 0.3
         fmt = req.format or "markdown"
 
@@ -413,6 +420,7 @@ def start() -> None:
     args, _ = parser.parse_known_args()
 
     set_idle_unload_seconds(args.idle_timeout)
+    ensure_model_downloaded(blocking=False)
     if not args.no_warmup:
         threading.Thread(target=warmup_model, daemon=True).start()
 

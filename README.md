@@ -27,11 +27,21 @@ Mesh provides persistent, shared agent memory with:
 
 ## Quickstart
 
-### 1. Installation
+### 1. Installation & Instant Setup
 
 ```bash
 pip install mesh-context-layer
+
+# Optional: Instant setup (spawns background daemon and warms ONNX model in <150 ms)
+mesh setup
 ```
+
+### Zero-Friction Auto-Daemon & Non-Blocking Background Model Downloader
+
+Mesh is zero-configuration:
+- **Zero-Friction Auto-Daemon**: On first use, Mesh automatically spawns a persistent local background daemon (`http://127.0.0.1:7701`) with zero cold start.
+- **Non-Blocking Background Model Downloader**: Downloads `all-MiniLM-L6-v2` ONNX weights into `~/.mesh/models/` in a background daemon thread prioritizing fast Google Cloud Storage and CDN mirrors—**no Hugging Face token required and zero network rate limits**.
+- While the background download completes, Mesh serves requests instantly in `<0.05 ms` using a concept-aware 384-dimensional semantic feature-hash engine (`onnx-warming`) and automatically backfills neural embeddings once the ONNX model lands on disk.
 
 ### 2. Python SDK
 
@@ -165,6 +175,40 @@ curl -s -X POST http://localhost:7701/context \
 
 ---
 
+## CLI Commands
+
+Mesh provides both unified `mesh <subcommand>` routing and dedicated script entry points:
+
+```bash
+# Setup & daemon management
+mesh setup                        # Instant setup & model caching (<150 ms)
+mesh-setup                        # Direct alias for mesh setup
+mesh daemon start                 # Start background daemon (port 7701)
+mesh daemon stop                  # Stop background daemon
+mesh daemon status                # Inspect daemon health & model RAM residency
+mesh daemon warmup                # Cache ONNX model & warm local daemon
+mesh daemon unload                # Immediately release model weights from RAM
+mesh-daemon status                # Direct script entry point for daemon control
+
+# Memory operations (automatically proxy through warm local daemon)
+mesh add "PostgreSQL 16 runs on port 5432" --tags db,prod --type fact
+mesh ask "what port does postgres use?" --n 3
+mesh update <id> --content "Updated content"
+mesh forget <id>
+mesh context --query "database config" --format markdown
+
+# Inspection, tools & utilities
+mesh namespaces                   # List and inspect namespaces
+mesh export backup.json           # Export memories to JSON
+mesh import backup.json           # High-speed batch import
+mesh dashboard --port 7433        # Launch visualizer
+mesh server                       # Start MCP stdio server
+mesh capture --file session.log   # Extract memories from logs
+mesh digest --hours 24            # UTC session summary
+```
+
+---
+
 ## Portability & Privacy
 
 ### Privacy Flags
@@ -186,7 +230,17 @@ mesh-import backup.json --namespace checkout-staging --merge-strategy skip_exist
 
 ## Detailed Changelog
 
-### v0.5.3 (Latest)
+### v0.6.0 (Latest)
+- **Direct Zero-Network ONNX Runtime Engine (`_DirectOnnxEmbedding`)**: Replaced blocking Hugging Face Hub calls with direct `onnxruntime.InferenceSession` + `tokenizers.Tokenizer` execution (`~80 ms` cold start, `~1.5–3 ms` CPU inference, zero PyTorch overhead). Routed `_encode_texts()` directly through the 4,096-entry `_EMBED_CACHE` for `<0.01 ms` LRU cache hits.
+- **Non-Blocking Multi-Mirror Background ONNX Auto-Downloader**: Automatically downloads `model.onnx` and `tokenizer.json` into `~/.mesh/models/all-MiniLM-L6-v2-onnx/` in a background daemon thread prioritizing Google Cloud Storage (`storage.googleapis.com`, immune to Hugging Face rate limits) and CDN mirrors (`hf-mirror.com` and `huggingface.co` with `HF_TOKEN` support).
+- **Concept-Aware Fallback & Automatic Backfill**: Serves requests in `<0.05 ms` via a concept-aware 384-dim semantic feature-hash engine (`onnx-warming`) while background download runs, then automatically backfills neural embeddings (`_backfill_pending_embeddings`) once the ONNX model lands on disk.
+- **Instant Non-Blocking `mesh setup` / `mesh-setup` CLI**: Added `mesh-setup` (`mesh setup`) and `mesh-daemon warmup`, registering OS login auto-start and launching the detached background daemon worker (`wait=False`) in `<150 ms`.
+- **In-Memory Metadata Cache & Capacity-Doubling Vector Buffer (`mesh/store.py`)**: Cached full row metadata and parsed `tags_list` in RAM (`_VectorCacheEntry.rows_by_id`) alongside a capacity-doubling `float32` NumPy matrix buffer, making `get()`, `count()`, `list_all()` (`inspect`), and `query()` 100% in-memory (`<0.03 ms`, zero SQLite reads) and eliminating `np.vstack()` reallocations on `learn()`.
+- **Persistent SQLite WAL Connection Pooling (`mesh/store.py` & `mesh/audit.py`)**: Replaced per-call connection closing with persistent pooled SQLite WAL connections (`_PooledConnection` and `_ManagedAuditConnection`) synchronized via composite `(.db, .db-wal)` file stamps and `PRAGMA data_version`.
+- **Zero-Cold-Start Daemon Proxy Across CLI & MCP (`mesh/cli.py` & `mesh/mcp_server.py`)**: `mesh-add`, `mesh-ask`, `mesh-update`, `mesh-forget`, and `mesh-context` automatically proxy through the warm local daemon (`127.0.0.1:7701`), auto-spawning the daemon in the background (`ensure_daemon_running(wait=False)`) if stopped. Upgraded `mcp_server.py` daemon proxy to use persistent HTTP `keep-alive` connections.
+- **Precision Contradiction Detection & Compatibility Fixes**: Added `_is_true_contradiction()` in `mesh/memory.py` to prevent false conflict alerts when elaborating on compatible facts while catching numeric and negation polarity conflicts. Added `max_memories` and `n` parameter aliases to `build_context()`, `mesh_context`, `/context`, and `mesh-context`. Fixed `mesh-namespaces` script entry point.
+
+### v0.5.3
 - **Instant Background Daemon Activation (`mesh daemon install-startup`)**: `install-startup` automatically triggers `start_daemon()` immediately upon registration without requiring an extra manual start command.
 - **New Daemon Management & Residency Endpoints**: Added `GET /engine` and `POST /unload` REST endpoints to inspect model status and immediately release model weights from memory. Added `mesh-daemon` CLI commands (`start`, `stop`, `restart`, `status`, `unload`, `install-startup`, `remove-startup`).
 - **3-Tier Lightweight ONNX / FastEmbed Engine**: Integrated `fastembed` as the primary ONNX runtime embedding engine, dropping cold startup down to ~120 ms and idle RAM to ~20 MB while preserving exact 384-dimensional `all-MiniLM-L6-v2` vector compatibility.

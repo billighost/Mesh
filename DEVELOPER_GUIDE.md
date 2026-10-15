@@ -24,7 +24,7 @@
    - [`inspect()`](#inspect)
    - [`patterns()`](#patterns)
    - [`contradictions()` & `resolve_contradiction()`](#contradictions--resolve_contradiction)
-   - [`count()`, `clear()`, & `warmup_model()`](#count-clear--warmup_model)
+   - [`count()`, `clear()`, `warmup_model()`, & `ensure_model_downloaded()`](#count-clear-warmup_model--ensure_model_downloaded)
 6. [MCP Server (Claude Desktop, Cursor, Windsurf)](#mcp-server)
 7. [HTTP REST API](#http-rest-api)
 8. [CLI Tools](#cli-tools)
@@ -340,16 +340,20 @@ mesh.resolve_contradiction(contradiction_id="conflict-uuid")
 
 ---
 
-### `count()`, `clear()`, & `warmup_model()`
+### `count()`, `clear()`, `warmup_model()`, & `ensure_model_downloaded()`
 
 ```python
-from mesh import Mesh, warmup_model
+from mesh import Mesh, ensure_model_downloaded, warmup_model
 
-# Pre-load SentenceTransformer and warm the namespace vector cache in the background
+# Pre-download the ONNX model in background or synchronously wait
+model_pair = ensure_model_downloaded(blocking=True, timeout=60.0)
+# Returns: (Path(".../model.onnx"), Path(".../tokenizer.json"))
+
+# Pre-load ONNX Runtime engine and warm the namespace vector cache
 warmup_model("my-project")
 
 mesh = Mesh(namespace="my-project")
-total: int = mesh.count()   # O(1) when vector cache is hot
+total: int = mesh.count()   # O(1) in-memory from vector cache
 mesh.clear()                # Wipes memories, queries, FTS, and contradictions in this namespace
 ```
 

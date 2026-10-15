@@ -24,6 +24,7 @@
    - [http_server.py](#http_serverpy)
    - [mcp_server.py](#mcp_serverpy)
    - [dashboard.py](#dashboardpy)
+   - [daemon.py](#daemonpy)
    - [cli.py](#clipy)
    - [version.py](#versionpy)
 5. [Storage Schema](#storage-schema)
@@ -54,6 +55,7 @@ mesh/
 ├── http_server.py        # FastAPI REST API server (port 7701)
 ├── mcp_server.py         # Production MCP server over stdio + background passive log sync
 ├── dashboard.py          # FastAPI + zero-build inline HTML/JS web UI (port 7433)
+├── daemon.py             # Windowless background daemon & OS login auto-start manager
 ├── cli.py                # Unified `mesh` command router and `mesh-*` CLI entry points
 └── version.py            # Package version metadata and non-blocking PyPI update checker
 
@@ -63,6 +65,7 @@ tests/
 └── test_v04.py           # Audit trail, context builder, digest, HTTP API, MCP tools, passive capture
 
 ~/.mesh/                  # All local data lives here (created automatically on first use)
+├── models/               # Cached ONNX models (all-MiniLM-L6-v2-onnx)
 ├── mesh_shared.db        # Unified SQLite DB (memories + FTS5 + queries + contradictions)
 ├── mesh_<namespace>.db   # Separate isolated SQLite DB per namespace
 ├── audit_shared.db       # Fault-isolated SQLite audit trail for "shared"
@@ -78,13 +81,16 @@ Here is how the modules depend on each other:
 ```text
 cli.py
   └── memory.py, io.py, namespaces.py, audit.py, context_builder.py,
-      digest.py, passive.py, dashboard.py, http_server.py, mcp_server.py, version.py
+      digest.py, passive.py, dashboard.py, http_server.py, mcp_server.py, daemon.py, version.py
+
+daemon.py
+  └── store.py, memory.py, http_server.py
 
 http_server.py
   └── memory.py, audit.py, context_builder.py
 
 mcp_server.py
-  └── memory.py, audit.py, context_builder.py, passive.py
+  └── memory.py, audit.py, context_builder.py, passive.py, daemon.py
 
 dashboard.py
   └── memory.py, namespaces.py, io.py, audit.py, digest.py
@@ -231,12 +237,15 @@ Mesh.update(memory_id, content, memory_type, confidence, tags, ttl_days, reset_t
 
 **Three integrated subsystems inside one SQLite file:**
 1. **Relational Metadata & Vector BLOBs (`memories` table):** Stores metadata alongside L2-normalized 384-dimensional `float32` vectors serialized as compact 1,536-byte binary BLOBs.
-2. **In-Memory SIMD Vector Cache (`_VectorCacheEntry`):** Maintains a contiguous 2D `np.float32` matrix (`shape = (N, 384)`) per namespace so cosine similarity across all memories is a single matrix-vector multiplication (`cache.matrix @ q_vec`).
+2. **In-Memory Metadata Cache & Capacity-Doubling Vector Buffer (`_VectorCacheEntry`):**
+   - Hydrates full row metadata and parsed `tags_list` in RAM (`_VectorCacheEntry.rows_by_id`) alongside a capacity-doubling `float32` NumPy matrix buffer.
+   - Makes `get()`, `count()`, `list_all()` (`inspect`), and `query()` 100% in-memory (`<0.03 ms`, zero SQLite reads).
+   - Eliminates expensive `np.vstack()` reallocations on `learn()` by doubling buffer capacity on resize.
 3. **Lexical BM25 Search (`memories_fts` virtual table):** Uses SQLite FTS5 (`tokenize='porter unicode61'`) to score keyword matches and boost exact technical identifiers (error codes, ports, paths, function names).
 
-**Connection Management (`_ManagedConnection`):**
-- Subclasses `sqlite3.Connection` so exiting any `with self._connect() as conn:` block commits/rolls back the transaction **and** deterministically calls `self.close()`.
-- Prevents lingering file handles or memory-mapped section locks (`WinError 32`) on Windows during namespace deletion or renaming.
+**Persistent SQLite WAL Connection Pooling (`_PooledConnection`):**
+- Replaced per-call connection closing with persistent pooled SQLite WAL connections (`_PooledConnection`) synchronized via composite `(.db, .db-wal)` file stamps and `PRAGMA data_version`.
+- Provides deterministic teardown and unlinking safety on namespace eviction, renaming, or deletion.
 
 **Legacy Migration:**
 - `_migrate_from_chroma_if_needed()` checks if `~/.mesh/chroma` exists and automatically backfills any missing SQLite `embedding` BLOBs from legacy ChromaDB collections on startup.
@@ -248,8 +257,19 @@ Mesh.update(memory_id, content, memory_type, confidence, tags, ttl_days, reset_t
 
 **Purpose:** Public-facing `Mesh` orchestration class and embedding lifecycle manager.
 
+**Key Components & Architecture:**
+- **Direct Zero-Network ONNX Runtime Engine (`_DirectOnnxEmbedding`):**
+  - Uses direct `onnxruntime.InferenceSession` + `tokenizers.Tokenizer` execution (`~80 ms` cold start, `~1.5–3 ms` CPU inference, zero PyTorch overhead).
+  - Routes `_encode_texts()` directly through the 4,096-entry `_EMBED_CACHE` for `<0.01 ms` LRU cache hits.
+- **Non-Blocking Multi-Mirror Background ONNX Auto-Downloader:**
+  - Automatically downloads `model.onnx` and `tokenizer.json` into `~/.mesh/models/all-MiniLM-L6-v2-onnx/` in a background daemon thread prioritizing Google Cloud Storage (`storage.googleapis.com`, immune to Hugging Face rate limits) and CDN mirrors (`hf-mirror.com` and `huggingface.co` with `HF_TOKEN` support).
+  - Zero blocking on foreground tool calls, CLI commands, or `pytest`: while the initial download runs in the background, Mesh serves requests in `<0.05 ms` via a concept-aware 384-dim semantic feature-hash engine (`onnx-warming`) and automatically backfills neural embeddings (`_backfill_pending_embeddings`) once the ONNX model lands on disk.
+- **Precision Contradiction Detection (`_is_true_contradiction()`):**
+  - Evaluates candidate pairs above `CONTRADICTION_THRESHOLD = 0.82` with `_is_true_contradiction()` to prevent false conflict alerts when elaborating on compatible facts while catching numeric disparities and negation polarity conflicts.
+
 **Key Constants:**
 - `_MODEL_NAME = "all-MiniLM-L6-v2"`: 384-dimensional local embedding model.
+- `_ONNX_MODEL_DIR = ~/.mesh/models/all-MiniLM-L6-v2-onnx`: Local directory for cached ONNX model and tokenizer.
 - `CONTRADICTION_THRESHOLD = 0.82`: Cosine similarity threshold above which non-duplicate memories are flagged as potential conflicts.
 - `DEDUP_THRESHOLD = 0.985`: Cosine similarity threshold above which semantically identical facts (with matching numbers and negation polarity) are deduplicated in-place.
 - `STALE_THRESHOLD = 0.3`: Effective confidence threshold below which a TTL-enabled memory is marked stale.
@@ -258,12 +278,7 @@ Mesh.update(memory_id, content, memory_type, confidence, tags, ttl_days, reset_t
 **Shared Single & Batch Embedding LRU Cache (`_EMBED_CACHE`):**
 - Uses a thread-safe `OrderedDict` capped at `4,096` entries.
 - Both `_embed()` (single string) and `_embed_batch()` (multiple strings during imports) read from and populate `_EMBED_CACHE`.
-- Deduplicates identical strings within the same batch before running `model.encode()` under `torch.inference_mode()`.
-
-**Smart Deduplication vs. Contradiction Detection (`_is_true_duplicate`):**
-- Exact normalized text matches always deduplicate.
-- Near-identical paraphrases (`similarity >= 0.985`) only deduplicate if all numeric tokens (`_NUMBER_TOKEN_RE`) and negation tokens (`_NEGATION_TOKENS`) match.
-- Thus, `"The API rate limit is 100 req/min"` vs. `"The API rate limit is 200 req/min"` is accurately caught as a **contradiction** rather than deduplicated.
+- Deduplicates identical strings within the same batch before executing model inference.
 
 ---
 
@@ -272,9 +287,9 @@ Mesh.update(memory_id, content, memory_type, confidence, tags, ttl_days, reset_t
 **Purpose:** Fault-isolated, high-speed audit log for all read and write operations (`recall`, `learn`, `update`, `forget`).
 
 **Key Features:**
-- Writes to `~/.mesh/audit_<namespace>.db` so audit activity is completely isolated from `mesh_<namespace>.db`.
+- Writes to `~/.mesh/audit_<namespace>.db` via persistent pooled connections (`_ManagedAuditConnection`) so audit activity is completely isolated from `mesh_<namespace>.db`.
 - Every logging function (`log_recall`, `log_learn`, `log_update`, `log_forget`) is wrapped in `try/except Exception: pass` so audit I/O can never interrupt agent execution.
-- `_write_audit_entry()` initializes schema (if needed) and inserts the log record in a single connection pass, then updates `_INITIALIZED_AUDIT_DBS[db_path]` with the new `st_mtime_ns` so subsequent writes never re-run `CREATE TABLE` / `CREATE INDEX`.
+- `_write_audit_entry()` initializes schema (if needed) and inserts the log record in a single connection pass, tracked via composite file timestamps so subsequent writes never re-run `CREATE TABLE` / `CREATE INDEX`.
 
 ---
 
@@ -368,15 +383,26 @@ Mesh.update(memory_id, content, memory_type, confidence, tags, ttl_days, reset_t
 
 ---
 
+### `daemon.py`
+
+**Purpose:** Windowless background daemon & OS login auto-start manager running on `127.0.0.1:7701` (`mesh-daemon`).
+
+- **Non-Blocking Background Worker (`ensure_daemon_running`):** Auto-starts the background HTTP daemon worker if not already running; returns in `<2 ms` without blocking foreground processes.
+- **Silent Process Spawning:** Uses `pythonw.exe` and `CREATE_NO_WINDOW` on Windows for completely windowless, silent daemon execution.
+- **OS Login Auto-Start:** Automatically registers auto-start on Windows (`Software\Microsoft\Windows\CurrentVersion\Run`), macOS (`LaunchAgents`), and Linux (`systemd`), keeping Mesh warm and ready across reboots.
+- **Model Lifecycle & Management:** Supports `start`, `stop`, `restart`, `status`, `unload` (free model weights from RAM on demand), `warmup`, `install-startup`, and `remove-startup`.
+
+---
+
 ### `cli.py`
 
-**Purpose:** Command-line interface providing both the unified `mesh <subcommand>` dispatcher (`main()`) and standalone `mesh-*` scripts (`mesh-add`, `mesh-ask`, `mesh-update`, `mesh-forget`, `mesh-context`, `mesh-why`, `mesh-status`, `mesh-namespaces`, `mesh-export`, `mesh-import`, `mesh-capture`, `mesh-digest`, `mesh-server`, `mesh-dashboard`, `mesh-http`, `mesh-help`).
+**Purpose:** Command-line interface providing both the unified `mesh <subcommand>` dispatcher (`main()`) and standalone `mesh-*` scripts (`mesh-setup`, `mesh-add`, `mesh-ask`, `mesh-update`, `mesh-forget`, `mesh-context`, `mesh-why`, `mesh-status`, `mesh-namespaces`, `mesh-export`, `mesh-import`, `mesh-capture`, `mesh-digest`, `mesh-server`, `mesh-dashboard`, `mesh-http`, `mesh-daemon`, `mesh-help`). Auto-proxies operations through the warm local daemon (`127.0.0.1:7701`).
 
 ---
 
 ### `version.py`
 
-**Purpose:** Stores `VERSION = "0.5.3"` and runs a non-blocking background daemon check against PyPI (`check_for_updates()`) during `mesh-status` and `mesh-help` (can be disabled with `MESH_NO_UPDATE_CHECK=1`).
+**Purpose:** Stores `VERSION = "0.6.0"` and runs a non-blocking background daemon check against PyPI (`check_for_updates()`) during `mesh-status` and `mesh-help` (can be disabled with `MESH_NO_UPDATE_CHECK=1`).
 
 ---
 
