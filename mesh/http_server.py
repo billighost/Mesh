@@ -6,7 +6,6 @@ Any tool or script that can make HTTP requests can use Mesh through this server.
 
 from __future__ import annotations
 
-import json
 import os
 import threading
 from datetime import datetime, timezone
@@ -18,7 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from .audit import get_audit_log, log_forget, log_learn, log_recall, log_update
-from .context_builder import build_context
+from .context_builder import _format, build_context
 from .memory import Mesh, warmup_model
 
 app = FastAPI(
@@ -43,6 +42,11 @@ def get_mesh(namespace: Optional[str] = None, agent_id: Optional[str] = None) ->
     ns = (namespace or os.environ.get("MESH_NAMESPACE", "shared")).strip() or "shared"
     aid = (agent_id or os.environ.get("MESH_AGENT_ID", "http-client")).strip() or "http-client"
     key = (ns, aid)
+
+    mesh = _MESH_REGISTRY.get(key)
+    if mesh is not None:
+        return mesh
+
     with _MESH_LOCK:
         mesh = _MESH_REGISTRY.get(key)
         if mesh is None:
@@ -52,6 +56,7 @@ def get_mesh(namespace: Optional[str] = None, agent_id: Optional[str] = None) ->
 
 
 # --- Request Models ---
+
 
 class LearnRequest(BaseModel):
     content: str
@@ -111,6 +116,7 @@ class ContextRequest(BaseModel):
 
 
 # --- Endpoints ---
+
 
 @app.get("/health")
 async def health() -> dict[str, str]:
@@ -274,27 +280,47 @@ async def resolve_contradiction(req: ResolveContradictionRequest) -> dict[str, A
 @app.post("/context")
 async def context(req: ContextRequest) -> dict[str, Any]:
     """
-    Return memories formatted as a system prompt block.
+    Return memories formatted as a system prompt block in a single retrieval pass.
     Used by mesh-context CLI command and direct integrations.
     """
     try:
-        mesh = get_mesh(req.namespace)
-        formatted = build_context(
-            query=req.query,
-            namespace=mesh.namespace,
-            count=req.count or 10,
-            format=req.format or "markdown",
-            min_confidence=req.min_confidence if req.min_confidence is not None else 0.3,
-            memory_type=req.memory_type,
-            tags=req.tags,
-            agent_id="http-context",
-        )
-        # Estimate memory count returned
-        memories = (
-            mesh.recall(query=req.query, n=req.count or 10)
-            if req.query
-            else mesh.inspect(limit=req.count or 10)
-        )
+        mesh = get_mesh(req.namespace, "http-context")
+        count = req.count or 10
+        min_conf = req.min_confidence if req.min_confidence is not None else 0.3
+        fmt = req.format or "markdown"
+
+        if req.query:
+            memories = mesh.recall(
+                query=req.query,
+                n=count,
+                min_confidence=min_conf,
+                memory_type=req.memory_type,
+                tags=req.tags,
+            )
+        else:
+            raw_mems = mesh.inspect(limit=max(count * 3, 30), memory_type=req.memory_type)
+            filtered = [
+                m
+                for m in raw_mems
+                if float(m.get("effective_confidence", m.get("confidence", 1.0))) >= min_conf
+            ]
+            if req.tags:
+                tag_set = {str(t).lower() for t in req.tags}
+                filtered = [
+                    m
+                    for m in filtered
+                    if tag_set.issubset({str(t).lower() for t in m.get("tags_list", [])})
+                ]
+            filtered.sort(
+                key=lambda x: (
+                    int(x.get("access_count", 0)),
+                    float(x.get("effective_confidence", x.get("confidence", 1.0))),
+                ),
+                reverse=True,
+            )
+            memories = filtered[:count]
+
+        formatted = _format(memories, fmt, mesh.namespace) if memories else ""
         return {"status": "ok", "context": formatted, "memory_count": len(memories)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -307,7 +333,7 @@ async def audit(
     action: str = "all",
 ) -> dict[str, Any]:
     """Return the audit trail: recent memory reads and writes."""
-    ns = namespace or os.environ.get("MESH_NAMESPACE", "shared")
+    ns = (namespace or os.environ.get("MESH_NAMESPACE", "shared")).strip() or "shared"
     entries = get_audit_log(namespace=ns, limit=limit, action_filter=action)
     return {"status": "ok", "entries": entries}
 

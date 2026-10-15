@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mesh-context-layer"
-version = "0.5.0"
+version = "0.5.1"
 description = "High-speed shared semantic & hybrid memory layer for AI agents — MCP server, CLI, and Python library"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -69,6 +69,7 @@ mesh-digest = "mesh.digest:digest_cmd"
 [project.urls]
 Homepage = "https://github.com/billighost/mesh"
 Repository = "https://github.com/billighost/mesh"
+Changelog = "https://github.com/billighost/mesh/blob/main/CHANGELOG.md"
 
 [tool.hatch.build.targets.wheel]
 packages = ["mesh"]

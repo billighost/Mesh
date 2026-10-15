@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .memory import VALID_MEMORY_TYPES, _embed_batch, _parse_tags
-from . passive import _normalize_memory_type
+from .passive import _normalize_memory_type
 from .store import MeshStore
 
 MESH_VERSION = "0.3"
@@ -35,18 +35,18 @@ def export_namespace(
         Export dict (also written to file if output_path is provided).
     """
     store = MeshStore(namespace=namespace)
-    all_memories = store.list_all(limit=100000)
-    skipped_count = sum(1 for m in all_memories if m.get("local_only"))
-
+    total_count = store.count()
     raw_exportable = store.get_exportable_memories(include_embeddings=include_embeddings)
 
     exportable: list[dict[str, Any]] = []
+    missing_emb_indices: dict[str, int] = {}
+
     for mem in raw_exportable:
         if mem.get("local_only"):
             continue
-
+        mid = mem["id"]
         entry: dict[str, Any] = {
-            "id": mem["id"],
+            "id": mid,
             "content": mem["content"],
             "memory_type": mem.get("memory_type", "general"),
             "confidence": float(mem.get("confidence", 1.0)),
@@ -58,19 +58,30 @@ def export_namespace(
             "decay_start_at": mem.get("decay_start_at"),
             "access_count": int(mem.get("access_count", 0)),
         }
-
         if include_embeddings:
             emb = mem.get("embedding")
-            if emb is None:
-                try:
-                    res = store.collection.get(ids=[mem["id"]], include=["embeddings"])
-                    if res and res.get("embeddings"):
-                        emb = res["embeddings"][0]
-                except Exception:
-                    emb = None
             entry["embedding"] = emb
-
+            if emb is None:
+                missing_emb_indices[mid] = len(exportable)
         exportable.append(entry)
+
+    # Batch-fetch any missing embeddings in a single query instead of N+1 lookups
+    if include_embeddings and missing_emb_indices:
+        try:
+            res = store.collection.get(
+                ids=list(missing_emb_indices.keys()),
+                include=["embeddings"],
+            )
+            got_ids = res.get("ids") or []
+            got_embs = res.get("embeddings") or []
+            for mid, emb in zip(got_ids, got_embs):
+                idx = missing_emb_indices.get(mid)
+                if idx is not None and emb is not None:
+                    exportable[idx]["embedding"] = emb
+        except Exception:
+            pass
+
+    skipped_count = max(0, total_count - len(exportable))
 
     export_data: dict[str, Any] = {
         "mesh_version": MESH_VERSION,
@@ -147,10 +158,19 @@ def import_namespace(
 
     store = MeshStore(namespace=namespace)
 
+    # Resolve all existing IDs in O(1) via the in-memory vector cache instead of N+1 SQLite queries
+    existing_ids: set[str] = set()
+    if merge_strategy == "skip_existing":
+        try:
+            cache = store._get_vector_cache()
+            existing_ids = set(getattr(cache, "all_ids", None) or cache.ids)
+        except Exception:
+            existing_ids = set()
+
     # First pass: determine which memories need importing and which need fresh embeddings
     to_import: list[tuple[str, dict[str, Any]]] = []
     texts_to_embed: list[str] = []
-    embed_Owner_indices: list[int] = []
+    embed_owner_indices: list[int] = []
 
     for mem in memories:
         try:
@@ -160,33 +180,33 @@ def import_namespace(
                 continue
 
             mem_id = str(mem.get("id") or uuid.uuid4())
-            existing = store.get(mem_id) is not None
-
-            if existing and merge_strategy == "skip_existing":
-                stats["skipped"] += 1
-                continue
+            if merge_strategy == "skip_existing":
+                if mem_id in existing_ids or (not existing_ids and store.get(mem_id) is not None):
+                    stats["skipped"] += 1
+                    continue
+                existing_ids.add(mem_id)
 
             idx = len(to_import)
             to_import.append((mem_id, mem))
-
             if not mem.get("embedding"):
-                embed_Owner_indices.append(idx)
+                embed_owner_indices.append(idx)
                 texts_to_embed.append(content)
         except Exception as e:
             stats["errors"] += 1
             print(f"  Error preparing memory '{str(mem.get('content', ''))[:50]}': {e}")
 
-    # Batch-compute any missing embeddings in one forward pass
+    # Batch-compute any missing embeddings in one forward pass (with LRU cache lookup)
     computed_embeddings: dict[int, list[float]] = {}
     if texts_to_embed:
         try:
             vecs = _embed_batch(texts_to_embed)
-            for item_idx, vec in zip(embed_Owner_indices, vecs):
+            for item_idx, vec in zip(embed_owner_indices, vecs):
                 computed_embeddings[item_idx] = vec
         except Exception as e:
             print(f"  Error batch-embedding imported memories: {e}")
 
     now_iso = datetime.now(timezone.utc).isoformat()
+    batch_items: list[tuple[str, str, list[float], dict[str, Any], bool]] = []
 
     for idx, (mem_id, mem) in enumerate(to_import):
         try:
@@ -196,33 +216,70 @@ def import_namespace(
                 raise ValueError("Missing embedding vector")
 
             raw_type = str(mem.get("memory_type", "general")).strip().lower()
-            mem_type = raw_type if raw_type in VALID_MEMORY_TYPES else _normalize_memory_type(raw_type)
+            mem_type = (
+                raw_type
+                if raw_type in VALID_MEMORY_TYPES
+                else _normalize_memory_type(raw_type)
+            )
             tags = _parse_tags(mem.get("tags", []))
             created_at = mem.get("created_at") or now_iso
             ttl_days = mem.get("ttl_days")
-            decay_start_at = mem.get("decay_start_at") or (created_at if ttl_days is not None else None)
-
-            store.upsert(
-                memory_id=mem_id,
-                content=content,
-                embedding=embedding,
-                metadata={
-                    "memory_type": mem_type,
-                    "confidence": float(mem.get("confidence", 1.0)),
-                    "source_agent": mem.get("source_agent", "mesh-import"),
-                    "tags": tags,
-                    "created_at": created_at,
-                    "accessed_at": now_iso,
-                    "access_count": int(mem.get("access_count", 0)),
-                    "ttl_days": ttl_days,
-                    "decay_start_at": decay_start_at,
-                },
-                local_only=bool(mem.get("local_only", False)),
+            decay_start_at = mem.get("decay_start_at") or (
+                created_at if ttl_days is not None else None
             )
-            stats["imported"] += 1
+
+            metadata = {
+                "memory_type": mem_type,
+                "confidence": float(mem.get("confidence", 1.0)),
+                "source_agent": mem.get("source_agent", "mesh-import"),
+                "tags": tags,
+                "created_at": created_at,
+                "accessed_at": now_iso,
+                "access_count": int(mem.get("access_count", 0)),
+                "ttl_days": ttl_days,
+                "decay_start_at": decay_start_at,
+            }
+            batch_items.append(
+                (mem_id, content, embedding, metadata, bool(mem.get("local_only", False)))
+            )
         except Exception as e:
             stats["errors"] += 1
             print(f"  Error importing memory '{str(mem.get('content', ''))[:50]}': {e}")
+
+    # Write all valid memories in a single SQLite WAL transaction
+    if batch_items:
+        if hasattr(store, "upsert_batch"):
+            try:
+                store.upsert_batch(batch_items)
+                stats["imported"] += len(batch_items)
+            except Exception:
+                for mem_id, content, embedding, metadata, local_only in batch_items:
+                    try:
+                        store.upsert(
+                            memory_id=mem_id,
+                            content=content,
+                            embedding=embedding,
+                            metadata=metadata,
+                            local_only=local_only,
+                        )
+                        stats["imported"] += 1
+                    except Exception as e:
+                        stats["errors"] += 1
+                        print(f"  Error importing memory '{content[:50]}': {e}")
+        else:
+            for mem_id, content, embedding, metadata, local_only in batch_items:
+                try:
+                    store.upsert(
+                        memory_id=mem_id,
+                        content=content,
+                        embedding=embedding,
+                        metadata=metadata,
+                        local_only=local_only,
+                    )
+                    stats["imported"] += 1
+                except Exception as e:
+                    stats["errors"] += 1
+                    print(f"  Error importing memory '{content[:50]}': {e}")
 
     print(
         f"[OK] Import complete: {stats['imported']} imported, "

@@ -1,6 +1,6 @@
 # Mesh — Architecture & Contributor Guide
 
-> How the code is organized, how the pieces fit together, and how to extend Mesh.
+> How the code is organized, how the high-speed hybrid storage engine works, and how to extend Mesh.
 
 ---
 
@@ -9,6 +9,9 @@
 1. [Folder Structure](#folder-structure)
 2. [Module Map](#module-map)
 3. [Data Flow Diagrams](#data-flow-diagrams)
+   - [learn() flow](#learn-flow)
+   - [recall() flow](#recall-flow)
+   - [update() flow](#update-flow)
 4. [Module Deep Dives](#module-deep-dives)
    - [store.py](#storepy)
    - [memory.py](#memorypy)
@@ -22,42 +25,48 @@
    - [mcp_server.py](#mcp_serverpy)
    - [dashboard.py](#dashboardpy)
    - [cli.py](#clipy)
+   - [version.py](#versionpy)
 5. [Storage Schema](#storage-schema)
-6. [How to Add a New Feature](#how-to-add-a-new-feature)
-7. [How to Add a New CLI Command](#how-to-add-a-new-cli-command)
-8. [How to Add a New MCP Tool](#how-to-add-a-new-mcp-tool)
-9. [How to Add a New HTTP Endpoint](#how-to-add-a-new-http-endpoint)
-10. [How to Add a New Memory Type](#how-to-add-a-new-memory-type)
-11. [Testing](#testing)
-12. [Key Design Decisions](#key-design-decisions)
+6. [Performance & Caching Architecture](#performance--caching-architecture)
+7. [How to Add a New Feature](#how-to-add-a-new-feature)
+8. [How to Add a New CLI Command](#how-to-add-a-new-cli-command)
+9. [How to Add a New MCP Tool](#how-to-add-a-new-mcp-tool)
+10. [How to Add a New HTTP Endpoint](#how-to-add-a-new-http-endpoint)
+11. [How to Add a New Memory Type](#how-to-add-a-new-memory-type)
+12. [Testing](#testing)
+13. [Key Design Decisions](#key-design-decisions)
 
 ---
 
 ## Folder Structure
 
-```
+```text
 mesh/
-├── __init__.py           # Public API surface — imports and re-exports everything
-├── memory.py             # Core Mesh class — learn(), recall(), patterns(), etc.
-├── store.py              # Persistence layer — ChromaDB + SQLite abstraction
-├── audit.py              # Separate audit DB — logs every read and write
-├── context_builder.py    # Formats memories as system prompt blocks
-├── passive.py            # AI-powered extraction from conversation logs
-├── digest.py             # Session summary generator
-├── io.py                 # Export/import to/from JSON files
-├── namespaces.py         # Namespace listing, deletion, renaming, stats
-├── http_server.py        # FastAPI REST API (port 7701)
-├── mcp_server.py         # MCP server — exposes tools to Claude Desktop/Cursor
-├── dashboard.py          # FastAPI + HTML dashboard (port 7433)
-└── cli.py                # Click-based CLI entry points
+├── __init__.py           # Public API surface — imports and re-exports core functions & classes
+├── memory.py             # Core Mesh class — learn(), recall(), update(), forget(), patterns(), etc.
+├── store.py              # Unified SQLite WAL + in-memory SIMD NumPy matrix + FTS5 BM25 engine
+├── audit.py              # Fault-isolated SQLite audit trail — logs recall, learn, update, forget
+├── context_builder.py    # Formats memories as system prompt blocks (markdown, plain, xml, json)
+├── passive.py            # AI-powered & local regex extraction from agent session logs
+├── digest.py             # Timezone-safe UTC session summary generator
+├── io.py                 # High-speed batch export/import to and from JSON files
+├── namespaces.py         # Namespace discovery, deletion, renaming, and statistics
+├── http_server.py        # FastAPI REST API server (port 7701)
+├── mcp_server.py         # Production MCP server over stdio + background passive log sync
+├── dashboard.py          # FastAPI + zero-build inline HTML/JS web UI (port 7433)
+├── cli.py                # Unified `mesh` command router and `mesh-*` CLI entry points
+└── version.py            # Package version metadata and non-blocking PyPI update checker
 
-~/.mesh/                  # All data lives here (created at first use)
-├── chroma/               # ChromaDB persistent storage (vector embeddings)
-│   └── ...               # ChromaDB internal files
-├── mesh_shared.db        # SQLite — memories + queries + contradictions for "shared" namespace
-├── mesh_my-project.db    # SQLite — separate DB per namespace
-├── audit_shared.db       # SQLite — audit trail for "shared" namespace
-└── audit_my-project.db   # SQLite — separate audit DB per namespace
+tests/
+├── test_memory.py        # Core unit tests: learn, hybrid recall, dedup, conflicts, decay, update
+├── test_v03.py           # Privacy flags (local_only), export/import, namespace management
+└── test_v04.py           # Audit trail, context builder, digest, HTTP API, MCP tools, passive capture
+
+~/.mesh/                  # All local data lives here (created automatically on first use)
+├── mesh_shared.db        # Unified SQLite DB (memories + FTS5 + queries + contradictions)
+├── mesh_<namespace>.db   # Separate isolated SQLite DB per namespace
+├── audit_shared.db       # Fault-isolated SQLite audit trail for "shared"
+└── audit_<namespace>.db  # Separate audit DB per namespace
 ```
 
 ---
@@ -66,97 +75,150 @@ mesh/
 
 Here is how the modules depend on each other:
 
-```
+```text
 cli.py
-  └── memory.py, io.py, namespaces.py, audit.py, context_builder.py, digest.py, passive.py
+  └── memory.py, io.py, namespaces.py, audit.py, context_builder.py,
+      digest.py, passive.py, dashboard.py, http_server.py, mcp_server.py, version.py
 
 http_server.py
-  └── memory.py, store.py, audit.py, context_builder.py
+  └── memory.py, audit.py, context_builder.py
 
 mcp_server.py
-  └── memory.py, audit.py
+  └── memory.py, audit.py, context_builder.py, passive.py
 
 dashboard.py
   └── memory.py, namespaces.py, io.py, audit.py, digest.py
 
-memory.py
-  └── store.py
-
 context_builder.py
   └── memory.py
 
-digest.py
-  └── (reads SQLite directly — no dependency on memory.py)
-
 io.py
-  └── store.py, memory.py
-
-namespaces.py
-  └── (reads SQLite directly — no dependency on memory.py)
-
-audit.py
-  └── (standalone — reads/writes its own DB files)
+  └── store.py, memory.py, passive.py
 
 passive.py
-  └── memory.py
+  └── memory.py, audit.py
+
+digest.py
+  └── store.py (UTC timestamp helpers; reads SQLite directly)
+
+namespaces.py
+  └── store.py (cache locks, paths, and UTC helpers; manages SQLite DB files)
+
+memory.py
+  └── store.py
+
+audit.py
+  └── (standalone — manages its own `audit_<namespace>.db` SQLite files)
 
 store.py
-  └── chromadb, sqlite3  (no internal mesh dependencies)
+  └── sqlite3, numpy (zero internal mesh dependencies)
+
+version.py
+  └── (standalone — checks PyPI in a background daemon thread)
 ```
 
-**Rule:** `store.py` is the only module that touches the database. `memory.py` is the only module that creates embeddings. All other modules use `Mesh` or `MeshStore` as their interface.
+**Core Architectural Rules:**
+1. `store.py` is the primary persistence engine for memories, vectors, FTS5 indexes, queries, and contradictions.
+2. `memory.py` is the only module that loads `SentenceTransformer` and computes embeddings.
+3. All high-level interfaces (`mcp_server.py`, `http_server.py`, `dashboard.py`, `cli.py`) interact with `Mesh` and log events through `audit.py`.
 
 ---
 
 ## Data Flow Diagrams
 
-### learn() flow
+### `learn()` flow
 
-```
+```text
 caller
   │
   ▼
-Mesh.learn(content, ...)
+Mesh.learn(content, memory_type, confidence, tags, ttl_days, local_only, deduplicate=True)
   │
-  ├─► _embed(content)                  → SentenceTransformer → [float, ...]
+  ├─► Validate content & memory_type (9 valid types)
   │
-  ├─► MeshStore.query(embedding, n=3)  → check for contradictions
-  │     └── similarity ≥ 0.82?
-  │           ├── YES → MeshStore.log_contradiction() → contradiction_id
-  │           └── NO  → conflict = None
+  ├─► _embed(clean_content)
+  │     ├─► Check _EMBED_CACHE (OrderedDict LRU, maxsize=4096) → <0.01ms hit
+  │     └─► On miss: SentenceTransformer("all-MiniLM-L6-v2") under torch.inference_mode()
   │
-  ├─► MeshStore.upsert(id, content, embedding, metadata, local_only)
-  │     ├── ChromaDB.collection.upsert(...)    → vector index
-  │     └── SQLite INSERT INTO memories (...)  → metadata row
+  ├─► MeshStore.count() > 0? (O(1) via in-memory _VectorCacheEntry.all_ids)
+  │     └── YES → MeshStore.query(embedding, n=3) (SIMD cosine dot product)
+  │           │
+  │           ├─► Pass 1 (Deduplication, if deduplicate=True):
+  │           │     _is_true_duplicate(clean_content, doc, similarity)?
+  │           │     (exact text match OR similarity ≥ 0.985 with same numbers & negation polarity)
+  │           │     └── YES → Merge tags, take max(confidence), call MeshStore.update() in-place
+  │           │               └─► return {"memory_id": existing_id, "status": "stored", "deduplicated": True}
+  │           │
+  │           └─► Pass 2 (Contradiction Detection):
+  │                 similarity ≥ 0.82?
+  │                 └── YES → MeshStore.log_contradiction(new_memory_id, ...) → conflict dict
   │
-  └─► return {"memory_id": ..., "status": ..., "conflict": ...}
+  ├─► MeshStore.upsert(memory_id, content, embedding, metadata, local_only)
+  │     ├── Normalize vector to contiguous float32 BLOB
+  │     ├── Single SQLite WAL transaction:
+  │     │     ├── INSERT OR REPLACE INTO memories (...)
+  │     │     └── Sync row in memories_fts (FTS5 virtual table)
+  │     ├── Mutate _VectorCacheEntry in-place in RAM (append/update row in NumPy matrix)
+  │     └── Refresh tracked (mtime_ns, file_size) stamp so cache stays hot
+  │
+  └─► return {"memory_id": memory_id, "status": "stored" | "stored_with_conflict", "deduplicated": False, "conflict": conflict}
 ```
 
-### recall() flow
+### `recall()` flow
 
-```
+```text
 caller
   │
   ▼
-Mesh.recall(query, n, min_similarity, ...)
+Mesh.recall(query, n, min_similarity, min_confidence, include_stale, memory_type, tags, source_agent)
   │
-  ├─► _embed(query)                        → SentenceTransformer → [float, ...]
+  ├─► _embed(clean_query) → _EMBED_CACHE or SentenceTransformer
   │
-  ├─► MeshStore.query(embedding, n)        → ChromaDB cosine search
-  │     └── returns: ids, documents, distances, metadatas
+  ├─► MeshStore.hybrid_query(query_text, embedding, n=max(n*3, 15), ...)
+  │     ├── 1. Dense SIMD Cosine Search: sims = cache.matrix @ q_vec (in-memory float32 dot product)
+  │     ├── 2. Single SQLite connection pass:
+  │     │      ├── FTS5 BM25 lexical search over `memories_fts` (_fts_lexical_scores)
+  │     │      └── Fetch metadata rows for top dense ∪ lexical candidates with SQL pre-filters
+  │     └── 3. Exact Token / Identifier Boost & Score Fusion:
+  │            keyword_signal = max(bm25_score, exact_token_overlap)
+  │            hybrid_sim = min(1.0, sem_sim + (1.0 - sem_sim) * 0.28 * keyword_signal)
   │
-  ├─► for each result:
-  │     ├── similarity = 1.0 - distance
-  │     ├── _compute_decay_factor(ttl_days, decay_start_at)
-  │     ├── effective_confidence = confidence × decay_factor
+  ├─► For each candidate (using a single UTC `now` reference):
+  │     ├── _compute_decay_metrics(ttl_days, decay_start_at, now)
+  │     │     ├── decay_factor = clamp(1.0 - days_elapsed / ttl_days, 0.0, 1.0)
+  │     │     └── days_until_stale = max(0, round(ttl_days * 0.7 - days_elapsed))
+  │     ├── effective_confidence = round(stored_confidence * decay_factor, 4)
   │     ├── is_stale = effective_confidence < 0.3
-  │     ├── filter by min_similarity, min_confidence, include_stale
-  │     └── MeshStore.increment_access(id)  → SQLite UPDATE
+  │     ├── Filter by min_similarity, include_stale, and min_confidence
+  │     └── Compute composite_score = 0.75 * similarity + 0.18 * effective_confidence + 0.07 * usage_boost
   │
-  ├─► MeshStore.log_query(query, agent_id, best_similarity, result_count)
-  │     └── SQLite INSERT INTO queries (...)
+  ├─► Sort by (similarity, effective_confidence, access_count) DESC and slice [:n]
   │
-  └─► return sorted(memories, by=similarity desc)
+  ├─► MeshStore.record_recall_telemetry(returned_ids, query_text, agent_id, best_similarity, len(memories))
+  │     ├── Single atomic SQLite WAL transaction:
+  │     │     ├── UPDATE memories SET access_count = access_count + 1, accessed_at = ? WHERE id IN (...)
+  │     │     └── INSERT INTO queries (...)
+  │     └── Refresh tracked (mtime_ns, file_size) stamp so _VECTOR_CACHE & _INITIALIZED_DBS remain valid
+  │
+  └─► return memories
+```
+
+### `update()` flow
+
+```text
+caller
+  │
+  ▼
+Mesh.update(memory_id, content, memory_type, confidence, tags, ttl_days, reset_ttl, local_only)
+  │
+  ├─► MeshStore.get(memory_id) → verify memory exists
+  ├─► Re-compute _embed(content) ONLY if `content` was provided and changed
+  ├─► MeshStore.update(...)
+  │     ├── UPDATE memories SET ... WHERE id = ? AND namespace = ? (preserves id, created_at, access_count)
+  │     ├── Sync updated text/tags in `memories_fts`
+  │     ├── If embedding changed: overwrite row `cache.matrix[idx] = norm_vec` in-place
+  │     └── Refresh tracked (mtime_ns, file_size) stamp
+  └─► return {"memory_id": memory_id, "status": "updated", "memory": enriched_row}
 ```
 
 ---
@@ -165,215 +227,156 @@ Mesh.recall(query, n, min_similarity, ...)
 
 ### `store.py`
 
-**Purpose:** The only module that touches persistent storage. Everything else goes through this.
+**Purpose:** Unified persistence and hybrid retrieval engine. Everything is stored atomically in `~/.mesh/mesh_<namespace>.db` using SQLite in WAL mode.
 
-**Two backends:**
-- `chromadb.PersistentClient` — stores embeddings, enables cosine similarity search
-- `sqlite3` — stores all metadata (content, type, confidence, tags, TTL, access counts)
+**Three integrated subsystems inside one SQLite file:**
+1. **Relational Metadata & Vector BLOBs (`memories` table):** Stores metadata alongside L2-normalized 384-dimensional `float32` vectors serialized as compact 1,536-byte binary BLOBs.
+2. **In-Memory SIMD Vector Cache (`_VectorCacheEntry`):** Maintains a contiguous 2D `np.float32` matrix (`shape = (N, 384)`) per namespace so cosine similarity across all memories is a single matrix-vector multiplication (`cache.matrix @ q_vec`).
+3. **Lexical BM25 Search (`memories_fts` virtual table):** Uses SQLite FTS5 (`tokenize='porter unicode61'`) to score keyword matches and boost exact technical identifiers (error codes, ports, paths, function names).
 
-**Why both?** ChromaDB is optimised for vector search but its metadata storage is limited (string/int/float/bool only, no lists). SQLite gives us full SQL query power over metadata — needed for pattern detection, gap analysis, TTL calculations, and filtering by type/tag/privacy.
+**Connection Management (`_ManagedConnection`):**
+- Subclasses `sqlite3.Connection` so exiting any `with self._connect() as conn:` block commits/rolls back the transaction **and** deterministically calls `self.close()`.
+- Prevents lingering file handles or memory-mapped section locks (`WinError 32`) on Windows during namespace deletion or renaming.
 
-**Key methods:**
-
-```python
-upsert(memory_id, content, embedding, metadata, local_only)
-    # Writes to both ChromaDB (vectors) and SQLite (metadata)
-    # local_only becomes integer 0/1 in SQLite and is also in chroma_meta
-
-query(embedding, n)
-    # ChromaDB cosine search — returns raw dict with ids/docs/distances/metadatas
-    # Handles the edge case of empty collection (count=0)
-
-log_query(query_text, agent_id, best_similarity, result_count)
-    # Writes every recall() to the queries table for pattern analysis
-
-log_contradiction(new_memory_id, new_content, existing_memory_id, existing_content, similarity)
-    # Writes conflict record to contradictions table, returns contradiction_id
-
-get_patterns()
-    # Pure SQL — aggregates queries table (top topics, gaps), memories table (unused, stale)
-    # This is the only place decay math is re-run in SQL
-```
-
-**To add a new metadata field** (e.g. `source_url`):
-1. Add to the SQLite schema in `_init_db()` — include a migration `ALTER TABLE ... ADD COLUMN` block
-2. Add to the `upsert()` method's INSERT statement
-3. Add to `list_all()` return (it already uses `SELECT *` so this is automatic)
-4. Surface it in `Mesh.learn()` parameters
+**Legacy Migration:**
+- `_migrate_from_chroma_if_needed()` checks if `~/.mesh/chroma` exists and automatically backfills any missing SQLite `embedding` BLOBs from legacy ChromaDB collections on startup.
+- `_CollectionCompatShim` (`store.collection`) emulates the legacy ChromaDB collection interface (`get`, `upsert`, `query`, `delete`, `count`) for backward compatibility.
 
 ---
 
 ### `memory.py`
 
-**Purpose:** The public-facing class. Orchestrates embeddings, contradiction checks, and storage. The only module that creates embeddings.
+**Purpose:** Public-facing `Mesh` orchestration class and embedding lifecycle manager.
 
-**Key globals:**
-```python
-_model: Optional[SentenceTransformer]  # singleton — loaded once, reused
-_MODEL_NAME = "all-MiniLM-L6-v2"       # ~90MB, fast, good quality
-CONTRADICTION_THRESHOLD = 0.82          # cosine similarity for conflict detection
-STALE_THRESHOLD = 0.3                   # effective_confidence below this = stale
-VALID_MEMORY_TYPES = {...}              # validated in learn()
-```
+**Key Constants:**
+- `_MODEL_NAME = "all-MiniLM-L6-v2"`: 384-dimensional local embedding model.
+- `CONTRADICTION_THRESHOLD = 0.82`: Cosine similarity threshold above which non-duplicate memories are flagged as potential conflicts.
+- `DEDUP_THRESHOLD = 0.985`: Cosine similarity threshold above which semantically identical facts (with matching numbers and negation polarity) are deduplicated in-place.
+- `STALE_THRESHOLD = 0.3`: Effective confidence threshold below which a TTL-enabled memory is marked stale.
+- `VALID_MEMORY_TYPES`: `{"fact", "preference", "context", "result", "instruction", "process", "decision", "error", "general"}`.
 
-**Embedding is lazy-loaded:** `_get_model()` only downloads/loads the model on first call. Subsequent calls reuse the global `_model` object. This means the first `learn()` or `recall()` in a session takes a few seconds; all subsequent calls are fast.
+**Shared Single & Batch Embedding LRU Cache (`_EMBED_CACHE`):**
+- Uses a thread-safe `OrderedDict` capped at `4,096` entries.
+- Both `_embed()` (single string) and `_embed_batch()` (multiple strings during imports) read from and populate `_EMBED_CACHE`.
+- Deduplicates identical strings within the same batch before running `model.encode()` under `torch.inference_mode()`.
 
-**Contradiction detection threshold:** 0.82 was chosen to catch semantically opposite or conflicting statements while allowing genuinely related-but-different memories to coexist. For example, "API limit is 100 req/min" vs "API limit is 200 req/min" scores ~0.91. "Python is our language" vs "We use TypeScript" scores ~0.78 (below the threshold — these coexist fine). You can tune this.
-
-**Decay calculation** (`_compute_decay_factor`):
-```python
-decay_factor = max(0.0, 1.0 - (days_elapsed / ttl_days))
-```
-Linear, from 1.0 at creation to 0.0 at `ttl_days`. Stale threshold (0.3) is hit at `ttl_days * 0.7` days.
+**Smart Deduplication vs. Contradiction Detection (`_is_true_duplicate`):**
+- Exact normalized text matches always deduplicate.
+- Near-identical paraphrases (`similarity >= 0.985`) only deduplicate if all numeric tokens (`_NUMBER_TOKEN_RE`) and negation tokens (`_NEGATION_TOKENS`) match.
+- Thus, `"The API rate limit is 100 req/min"` vs. `"The API rate limit is 200 req/min"` is accurately caught as a **contradiction** rather than deduplicated.
 
 ---
 
 ### `audit.py`
 
-**Purpose:** Standalone audit trail. Every `recall()` and `learn()` call — whether through the Python API, MCP, HTTP, or CLI — should log here.
+**Purpose:** Fault-isolated, high-speed audit log for all read and write operations (`recall`, `learn`, `update`, `forget`).
 
-**Separate database:** audit logs live in `audit_<namespace>.db`, completely separate from `mesh_<namespace>.db`. This means audit logging can never corrupt memory data, and the audit DB can be deleted without losing memories.
-
-**Audit logging is fire-and-forget:** every logging function wraps its body in `try/except: pass`. A logging failure must never crash a `learn()` or `recall()` call.
-
-**Who logs?**
-- `memory.py` does NOT call audit logging directly — this keeps the core clean
-- `mcp_server.py` calls `log_recall()` and `log_learn()` after tool invocations
-- `http_server.py` calls them after each endpoint handler
-- `cli.py` implicitly logs because it uses `Mesh` which uses `MeshStore.log_query()` internally (the query log is different from the audit log — queries go to `mesh_*.db`, audit goes to `audit_*.db`)
-
-**Note for contributors:** if you add a new entry point (e.g. a WebSocket server), you need to call `log_recall()` / `log_learn()` manually after each operation.
+**Key Features:**
+- Writes to `~/.mesh/audit_<namespace>.db` so audit activity is completely isolated from `mesh_<namespace>.db`.
+- Every logging function (`log_recall`, `log_learn`, `log_update`, `log_forget`) is wrapped in `try/except Exception: pass` so audit I/O can never interrupt agent execution.
+- `_write_audit_entry()` initializes schema (if needed) and inserts the log record in a single connection pass, then updates `_INITIALIZED_AUDIT_DBS[db_path]` with the new `st_mtime_ns` so subsequent writes never re-run `CREATE TABLE` / `CREATE INDEX`.
 
 ---
 
 ### `context_builder.py`
 
-**Purpose:** Takes memories and formats them as a system prompt block ready to paste into any agent's context.
+**Purpose:** Formats top memories into system prompt blocks ready for injection into LLM contexts.
 
-**Format options:**
-- `markdown` — default; groups by memory type with bold headers, uses `<mesh_context>` XML wrapper
-- `plain` — simple bullet list under `[MESH CONTEXT]` header
-- `xml` — `<mesh_context><memory type="fact">...</memory></mesh_context>`
-- `json` — raw JSON dict with all memory metadata
+**Supported Formats:**
+- `markdown` (default): Groups memories by `memory_type` under bold headings inside `<mesh_context>` tags, marking stale items with `*(possibly stale)*`.
+- `plain`: Bullet list under `[MESH CONTEXT — Shared Agent Memory]`.
+- `xml`: Structured `<mesh_context><memory type="..." stale="true">...</memory></mesh_context>`.
+- `json`: Indented JSON object containing `namespace` and enriched memory dictionaries.
 
-**Query vs no-query:** if a `query` is passed, it calls `mesh.recall()` (semantic search). If no query, it calls `mesh.inspect()`, sorts by `access_count` descending, and takes the top N. This makes no-query context meaningful — it returns the memories agents actually use, not random ones.
+**Selection Logic:**
+- When `query` is provided, calls `mesh.recall()` using hybrid search.
+- When `query` is `None`, calls `mesh.inspect(limit=max(count * 3, 30))`, filters by `min_confidence` and `tags`, and sorts by `(access_count, effective_confidence)` descending so frequently used project facts surface first.
 
 ---
 
 ### `passive.py`
 
-**Purpose:** Extracts memories from a raw conversation or session log, without the agent explicitly calling `learn()`.
+**Purpose:** Extracts concrete, reusable memories from raw session logs, `.log`/`.txt`/`.md` files, `.jsonl` transcripts, or directories of agent logs.
 
-**Provider detection** (`detect_provider()`):
-1. Check `MESH_AI_PROVIDER` env var for explicit override
-2. Check for API keys: `ANTHROPIC_API_KEY` → `OPENAI_API_KEY` → `GROQ_API_KEY`
-3. Check if Ollama is running on localhost:11434
-4. Fall back to local keyword extractor
+**Provider Auto-Detection (`detect_provider()`):**
+1. Explicit `MESH_AI_PROVIDER` override (`anthropic`, `openai`, `groq`, `ollama`, `openai-compatible`, `local`).
+2. `ANTHROPIC_API_KEY` (`claude-haiku-4-5-20251001`).
+3. `OPENAI_API_KEY` (`gpt-4o-mini`).
+4. `GROQ_API_KEY` (`llama3-8b-8192`).
+5. Local Ollama instance at `http://localhost:11434/v1`.
+6. Local zero-dependency regex/heuristic fallback (`_extract_local()`).
 
-**AI extraction:** sends the log to an LLM with a prompt that asks it to return a JSON array of `{content, type, tags, private}` objects. The response is parsed and each item is stored via `mesh.learn()`.
-
-**Local extraction** (`_extract_local()`): pure Python, no API. Splits log into sentences, scores each for "signal" using keyword matching (`SIGNAL_KEYWORDS`), filters out filler (`NOISE_PATTERNS`), detects credentials (`_is_credential()`), and returns high-signal sentences. Much less accurate than AI extraction but works with zero dependencies.
-
-**Fallback chain:** if AI extraction throws an exception (bad API key, timeout, etc.), the code falls back to local extraction and reports `provider_used: "local-keyword-extractor (fallback)"`.
+**Privacy Protection:**
+- Automatically scans extracted sentences against `_CREDENTIAL_PATTERNS` (`password`, `api_key`, `secret`, `token`, `sk-...`, `Bearer ...`) and forces `local_only=True` so secrets are never exported.
 
 ---
 
 ### `digest.py`
 
-**Purpose:** Summarize recent activity for a time window — new memories, contradictions, stale memories, active agents.
+**Purpose:** Generates timezone-safe UTC activity summaries over a configurable window (`--hours 24`).
 
-**Reads SQLite directly** (doesn't go through `Mesh` class). This is intentional — digest is a reporting tool, not an agent action. It shouldn't create embeddings or log to audit.
-
-**Time window:** the `since` timestamp is computed from `datetime.now() - timedelta(hours=hours)`. All SQLite queries use `WHERE created_at >= ?` with this ISO timestamp string.
+- Queries `mesh_<namespace>.db` and `audit_<namespace>.db` directly using `_utc_now()` and `_parse_iso_utc()` without loading the embedding model or polluting query/audit logs.
+- Reports new memories stored, total recalls, active agents, contradictions flagged, and memories whose TTL has expired.
 
 ---
 
 ### `io.py`
 
-**Purpose:** Export memories to JSON files and import them back.
+**Purpose:** High-speed namespace export and import (`mesh-export` and `mesh-import`).
 
-**Export:** reads all non-private memories from SQLite, optionally fetches their embeddings from ChromaDB, and writes a JSON file with mesh version metadata.
-
-**Import:** for each memory in the file:
-- If `embedding` is present in the JSON, upserts it directly into ChromaDB (no re-embedding)
-- If `embedding` is absent (file exported with `include_embeddings=False`), calls `mesh.learn()` to re-embed
-- Writes metadata to SQLite regardless
-
-**Why include embeddings?** Re-embedding ~500 memories on import takes 30+ seconds. Including embeddings makes import instant. But embeddings are large (~1536 floats × 4 bytes = ~6 KB each), so a 1000-memory export is ~6 MB with embeddings vs ~200 KB without.
+- **`export_namespace()`:** Uses $O(1)$ `store.count()` and `store.get_exportable_memories()` to export all non-private (`local_only = 0`) memories in a single pass. Batch-fetches any fallback embeddings in one query if `include_embeddings=True`.
+- **`import_namespace()`:** Resolves existing memory IDs in $O(1)$ from the store's vector cache (`all_ids`), batch-computes any missing embeddings in a single forward pass via `_embed_batch()`, and writes all imported memories in a single SQLite WAL transaction via `store.upsert_batch()`.
 
 ---
 
 ### `namespaces.py`
 
-**Purpose:** Namespace-level operations — list, delete, rename, stats.
+**Purpose:** Namespace-level management (`list_namespaces`, `delete_namespace`, `rename_namespace`, `namespace_stats`).
 
-**Discovery:** `list_namespaces()` scans `~/.mesh/` for files matching `mesh_*.db` and infers namespace names from filenames. This means namespaces are discovered from disk, not from a registry. If you manually create a DB file, it will appear.
-
-**Delete:** removes the SQLite file and calls `chromadb.delete_collection()`. The audit DB is not deleted — audit history is preserved even after namespace deletion.
-
-**Rename:** copies the SQLite file with `shutil.copy2`, reads all ChromaDB data with `.get(include=["documents", "embeddings", "metadatas"])`, upserts to a new collection, then deletes the originals. This is the only place we read and re-write all embeddings at once.
+- Discovers namespaces directly from `~/.mesh/mesh_*.db` files on disk.
+- Evicts in-memory caches (`_VECTOR_CACHE`, `_INITIALIZED_DBS`, `_TRANSIENT_EMBEDDINGS`) under `_CACHE_LOCK` and runs `PRAGMA wal_checkpoint(TRUNCATE)` before copying or unlinking SQLite files.
+- `_remove_sqlite_files()` cleanly removes `.db`, `-wal`, and `-shm` files with garbage-collection retry safety for Windows.
 
 ---
 
 ### `http_server.py`
 
-**Purpose:** FastAPI REST API on port 7701. Any tool that can make HTTP requests can use Mesh.
+**Purpose:** FastAPI REST API server running on `127.0.0.1:7701` (`mesh-http` / `mesh-server-http`).
 
-**CORS:** configured with `allow_origins=["*"]` since this is a localhost-only server. Not a security concern for local use.
-
-**`get_mesh()` helper:** creates a `Mesh` instance from the request body's `namespace` and `agent_id` fields, falling back to environment variables. Each request gets a fresh `Mesh` instance (they're cheap — just SQLite + ChromaDB client connections).
-
-**To add an endpoint:** add a Pydantic model for the request body, add a FastAPI route function, add to the `routes` check in `test_v04.py`.
+- Caches `(namespace, agent_id)` `Mesh` instances in `_MESH_REGISTRY` with a lock-free fast path.
+- Pre-warms the embedding model and default namespace vector cache in a background thread on startup.
+- Exposes `/health`, `/learn`, `/recall`, `/update`, `/forget`, `/inspect`, `/patterns`, `/contradictions`, `/contradictions/resolve`, `/context` (single-pass retrieval + formatting), and `/audit`.
 
 ---
 
 ### `mcp_server.py`
 
-**Purpose:** Exposes Mesh as MCP tools for Claude Desktop, Cursor, and any MCP-compatible client.
+**Purpose:** Production Model Context Protocol (MCP) server over `stdio` (`mesh-server`).
 
-**Singleton `_mesh`:** unlike the HTTP server (fresh instance per request), the MCP server keeps a global `Mesh` instance. MCP servers are long-running processes — the singleton avoids reconnecting ChromaDB on every tool call.
-
-**Async:** MCP requires `async def` handlers. The `get_mesh()` and all tool handlers use `async` even though `Mesh` itself is synchronous. This is fine — synchronous code runs fine inside async functions as long as it doesn't block the event loop for too long. (For very large namespaces, consider wrapping heavy calls in `asyncio.run_in_executor`.)
-
-**To add a tool:** add to `list_tools()` with a `types.Tool` definition, add a case to `call_tool()`, and add documentation to the tool's `description` field (this is what the agent reads).
+- Pre-builds all 10 `types.Tool` schemas at module import time (`_MCP_TOOLS`) for instant `list_tools()` responses.
+- Runs synchronous tool handlers in `asyncio.to_thread()` wrapped in `_safe_redirect_stdout_to_stderr()`—a lock-protected, reference-counted context manager that guarantees `sys.stdout` is never corrupted by concurrent threads or print statements while `stdio_server` is active.
+- Includes `background_sync_worker()`, which pre-warms the model and periodically tails newly appended bytes from Claude Desktop and Antigravity agent logs using file `(mtime_ns, byte_offset)` watermarks (`_LOG_WATERMARKS`).
 
 ---
 
 ### `dashboard.py`
 
-**Purpose:** Local web dashboard. FastAPI for the API layer, inline HTML/JS for the UI. Runs on port 7433 by default.
+**Purpose:** Minimal, responsive web UI running on `127.0.0.1:7433` (`mesh-dashboard`).
 
-**Architecture:** the entire frontend is a single HTML string (`DASHBOARD_HTML`) embedded in the Python file. This makes the dashboard zero-dependency from a deployment perspective — no npm, no build step, no static file serving config.
-
-**API endpoints:** the dashboard has its own set of `/api/*` endpoints. They're separate from the HTTP REST API (port 7701) — the dashboard has read-write access to everything, while the HTTP API is the integration point for external tools.
-
-**Additional endpoints needed for editing:**
-- `POST /api/memories` — create a memory (calls `mesh.learn()`)
-- `PUT /api/memories/{id}` — update memory content (needs `forget()` + `learn()` since embeddings can't be patched)
+- Zero frontend build step: serves `DASHBOARD_HTML` from a single self-contained Python module with FastAPI `/api/*` endpoints.
+- Supports live hybrid search, type filtering, sorting, in-place memory editing (`PUT /api/memories/{memory_id}`), conflict resolution, pattern inspection, audit log filtering, namespace switching/exporting, and 24-hour digests.
 
 ---
 
 ### `cli.py`
 
-**Purpose:** Click-based CLI entry points. Each function corresponds to a `mesh-*` command.
+**Purpose:** Command-line interface providing both the unified `mesh <subcommand>` dispatcher (`main()`) and standalone `mesh-*` scripts (`mesh-add`, `mesh-ask`, `mesh-update`, `mesh-forget`, `mesh-context`, `mesh-why`, `mesh-status`, `mesh-namespaces`, `mesh-export`, `mesh-import`, `mesh-capture`, `mesh-digest`, `mesh-server`, `mesh-dashboard`, `mesh-http`, `mesh-help`).
 
-**Entry point registration:** in `pyproject.toml` (or `setup.py`), each function is registered as a console script:
-```toml
-[project.scripts]
-mesh-add      = "mesh.cli:add_cmd"
-mesh-ask      = "mesh.cli:ask_cmd"
-mesh-context  = "mesh.cli:context_cmd"
-mesh-why      = "mesh.cli:why_cmd"
-mesh-status   = "mesh.cli:status_cmd"
-mesh-export   = "mesh.cli:export_cmd"
-mesh-import   = "mesh.cli:import_cmd"
-mesh-namespaces = "mesh.cli:namespaces_cmd"
-mesh-digest   = "mesh.digest:digest_cmd"
-mesh-server   = "mesh.mcp_server:run"
-mesh-dashboard = "mesh.dashboard:run"
-```
+---
 
-**Namespace resolution:** every CLI command resolves namespace in order: `--namespace` flag → `MESH_NAMESPACE` env var → `"shared"`.
+### `version.py`
+
+**Purpose:** Stores `VERSION = "0.5.1"` and runs a non-blocking background daemon check against PyPI (`check_for_updates()`) during `mesh-status` and `mesh-help` (can be disabled with `MESH_NO_UPDATE_CHECK=1`).
 
 ---
 
@@ -382,23 +385,33 @@ mesh-dashboard = "mesh.dashboard:run"
 ### `mesh_<namespace>.db`
 
 ```sql
-CREATE TABLE memories (
+CREATE TABLE IF NOT EXISTS memories (
     id              TEXT PRIMARY KEY,
     namespace       TEXT NOT NULL,
     content         TEXT NOT NULL,
     confidence      REAL NOT NULL DEFAULT 1.0,
     memory_type     TEXT NOT NULL DEFAULT 'fact',
     source_agent    TEXT NOT NULL DEFAULT 'unknown',
-    tags            TEXT NOT NULL DEFAULT '[]',   -- JSON array stored as string
-    created_at      TEXT NOT NULL,                -- ISO 8601
-    accessed_at     TEXT NOT NULL,
+    tags            TEXT NOT NULL DEFAULT '[]',   -- JSON array stored as text
+    created_at      TEXT NOT NULL,                -- UTC ISO-8601
+    accessed_at     TEXT NOT NULL,                -- UTC ISO-8601
     access_count    INTEGER NOT NULL DEFAULT 0,
-    ttl_days        REAL,                         -- NULL = no decay
-    decay_start_at  TEXT,                         -- ISO 8601 or NULL
-    local_only      INTEGER DEFAULT 0             -- 0 = exportable, 1 = private
+    ttl_days        REAL,                         -- NULL = permanent (no decay)
+    decay_start_at  TEXT,                         -- UTC ISO-8601 or NULL
+    local_only      INTEGER NOT NULL DEFAULT 0,   -- 0 = exportable, 1 = private
+    embedding       BLOB                          -- L2-normalized float32 vector (1536 bytes)
 );
 
-CREATE TABLE queries (
+CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+    id UNINDEXED,
+    content,
+    tags,
+    memory_type,
+    source_agent,
+    tokenize='porter unicode61'
+);
+
+CREATE TABLE IF NOT EXISTS queries (
     id              TEXT PRIMARY KEY,
     namespace       TEXT NOT NULL,
     query_text      TEXT NOT NULL,
@@ -408,7 +421,7 @@ CREATE TABLE queries (
     timestamp       TEXT NOT NULL
 );
 
-CREATE TABLE contradictions (
+CREATE TABLE IF NOT EXISTS contradictions (
     id                  TEXT PRIMARY KEY,
     namespace           TEXT NOT NULL,
     new_memory_id       TEXT NOT NULL,
@@ -424,136 +437,107 @@ CREATE TABLE contradictions (
 ### `audit_<namespace>.db`
 
 ```sql
-CREATE TABLE audit_log (
+CREATE TABLE IF NOT EXISTS audit_log (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp       TEXT NOT NULL,
-    action          TEXT NOT NULL,      -- 'recall' or 'learn'
+    action          TEXT NOT NULL,           -- 'recall', 'learn', 'update', or 'forget'
     agent_id        TEXT,
     namespace       TEXT,
-    query           TEXT,               -- for recalls: the query string
-    content         TEXT,               -- for learns: the content stored
-    top_result      TEXT,               -- for recalls: top result content
-    top_similarity  REAL,               -- for recalls: top result similarity
-    result_count    INTEGER,            -- for recalls: number of results
-    memory_id       TEXT,               -- for learns: the stored memory ID
-    had_conflict    INTEGER DEFAULT 0   -- for learns: 1 if contradiction detected
+    query           TEXT,                    -- for recalls: the query string
+    content         TEXT,                    -- for learns/updates/forgets: content or summary
+    top_result      TEXT,                    -- for recalls: top result content
+    top_similarity  REAL,                    -- for recalls: top result similarity
+    result_count    INTEGER,                 -- for recalls: number of results
+    memory_id       TEXT,                    -- for learns/updates/forgets: target memory UUID
+    had_conflict    INTEGER DEFAULT 0        -- for learns: 1 if contradiction detected
 );
 ```
 
-### ChromaDB collection: `mesh_<namespace>`
+---
 
-Each collection stores:
-- `ids`: memory UUIDs
-- `documents`: memory content strings (used for display)
-- `embeddings`: 384-dim float vectors from `all-MiniLM-L6-v2`
-- `metadatas`: dict of `str/int/float/bool` fields — subset of SQLite metadata
+## Performance & Caching Architecture
 
-Note: ChromaDB's metadata cannot store lists or nested objects. Tags are stored in SQLite only. The ChromaDB metadata is used primarily for contradiction detection context (who stored it, when).
+Mesh is engineered for sub-millisecond cached operations and single-digit millisecond uncached operations:
+
+1. **In-Place Vector Matrix Mutations (`_VectorCacheEntry`):**
+   - `upsert()`, `upsert_batch()`, `update()`, and `delete()` mutate the in-memory `np.float32` matrix directly in RAM (`upsert_vector` and `delete_vector`) rather than evicting the cache and rescanning SQLite.
+2. **Self-Write File-Stat Synchronization (`_refresh_stamps_after_write_locked`):**
+   - After any internal SQLite commit (`upsert`, `update`, `delete`, `record_recall_telemetry`, `log_query`, `log_contradiction`, `resolve_contradiction`), `MeshStore` immediately updates `_INITIALIZED_DBS[db_path]` and `synced_cache.(mtime_ns, file_size)` with the new file stat.
+   - In-process writes never trigger false cache invalidations or schema re-initializations, while external writes from other processes are still detected via `db_path.stat()`.
+3. **Single-Connection Hybrid Search & Single-Transaction Telemetry:**
+   - `hybrid_query()` runs both FTS5 BM25 scoring and candidate metadata retrieval on a single SQLite connection.
+   - `record_recall_telemetry()` combines `access_count` batch increments and query logging into one atomic WAL commit.
+4. **Shared `OrderedDict` Embedding Cache (`_EMBED_CACHE`):**
+   - Repeated queries and duplicate facts resolve their 384-dim normalized embedding in `<0.01 ms` without invoking PyTorch.
 
 ---
 
 ## How to Add a New Feature
 
-### Step 1: Does it need new storage?
-
-If yes → add columns to `store.py:_init_db()` with an `ALTER TABLE` migration block for existing DBs, and update `store.py:upsert()` and `store.py:list_all()`.
-
-### Step 2: Does it touch the core Mesh class?
-
-If yes → add/modify methods in `memory.py`. The `Mesh` class is the single interface all other modules use — keep it clean and focused.
-
-### Step 3: Does it need a new CLI command?
-
-→ See [How to Add a New CLI Command](#how-to-add-a-new-cli-command).
-
-### Step 4: Does it need a new HTTP endpoint?
-
-→ See [How to Add a New HTTP Endpoint](#how-to-add-a-new-http-endpoint).
-
-### Step 5: Should it be exposed in the public API?
-
-If yes → add the import to `__init__.py` and add the name to `__all__`.
-
-### Step 6: Write tests
-
-Add to `test_v04.py`. Tests should:
-- Use a unique namespace like `"test_myfeature_<uuid>"` to avoid conflicts
-- Call `delete_namespace("test_myfeature_...")` in cleanup
-- Mock API calls with `unittest.mock.patch`
+1. **Storage layer (`mesh/store.py`):** If a new column is needed, add it to `CREATE TABLE IF NOT EXISTS memories` and the `ALTER TABLE` migration loop in `_init_db()`, include it in `_MEMORY_COLUMNS`, and handle it in `upsert()`, `upsert_batch()`, and `update()`.
+2. **Core logic (`mesh/memory.py`):** Expose the parameter or method on `Mesh` and enrich returned rows in `_enrich_memory_row()` if needed.
+3. **Interfaces (`mcp_server.py`, `http_server.py`, `cli.py`, `dashboard.py`):** Wire the feature into the MCP tool schema, FastAPI request model, CLI parser, or dashboard UI.
+4. **Public exports (`mesh/__init__.py`):** Export any new top-level helper functions in `__all__`.
+5. **Tests (`tests/`):** Add unit and integration tests with proper `_cleanup_ns()` teardown.
 
 ---
 
 ## How to Add a New CLI Command
 
-1. Add a function in `cli.py` following the pattern:
+1. Add a command function in `mesh/cli.py`:
 
 ```python
-def myfeature_cmd():
+def myfeature_cmd() -> None:
     """Entry point for: mesh-myfeature"""
-    import argparse
     parser = argparse.ArgumentParser(
-        description="Short description.",
-        epilog="Example: mesh-myfeature --option value"
+        description="Short description of myfeature.",
+        epilog="Example: mesh-myfeature --namespace work",
     )
     parser.add_argument("--namespace", default=None)
-    parser.add_argument("--option", default="default")
     args = parser.parse_args()
 
-    from .memory import Mesh   # import inside function to keep startup fast
-    import os
-    ns = args.namespace or os.environ.get("MESH_NAMESPACE", "shared")
-    
-    # ... do the work ...
-    print("Done.")
+    ns = _resolve_namespace(args.namespace)
+    # ... execute command ...
 ```
 
-2. Register it in `pyproject.toml`:
+2. Add the subcommand routing entry to `mapping` inside `mesh/cli.py:main()` and document it in `help_cmd()`.
+3. Register the script entry point in `pyproject.toml` under `[project.scripts]`:
 
 ```toml
-[project.scripts]
 mesh-myfeature = "mesh.cli:myfeature_cmd"
 ```
 
-3. Re-install: `pip install -e .`
+4. Re-install editable package metadata: `pip install -e .`
 
 ---
 
 ## How to Add a New MCP Tool
 
-1. Add a `types.Tool` entry to `list_tools()` in `mcp_server.py`:
+1. Add a `types.Tool` definition to `_MCP_TOOLS` in `mesh/mcp_server.py`:
 
 ```python
 types.Tool(
     name="mesh_myfeature",
-    description="What this tool does and when to use it.",
+    description="Clear description for AI agents explaining when and how to call this tool.",
     inputSchema={
         "type": "object",
         "properties": {
-            "param1": {"type": "string", "description": "..."}
+            "param1": {"type": "string", "description": "..."},
+            "namespace": {"type": "string", "description": "Optional namespace override."},
         },
-        "required": ["param1"]
-    }
+        "required": ["param1"],
+    },
 )
 ```
 
-2. Add a case to `call_tool()`:
-
-```python
-elif name == "mesh_myfeature":
-    result = mesh.myfeature(arguments["param1"])
-    return [types.TextContent(
-        type="text",
-        text=json.dumps(result, indent=2)
-    )]
-```
-
-3. Restart the MCP server (Cursor/Claude Desktop need a restart to pick up tool changes).
+2. Add an `elif name == "mesh_myfeature":` branch inside `_execute_tool_sync()` in `mesh/mcp_server.py`.
+3. Update `expected_tools` in `tests/test_v04.py:test_mcp_server_tools_and_execution()`.
 
 ---
 
 ## How to Add a New HTTP Endpoint
 
-1. Add a Pydantic model (if the endpoint takes a request body):
+1. Define a Pydantic request model (for `POST`/`PUT` routes) in `mesh/http_server.py`:
 
 ```python
 class MyFeatureRequest(BaseModel):
@@ -562,121 +546,71 @@ class MyFeatureRequest(BaseModel):
     agent_id: Optional[str] = None
 ```
 
-2. Add the route:
+2. Add the FastAPI route handler in `mesh/http_server.py`:
 
 ```python
 @app.post("/myfeature")
-async def myfeature(req: MyFeatureRequest):
+async def myfeature(req: MyFeatureRequest) -> dict[str, Any]:
     try:
         mesh = get_mesh(req.namespace, req.agent_id)
-        result = mesh.myfeature(req.param1)
-        return {"status": "ok", "result": result}
+        # ... call mesh method ...
+        return {"status": "ok", "result": ...}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 ```
 
-3. Add to the routes check in `test_v04.py:test_http_endpoints_exist()`:
-
-```python
-required = [..., "/myfeature"]
-```
+3. Add the route path to `required` in `tests/test_v04.py:test_http_endpoints_exist()`.
 
 ---
 
 ## How to Add a New Memory Type
 
-1. Add the new type to `VALID_MEMORY_TYPES` in `memory.py`:
-
-```python
-VALID_MEMORY_TYPES = {"fact", "preference", "context", "result", "instruction", "mytype"}
-```
-
-2. Update the MCP tool's `inputSchema` in `mcp_server.py`:
-
-```python
-"enum": list(VALID_MEMORY_TYPES),
-```
-
-3. Update the CLI help text in `cli.py:add_cmd()`:
-
-```python
-choices=["fact", "process", "decision", "error", "general", "mytype"],
-```
-
-4. Update the context builder's type display in `context_builder.py:_format()` if you want a specific section header for the new type.
-
-5. Update the README's memory types table.
+1. Add the type string to `VALID_MEMORY_TYPES` in `mesh/memory.py` (all CLI `choices` and MCP `enum` lists derive from `sorted(VALID_MEMORY_TYPES)` automatically).
+2. Optional: Add any heuristic alias mappings to `_TYPE_ALIASES` and `_infer_type()` in `mesh/passive.py`.
+3. Optional: Add a `.type-pill.<newtype>` color rule and filter chip in `mesh/dashboard.py`.
 
 ---
 
 ## Testing
 
-Tests live in `test_v04.py` and cover: audit trail, context builder, digest, HTTP API, passive capture.
+Run the full test suite from the project root:
 
 ```bash
-# Run all tests
-pytest test_v04.py -v
+# Run all 79 tests across test_memory.py, test_v03.py, and test_v04.py
+pytest tests/ -v
 
-# Run a specific test
-pytest test_v04.py::test_http_learn_and_recall -v
+# Run a specific test file
+pytest tests/test_v04.py -v
 
-# Run with coverage
-pytest test_v04.py --cov=mesh --cov-report=term-missing
+# Run with coverage report
+pytest tests/ --cov=mesh --cov-report=term-missing
 ```
 
-**Test isolation pattern:**
+**Test Isolation Pattern:**
+Always use a unique namespace and clean up both the memory DB and audit DB in a `finally` block (or fixture teardown):
 
 ```python
-def test_my_feature():
-    ns = "test_myfeature_xyz"
-    mesh = Mesh(namespace=ns, agent_id="test")
-    
-    # ... test code ...
-    
-    delete_namespace(ns)  # always clean up
-```
-
-**Mocking external calls:**
-
-```python
-from unittest.mock import patch, MagicMock
-
-def test_passive_with_mock():
-    mock_resp = MagicMock()
-    mock_resp.status_code = 200
-    mock_resp.json.return_value = {
-        "content": [{"text": '[{"content": "test fact", "type": "fact", "tags": [], "private": false}]'}]
-    }
-    with patch("httpx.post", return_value=mock_resp):
-        result = extract_memories_from_log(log_text="...", namespace="test_ns")
-    assert result["stored_count"] >= 1
-    delete_namespace("test_ns")
+def test_custom_feature():
+    ns = f"test_custom_{uuid.uuid4().hex[:8]}"
+    try:
+        mesh = Mesh(namespace=ns, agent_id="test-agent")
+        # ... assertions ...
+    finally:
+        _cleanup_ns(ns)
 ```
 
 ---
 
 ## Key Design Decisions
 
-**Why ChromaDB + SQLite instead of just one?**
-
-ChromaDB gives fast approximate nearest-neighbour search over embeddings — this is the core of semantic recall. But ChromaDB's metadata is limited (no lists, no complex types, no SQL aggregation). SQLite gives full SQL power for pattern detection, TTL calculations, access counting, and filtering. They're complementary.
+**Why Unified SQLite WAL + In-Memory NumPy SIMD + FTS5 Instead of ChromaDB?**
+Storing metadata, FTS5 lexical indexes, and normalized `float32` vector BLOBs in a single SQLite WAL file per namespace eliminates multi-database synchronization bugs, removes heavy external C++/Rust binary dependencies, makes namespace backups/renames atomic file operations, and allows in-memory NumPy SIMD matrix multiplication (`cache.matrix @ q_vec`) to execute cosine similarity searches in `<0.1 ms`. Combining dense cosine similarity with SQLite FTS5 BM25 and exact token overlap gives agents both semantic understanding and exact identifier precision.
 
 **Why `all-MiniLM-L6-v2`?**
+It provides an ideal balance of semantic accuracy, compact 384-dimensional vectors (1.5 KB per memory as `float32`), zero API cost, offline privacy, and `<8 ms` single-sentence CPU inference.
 
-Good balance of quality, size, and speed. 384-dimensional embeddings (vs 1536 for OpenAI's ada-002). Runs locally with no API costs. Fast enough for interactive use (<100ms per embed on CPU for short texts). A bigger model like `all-mpnet-base-v2` would give better quality but is 3× slower.
+**Why Deduplicate Identical Facts While Storing Contradictions?**
+When agents repeatedly observe the exact same fact, creating duplicate rows pollutes recall results; reinforcing the existing memory in-place (merging tags and preserving its UUID) keeps the store clean. Conversely, when a new fact has high semantic similarity ($\ge 0.82$) but different numbers or negation polarity, Mesh stores the new memory and flags a contradiction record so the agent or human can resolve the conflict without silent data loss.
 
-**Why store memories regardless of contradictions?**
-
-Mesh is an observation layer, not an arbiter. It surfaces conflicts for the agent to resolve. Silently discarding new information based on similarity would cause data loss and confuse agents ("I stored this, why can't I find it?"). The agent knows context Mesh doesn't — a "contradictory" memory might be an intentional update.
-
-**Why audit in a separate database?**
-
-Audit logging is fire-and-forget (`try/except: pass`). If the audit DB gets corrupted, deleted, or locked, it must never affect memory reads or writes. Separating the DBs makes this guarantee simple and clear.
-
-**Why inline HTML in the dashboard?**
-
-Zero build-step deployment. No npm, webpack, vite, or static file config. The dashboard works as a `pip install` with no extra steps. The tradeoff is that the Python file is very long — acceptable for a single-file dashboard.
-
-**Why linear decay?**
-
-Simplicity. A linear function is easy to reason about: "I set ttl_days=30, so after 15 days it's at 50% confidence, after 30 days it's at 0%." Exponential decay would make memories "never fully expire" which is confusing for users. S-curve decay would be more realistic but harder to explain.
+**Why Separate `audit_<namespace>.db` from `mesh_<namespace>.db`?**
+Audit logging is high-frequency observability data. Isolating it in its own WAL database ensures audit writes never contend with memory transactions and allows audit logs to be inspected or rotated independently.
