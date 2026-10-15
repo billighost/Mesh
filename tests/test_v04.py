@@ -1,156 +1,246 @@
-"""Tests for Mesh v0.4: HTTP API, context builder, CLI, audit trail, passive capture, digest."""
+"""Tests for Mesh v0.4 & v0.5: HTTP API, MCP server, context builder, CLI, audit trail, passive capture, digest."""
 
+import asyncio
 import json
-import pytest
-from unittest.mock import patch, MagicMock
-from mesh.memory import Mesh
-from mesh.audit import log_recall, log_learn, get_audit_log, get_audit_stats
+import os
+import tempfile
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+from mesh.audit import (
+    _get_audit_db_path,
+    get_audit_log,
+    get_audit_stats,
+    log_forget,
+    log_learn,
+    log_recall,
+    log_update,
+)
 from mesh.context_builder import build_context
 from mesh.digest import generate_digest
-from mesh.namespaces import delete_namespace
+from mesh.memory import Mesh
+from mesh.namespaces import _remove_sqlite_files, delete_namespace
+from mesh.passive import (
+    _extract_local,
+    _has_signal,
+    _is_credential,
+    detect_provider,
+    extract_memories_from_log,
+)
+
+
+def _cleanup_ns(ns: str) -> None:
+    delete_namespace(ns)
+    _remove_sqlite_files(_get_audit_db_path(ns))
 
 
 # --- Audit Trail Tests ---
 
+
 def test_audit_log_recall():
     """Recall events should be logged to audit trail."""
-    mesh = Mesh(namespace="test_audit", agent_id="test-agent")
-    mesh.learn("audit test memory")
-    results = mesh.recall("audit test")
-    
-    log_recall(
-        query="audit test",
-        namespace="test_audit",
-        agent_id="test-agent",
-        results=results
-    )
-    
-    entries = get_audit_log(namespace="test_audit", limit=10)
-    recall_entries = [e for e in entries if e["action"] == "recall"]
-    assert len(recall_entries) > 0
-    assert recall_entries[0]["query"] == "audit test"
-    assert recall_entries[0]["agent_id"] == "test-agent"
-    
-    delete_namespace("test_audit")
+    ns = "test_audit"
+    try:
+        mesh = Mesh(namespace=ns, agent_id="test-agent")
+        mesh.learn("audit test memory")
+        results = mesh.recall("audit test")
+        log_recall(
+            query="audit test",
+            namespace=ns,
+            agent_id="test-agent",
+            results=results,
+        )
+        entries = get_audit_log(namespace=ns, limit=10)
+        recall_entries = [e for e in entries if e["action"] == "recall"]
+        assert len(recall_entries) > 0
+        assert recall_entries[0]["query"] == "audit test"
+        assert recall_entries[0]["agent_id"] == "test-agent"
+    finally:
+        _cleanup_ns(ns)
 
 
-def test_audit_log_learn():
-    """Learn events should be logged to audit trail."""
-    log_learn(
-        content="test learn event",
-        namespace="test_audit_learn",
-        agent_id="test-agent",
-        result={"memory_id": "test-id-123", "conflict": None}
-    )
-    
-    entries = get_audit_log(namespace="test_audit_learn", limit=10)
-    learn_entries = [e for e in entries if e["action"] == "learn"]
-    assert len(learn_entries) > 0
-    assert "test learn event" in learn_entries[0]["content"]
+def test_audit_log_learn_update_forget():
+    """Learn, update, and forget events should be logged to audit trail."""
+    ns = "test_audit_learn"
+    try:
+        log_learn(
+            content="test learn event",
+            namespace=ns,
+            agent_id="test-agent",
+            result={"memory_id": "test-id-123", "conflict": None},
+        )
+        log_update(
+            memory_id="test-id-123",
+            content="updated learn event",
+            namespace=ns,
+            agent_id="test-agent",
+        )
+        log_forget(
+            memory_id="test-id-123",
+            namespace=ns,
+            agent_id="test-agent",
+        )
+        entries = get_audit_log(namespace=ns, limit=10)
+        learn_entries = [e for e in entries if e["action"] == "learn"]
+        update_entries = [e for e in entries if e["action"] == "update"]
+        forget_entries = [e for e in entries if e["action"] == "forget"]
+        assert len(learn_entries) > 0
+        assert "test learn event" in learn_entries[0]["content"]
+        assert len(update_entries) == 1
+        assert len(forget_entries) == 1
+    finally:
+        _cleanup_ns(ns)
 
 
 def test_audit_filter_by_action():
     """Audit log should support filtering by action type."""
     ns = "test_audit_filter"
-    log_recall(query="test query", namespace=ns, agent_id="agent1", results=[])
-    log_learn(content="test content", namespace=ns, agent_id="agent1", result={"memory_id": "x"})
-    
-    recalls = get_audit_log(namespace=ns, action_filter="read")
-    learns = get_audit_log(namespace=ns, action_filter="write")
-    
-    assert all(e["action"] == "recall" for e in recalls)
-    assert all(e["action"] == "learn" for e in learns)
+    try:
+        log_recall(query="test query", namespace=ns, agent_id="agent1", results=[])
+        log_learn(content="test content", namespace=ns, agent_id="agent1", result={"memory_id": "x"})
+
+        recalls = get_audit_log(namespace=ns, action_filter="read")
+        learns = get_audit_log(namespace=ns, action_filter="write")
+
+        assert all(e["action"] == "recall" for e in recalls)
+        assert all(e["action"] == "learn" for e in learns)
+    finally:
+        _cleanup_ns(ns)
 
 
 def test_audit_stats():
     """Audit stats should return accurate aggregate counts."""
     ns = "test_audit_stats"
-    log_recall(query="q1", namespace=ns, agent_id="agent-a", results=[])
-    log_recall(query="q2", namespace=ns, agent_id="agent-b", results=[])
-    log_learn(content="c1", namespace=ns, agent_id="agent-a", result={"memory_id": "x", "conflict": True})
-    
-    stats = get_audit_stats(ns)
-    assert stats["total_recalls"] >= 2
-    assert stats["total_learns"] >= 1
-    assert "agent-a" in stats["agents"]
-    assert stats["conflicts_detected"] >= 1
+    try:
+        log_recall(query="q1", namespace=ns, agent_id="agent-a", results=[])
+        log_recall(query="q2", namespace=ns, agent_id="agent-b", results=[])
+        log_learn(
+            content="c1",
+            namespace=ns,
+            agent_id="agent-a",
+            result={"memory_id": "x", "conflict": True},
+        )
+
+        stats = get_audit_stats(ns)
+        assert stats["total_recalls"] >= 2
+        assert stats["total_learns"] >= 1
+        assert "agent-a" in stats["agents"]
+        assert stats["conflicts_detected"] >= 1
+    finally:
+        _cleanup_ns(ns)
 
 
 # --- Context Builder Tests ---
 
+
 def test_context_builder_returns_string():
     """build_context should return a non-empty string when memories exist."""
-    mesh = Mesh(namespace="test_context", agent_id="test")
-    mesh.learn("the deploy script is at ./scripts/deploy.sh", memory_type="instruction")
-    mesh.learn("staging URL is staging.example.com", memory_type="fact")
-    
-    result = build_context(namespace="test_context", count=5)
-    assert isinstance(result, str)
-    assert len(result) > 0
-    
-    delete_namespace("test_context")
+    ns = "test_context"
+    try:
+        mesh = Mesh(namespace=ns, agent_id="test")
+        mesh.learn("the deploy script is at ./scripts/deploy.sh", memory_type="instruction")
+        mesh.learn("staging URL is staging.example.com", memory_type="fact")
+
+        result = build_context(namespace=ns, count=5)
+        assert isinstance(result, str)
+        assert len(result) > 0
+    finally:
+        _cleanup_ns(ns)
 
 
 def test_context_builder_formats():
     """build_context should support markdown, plain, xml, and json formats."""
-    mesh = Mesh(namespace="test_context_fmt", agent_id="test")
-    mesh.learn("format test memory")
-    
-    for fmt in ["markdown", "plain", "xml", "json"]:
-        result = build_context(namespace="test_context_fmt", format=fmt)
-        assert isinstance(result, str)
-        assert len(result) > 0
-    
-    delete_namespace("test_context_fmt")
+    ns = "test_context_fmt"
+    try:
+        mesh = Mesh(namespace=ns, agent_id="test")
+        mesh.learn("format test memory")
+
+        for fmt in ["markdown", "plain", "xml", "json"]:
+            result = build_context(namespace=ns, format=fmt)
+            assert isinstance(result, str)
+            assert len(result) > 0
+    finally:
+        _cleanup_ns(ns)
 
 
 def test_context_builder_empty_namespace():
     """build_context should return empty string for empty/nonexistent namespace."""
-    result = build_context(namespace="test_context_empty_xyz", count=5)
-    assert result == ""
+    ns = "test_context_empty_xyz"
+    try:
+        result = build_context(namespace=ns, count=5)
+        assert result == ""
+    finally:
+        _cleanup_ns(ns)
 
 
 # --- Digest Tests ---
 
+
 def test_digest_structure():
     """generate_digest should return a dict with expected keys."""
-    digest = generate_digest(namespace="test_digest_struct", hours=24)
-    
-    required_keys = [
-        "namespace", "hours", "since", "new_memories", "new_count",
-        "contradictions", "contradiction_count", "stale_memories",
-        "stale_count", "total_recalls", "agents_active"
-    ]
-    for key in required_keys:
-        assert key in digest, f"Missing key: {key}"
+    ns = "test_digest_struct"
+    try:
+        digest = generate_digest(namespace=ns, hours=24)
+        required_keys = [
+            "namespace",
+            "hours",
+            "since",
+            "new_memories",
+            "new_count",
+            "contradictions",
+            "contradiction_count",
+            "stale_memories",
+            "stale_count",
+            "total_recalls",
+            "agents_active",
+        ]
+        for key in required_keys:
+            assert key in digest, f"Missing key: {key}"
+    finally:
+        _cleanup_ns(ns)
 
 
 def test_digest_counts_new_memories():
     """Digest should count memories created in the time window."""
-    mesh = Mesh(namespace="test_digest_count", agent_id="test")
-    mesh.learn("digest test memory one")
-    mesh.learn("digest test memory two")
-    
-    digest = generate_digest(namespace="test_digest_count", hours=1)
-    assert digest["new_count"] >= 2
-    
-    delete_namespace("test_digest_count")
+    ns = "test_digest_count"
+    try:
+        mesh = Mesh(namespace=ns, agent_id="test")
+        mesh.learn("digest test memory one")
+        mesh.learn("digest test memory two")
+
+        digest = generate_digest(namespace=ns, hours=1)
+        assert digest["new_count"] >= 2
+    finally:
+        _cleanup_ns(ns)
 
 
 # --- HTTP API Tests ---
 
+
 def test_http_server_imports():
     """HTTP server module should import without errors."""
     from mesh import http_server
+
     assert http_server.app is not None
 
 
 def test_http_endpoints_exist():
     """HTTP server should have all required endpoints."""
     from mesh.http_server import app
+
     routes = [r.path for r in app.routes]
-    
-    required = ["/health", "/learn", "/recall", "/forget", "/inspect", "/patterns", "/context", "/audit"]
+    required = [
+        "/health",
+        "/learn",
+        "/recall",
+        "/update",
+        "/forget",
+        "/inspect",
+        "/patterns",
+        "/contradictions",
+        "/context",
+        "/audit",
+    ]
     for endpoint in required:
         assert endpoint in routes, f"Missing endpoint: {endpoint}"
 
@@ -158,8 +248,9 @@ def test_http_endpoints_exist():
 def test_http_health_endpoint():
     """Health endpoint should return ok status."""
     from fastapi.testclient import TestClient
+
     from mesh.http_server import app
-    
+
     client = TestClient(app)
     response = client.get("/health")
     assert response.status_code == 200
@@ -168,65 +259,170 @@ def test_http_health_endpoint():
     assert data["version"] == "0.4"
 
 
-def test_http_learn_and_recall():
-    """HTTP learn and recall should work end-to-end."""
+def test_http_learn_update_and_recall():
+    """HTTP learn, update, and recall should work end-to-end."""
     from fastapi.testclient import TestClient
+
     from mesh.http_server import app
-    import os
-    os.environ["MESH_NAMESPACE"] = "test_http_e2e"
-    
+
+    ns = "test_http_e2e"
+    prev_ns = os.environ.get("MESH_NAMESPACE")
+    os.environ["MESH_NAMESPACE"] = ns
     client = TestClient(app)
-    
-    # Learn
-    r = client.post("/learn", json={
-        "content": "HTTP test: production port is 8080",
-        "memory_type": "fact",
-        "namespace": "test_http_e2e"
-    })
-    assert r.status_code == 200
-    assert r.json()["status"] == "ok"
-    
-    # Recall
-    r = client.post("/recall", json={
-        "query": "what port is production?",
-        "count": 3,
-        "namespace": "test_http_e2e"
-    })
-    assert r.status_code == 200
-    data = r.json()
-    assert data["status"] == "ok"
-    assert data["count"] >= 1
-    assert any("8080" in m["content"] for m in data["results"])
-    
-    delete_namespace("test_http_e2e")
+
+    try:
+        # Learn (including 'process' type from README)
+        r = client.post(
+            "/learn",
+            json={
+                "content": "HTTP test: production port is 8080",
+                "memory_type": "process",
+                "tags": ["prod", "network"],
+                "namespace": ns,
+            },
+        )
+        assert r.status_code == 200
+        learned_data = r.json()
+        assert learned_data["status"] == "ok"
+        mem_id = learned_data["result"]["memory_id"]
+
+        # Recall with memory_type filter
+        r = client.post(
+            "/recall",
+            json={
+                "query": "what port is production?",
+                "count": 3,
+                "memory_type": "process",
+                "namespace": ns,
+            },
+        )
+        assert r.status_code == 200
+        data = r.json()
+        assert data["status"] == "ok"
+        assert data["count"] >= 1
+        assert any("8080" in m["content"] for m in data["results"])
+
+        # Update in-place
+        r_up = client.post(
+            "/update",
+            json={
+                "memory_id": mem_id,
+                "content": "HTTP test: production port is 9090",
+                "namespace": ns,
+            },
+        )
+        assert r_up.status_code == 200
+        assert r_up.json()["result"]["memory"]["content"] == "HTTP test: production port is 9090"
+    finally:
+        if prev_ns is None:
+            os.environ.pop("MESH_NAMESPACE", None)
+        else:
+            os.environ["MESH_NAMESPACE"] = prev_ns
+        _cleanup_ns(ns)
 
 
 def test_http_local_only_stored():
     """HTTP learn with local_only should store private memory."""
     from fastapi.testclient import TestClient
+
     from mesh.http_server import app
-    
+
+    ns = "test_http_private"
     client = TestClient(app)
-    r = client.post("/learn", json={
-        "content": "secret: API key is sk-test-xyz",
-        "local_only": True,
-        "namespace": "test_http_private"
-    })
-    assert r.status_code == 200
-    
-    delete_namespace("test_http_private")
+
+    try:
+        r = client.post(
+            "/learn",
+            json={
+                "content": "secret: API key is sk-test-xyz",
+                "local_only": True,
+                "namespace": ns,
+            },
+        )
+        assert r.status_code == 200
+    finally:
+        _cleanup_ns(ns)
+
+
+# --- MCP Server Tool Tests ---
+
+
+def test_mcp_server_tools_and_execution():
+    """MCP server should expose all 10 tools and execute learn/recall/update/resolve cleanly."""
+    from mesh.mcp_server import call_tool, list_tools
+
+    ns = "test_mcp_tools"
+    try:
+        tools = asyncio.run(list_tools())
+        tool_names = {t.name for t in tools}
+        expected_tools = {
+            "mesh_learn",
+            "mesh_recall",
+            "mesh_update",
+            "mesh_forget",
+            "mesh_inspect",
+            "mesh_context",
+            "mesh_patterns",
+            "mesh_contradictions",
+            "mesh_resolve_contradiction",
+            "mesh_sync",
+        }
+        assert expected_tools.issubset(tool_names)
+
+        # Call mesh_learn
+        learn_out = asyncio.run(
+            call_tool(
+                "mesh_learn",
+                {
+                    "content": "MCP test: staging server uses port 7000",
+                    "memory_type": "fact",
+                    "tags": ["mcp", "staging"],
+                    "namespace": ns,
+                },
+            )
+        )
+        learn_json = json.loads(learn_out[0].text)
+        assert learn_json["status"] == "stored"
+        mid = learn_json["memory_id"]
+
+        # Call mesh_update
+        update_out = asyncio.run(
+            call_tool(
+                "mesh_update",
+                {
+                    "memory_id": mid,
+                    "content": "MCP test: staging server uses port 7001",
+                    "namespace": ns,
+                },
+            )
+        )
+        update_json = json.loads(update_out[0].text)
+        assert update_json["status"] == "updated"
+
+        # Call mesh_recall
+        recall_out = asyncio.run(
+            call_tool(
+                "mesh_recall",
+                {"query": "port 7001", "namespace": ns},
+            )
+        )
+        recall_json = json.loads(recall_out[0].text)
+        assert recall_json["count"] == 1
+        assert "7001" in recall_json["results"][0]["content"]
+    finally:
+        _cleanup_ns(ns)
 
 
 # --- Passive Capture Tests ---
 
-from mesh.passive import (
-    detect_provider, extract_memories_from_log,
-    _extract_local, _is_credential, _has_signal
-)
 
 def test_detect_provider_anthropic_key():
     """Should detect Anthropic when ANTHROPIC_API_KEY is set."""
-    with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "sk-ant-test", "MESH_AI_PROVIDER": ""}, clear=False):
+    with patch.dict(
+        "os.environ",
+        {"ANTHROPIC_API_KEY": "sk-ant-test", "MESH_AI_PROVIDER": ""},
+        clear=False,
+    ):
         config = detect_provider()
         assert config["provider"] == "anthropic"
         assert config["available"] is True
@@ -246,7 +442,7 @@ def test_detect_provider_explicit_override():
     env = {
         "MESH_AI_PROVIDER": "groq",
         "GROQ_API_KEY": "gsk_test",
-        "ANTHROPIC_API_KEY": "sk-also-set"
+        "ANTHROPIC_API_KEY": "sk-also-set",
     }
     with patch.dict("os.environ", env, clear=False):
         config = detect_provider()
@@ -256,7 +452,12 @@ def test_detect_provider_explicit_override():
 
 def test_detect_provider_no_keys_returns_local():
     """Should return local provider when no keys are set and Ollama is not running."""
-    env = {"ANTHROPIC_API_KEY": "", "OPENAI_API_KEY": "", "GROQ_API_KEY": "", "MESH_AI_PROVIDER": ""}
+    env = {
+        "ANTHROPIC_API_KEY": "",
+        "OPENAI_API_KEY": "",
+        "GROQ_API_KEY": "",
+        "MESH_AI_PROVIDER": "",
+    }
     with patch.dict("os.environ", env, clear=False):
         with patch("mesh.passive._ollama_is_running", return_value=False):
             config = detect_provider()
@@ -266,7 +467,12 @@ def test_detect_provider_no_keys_returns_local():
 
 def test_detect_provider_ollama_fallback():
     """Should detect Ollama when it's running and no API keys are set."""
-    env = {"ANTHROPIC_API_KEY": "", "OPENAI_API_KEY": "", "GROQ_API_KEY": "", "MESH_AI_PROVIDER": ""}
+    env = {
+        "ANTHROPIC_API_KEY": "",
+        "OPENAI_API_KEY": "",
+        "GROQ_API_KEY": "",
+        "MESH_AI_PROVIDER": "",
+    }
     with patch.dict("os.environ", env, clear=False):
         with patch("mesh.passive._ollama_is_running", return_value=True):
             with patch("mesh.passive._detect_ollama_model", return_value="llama3"):
@@ -310,58 +516,74 @@ def test_extract_dry_run_does_not_store():
     mock_resp = MagicMock()
     mock_resp.status_code = 200
     mock_resp.json.return_value = {
-        "content": [{"text": '[{"content": "dry run test fact", "type": "fact", "tags": [], "private": false}]'}]
+        "content": [
+            {
+                "text": '[{"content": "dry run test fact", "type": "fact", "tags": [], "private": false}]'
+            }
+        ]
     }
     with patch("httpx.post", return_value=mock_resp):
         result = extract_memories_from_log(
             log_text="dry run test session log with facts",
             namespace="test_dry_run_passive",
-            dry_run=True
+            dry_run=True,
         )
     assert result["stored_count"] == 0
 
 
 def test_extract_anthropic_stores_memories():
-    """Anthropic extraction path should store memories."""
+    """Anthropic extraction path should store memories including process/decision types."""
+    ns = "test_passive_anthropic"
     mock_resp = MagicMock()
     mock_resp.status_code = 200
     mock_resp.json.return_value = {
-        "content": [{"text": '[{"content": "prod uses port 8080", "type": "fact", "tags": ["infra"], "private": false}]'}]
+        "content": [
+            {
+                "text": '[{"content": "prod uses port 8080", "type": "process", "tags": ["infra"], "private": false}]'
+            }
+        ]
     }
-    with patch("httpx.post", return_value=mock_resp):
-        with patch("mesh.passive.detect_provider", return_value={
-            "provider": "anthropic",
-            "api_key": "sk-test",
-            "model": "claude-haiku-4-5-20251001",
-            "base_url": None,
-            "available": True
-        }):
-            result = extract_memories_from_log(
-                log_text="we set production to use port 8080",
-                namespace="test_passive_anthropic",
-                dry_run=False
-            )
-    assert result["stored_count"] >= 1
-    delete_namespace("test_passive_anthropic")
+    try:
+        with patch("httpx.post", return_value=mock_resp):
+            with patch(
+                "mesh.passive.detect_provider",
+                return_value={
+                    "provider": "anthropic",
+                    "api_key": "sk-test",
+                    "model": "claude-haiku-4-5-20251001",
+                    "base_url": None,
+                    "available": True,
+                },
+            ):
+                result = extract_memories_from_log(
+                    log_text="we set production to use port 8080",
+                    namespace=ns,
+                    dry_run=False,
+                )
+        assert result["stored_count"] >= 1
+    finally:
+        _cleanup_ns(ns)
 
 
 def test_extract_falls_back_to_local_on_api_error():
     """Should fall back to local extraction if AI API call fails."""
-    with patch("mesh.passive.detect_provider", return_value={
-        "provider": "anthropic",
-        "api_key": "bad-key",
-        "model": "claude-haiku-4-5-20251001",
-        "base_url": None,
-        "available": True
-    }):
+    with patch(
+        "mesh.passive.detect_provider",
+        return_value={
+            "provider": "anthropic",
+            "api_key": "bad-key",
+            "model": "claude-haiku-4-5-20251001",
+            "base_url": None,
+            "available": True,
+        },
+    ):
         with patch("mesh.passive._extract_with_anthropic", side_effect=Exception("API error")):
             result = extract_memories_from_log(
                 log_text="the deploy script is at ./deploy.sh and must be run as root",
                 namespace="test_passive_fallback",
                 dry_run=True,
-                verbose=False
+                verbose=False,
             )
-    # Should have fallen back to local and found something (or at least not crashed)
     assert "provider_used" in result
     assert "local" in result["provider_used"]
 
@@ -372,6 +594,25 @@ def test_force_local_skips_ai():
         log_text="the staging URL is staging.example.com and must be used for testing",
         namespace="test_force_local",
         force_local=True,
-        dry_run=True
+        dry_run=True,
     )
     assert result["provider_used"] == "local-keyword-extractor"
+
+
+def test_extract_reads_log_file_path():
+    """extract_memories_from_log should automatically read files when passed a file path."""
+    ns = "test_passive_filepath"
+    with tempfile.NamedTemporaryFile(suffix=".log", mode="w", delete=False, encoding="utf-8") as f:
+        f.write("We decided to use PostgreSQL 16 on port 5432 for production.\n")
+        path = f.name
+    try:
+        result = extract_memories_from_log(
+            log_text=path,
+            namespace=ns,
+            force_local=True,
+            dry_run=False,
+        )
+        assert result["stored_count"] >= 1
+    finally:
+        _cleanup_ns(ns)
+        Path(path).unlink(missing_ok=True)

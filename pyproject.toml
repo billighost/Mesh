@@ -4,32 +4,37 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mesh-context-layer"
-version = "0.4.4"
-description = "Shared memory layer for AI agents — MCP server and Python library"
+version = "0.5.0"
+description = "High-speed shared semantic & hybrid memory layer for AI agents — MCP server, CLI, and Python library"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-keywords = ["ai", "agents", "memory", "mcp", "llm", "claude", "cursor"]
+keywords = ["ai", "agents", "memory", "mcp", "llm", "claude", "cursor", "hybrid-search"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    "chromadb>=0.5.0",
+    "numpy>=1.24.0",
     "sentence-transformers>=3.0.0",
     "mcp>=1.0.0",
     "click>=8.0.0",
     "fastapi>=0.110.0",
+    "pydantic>=2.0.0",
     "uvicorn>=0.29.0",
     "httpx>=0.27.0",
 ]
 
 [project.optional-dependencies]
+legacy = [
+    "chromadb>=0.5.0",
+]
 test = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
@@ -50,9 +55,12 @@ mesh-export = "mesh.cli:export_cmd"
 mesh-import = "mesh.cli:import_cmd"
 mesh-namespaces = "mesh.cli:namespaces_cmd"
 mesh-http = "mesh.http_server:start"
+mesh-server-http = "mesh.http_server:start"
 mesh-context = "mesh.cli:context_cmd"
 mesh-add = "mesh.cli:add_cmd"
 mesh-ask = "mesh.cli:ask_cmd"
+mesh-update = "mesh.cli:update_cmd"
+mesh-forget = "mesh.cli:forget_cmd"
 mesh-why = "mesh.cli:why_cmd"
 mesh-status = "mesh.cli:status_cmd"
 mesh-capture = "mesh.passive:capture_cmd"

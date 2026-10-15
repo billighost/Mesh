@@ -1,36 +1,51 @@
 """
-Mesh Dashboard — v0.4
-Redesigned: full memory management (add/edit/delete), dark UI, audit, digest, patterns.
+Mesh Dashboard — Minimal, high-speed web UI for managing shared agent memory.
 
 Start: mesh-dashboard
        mesh-dashboard --namespace my-project --port 7433
 """
 
-import json
-import webbrowser
+from __future__ import annotations
+
 import threading
 import time
-from typing import Optional, List
+import webbrowser
+from typing import Any, List, Optional
 
 import click
 import uvicorn
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse
-from pydantic import BaseModel
+from fastapi.responses import HTMLResponse
+from pydantic import BaseModel, Field
 
-from .memory import Mesh
-from .namespaces import list_namespaces, delete_namespace, namespace_stats
+from .audit import get_audit_log, log_forget, log_learn, log_recall, log_update
+from .digest import generate_digest
 from .io import export_namespace
+from .memory import VALID_MEMORY_TYPES, Mesh, warmup_model
+from .namespaces import delete_namespace, list_namespaces, namespace_stats
 
-api = FastAPI(title="Mesh Dashboard", version="0.4.0")
+api = FastAPI(title="Mesh Dashboard", version="0.4.4")
 
+_MESH_LOCK = threading.RLock()
+_MESH_CACHE: dict[str, Mesh] = {}
+_default_namespace: str = "shared"
 _mesh: Optional[Mesh] = None
 
 
-def get_mesh() -> Mesh:
-    if _mesh is None:
-        raise RuntimeError("Mesh not initialised")
-    return _mesh
+def get_mesh(namespace: Optional[str] = None) -> Mesh:
+    """Return a cached Mesh instance for the requested (or default) namespace."""
+    global _mesh
+    ns = (namespace or (_mesh.namespace if _mesh is not None else _default_namespace)).strip() or "shared"
+    with _MESH_LOCK:
+        if _mesh is not None and _mesh.namespace == ns:
+            return _mesh
+        inst = _MESH_CACHE.get(ns)
+        if inst is None:
+            inst = Mesh(namespace=ns, agent_id="dashboard")
+            _MESH_CACHE[ns] = inst
+        if _mesh is None:
+            _mesh = inst
+        return inst
 
 
 # ── Request models ──────────────────────────────────────────────────────────
@@ -39,25 +54,27 @@ class CreateMemoryRequest(BaseModel):
     content: str
     memory_type: str = "fact"
     confidence: float = 1.0
-    tags: List[str] = []
+    tags: List[str] = Field(default_factory=list)
     local_only: bool = False
     ttl_days: Optional[float] = None
+    namespace: Optional[str] = None
 
 
 class UpdateMemoryRequest(BaseModel):
-    content: str
-    memory_type: str = "fact"
-    confidence: float = 1.0
-    tags: List[str] = []
-    local_only: bool = False
+    content: Optional[str] = None
+    memory_type: Optional[str] = None
+    confidence: Optional[float] = None
+    tags: Optional[List[str]] = None
+    local_only: Optional[bool] = None
     ttl_days: Optional[float] = None
+    namespace: Optional[str] = None
 
 
 # ── REST API endpoints ──────────────────────────────────────────────────────
 
 @api.get("/api/stats")
-def get_stats():
-    mesh = get_mesh()
+def get_stats(namespace: Optional[str] = None) -> dict[str, Any]:
+    mesh = get_mesh(namespace)
     patterns = mesh.patterns()
     contradictions = mesh.contradictions()
     return {
@@ -71,15 +88,15 @@ def get_stats():
 
 
 @api.get("/api/memories")
-def get_memories(limit: int = 200):
-    return get_mesh().inspect(limit=limit)
+def get_memories(limit: int = 200, namespace: Optional[str] = None) -> list[dict[str, Any]]:
+    return get_mesh(namespace).inspect(limit=limit)
 
 
 @api.post("/api/memories")
-def create_memory(req: CreateMemoryRequest):
+def create_memory(req: CreateMemoryRequest) -> dict[str, Any]:
     """Add a new memory from the dashboard."""
     try:
-        mesh = get_mesh()
+        mesh = get_mesh(req.namespace)
         result = mesh.learn(
             content=req.content,
             memory_type=req.memory_type,
@@ -87,6 +104,12 @@ def create_memory(req: CreateMemoryRequest):
             tags=req.tags,
             local_only=req.local_only,
             ttl_days=req.ttl_days if req.ttl_days and req.ttl_days > 0 else None,
+        )
+        log_learn(
+            content=req.content,
+            namespace=mesh.namespace,
+            agent_id="dashboard",
+            result=result,
         )
         return {"status": "ok", "result": result}
     except Exception as e:
@@ -94,18 +117,25 @@ def create_memory(req: CreateMemoryRequest):
 
 
 @api.put("/api/memories/{memory_id}")
-def update_memory(memory_id: str, req: UpdateMemoryRequest):
-    """Update a memory: deletes old embedding and re-learns with new content."""
+def update_memory(memory_id: str, req: UpdateMemoryRequest) -> dict[str, Any]:
+    """Update a memory in-place, preserving its ID, creation time, and access count."""
     try:
-        mesh = get_mesh()
-        mesh.forget(memory_id)
-        result = mesh.learn(
+        mesh = get_mesh(req.namespace)
+        result = mesh.update(
+            memory_id=memory_id,
             content=req.content,
             memory_type=req.memory_type,
             confidence=req.confidence,
             tags=req.tags,
             local_only=req.local_only,
             ttl_days=req.ttl_days if req.ttl_days and req.ttl_days > 0 else None,
+            reset_ttl=True,
+        )
+        log_update(
+            memory_id=memory_id,
+            content=req.content,
+            namespace=mesh.namespace,
+            agent_id="dashboard",
         )
         return {"status": "ok", "result": result}
     except Exception as e:
@@ -113,41 +143,46 @@ def update_memory(memory_id: str, req: UpdateMemoryRequest):
 
 
 @api.delete("/api/memories/{memory_id}")
-def delete_memory(memory_id: str):
-    get_mesh().forget(memory_id)
+def delete_memory(memory_id: str, namespace: Optional[str] = None) -> dict[str, str]:
+    mesh = get_mesh(namespace)
+    mesh.forget(memory_id)
+    log_forget(memory_id=memory_id, namespace=mesh.namespace, agent_id="dashboard")
     return {"status": "deleted", "memory_id": memory_id}
 
 
 @api.get("/api/patterns")
-def get_patterns():
-    return get_mesh().patterns()
+def get_patterns(namespace: Optional[str] = None) -> dict[str, Any]:
+    return get_mesh(namespace).patterns()
 
 
 @api.get("/api/contradictions")
-def get_contradictions():
-    return get_mesh().contradictions()
+def get_contradictions(namespace: Optional[str] = None) -> list[dict[str, Any]]:
+    return get_mesh(namespace).contradictions()
 
 
 @api.post("/api/contradictions/{contradiction_id}/resolve")
-def resolve_contradiction(contradiction_id: str):
-    get_mesh().resolve_contradiction(contradiction_id)
+def resolve_contradiction(contradiction_id: str, namespace: Optional[str] = None) -> dict[str, str]:
+    get_mesh(namespace).resolve_contradiction(contradiction_id)
     return {"status": "resolved"}
 
 
 @api.get("/api/search")
-def search(q: str, n: int = 20):
+def search(q: str, n: int = 25, namespace: Optional[str] = None) -> list[dict[str, Any]]:
     if not q.strip():
         raise HTTPException(status_code=400, detail="Query cannot be empty")
-    return get_mesh().recall(q, n=n)
+    mesh = get_mesh(namespace)
+    results = mesh.recall(q, n=n)
+    log_recall(query=q, namespace=mesh.namespace, agent_id="dashboard", results=results)
+    return results
 
 
 @api.get("/api/namespaces")
-def get_namespaces():
+def get_namespaces() -> list[dict[str, Any]]:
     return list_namespaces()
 
 
 @api.get("/api/namespaces/{namespace}/stats")
-def get_namespace_stats(namespace: str):
+def get_namespace_stats(namespace: str) -> dict[str, Any]:
     try:
         return namespace_stats(namespace)
     except ValueError as e:
@@ -155,962 +190,572 @@ def get_namespace_stats(namespace: str):
 
 
 @api.delete("/api/namespaces/{namespace}")
-def api_delete_namespace(namespace: str):
+def api_delete_namespace(namespace: str) -> dict[str, Any]:
+    with _MESH_LOCK:
+        _MESH_CACHE.pop(namespace, None)
     count = delete_namespace(namespace)
     return {"deleted": True, "memories_removed": count}
 
 
 @api.get("/api/export/{namespace}")
-def api_export_namespace(namespace: str, include_embeddings: bool = False):
+def api_export_namespace(namespace: str, include_embeddings: bool = False) -> dict[str, Any]:
     return export_namespace(namespace=namespace, include_embeddings=include_embeddings)
 
 
 @api.get("/api/audit")
-async def get_audit(namespace: str = "shared", limit: int = 100, action: str = "all"):
-    from .audit import get_audit_log
-    return get_audit_log(namespace=namespace, limit=limit, action_filter=action)
+async def get_audit(
+    namespace: Optional[str] = None,
+    limit: int = 100,
+    action: str = "all",
+) -> list[dict[str, Any]]:
+    mesh = get_mesh(namespace)
+    return get_audit_log(namespace=mesh.namespace, limit=limit, action_filter=action)
 
 
 @api.get("/api/digest")
-async def get_digest(namespace: str = "shared", hours: int = 24):
-    from .digest import generate_digest
-    return generate_digest(namespace=namespace, hours=hours)
+async def get_digest(namespace: Optional[str] = None, hours: int = 24) -> dict[str, Any]:
+    mesh = get_mesh(namespace)
+    return generate_digest(namespace=mesh.namespace, hours=hours)
 
 
-# ── Dashboard HTML ──────────────────────────────────────────────────────────
+# ── Minimal, Responsive Dashboard HTML ──────────────────────────────────────
 
 DASHBOARD_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Mesh Dashboard</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<title>Mesh</title>
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  --bg:        #070b14;
-  --bg-2:      #0c1220;
-  --bg-3:      #111827;
-  --bg-4:      #1a2236;
-  --border:    rgba(148,163,184,0.07);
-  --border-2:  rgba(148,163,184,0.13);
-  --border-3:  rgba(148,163,184,0.22);
-  --text:      #e2e8f4;
-  --text-2:    #94a3b8;
-  --text-3:    #475569;
-  --mint:      #10d9a4;
-  --mint-dim:  rgba(16,217,164,0.12);
-  --mint-glow: rgba(16,217,164,0.25);
-  --purple:    #a78bfa;
-  --purple-dim:rgba(167,139,250,0.12);
-  --amber:     #fbbf24;
-  --amber-dim: rgba(251,191,36,0.12);
-  --red:       #f87171;
-  --red-dim:   rgba(248,113,113,0.12);
-  --blue:      #60a5fa;
-  --blue-dim:  rgba(96,165,250,0.12);
-  --green:     #34d399;
-  --green-dim: rgba(52,211,153,0.12);
-
-  --type-fact:        #60a5fa;
-  --type-preference:  #a78bfa;
-  --type-context:     #10d9a4;
-  --type-result:      #34d399;
-  --type-instruction: #fbbf24;
-
-  --radius: 8px;
-  --radius-lg: 12px;
-  --radius-xl: 16px;
-  --font: 'Outfit', sans-serif;
-  --mono: 'JetBrains Mono', monospace;
+  --bg:       #090a0f;
+  --surface:  #10121a;
+  --surface2: #161924;
+  --border:   rgba(255, 255, 255, 0.07);
+  --border2:  rgba(255, 255, 255, 0.13);
+  --text:     #eceff4;
+  --muted:    #8b95a7;
+  --subtle:   #525b6d;
+  --accent:   #10b981;
+  --accent-bg:rgba(16, 185, 129, 0.12);
+  --blue:     #3b82f6;
+  --purple:   #8b5cf6;
+  --amber:    #f59e0b;
+  --red:      #ef4444;
+  --font:     -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, sans-serif;
+  --mono:     "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
-html, body { height: 100%; }
-
-body {
-  font-family: var(--font);
+html, body {
+  height: 100%;
   background: var(--bg);
   color: var(--text);
-  font-size: 14px;
-  line-height: 1.5;
-  overflow-x: hidden;
+  font-family: var(--font);
+  font-size: 13px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
 }
 
-/* ── Scrollbar ── */
-::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--bg-4); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: var(--border-3); }
+::-webkit-scrollbar-thumb { background: var(--surface2); border-radius: 3px; }
 
-/* ── Layout ── */
-.layout { display: flex; flex-direction: column; height: 100vh; }
-
-/* ── Navbar ── */
-nav {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 0 24px;
-  height: 58px;
-  background: var(--bg-2);
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-  position: relative;
-  z-index: 100;
+.app {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 0 16px 40px;
 }
 
-.nav-logo {
+/* ── Top Bar ── */
+header {
   display: flex;
   align-items: center;
   gap: 10px;
-  font-size: 17px;
-  font-weight: 700;
+  height: 50px;
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  background: rgba(9, 10, 15, 0.88);
+  backdrop-filter: blur(10px);
+  z-index: 50;
+  flex-wrap: wrap;
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-weight: 600;
+  font-size: 14px;
   letter-spacing: -0.02em;
   color: var(--text);
 }
 
-.nav-logo-icon {
-  width: 28px; height: 28px;
-  background: linear-gradient(135deg, var(--mint), #0ea5e9);
-  border-radius: 7px;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 14px;
-}
-
-.nav-ns {
-  display: flex; align-items: center; gap: 6px;
-  padding: 4px 10px 4px 8px;
-  background: var(--bg-3);
-  border: 1px solid var(--border-2);
-  border-radius: 20px;
-  font-size: 12px;
-  color: var(--text-2);
-}
-.nav-ns-dot {
-  width: 6px; height: 6px;
+.brand-dot {
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
-  background: var(--mint);
-  box-shadow: 0 0 6px var(--mint-glow);
-  animation: pulse 2s ease-in-out infinite;
-}
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.5; }
+  background: var(--accent);
 }
 
-.nav-search {
-  flex: 1;
-  max-width: 380px;
-  margin-left: 8px;
-  position: relative;
-}
-.nav-search input {
-  width: 100%;
-  padding: 7px 12px 7px 34px;
-  background: var(--bg-3);
-  border: 1px solid var(--border-2);
-  border-radius: var(--radius);
-  color: var(--text);
-  font-family: var(--font);
-  font-size: 13px;
+.ns-select {
+  background: var(--surface);
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-size: 12px;
+  font-family: var(--mono);
   outline: none;
-  transition: border-color 0.15s;
-}
-.nav-search input:focus { border-color: var(--mint); }
-.nav-search input::placeholder { color: var(--text-3); }
-.nav-search-icon {
-  position: absolute;
-  left: 10px; top: 50%;
-  transform: translateY(-50%);
-  color: var(--text-3);
-  pointer-events: none;
-  font-size: 13px;
-}
-
-.nav-right { margin-left: auto; display: flex; gap: 8px; align-items: center; }
-
-.btn-add {
-  display: flex; align-items: center; gap: 6px;
-  padding: 7px 16px;
-  background: var(--mint);
-  color: #030a06;
-  font-family: var(--font);
-  font-size: 13px;
-  font-weight: 600;
-  border: none;
-  border-radius: var(--radius);
   cursor: pointer;
-  transition: all 0.15s;
-  letter-spacing: -0.01em;
 }
-.btn-add:hover { background: #0ec898; transform: translateY(-1px); box-shadow: 0 4px 12px var(--mint-glow); }
+.ns-select:hover, .ns-select:focus { border-color: var(--border2); color: var(--text); }
 
-.btn-icon {
-  padding: 7px;
-  background: var(--bg-3);
-  border: 1px solid var(--border-2);
-  border-radius: var(--radius);
-  cursor: pointer;
-  color: var(--text-2);
-  font-size: 14px;
-  transition: all 0.15s;
-  display: flex; align-items: center;
-}
-.btn-icon:hover { background: var(--bg-4); color: var(--text); border-color: var(--border-3); }
-
-/* ── Stats Bar ── */
-.stats-bar {
-  display: flex;
-  gap: 1px;
-  padding: 0 24px;
-  background: var(--bg-2);
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-}
-
-.stat-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 20px;
+.search-wrap {
   flex: 1;
+  min-width: 180px;
+  max-width: 360px;
   position: relative;
 }
-.stat-item + .stat-item::before {
-  content: '';
+.search-wrap input {
+  width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 26px 5px 10px;
+  color: var(--text);
+  font-size: 12.5px;
+  outline: none;
+  transition: border-color 0.12s;
+}
+.search-wrap input:focus { border-color: var(--accent); }
+.search-wrap input::placeholder { color: var(--subtle); }
+.search-kbd {
   position: absolute;
-  left: 0; top: 20%; height: 60%;
-  width: 1px;
-  background: var(--border);
-}
-
-.stat-num {
-  font-size: 24px;
-  font-weight: 700;
-  letter-spacing: -0.03em;
-  line-height: 1;
-}
-.stat-num.mint  { color: var(--mint); }
-.stat-num.amber { color: var(--amber); }
-.stat-num.red   { color: var(--red); }
-.stat-num.purple{ color: var(--purple); }
-.stat-num.blue  { color: var(--blue); }
-.stat-num.green { color: var(--green); }
-
-.stat-label { font-size: 11px; color: var(--text-3); font-weight: 500; text-transform: uppercase; letter-spacing: 0.05em; }
-
-/* ── Tabs ── */
-.tabs-bar {
-  display: flex;
-  gap: 2px;
-  padding: 10px 24px 0;
-  background: var(--bg-2);
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-}
-
-.tab {
-  padding: 8px 16px;
-  font-size: 13px;
-  font-family: var(--font);
-  font-weight: 500;
-  color: var(--text-3);
-  border: none;
-  background: transparent;
-  cursor: pointer;
-  border-bottom: 2px solid transparent;
-  margin-bottom: -1px;
-  transition: all 0.15s;
-  display: flex; align-items: center; gap: 6px;
-  border-radius: var(--radius) var(--radius) 0 0;
-}
-.tab:hover { color: var(--text-2); background: var(--bg-3); }
-.tab.active { color: var(--mint); border-bottom-color: var(--mint); }
-.tab-badge {
-  display: inline-flex; align-items: center; justify-content: center;
-  min-width: 18px; height: 18px; padding: 0 5px;
-  background: var(--bg-4);
-  border-radius: 9px;
+  right: 7px;
+  top: 50%;
+  transform: translateY(-50%);
   font-size: 10px;
-  font-weight: 600;
-  color: var(--text-2);
+  font-family: var(--mono);
+  color: var(--subtle);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 4px;
+  pointer-events: none;
 }
-.tab.active .tab-badge { background: var(--mint-dim); color: var(--mint); }
 
-/* ── Content Area ── */
-.content { flex: 1; overflow-y: auto; padding: 20px 24px; }
-
-.panel { display: none; }
-.panel.active { display: block; }
-
-/* ── Memory Grid / List ── */
-.memories-toolbar {
+.metrics-inline {
   display: flex;
-  gap: 10px;
-  margin-bottom: 16px;
   align-items: center;
+  gap: 12px;
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--muted);
+}
+.metric-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.metric-val {
+  font-family: var(--mono);
+  font-weight: 600;
+  color: var(--text);
+}
+.metric-val.warn { color: var(--amber); }
+.metric-val.danger { color: var(--red); }
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  font-family: var(--font);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  transition: all 0.12s;
+  white-space: nowrap;
+}
+.btn:hover { background: var(--surface2); border-color: var(--border2); }
+.btn-primary {
+  background: var(--accent);
+  color: #04130d;
+  border-color: transparent;
+  font-weight: 600;
+}
+.btn-primary:hover { background: #0ea572; border-color: transparent; }
+.btn-danger { color: var(--red); border-color: rgba(239, 68, 68, 0.25); }
+.btn-danger:hover { background: rgba(239, 68, 68, 0.1); }
+
+/* ── Sub-navigation & Toolbar ── */
+.subnav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 12px;
   flex-wrap: wrap;
 }
 
-.filter-group { display: flex; gap: 4px; }
-.filter-btn {
-  padding: 5px 12px;
+.tabs {
+  display: flex;
+  gap: 2px;
+  overflow-x: auto;
+}
+.tab {
+  padding: 4px 10px;
+  border-radius: 5px;
   font-size: 12px;
-  font-family: var(--font);
   font-weight: 500;
-  border: 1px solid var(--border-2);
-  border-radius: 20px;
+  color: var(--muted);
   background: transparent;
-  color: var(--text-3);
+  border: none;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   transition: all 0.12s;
 }
-.filter-btn:hover { color: var(--text-2); border-color: var(--border-3); background: var(--bg-3); }
-.filter-btn.active { color: var(--mint); border-color: var(--mint); background: var(--mint-dim); }
-
-.sort-select {
-  padding: 5px 10px;
-  font-size: 12px;
-  font-family: var(--font);
-  background: var(--bg-3);
-  border: 1px solid var(--border-2);
-  border-radius: var(--radius);
-  color: var(--text-2);
-  outline: none;
-  cursor: pointer;
-  margin-left: auto;
-}
-
-.memory-count {
-  font-size: 12px;
-  color: var(--text-3);
-  margin-left: 4px;
-}
-
-/* ── Memory Card ── */
-.memory-list { display: flex; flex-direction: column; gap: 8px; }
-
-.memory-card {
-  display: flex;
-  background: var(--bg-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  overflow: hidden;
-  transition: border-color 0.15s, box-shadow 0.15s;
-  position: relative;
-}
-.memory-card:hover { border-color: var(--border-2); box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
-.memory-card.stale { border-color: rgba(251,191,36,0.25); }
-.memory-card.stale:hover { border-color: var(--amber); }
-
-.memory-stripe {
-  width: 3px;
-  flex-shrink: 0;
-  background: var(--type-fact);
-}
-.memory-stripe.fact        { background: var(--type-fact); }
-.memory-stripe.preference  { background: var(--type-preference); }
-.memory-stripe.context     { background: var(--type-context); }
-.memory-stripe.result      { background: var(--type-result); }
-.memory-stripe.instruction { background: var(--type-instruction); }
-
-.memory-body {
-  flex: 1;
-  padding: 13px 14px;
-  min-width: 0;
-}
-
-.memory-content {
+.tab:hover { color: var(--text); background: var(--surface); }
+.tab.active { color: var(--text); background: var(--surface2); }
+.tab-count {
   font-family: var(--mono);
-  font-size: 12.5px;
-  line-height: 1.6;
-  color: var(--text);
-  margin-bottom: 10px;
-  word-break: break-word;
+  font-size: 10.5px;
+  color: var(--subtle);
 }
+.tab.active .tab-count { color: var(--accent); }
 
-.memory-meta {
+.toolbar {
   display: flex;
   align-items: center;
   gap: 6px;
+  margin-bottom: 10px;
   flex-wrap: wrap;
 }
-
-.badge {
-  display: inline-flex; align-items: center; gap: 3px;
-  padding: 2px 8px;
-  border-radius: 10px;
-  font-size: 10.5px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
+.chip {
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 11.5px;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  cursor: pointer;
 }
-.badge-fact        { background: var(--blue-dim);   color: var(--blue); }
-.badge-preference  { background: var(--purple-dim); color: var(--purple); }
-.badge-context     { background: var(--mint-dim);   color: var(--mint); }
-.badge-result      { background: var(--green-dim);  color: var(--green); }
-.badge-instruction { background: var(--amber-dim);  color: var(--amber); }
-.badge-stale       { background: rgba(251,191,36,0.18); color: var(--amber); border: 1px solid rgba(251,191,36,0.3); }
-.badge-private     { background: var(--red-dim); color: var(--red); }
-
-.meta-sep { width: 3px; height: 3px; border-radius: 50%; background: var(--text-3); flex-shrink: 0; }
-
-.meta-text { font-size: 11px; color: var(--text-3); }
-
-.conf-bar-wrap {
-  display: flex; align-items: center; gap: 6px;
-  font-size: 11px; color: var(--text-3);
-}
-.conf-bar {
-  width: 48px; height: 3px;
-  background: var(--bg-4);
-  border-radius: 2px;
-  overflow: hidden;
-}
-.conf-bar-fill {
-  height: 100%;
-  background: var(--mint);
-  border-radius: 2px;
-  transition: width 0.3s;
-}
-.conf-bar-fill.amber { background: var(--amber); }
-.conf-bar-fill.red   { background: var(--red); }
-
-.tag-chip {
-  padding: 1px 7px;
-  background: var(--bg-4);
-  border: 1px solid var(--border-2);
-  border-radius: 8px;
-  font-size: 10.5px;
-  color: var(--text-3);
+.chip:hover { color: var(--text); background: var(--surface); }
+.chip.active {
+  color: var(--accent);
+  background: var(--accent-bg);
+  border-color: rgba(16, 185, 129, 0.25);
 }
 
-.memory-actions {
+.sort-select {
+  margin-left: auto;
+  background: var(--surface);
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 3px 7px;
+  font-size: 11.5px;
+  outline: none;
+}
+
+/* ── Panels & Compact Rows ── */
+.panel { display: none; }
+.panel.active { display: block; }
+
+.list {
   display: flex;
   flex-direction: column;
-  justify-content: center;
-  gap: 4px;
-  padding: 12px 12px 12px 8px;
-  opacity: 0;
-  transition: opacity 0.15s;
-}
-.memory-card:hover .memory-actions { opacity: 1; }
-
-.action-btn {
-  width: 28px; height: 28px;
-  display: flex; align-items: center; justify-content: center;
-  border: 1px solid var(--border-2);
-  border-radius: var(--radius);
-  background: var(--bg-3);
-  cursor: pointer;
-  font-size: 12px;
-  color: var(--text-2);
-  transition: all 0.12s;
-}
-.action-btn:hover { background: var(--bg-4); color: var(--text); border-color: var(--border-3); }
-.action-btn.edit:hover { border-color: var(--mint); color: var(--mint); background: var(--mint-dim); }
-.action-btn.delete:hover { border-color: var(--red); color: var(--red); background: var(--red-dim); }
-
-/* ── Modal ── */
-.modal-overlay {
-  position: fixed; inset: 0;
-  background: rgba(0,0,0,0.7);
-  backdrop-filter: blur(4px);
-  display: none;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-  padding: 24px;
-}
-.modal-overlay.open { display: flex; }
-
-.modal {
-  background: var(--bg-2);
-  border: 1px solid var(--border-2);
-  border-radius: var(--radius-xl);
-  width: 100%;
-  max-width: 560px;
-  max-height: 90vh;
-  overflow-y: auto;
-  box-shadow: 0 25px 50px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.03);
-  animation: modal-in 0.2s ease-out;
-}
-@keyframes modal-in {
-  from { opacity: 0; transform: translateY(-12px) scale(0.98); }
-  to   { opacity: 1; transform: translateY(0) scale(1); }
-}
-
-.modal-header {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 20px 24px 0;
-}
-.modal-title { font-size: 16px; font-weight: 600; letter-spacing: -0.02em; }
-.modal-close {
-  width: 28px; height: 28px;
-  display: flex; align-items: center; justify-content: center;
-  background: var(--bg-3);
-  border: 1px solid var(--border-2);
-  border-radius: var(--radius);
-  cursor: pointer;
-  color: var(--text-2);
-  font-size: 16px;
-  transition: all 0.12s;
-}
-.modal-close:hover { background: var(--bg-4); color: var(--text); }
-
-.modal-body { padding: 20px 24px 24px; display: flex; flex-direction: column; gap: 16px; }
-
-.field { display: flex; flex-direction: column; gap: 6px; }
-.field label { font-size: 12px; font-weight: 600; color: var(--text-2); letter-spacing: 0.02em; text-transform: uppercase; }
-
-.field textarea, .field input[type="text"], .field input[type="number"], .field select {
-  padding: 10px 12px;
-  background: var(--bg-3);
-  border: 1px solid var(--border-2);
-  border-radius: var(--radius);
-  color: var(--text);
-  font-family: var(--font);
-  font-size: 13px;
-  outline: none;
-  transition: border-color 0.15s;
-  width: 100%;
-}
-.field textarea:focus, .field input:focus, .field select:focus { border-color: var(--mint); }
-.field textarea { resize: vertical; min-height: 90px; line-height: 1.6; font-family: var(--mono); font-size: 12.5px; }
-.field select option { background: var(--bg-3); }
-
-.field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-
-.field-hint { font-size: 11px; color: var(--text-3); }
-
-/* Slider */
-.slider-wrap { display: flex; align-items: center; gap: 10px; }
-.conf-slider {
-  flex: 1;
-  -webkit-appearance: none;
-  height: 4px;
-  background: var(--bg-4);
-  border-radius: 2px;
-  outline: none;
-}
-.conf-slider::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  width: 16px; height: 16px;
-  border-radius: 50%;
-  background: var(--mint);
-  cursor: pointer;
-  box-shadow: 0 0 6px var(--mint-glow);
-}
-.conf-value { font-size: 13px; font-weight: 600; color: var(--mint); min-width: 30px; text-align: right; }
-
-/* Toggle */
-.toggle-wrap { display: flex; align-items: center; gap: 10px; }
-.toggle-label { font-size: 13px; color: var(--text-2); }
-.toggle {
-  position: relative; display: inline-block;
-  width: 36px; height: 20px;
-}
-.toggle input { opacity: 0; width: 0; height: 0; }
-.toggle-slider {
-  position: absolute; inset: 0;
-  background: var(--bg-4);
-  border: 1px solid var(--border-2);
-  border-radius: 10px;
-  cursor: pointer;
-  transition: 0.2s;
-}
-.toggle-slider::before {
-  content: '';
-  position: absolute;
-  height: 14px; width: 14px;
-  left: 2px; bottom: 2px;
-  background: var(--text-3);
-  border-radius: 50%;
-  transition: 0.2s;
-}
-.toggle input:checked + .toggle-slider { background: var(--mint); border-color: var(--mint); }
-.toggle input:checked + .toggle-slider::before { transform: translateX(16px); background: #fff; }
-
-.modal-footer {
-  display: flex; justify-content: flex-end; gap: 8px;
-  padding: 0 24px 24px;
-}
-
-.btn {
-  padding: 9px 20px;
-  font-family: var(--font);
-  font-size: 13px;
-  font-weight: 600;
-  border-radius: var(--radius);
-  cursor: pointer;
-  transition: all 0.15s;
-  border: 1px solid transparent;
-}
-.btn-ghost {
-  background: transparent;
-  border-color: var(--border-2);
-  color: var(--text-2);
-}
-.btn-ghost:hover { background: var(--bg-3); color: var(--text); border-color: var(--border-3); }
-.btn-primary {
-  background: var(--mint);
-  color: #030a06;
-  border-color: var(--mint);
-}
-.btn-primary:hover { background: #0ec898; box-shadow: 0 4px 12px var(--mint-glow); }
-.btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
-
-/* ── Conflict cards ── */
-.conflict-card {
-  background: var(--bg-2);
-  border: 1px solid rgba(251,191,36,0.18);
-  border-radius: var(--radius-lg);
-  padding: 16px;
-  margin-bottom: 10px;
-}
-.conflict-header {
-  display: flex; align-items: center; justify-content: space-between;
-  margin-bottom: 12px;
-}
-.conflict-pair {
-  display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
-  margin-bottom: 12px;
-}
-.conflict-side {
-  padding: 10px 12px;
-  border-radius: var(--radius);
-  font-family: var(--mono);
-  font-size: 12px;
-  line-height: 1.55;
-}
-.conflict-old { background: var(--red-dim); border: 1px solid rgba(248,113,113,0.2); color: var(--text-2); }
-.conflict-new { background: var(--green-dim); border: 1px solid rgba(52,211,153,0.2); color: var(--text); }
-.conflict-meta { font-size: 11px; color: var(--text-3); }
-
-/* ── Pattern cards ── */
-.pattern-section { margin-bottom: 28px; }
-.section-header {
-  display: flex; align-items: center; gap: 10px;
-  margin-bottom: 12px;
-}
-.section-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-2);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-.section-badge {
-  padding: 2px 8px;
-  background: var(--bg-4);
-  border-radius: 10px;
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-3);
-}
-
-.pattern-card {
-  background: var(--bg-2);
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  padding: 12px 14px;
-  margin-bottom: 8px;
-  display: flex; align-items: center; gap: 12px;
+  border-radius: 8px;
+  background: var(--surface);
+  overflow: hidden;
 }
-.pattern-query {
-  flex: 1;
+
+.row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  transition: background 0.1s;
+}
+.row:last-child { border-bottom: none; }
+.row:hover { background: rgba(255, 255, 255, 0.018); }
+
+.row-main { flex: 1; min-width: 0; }
+.row-top {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.row-content {
   font-family: var(--mono);
   font-size: 12.5px;
   color: var(--text);
+  word-break: break-word;
+  line-height: 1.5;
 }
-.pattern-stats { display: flex; gap: 16px; }
-.pattern-stat { text-align: right; }
-.pattern-stat-num { font-size: 15px; font-weight: 700; color: var(--text); }
-.pattern-stat-label { font-size: 10px; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.04em; }
 
-/* ── Gap card ── */
-.gap-card {
-  background: var(--bg-2);
-  border: 1px solid rgba(251,191,36,0.15);
-  border-radius: var(--radius-lg);
-  padding: 12px 14px;
-  margin-bottom: 8px;
-  display: flex; align-items: center; gap: 12px;
+.row-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: var(--subtle);
 }
-.gap-icon { font-size: 16px; flex-shrink: 0; }
-.gap-body { flex: 1; }
-.gap-query { font-family: var(--mono); font-size: 12.5px; color: var(--text); margin-bottom: 3px; }
-.gap-meta { font-size: 11px; color: var(--text-3); }
 
-/* ── Audit entries ── */
-.audit-entry {
-  display: flex; align-items: flex-start; gap: 12px;
-  padding: 12px;
-  background: var(--bg-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  margin-bottom: 8px;
-  transition: border-color 0.12s;
-}
-.audit-entry:hover { border-color: var(--border-2); }
-.audit-icon {
-  width: 32px; height: 32px;
-  border-radius: var(--radius);
-  display: flex; align-items: center; justify-content: center;
-  font-size: 14px;
+.type-pill {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  background: var(--surface2);
+  color: var(--muted);
   flex-shrink: 0;
 }
-.audit-icon.read  { background: var(--blue-dim); }
-.audit-icon.write { background: var(--mint-dim); }
-.audit-body { flex: 1; min-width: 0; }
-.audit-top { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
-.audit-agent { font-size: 12px; font-weight: 600; color: var(--text); }
-.audit-time { font-size: 11px; color: var(--text-3); }
-.audit-text { font-family: var(--mono); font-size: 12px; color: var(--text-2); line-height: 1.5; }
-.audit-sub { font-size: 11px; color: var(--text-3); margin-top: 3px; font-family: var(--mono); }
+.type-pill.fact        { color: #60a5fa; background: rgba(59,130,246,0.12); }
+.type-pill.preference  { color: #a78bfa; background: rgba(139,92,246,0.12); }
+.type-pill.context     { color: #34d399; background: rgba(16,185,129,0.12); }
+.type-pill.result      { color: #4ade80; background: rgba(74,222,128,0.12); }
+.type-pill.instruction { color: #fbbf24; background: rgba(245,158,11,0.12); }
+.type-pill.process     { color: #38bdf8; background: rgba(56,189,248,0.12); }
+.type-pill.decision    { color: #f472b6; background: rgba(244,114,182,0.12); }
+.type-pill.error       { color: #f87171; background: rgba(248,113,113,0.12); }
 
-/* ── Namespace table ── */
-.ns-table { width: 100%; border-collapse: collapse; }
-.ns-table th {
-  padding: 8px 14px;
+.tag {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  padding: 0 5px;
+  border-radius: 3px;
+}
+
+.flag {
+  font-size: 10px;
+  padding: 0 5px;
+  border-radius: 3px;
+  font-weight: 500;
+}
+.flag.stale { color: var(--amber); background: rgba(245,158,11,0.12); }
+.flag.private { color: var(--red); background: rgba(239,68,68,0.12); }
+.flag.sim { color: var(--accent); background: var(--accent-bg); font-family: var(--mono); }
+
+.row-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+  opacity: 0.35;
+  transition: opacity 0.12s;
+}
+.row:hover .row-actions { opacity: 1; }
+
+.icon-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--muted);
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+}
+.icon-btn:hover { background: var(--surface2); border-color: var(--border2); color: var(--text); }
+.icon-btn.del:hover { color: var(--red); border-color: rgba(239,68,68,0.3); }
+
+/* ── Sections & Grids ── */
+.section-label {
   font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: var(--text-3);
-  text-align: left;
-  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  margin: 14px 0 6px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
-.ns-table td {
-  padding: 12px 14px;
-  font-size: 13px;
-  border-bottom: 1px solid var(--border);
-  vertical-align: middle;
-}
-.ns-table tr:last-child td { border-bottom: none; }
-.ns-table tr:hover td { background: var(--bg-3); }
-.ns-name { font-weight: 600; color: var(--text); }
-.ns-actions { display: flex; gap: 6px; }
 
-/* ── Digest ── */
-.digest-grid {
+.conflict-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 10px;
-  margin-bottom: 24px;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 6px;
 }
-.digest-stat {
-  background: var(--bg-2);
+.conflict-box {
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-family: var(--mono);
+  font-size: 11.5px;
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  padding: 14px 16px;
+  background: var(--bg);
 }
-.digest-stat-num { font-size: 28px; font-weight: 700; letter-spacing: -0.04em; margin-bottom: 2px; }
-.digest-stat-label { font-size: 11px; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.04em; }
+.conflict-box.old { border-left: 2px solid var(--red); }
+.conflict-box.new { border-left: 2px solid var(--accent); }
 
-/* ── Empty state ── */
 .empty {
-  display: flex; flex-direction: column; align-items: center;
-  justify-content: center;
-  padding: 60px 20px;
+  padding: 36px 16px;
   text-align: center;
-}
-.empty-icon { font-size: 36px; margin-bottom: 12px; opacity: 0.5; }
-.empty-title { font-size: 15px; font-weight: 600; color: var(--text-2); margin-bottom: 6px; }
-.empty-sub { font-size: 13px; color: var(--text-3); max-width: 300px; }
-
-/* ── Conflict warning in modal ── */
-.conflict-warn {
-  padding: 10px 14px;
-  background: rgba(251,191,36,0.1);
-  border: 1px solid rgba(251,191,36,0.25);
-  border-radius: var(--radius);
-  font-size: 12px;
-  color: var(--amber);
-  line-height: 1.5;
+  color: var(--subtle);
+  font-size: 12.5px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
 }
 
-/* ── Audit filter tabs ── */
-.sub-tabs { display: flex; gap: 4px; margin-bottom: 14px; }
-.sub-tab {
-  padding: 5px 12px;
-  font-size: 12px;
-  font-family: var(--font);
-  background: transparent;
-  border: 1px solid var(--border-2);
-  border-radius: 20px;
-  color: var(--text-3);
-  cursor: pointer;
-  transition: all 0.12s;
-}
-.sub-tab:hover { color: var(--text-2); }
-.sub-tab.active { color: var(--mint); border-color: var(--mint); background: var(--mint-dim); }
-
-/* ── Loading skeleton ── */
-.skeleton {
-  background: linear-gradient(90deg, var(--bg-3) 25%, var(--bg-4) 50%, var(--bg-3) 75%);
-  background-size: 200% 100%;
-  animation: shimmer 1.5s infinite;
-  border-radius: var(--radius);
-  height: 72px;
-  margin-bottom: 8px;
-}
-@keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
-
-/* ── Toasts ── */
-#toast-container {
+/* ── Minimal Modal ── */
+.backdrop {
   position: fixed;
-  bottom: 20px; right: 20px;
-  z-index: 9999;
-  display: flex; flex-direction: column; gap: 8px;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  padding: 16px;
 }
-.toast {
-  padding: 10px 16px;
-  background: var(--bg-3);
-  border: 1px solid var(--border-2);
-  border-radius: var(--radius-lg);
-  font-size: 13px;
+.backdrop.open { display: flex; }
+
+.modal {
+  background: var(--surface);
+  border: 1px solid var(--border2);
+  border-radius: 10px;
+  width: 100%;
+  max-width: 480px;
+  padding: 16px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+}
+.modal-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  font-weight: 600;
+  font-size: 13.5px;
+}
+.field { margin-bottom: 10px; display: flex; flex-direction: column; gap: 4px; }
+.field label { font-size: 11px; color: var(--muted); font-weight: 500; }
+.field textarea, .field input[type="text"], .field input[type="number"], .field select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 9px;
   color: var(--text);
-  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
-  animation: toast-in 0.2s ease-out;
-  display: flex; align-items: center; gap: 8px;
+  font-family: var(--font);
+  font-size: 12.5px;
+  outline: none;
 }
-.toast.success { border-color: rgba(16,217,164,0.3); }
-.toast.error   { border-color: rgba(248,113,113,0.3); }
-@keyframes toast-in {
-  from { opacity: 0; transform: translateX(16px); }
-  to   { opacity: 1; transform: translateX(0); }
+.field textarea {
+  font-family: var(--mono);
+  min-height: 76px;
+  resize: vertical;
+}
+.field textarea:focus, .field input:focus, .field select:focus { border-color: var(--accent); }
+.field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.modal-foot { display: flex; justify-content: flex-end; gap: 6px; margin-top: 12px; }
+
+#toast {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  background: var(--surface2);
+  border: 1px solid var(--border2);
+  color: var(--text);
+  padding: 7px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  display: none;
+  z-index: 200;
+}
+
+@media (max-width: 720px) {
+  header { height: auto; padding: 8px 0; }
+  .search-wrap { order: 3; max-width: 100%; flex-basis: 100%; }
+  .metrics-inline { display: none; }
+  .conflict-grid, .field-row { grid-template-columns: 1fr; }
+  .row-actions { opacity: 1; }
 }
 </style>
 </head>
 <body>
-<div class="layout">
+<div class="app">
 
-<!-- Navbar -->
-<nav>
-  <div class="nav-logo">
-    <div class="nav-logo-icon">◈</div>
-    Mesh
-  </div>
-  <div class="nav-ns">
-    <div class="nav-ns-dot"></div>
-    <span id="ns-label">shared</span>
-  </div>
-  <div class="nav-search">
-    <span class="nav-search-icon">⌕</span>
-    <input type="text" id="search-input" placeholder="Semantic search memories…" oninput="onSearchInput(this.value)">
-  </div>
-  <div class="nav-right">
-    <button class="btn-icon" onclick="refreshAll()" title="Refresh">↻</button>
-    <button class="btn-add" onclick="openModal()">+ Add Memory</button>
-  </div>
-</nav>
+  <header>
+    <div class="brand">
+      <span class="brand-dot"></span>
+      <span>Mesh</span>
+    </div>
 
-<!-- Stats Bar -->
-<div class="stats-bar" id="stats-bar">
-  <div class="stat-item">
-    <div>
-      <div class="stat-num mint" id="stat-total">—</div>
-      <div class="stat-label">Memories</div>
-    </div>
-  </div>
-  <div class="stat-item">
-    <div>
-      <div class="stat-num amber" id="stat-stale">—</div>
-      <div class="stat-label">Stale</div>
-    </div>
-  </div>
-  <div class="stat-item">
-    <div>
-      <div class="stat-num red" id="stat-conflicts">—</div>
-      <div class="stat-label">Conflicts</div>
-    </div>
-  </div>
-  <div class="stat-item">
-    <div>
-      <div class="stat-num purple" id="stat-gaps">—</div>
-      <div class="stat-label">Memory Gaps</div>
-    </div>
-  </div>
-  <div class="stat-item">
-    <div>
-      <div class="stat-num blue" id="stat-unused">—</div>
-      <div class="stat-label">Unused</div>
-    </div>
-  </div>
-</div>
+    <select id="ns-select" class="ns-select" onchange="switchNamespace(this.value)" title="Switch Namespace"></select>
 
-<!-- Tabs -->
-<div class="tabs-bar">
-  <button class="tab active" onclick="showTab('memories', this)">
-    Memories <span class="tab-badge" id="tab-badge-memories">0</span>
-  </button>
-  <button class="tab" onclick="showTab('patterns', this)">Patterns</button>
-  <button class="tab" onclick="showTab('conflicts', this)">
-    Conflicts <span class="tab-badge" id="tab-badge-conflicts">0</span>
-  </button>
-  <button class="tab" onclick="showTab('audit', this)">Audit Log</button>
-  <button class="tab" onclick="showTab('namespaces', this)">Namespaces</button>
-  <button class="tab" onclick="showTab('digest', this)">Digest</button>
-</div>
+    <div class="search-wrap">
+      <input type="text" id="search-input" placeholder="Search memories (semantic + keyword)..." oninput="onSearch(this.value)">
+      <span class="search-kbd">/</span>
+    </div>
 
-<!-- Content -->
-<div class="content">
+    <div class="metrics-inline">
+      <span class="metric-pill">Memories <span class="metric-val" id="m-total">0</span></span>
+      <span class="metric-pill">Stale <span class="metric-val warn" id="m-stale">0</span></span>
+      <span class="metric-pill">Conflicts <span class="metric-val danger" id="m-conflicts">0</span></span>
+      <span class="metric-pill">Gaps <span class="metric-val" id="m-gaps">0</span></span>
+    </div>
+
+    <button class="btn" onclick="refreshAll()" title="Refresh">↻</button>
+    <button class="btn btn-primary" onclick="openModal()">+ New</button>
+  </header>
+
+  <div class="subnav">
+    <div class="tabs">
+      <button class="tab active" onclick="showTab('memories', this)">Memories <span class="tab-count" id="tc-memories">0</span></button>
+      <button class="tab" onclick="showTab('conflicts', this)">Conflicts <span class="tab-count" id="tc-conflicts">0</span></button>
+      <button class="tab" onclick="showTab('patterns', this)">Patterns</button>
+      <button class="tab" onclick="showTab('audit', this)">Audit</button>
+      <button class="tab" onclick="showTab('namespaces', this)">Namespaces</button>
+      <button class="tab" onclick="showTab('digest', this)">Digest</button>
+    </div>
+    <span id="shown-count" style="font-size:11.5px;color:var(--subtle);font-family:var(--mono)"></span>
+  </div>
 
   <!-- Memories Panel -->
   <div class="panel active" id="panel-memories">
-    <div class="memories-toolbar">
-      <div class="filter-group" id="type-filters">
-        <button class="filter-btn active" onclick="setTypeFilter('all', this)">All</button>
-        <button class="filter-btn" onclick="setTypeFilter('fact', this)">Fact</button>
-        <button class="filter-btn" onclick="setTypeFilter('preference', this)">Preference</button>
-        <button class="filter-btn" onclick="setTypeFilter('context', this)">Context</button>
-        <button class="filter-btn" onclick="setTypeFilter('result', this)">Result</button>
-        <button class="filter-btn" onclick="setTypeFilter('instruction', this)">Instruction</button>
-      </div>
-      <select class="sort-select" onchange="setSortOrder(this.value)">
-        <option value="accessed">Last accessed</option>
-        <option value="created">Date created</option>
-        <option value="confidence">Confidence</option>
-        <option value="content">Alphabetical</option>
+    <div class="toolbar">
+      <button class="chip active" onclick="setType('all', this)">All</button>
+      <button class="chip" onclick="setType('fact', this)">Fact</button>
+      <button class="chip" onclick="setType('decision', this)">Decision</button>
+      <button class="chip" onclick="setType('process', this)">Process</button>
+      <button class="chip" onclick="setType('instruction', this)">Instruction</button>
+      <button class="chip" onclick="setType('preference', this)">Preference</button>
+      <button class="chip" onclick="setType('context', this)">Context</button>
+      <button class="chip" onclick="setType('result', this)">Result</button>
+      <button class="chip" onclick="setType('error', this)">Error</button>
+      <select class="sort-select" onchange="setSort(this.value)">
+        <option value="accessed">Sort: Recent access</option>
+        <option value="created">Sort: Created</option>
+        <option value="confidence">Sort: Confidence</option>
       </select>
-      <span class="memory-count" id="memory-count"></span>
     </div>
-    <div class="memory-list" id="memory-list">
-      <div class="skeleton"></div>
-      <div class="skeleton"></div>
-      <div class="skeleton" style="height:56px"></div>
-    </div>
-  </div>
-
-  <!-- Patterns Panel -->
-  <div class="panel" id="panel-patterns">
-    <div class="pattern-section">
-      <div class="section-header">
-        <div class="section-title">Top Topics</div>
-        <div class="section-badge" id="top-topics-count">0</div>
-      </div>
-      <div id="top-topics-list"></div>
-    </div>
-    <div class="pattern-section">
-      <div class="section-header">
-        <div class="section-title">Memory Gaps</div>
-        <div class="section-badge" id="gaps-count">0</div>
-        <span style="font-size:11px;color:var(--text-3)">— frequently asked, poorly answered</span>
-      </div>
-      <div id="gaps-list"></div>
-    </div>
-    <div class="pattern-section">
-      <div class="section-header">
-        <div class="section-title">Unused Memories</div>
-        <div class="section-badge" id="unused-count">0</div>
-        <span style="font-size:11px;color:var(--text-3)">— created 7+ days ago, never recalled</span>
-      </div>
-      <div id="unused-list"></div>
-    </div>
+    <div id="memory-list"></div>
   </div>
 
   <!-- Conflicts Panel -->
@@ -1118,715 +763,520 @@ nav {
     <div id="conflicts-list"></div>
   </div>
 
+  <!-- Patterns Panel -->
+  <div class="panel" id="panel-patterns">
+    <div class="section-label">Top Queries</div>
+    <div id="patterns-topics"></div>
+    <div class="section-label">Memory Gaps (Low Similarity)</div>
+    <div id="patterns-gaps"></div>
+    <div class="section-label">Unused Memories (7+ Days)</div>
+    <div id="patterns-unused"></div>
+  </div>
+
   <!-- Audit Panel -->
   <div class="panel" id="panel-audit">
-    <div class="sub-tabs">
-      <button class="sub-tab active" onclick="loadAudit('all', this)">All</button>
-      <button class="sub-tab" onclick="loadAudit('read', this)">Reads</button>
-      <button class="sub-tab" onclick="loadAudit('write', this)">Writes</button>
+    <div class="toolbar">
+      <button class="chip active" onclick="loadAudit('all', this)">All</button>
+      <button class="chip" onclick="loadAudit('read', this)">Reads</button>
+      <button class="chip" onclick="loadAudit('write', this)">Writes</button>
+      <button class="chip" onclick="loadAudit('update', this)">Updates</button>
     </div>
     <div id="audit-list"></div>
   </div>
 
   <!-- Namespaces Panel -->
   <div class="panel" id="panel-namespaces">
-    <div style="background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden">
-      <table class="ns-table">
-        <thead>
-          <tr>
-            <th>Namespace</th>
-            <th>Memories</th>
-            <th>Private</th>
-            <th>Last Updated</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody id="namespaces-list"></tbody>
-      </table>
-    </div>
+    <div id="namespaces-list"></div>
   </div>
 
   <!-- Digest Panel -->
   <div class="panel" id="panel-digest">
-    <div class="digest-grid" id="digest-stats"></div>
-    <div id="digest-content"></div>
+    <div id="digest-list"></div>
   </div>
 
 </div>
-</div>
 
-<!-- Add/Edit Memory Modal -->
-<div class="modal-overlay" id="modal-overlay" onclick="closeModalOnOverlay(event)">
-  <div class="modal" id="modal">
-    <div class="modal-header">
-      <div class="modal-title" id="modal-title">Add Memory</div>
-      <button class="modal-close" onclick="closeModal()">✕</button>
+<!-- Add / Edit Modal -->
+<div class="backdrop" id="backdrop" onclick="if(event.target===this)closeModal()">
+  <div class="modal">
+    <div class="modal-head">
+      <span id="modal-title">New Memory</span>
+      <button class="icon-btn" onclick="closeModal()">✕</button>
     </div>
-    <div class="modal-body">
-      <div class="field">
-        <label>Content</label>
-        <textarea id="modal-content" placeholder="What should agents remember? Be specific — 'The API rate limit is 100 req/min', not 'API stuff'."></textarea>
-      </div>
-      <div class="field-row">
-        <div class="field">
-          <label>Type</label>
-          <select id="modal-type">
-            <option value="fact">Fact — objective info</option>
-            <option value="preference">Preference — user/system prefs</option>
-            <option value="context">Context — situational background</option>
-            <option value="result">Result — outcome of a task</option>
-            <option value="instruction">Instruction — rules to follow</option>
-          </select>
-        </div>
-        <div class="field">
-          <label>TTL (days, optional)</label>
-          <input type="number" id="modal-ttl" placeholder="e.g. 30 — leave blank for permanent" min="1" step="1">
-          <div class="field-hint">Confidence decays to 0 after this many days</div>
-        </div>
-      </div>
-      <div class="field">
-        <label>Confidence: <span id="modal-conf-value">1.0</span></label>
-        <div class="slider-wrap">
-          <input type="range" class="conf-slider" id="modal-conf" min="0" max="1" step="0.05" value="1"
-                 oninput="document.getElementById('modal-conf-value').textContent = parseFloat(this.value).toFixed(2)">
-        </div>
-        <div class="field-hint">Use &lt; 0.7 for uncertain or tentative information</div>
-      </div>
-      <div class="field">
-        <label>Tags</label>
-        <input type="text" id="modal-tags" placeholder="api, auth, infra (comma-separated)">
-      </div>
-      <div class="field">
-        <div class="toggle-wrap">
-          <label class="toggle">
-            <input type="checkbox" id="modal-private">
-            <span class="toggle-slider"></span>
-          </label>
-          <span class="toggle-label">Private — never exported or synced</span>
-        </div>
-        <div class="field-hint">Use for API keys, credentials, and sensitive config</div>
-      </div>
-      <div id="modal-conflict-warn" style="display:none"></div>
+    <div class="field">
+      <label>Content</label>
+      <textarea id="f-content" placeholder="Specific fact, decision, or rule..."></textarea>
     </div>
-    <div class="modal-footer">
-      <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
-      <button class="btn btn-primary" id="modal-submit" onclick="submitMemory()">Save Memory</button>
+    <div class="field-row">
+      <div class="field">
+        <label>Type</label>
+        <select id="f-type">
+          <option value="fact">fact</option>
+          <option value="decision">decision</option>
+          <option value="process">process</option>
+          <option value="instruction">instruction</option>
+          <option value="preference">preference</option>
+          <option value="context">context</option>
+          <option value="result">result</option>
+          <option value="error">error</option>
+          <option value="general">general</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Confidence (0.0 – 1.0)</label>
+        <input type="number" id="f-conf" min="0" max="1" step="0.05" value="1.0">
+      </div>
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label>Tags (comma-separated)</label>
+        <input type="text" id="f-tags" placeholder="api, db, auth">
+      </div>
+      <div class="field">
+        <label>TTL Days (optional)</label>
+        <input type="number" id="f-ttl" min="1" step="1" placeholder="Permanent">
+      </div>
+    </div>
+    <label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer;margin-top:2px">
+      <input type="checkbox" id="f-private"> Private (local_only — exclude from exports)
+    </label>
+    <div class="modal-foot">
+      <button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" id="f-submit" onclick="saveMemory()">Save</button>
     </div>
   </div>
 </div>
 
-<!-- Toast Container -->
-<div id="toast-container"></div>
+<div id="toast"></div>
 
 <script>
-// ── State ─────────────────────────────────────────────────────────────────
+let ns = new URLSearchParams(location.search).get('ns') || '';
+let memories = [];
+let searchResults = null;
+let activeType = 'all';
+let sortBy = 'accessed';
+let editId = null;
+let debounceTimer = null;
 
-let allMemories = [];
-let displayedMemories = [];
-let activeTypeFilter = 'all';
-let sortOrder = 'accessed';
-let searchQuery = '';
-let searchTimeout = null;
-let editingMemoryId = null;  // null = adding new, string = editing existing
-let ns = 'shared';
-
-// ── Init ──────────────────────────────────────────────────────────────────
-
-window.addEventListener('DOMContentLoaded', () => {
-  // Read namespace from URL or default
-  const urlNs = new URLSearchParams(window.location.search).get('ns');
-  if (urlNs) ns = urlNs;
-  document.getElementById('ns-label').textContent = ns;
-  refreshAll();
-  setInterval(loadStats, 30000);
+window.addEventListener('DOMContentLoaded', async () => {
+  await refreshAll();
 });
 
-async function refreshAll() {
-  await Promise.all([loadStats(), loadMemories()]);
-}
-
-// ── Stats ─────────────────────────────────────────────────────────────────
-
-async function loadStats() {
-  const data = await fetchJSON('/api/stats');
-  if (!data) return;
-  document.getElementById('stat-total').textContent = data.total_memories;
-  document.getElementById('stat-stale').textContent = data.stale_memories;
-  document.getElementById('stat-conflicts').textContent = data.open_contradictions;
-  document.getElementById('stat-gaps').textContent = data.memory_gaps;
-  document.getElementById('stat-unused').textContent = data.unused_memories;
-  document.getElementById('tab-badge-memories').textContent = data.total_memories;
-  document.getElementById('tab-badge-conflicts').textContent = data.open_contradictions;
-}
-
-// ── Memories ──────────────────────────────────────────────────────────────
-
-async function loadMemories() {
-  const data = await fetchJSON('/api/memories?limit=200');
-  if (!data) return;
-  allMemories = data;
-  renderMemories();
-}
-
-function renderMemories() {
-  let mems = [...allMemories];
-
-  // Filter by type
-  if (activeTypeFilter !== 'all') {
-    mems = mems.filter(m => m.memory_type === activeTypeFilter);
-  }
-
-  // Filter by search query (client-side text filter)
-  if (searchQuery && !isSemanticSearch) {
-    const q = searchQuery.toLowerCase();
-    mems = mems.filter(m =>
-      m.content.toLowerCase().includes(q) ||
-      (m.tags && JSON.parse(m.tags || '[]').some(t => t.toLowerCase().includes(q)))
-    );
-  }
-
-  // Sort
-  if (sortOrder === 'created') {
-    mems.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
-  } else if (sortOrder === 'confidence') {
-    mems.sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
-  } else if (sortOrder === 'content') {
-    mems.sort((a, b) => a.content.localeCompare(b.content));
-  }
-  // default: accessed_at order (already from API)
-
-  displayedMemories = mems;
-  document.getElementById('memory-count').textContent = `${mems.length} shown`;
-
-  const el = document.getElementById('memory-list');
-  if (!mems.length) {
-    el.innerHTML = `<div class="empty">
-      <div class="empty-icon">◎</div>
-      <div class="empty-title">No memories found</div>
-      <div class="empty-sub">Try a different filter or add your first memory</div>
-    </div>`;
-    return;
-  }
-
-  el.innerHTML = mems.map(m => {
-    const tags = parseTags(m.tags);
-    const isStale = m.is_stale || false;
-    const isPrivate = m.local_only || false;
-    const typeClass = m.memory_type || 'fact';
-    const conf = m.confidence || 1.0;
-    const confColor = conf >= 0.7 ? '' : conf >= 0.4 ? 'amber' : 'red';
-
-    return `<div class="memory-card ${isStale ? 'stale' : ''}" id="mc-${esc(m.id)}">
-      <div class="memory-stripe ${typeClass}"></div>
-      <div class="memory-body">
-        <div class="memory-content">${escHtml(m.content)}</div>
-        <div class="memory-meta">
-          <span class="badge badge-${typeClass}">${typeClass}</span>
-          ${isStale ? '<span class="badge badge-stale">⚠ Stale</span>' : ''}
-          ${isPrivate ? '<span class="badge badge-private">🔒 Private</span>' : ''}
-          <div class="meta-sep"></div>
-          <div class="conf-bar-wrap">
-            <div class="conf-bar"><div class="conf-bar-fill ${confColor}" style="width:${Math.round(conf*100)}%"></div></div>
-            <span>${conf.toFixed(2)}</span>
-          </div>
-          <div class="meta-sep"></div>
-          <span class="meta-text">from ${escHtml(m.source_agent || 'unknown')}</span>
-          ${m.created_at ? `<div class="meta-sep"></div><span class="meta-text">${fmtDate(m.created_at)}</span>` : ''}
-          ${tags.length ? `<div class="meta-sep"></div>${tags.map(t => `<span class="tag-chip">${escHtml(t)}</span>`).join('')}` : ''}
-        </div>
-      </div>
-      <div class="memory-actions">
-        <button class="action-btn edit" title="Edit" onclick="openEditModal('${esc(m.id)}')">✎</button>
-        <button class="action-btn delete" title="Delete" onclick="deleteMemory('${esc(m.id)}')">⌫</button>
-      </div>
-    </div>`;
-  }).join('');
-}
-
-function setTypeFilter(type, btn) {
-  activeTypeFilter = type;
-  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
-  renderMemories();
-}
-
-function setSortOrder(order) {
-  sortOrder = order;
-  renderMemories();
-}
-
-let isSemanticSearch = false;
-
-function onSearchInput(val) {
-  searchQuery = val.trim();
-  clearTimeout(searchTimeout);
-
-  if (!searchQuery) {
-    isSemanticSearch = false;
-    renderMemories();
-    return;
-  }
-
-  // Debounce: after 400ms with no typing, do semantic search
-  isSemanticSearch = false;
-  renderMemories(); // client-side filter first
-
-  searchTimeout = setTimeout(async () => {
-    if (searchQuery.length >= 3) {
-      const results = await fetchJSON(`/api/search?q=${encodeURIComponent(searchQuery)}&n=20`);
-      if (results && Array.isArray(results)) {
-        isSemanticSearch = true;
-        displayedMemories = results;
-        document.getElementById('memory-count').textContent = `${results.length} semantic matches`;
-        const el = document.getElementById('memory-list');
-        if (!results.length) {
-          el.innerHTML = `<div class="empty"><div class="empty-icon">◎</div><div class="empty-title">No results</div></div>`;
-          return;
-        }
-        // Re-use render but with results directly
-        const temp = allMemories;
-        allMemories = results;
-        activeTypeFilter = 'all';
-        renderMemories();
-        allMemories = temp;
-      }
-    }
-  }, 400);
-}
-
-async function deleteMemory(id) {
-  if (!confirm('Delete this memory? This cannot be undone.')) return;
-  const res = await fetch(`/api/memories/${encodeURIComponent(id)}`, { method: 'DELETE' });
-  if (res.ok) {
-    toast('Memory deleted', 'success');
-    allMemories = allMemories.filter(m => m.id !== id);
-    renderMemories();
-    loadStats();
-  } else {
-    toast('Failed to delete memory', 'error');
-  }
-}
-
-// ── Modal ─────────────────────────────────────────────────────────────────
-
-function openModal() {
-  editingMemoryId = null;
-  document.getElementById('modal-title').textContent = 'Add Memory';
-  document.getElementById('modal-submit').textContent = 'Save Memory';
-  document.getElementById('modal-content').value = '';
-  document.getElementById('modal-type').value = 'fact';
-  document.getElementById('modal-conf').value = 1;
-  document.getElementById('modal-conf-value').textContent = '1.00';
-  document.getElementById('modal-tags').value = '';
-  document.getElementById('modal-ttl').value = '';
-  document.getElementById('modal-private').checked = false;
-  document.getElementById('modal-conflict-warn').style.display = 'none';
-  document.getElementById('modal-overlay').classList.add('open');
-  setTimeout(() => document.getElementById('modal-content').focus(), 100);
-}
-
-function openEditModal(id) {
-  const mem = allMemories.find(m => m.id === id);
-  if (!mem) return;
-  editingMemoryId = id;
-  document.getElementById('modal-title').textContent = 'Edit Memory';
-  document.getElementById('modal-submit').textContent = 'Update Memory';
-  document.getElementById('modal-content').value = mem.content || '';
-  document.getElementById('modal-type').value = mem.memory_type || 'fact';
-  const conf = mem.confidence || 1.0;
-  document.getElementById('modal-conf').value = conf;
-  document.getElementById('modal-conf-value').textContent = conf.toFixed(2);
-  const tags = parseTags(mem.tags);
-  document.getElementById('modal-tags').value = tags.join(', ');
-  document.getElementById('modal-ttl').value = mem.ttl_days || '';
-  document.getElementById('modal-private').checked = mem.local_only || false;
-  document.getElementById('modal-conflict-warn').style.display = 'none';
-  document.getElementById('modal-overlay').classList.add('open');
-  setTimeout(() => document.getElementById('modal-content').focus(), 100);
-}
-
-function closeModal() {
-  document.getElementById('modal-overlay').classList.remove('open');
-  editingMemoryId = null;
-}
-
-function closeModalOnOverlay(e) {
-  if (e.target === document.getElementById('modal-overlay')) closeModal();
-}
-
-async function submitMemory() {
-  const content = document.getElementById('modal-content').value.trim();
-  if (!content) { toast('Content is required', 'error'); return; }
-
-  const tagsRaw = document.getElementById('modal-tags').value;
-  const tags = tagsRaw.split(',').map(t => t.trim()).filter(Boolean);
-  const ttlRaw = document.getElementById('modal-ttl').value;
-  const ttl = ttlRaw ? parseFloat(ttlRaw) : null;
-
-  const body = {
-    content,
-    memory_type: document.getElementById('modal-type').value,
-    confidence: parseFloat(document.getElementById('modal-conf').value),
-    tags,
-    local_only: document.getElementById('modal-private').checked,
-    ttl_days: ttl
-  };
-
-  const btn = document.getElementById('modal-submit');
-  btn.disabled = true;
-  btn.textContent = 'Saving…';
-
+async function apiFetch(path, opts = {}) {
   try {
-    let url = '/api/memories';
-    let method = 'POST';
-    if (editingMemoryId) {
-      url = `/api/memories/${encodeURIComponent(editingMemoryId)}`;
-      method = 'PUT';
-    }
-    const res = await fetch(url, {
-      method,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      toast(data.detail || 'Failed to save memory', 'error');
-      return;
-    }
-
-    // Show conflict warning if any
-    if (data.result && data.result.conflict) {
-      const c = data.result.conflict;
-      const warnEl = document.getElementById('modal-conflict-warn');
-      warnEl.className = 'conflict-warn';
-      warnEl.style.display = 'block';
-      warnEl.innerHTML = `⚠ Possible conflict (similarity ${c.similarity.toFixed(2)})<br>
-        <span style="opacity:0.8">Existing: "${escHtml(c.existing_content.slice(0, 100))}"</span>`;
-    }
-
-    toast(editingMemoryId ? 'Memory updated' : 'Memory stored', 'success');
-    closeModal();
-    await loadMemories();
-    loadStats();
-  } finally {
-    btn.disabled = false;
-    btn.textContent = editingMemoryId ? 'Update Memory' : 'Save Memory';
-  }
-}
-
-// ── Patterns ──────────────────────────────────────────────────────────────
-
-async function loadPatterns() {
-  const data = await fetchJSON('/api/patterns');
-  if (!data) return;
-
-  const topTopics = data.top_topics || [];
-  document.getElementById('top-topics-count').textContent = topTopics.length;
-  const ttEl = document.getElementById('top-topics-list');
-  ttEl.innerHTML = topTopics.length
-    ? topTopics.map(t => `<div class="pattern-card">
-        <div class="pattern-query">${escHtml(t.query_text)}</div>
-        <div class="pattern-stats">
-          <div class="pattern-stat">
-            <div class="pattern-stat-num">${t.query_count}</div>
-            <div class="pattern-stat-label">Queries</div>
-          </div>
-          <div class="pattern-stat">
-            <div class="pattern-stat-num">${(t.avg_similarity || 0).toFixed(2)}</div>
-            <div class="pattern-stat-label">Avg Match</div>
-          </div>
-        </div>
-      </div>`).join('')
-    : `<div class="empty"><div class="empty-icon">◎</div><div class="empty-title">No queries yet</div><div class="empty-sub">Queries will appear here as agents use Mesh recall</div></div>`;
-
-  const gaps = data.memory_gaps || [];
-  document.getElementById('gaps-count').textContent = gaps.length;
-  const gapEl = document.getElementById('gaps-list');
-  gapEl.innerHTML = gaps.length
-    ? gaps.map(g => `<div class="gap-card">
-        <div class="gap-icon">⚠</div>
-        <div class="gap-body">
-          <div class="gap-query">${escHtml(g.query_text)}</div>
-          <div class="gap-meta">Asked ${g.query_count}× · avg similarity ${(g.avg_similarity || 0).toFixed(2)} — consider adding a memory for this</div>
-        </div>
-      </div>`).join('')
-    : `<div class="empty"><div class="empty-icon">✓</div><div class="empty-title">No gaps detected</div><div class="empty-sub">All frequent queries have good memory coverage</div></div>`;
-
-  const unused = data.unused_memories || [];
-  document.getElementById('unused-count').textContent = unused.length;
-  const unusedEl = document.getElementById('unused-list');
-  unusedEl.innerHTML = unused.length
-    ? unused.map(m => `<div class="pattern-card">
-        <div class="pattern-query">${escHtml(m.content)}</div>
-        <div class="pattern-stats">
-          <div class="pattern-stat">
-            <div class="pattern-stat-num" style="font-size:12px;color:var(--text-3)">${fmtDate(m.created_at)}</div>
-            <div class="pattern-stat-label">Created</div>
-          </div>
-        </div>
-        <button class="action-btn delete" onclick="deleteMemory('${esc(m.id)}')" title="Delete">⌫</button>
-      </div>`).join('')
-    : `<div class="empty"><div class="empty-icon">✓</div><div class="empty-title">No unused memories</div><div class="empty-sub">Every memory has been accessed at least once</div></div>`;
-}
-
-// ── Conflicts ─────────────────────────────────────────────────────────────
-
-async function loadConflicts() {
-  const data = await fetchJSON('/api/contradictions');
-  if (!data) return;
-  const el = document.getElementById('conflicts-list');
-  if (!data.length) {
-    el.innerHTML = `<div class="empty"><div class="empty-icon">✓</div><div class="empty-title">No open conflicts</div><div class="empty-sub">All contradictions have been resolved</div></div>`;
-    return;
-  }
-  el.innerHTML = data.map(c => `<div class="conflict-card">
-    <div class="conflict-header">
-      <div>
-        <span class="badge badge-stale">⚡ Conflict</span>
-        <span class="meta-text" style="margin-left:8px">similarity ${c.similarity.toFixed(2)}</span>
-      </div>
-      <button class="btn btn-ghost" style="padding:5px 12px;font-size:12px" onclick="resolveConflict('${esc(c.id)}')">Mark Resolved</button>
-    </div>
-    <div class="conflict-pair">
-      <div>
-        <div style="font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-3);margin-bottom:6px">Existing memory</div>
-        <div class="conflict-side conflict-old">${escHtml(c.existing_content)}</div>
-      </div>
-      <div>
-        <div style="font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--text-3);margin-bottom:6px">New memory (just stored)</div>
-        <div class="conflict-side conflict-new">${escHtml(c.new_content)}</div>
-      </div>
-    </div>
-    <div class="conflict-meta">Detected ${fmtDate(c.detected_at)}</div>
-  </div>`).join('');
-}
-
-async function resolveConflict(id) {
-  await fetch(`/api/contradictions/${encodeURIComponent(id)}/resolve`, { method: 'POST' });
-  toast('Conflict resolved', 'success');
-  loadConflicts();
-  loadStats();
-}
-
-// ── Audit ─────────────────────────────────────────────────────────────────
-
-async function loadAudit(filter = 'all', btn = null) {
-  if (btn) {
-    document.querySelectorAll('.sub-tab').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-  }
-  const data = await fetchJSON(`/api/audit?namespace=${encodeURIComponent(ns)}&limit=100&action=${filter}`);
-  if (!data) return;
-  const el = document.getElementById('audit-list');
-  if (!data.length) {
-    el.innerHTML = `<div class="empty"><div class="empty-icon">◎</div><div class="empty-title">No audit entries</div></div>`;
-    return;
-  }
-  el.innerHTML = data.map(e => {
-    const isRead = e.action === 'recall';
-    return `<div class="audit-entry">
-      <div class="audit-icon ${isRead ? 'read' : 'write'}">${isRead ? '⌕' : '✎'}</div>
-      <div class="audit-body">
-        <div class="audit-top">
-          <span class="audit-agent">${escHtml(e.agent_id || 'unknown')}</span>
-          <span class="audit-time">${fmtDate(e.timestamp)}</span>
-        </div>
-        ${isRead
-          ? `<div class="audit-text">Asked: "${escHtml(e.query || '')}"</div>
-             ${e.top_result ? `<div class="audit-sub">→ ${escHtml(e.top_result.slice(0,100))}${e.top_result.length > 100 ? '…' : ''}</div>` : ''}`
-          : `<div class="audit-text">Stored: "${escHtml((e.content || '').slice(0,120))}${(e.content||'').length > 120 ? '…' : ''}"</div>`
-        }
-      </div>
-    </div>`;
-  }).join('');
-}
-
-// ── Namespaces ────────────────────────────────────────────────────────────
-
-async function loadNamespaces() {
-  const data = await fetchJSON('/api/namespaces');
-  if (!data) return;
-  const el = document.getElementById('namespaces-list');
-  if (!data.length) {
-    el.innerHTML = `<tr><td colspan="5" style="text-align:center;padding:32px;color:var(--text-3)">No namespaces found</td></tr>`;
-    return;
-  }
-  el.innerHTML = data.map(n => `<tr>
-    <td><span class="ns-name">${escHtml(n.namespace)}</span></td>
-    <td style="color:var(--text-2)">${n.memory_count}</td>
-    <td style="color:var(--text-2)">${n.local_only_count}</td>
-    <td class="meta-text">${fmtDate(n.last_updated)}</td>
-    <td>
-      <div class="ns-actions">
-        <button class="btn btn-ghost" style="padding:4px 10px;font-size:11px" onclick="downloadExport('${escHtml(n.namespace)}')">Export</button>
-        <button class="btn btn-ghost" style="padding:4px 10px;font-size:11px;border-color:rgba(248,113,113,0.3);color:var(--red)" onclick="deleteNs('${escHtml(n.namespace)}')">Delete</button>
-      </div>
-    </td>
-  </tr>`).join('');
-}
-
-async function deleteNs(namespace) {
-  if (!confirm(`Delete namespace '${namespace}' and ALL its memories? This cannot be undone.`)) return;
-  await fetch(`/api/namespaces/${encodeURIComponent(namespace)}`, { method: 'DELETE' });
-  toast(`Namespace '${namespace}' deleted`, 'success');
-  loadNamespaces();
-  loadStats();
-}
-
-async function downloadExport(namespace) {
-  const data = await fetchJSON(`/api/export/${encodeURIComponent(namespace)}?include_embeddings=false`);
-  if (!data) return;
-  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `mesh_${namespace}_export.json`;
-  a.click();
-  URL.revokeObjectURL(url);
-  toast(`Exported ${data.memory_count} memories`, 'success');
-}
-
-// ── Digest ────────────────────────────────────────────────────────────────
-
-async function loadDigest() {
-  const data = await fetchJSON(`/api/digest?namespace=${encodeURIComponent(ns)}&hours=24`);
-  if (!data) return;
-
-  document.getElementById('digest-stats').innerHTML = `
-    <div class="digest-stat">
-      <div class="digest-stat-num" style="color:var(--mint)">${data.new_count}</div>
-      <div class="digest-stat-label">New Memories</div>
-    </div>
-    <div class="digest-stat">
-      <div class="digest-stat-num" style="color:var(--red)">${data.contradiction_count}</div>
-      <div class="digest-stat-label">Contradictions</div>
-    </div>
-    <div class="digest-stat">
-      <div class="digest-stat-num" style="color:var(--amber)">${data.stale_count}</div>
-      <div class="digest-stat-label">Going Stale</div>
-    </div>
-  `;
-
-  let html = '';
-
-  if (data.new_count > 0) {
-    html += `<div class="pattern-section">
-      <div class="section-header"><div class="section-title">New Memories</div><div class="section-badge">${data.new_count}</div></div>
-      ${data.new_memories.slice(0, 10).map(m => `<div class="gap-card" style="border-color:var(--border)">
-        <div class="gap-icon">${m.local_only ? '🔒' : '+'}</div>
-        <div class="gap-body">
-          <div class="gap-query">${escHtml(m.content)}</div>
-          <div class="gap-meta">[${escHtml(m.memory_type)}] from ${escHtml(m.source_agent)}</div>
-        </div>
-      </div>`).join('')}
-    </div>`;
-  }
-
-  if (data.contradiction_count > 0) {
-    html += `<div class="pattern-section">
-      <div class="section-header"><div class="section-title">Contradictions</div><div class="section-badge">${data.contradiction_count}</div></div>
-      ${data.contradictions.map(c => `<div class="gap-card" style="border-color:rgba(248,113,113,0.2)">
-        <div class="gap-icon">⚡</div>
-        <div class="gap-body">
-          <div class="gap-query">${escHtml(c.content.slice(0,120))}</div>
-          <div class="gap-meta">flagged by ${escHtml(c.agent_id)}</div>
-        </div>
-      </div>`).join('')}
-    </div>`;
-  }
-
-  if (data.stale_count > 0) {
-    html += `<div class="pattern-section">
-      <div class="section-header"><div class="section-title">Going Stale</div><div class="section-badge">${data.stale_count}</div></div>
-      ${data.stale_memories.slice(0, 5).map(m => `<div class="gap-card" style="border-color:rgba(251,191,36,0.2)">
-        <div class="gap-icon">⚠</div>
-        <div class="gap-body">
-          <div class="gap-query">${escHtml(m.content.slice(0,120))}</div>
-          <div class="gap-meta">TTL: ${m.ttl_days} days, stored ${fmtDate(m.created_at)}</div>
-        </div>
-      </div>`).join('')}
-    </div>`;
-  }
-
-  if (!html) {
-    html = `<div class="empty"><div class="empty-icon">✓</div><div class="empty-title">All clear — no activity in last 24h</div></div>`;
-  }
-
-  document.getElementById('digest-content').innerHTML = html;
-}
-
-// ── Tab navigation ────────────────────────────────────────────────────────
-
-function showTab(name, btn) {
-  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-  document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
-  document.getElementById('panel-' + name).classList.add('active');
-  btn.classList.add('active');
-
-  if (name === 'patterns')   loadPatterns();
-  if (name === 'conflicts')  loadConflicts();
-  if (name === 'namespaces') loadNamespaces();
-  if (name === 'audit')      loadAudit();
-  if (name === 'digest')     loadDigest();
-}
-
-// ── Utilities ─────────────────────────────────────────────────────────────
-
-async function fetchJSON(url) {
-  try {
-    const res = await fetch(url);
-    return res.ok ? res.json() : null;
+    const res = await fetch(path, opts);
+    return res.ok ? await res.json() : null;
   } catch { return null; }
 }
 
-function parseTags(raw) {
-  if (!raw) return [];
-  try { return JSON.parse(raw); } catch { return []; }
+async function refreshAll() {
+  const stats = await apiFetch(`/api/stats${ns ? '?namespace=' + encodeURIComponent(ns) : ''}`);
+  if (stats) {
+    ns = stats.namespace;
+    document.getElementById('m-total').textContent = stats.total_memories;
+    document.getElementById('m-stale').textContent = stats.stale_memories;
+    document.getElementById('m-conflicts').textContent = stats.open_contradictions;
+    document.getElementById('m-gaps').textContent = stats.memory_gaps;
+    document.getElementById('tc-memories').textContent = stats.total_memories;
+    document.getElementById('tc-conflicts').textContent = stats.open_contradictions;
+  }
+  await populateNamespaceDropdown();
+  await loadMemories();
 }
 
-function escHtml(s) {
-  if (!s) return '';
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+async function populateNamespaceDropdown() {
+  const list = await apiFetch('/api/namespaces') || [];
+  const names = new Set(list.map(x => x.namespace));
+  if (ns) names.add(ns);
+  const sel = document.getElementById('ns-select');
+  sel.innerHTML = Array.from(names).sort().map(n =>
+    `<option value="${esc(n)}" ${n === ns ? 'selected' : ''}>${esc(n)}</option>`
+  ).join('');
+}
+
+function switchNamespace(newNs) {
+  ns = newNs;
+  searchResults = null;
+  document.getElementById('search-input').value = '';
+  refreshAll();
+}
+
+async function loadMemories() {
+  const data = await apiFetch(`/api/memories?limit=200&namespace=${encodeURIComponent(ns)}`);
+  memories = Array.isArray(data) ? data : [];
+  renderMemories();
+}
+
+function parseTags(m) {
+  if (Array.isArray(m.tags_list)) return m.tags_list;
+  if (Array.isArray(m.tags)) return m.tags;
+  if (typeof m.tags === 'string' && m.tags.trim()) {
+    try { const p = JSON.parse(m.tags); return Array.isArray(p) ? p : []; } catch { return []; }
+  }
+  return [];
+}
+
+function renderMemories() {
+  let list = searchResults !== null ? [...searchResults] : [...memories];
+
+  if (activeType !== 'all') {
+    list = list.filter(m => (m.memory_type || 'fact') === activeType);
+  }
+
+  if (searchResults === null) {
+    if (sortBy === 'created') list.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+    else if (sortBy === 'confidence') list.sort((a, b) => (b.effective_confidence ?? b.confidence ?? 1) - (a.effective_confidence ?? a.confidence ?? 1));
+  }
+
+  document.getElementById('shown-count').textContent =
+    searchResults !== null ? `${list.length} matches` : `${list.length} items`;
+
+  const root = document.getElementById('memory-list');
+  if (!list.length) {
+    root.innerHTML = `<div class="empty">No memories match the current view.</div>`;
+    return;
+  }
+
+  root.innerHTML = `<div class="list">` + list.map(m => {
+    const t = m.memory_type || 'fact';
+    const tags = parseTags(m);
+    const conf = (m.effective_confidence ?? m.confidence ?? 1.0).toFixed(2);
+    const sim = m.similarity !== undefined ? `<span class="flag sim">${Math.round(m.similarity * 100)}% match</span>` : '';
+    const stale = m.is_stale ? `<span class="flag stale">stale</span>` : '';
+    const priv = m.local_only ? `<span class="flag private">private</span>` : '';
+
+    return `<div class="row">
+      <div class="row-main">
+        <div class="row-top">
+          <span class="type-pill ${esc(t)}">${esc(t)}</span>
+          <span class="row-content">${esc(m.content)}</span>
+        </div>
+        <div class="row-meta">
+          ${sim}${stale}${priv}
+          <span>conf ${conf}</span>
+          <span>by ${esc(m.source_agent || 'agent')}</span>
+          ${m.access_count ? `<span>${m.access_count}× read</span>` : ''}
+          ${m.created_at ? `<span>${relTime(m.created_at)}</span>` : ''}
+          ${tags.map(tag => `<span class="tag">#${esc(tag)}</span>`).join('')}
+        </div>
+      </div>
+      <div class="row-actions">
+        <button class="icon-btn" title="Edit" onclick="openEdit('${escAttr(m.id)}')">✎</button>
+        <button class="icon-btn del" title="Delete" onclick="delMemory('${escAttr(m.id)}')">✕</button>
+      </div>
+    </div>`;
+  }).join('') + `</div>`;
+}
+
+function setType(type, btn) {
+  activeType = type;
+  document.querySelectorAll('#panel-memories .chip').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderMemories();
+}
+
+function setSort(val) {
+  sortBy = val;
+  renderMemories();
+}
+
+function onSearch(val) {
+  clearTimeout(debounceTimer);
+  const q = val.trim();
+  if (!q) {
+    searchResults = null;
+    renderMemories();
+    return;
+  }
+  const ql = q.toLowerCase();
+  searchResults = memories.filter(m =>
+    (m.content || '').toLowerCase().includes(ql) ||
+    parseTags(m).some(t => t.toLowerCase().includes(ql))
+  );
+  renderMemories();
+
+  if (q.length >= 2) {
+    debounceTimer = setTimeout(async () => {
+      const res = await apiFetch(`/api/search?q=${encodeURIComponent(q)}&n=25&namespace=${encodeURIComponent(ns)}`);
+      if (Array.isArray(res)) {
+        searchResults = res;
+        renderMemories();
+      }
+    }, 220);
+  }
+}
+
+function openModal() {
+  editId = null;
+  document.getElementById('modal-title').textContent = 'New Memory';
+  document.getElementById('f-content').value = '';
+  document.getElementById('f-type').value = 'fact';
+  document.getElementById('f-conf').value = '1.0';
+  document.getElementById('f-tags').value = '';
+  document.getElementById('f-ttl').value = '';
+  document.getElementById('f-private').checked = false;
+  document.getElementById('backdrop').classList.add('open');
+  setTimeout(() => document.getElementById('f-content').focus(), 40);
+}
+
+function openEdit(id) {
+  const pool = searchResults !== null ? [...searchResults, ...memories] : memories;
+  const m = pool.find(x => x.id === id);
+  if (!m) return;
+  editId = id;
+  document.getElementById('modal-title').textContent = 'Edit Memory';
+  document.getElementById('f-content').value = m.content || '';
+  document.getElementById('f-type').value = m.memory_type || 'fact';
+  document.getElementById('f-conf').value = m.confidence ?? 1.0;
+  document.getElementById('f-tags').value = parseTags(m).join(', ');
+  document.getElementById('f-ttl').value = m.ttl_days || '';
+  document.getElementById('f-private').checked = Boolean(m.local_only);
+  document.getElementById('backdrop').classList.add('open');
+}
+
+function closeModal() {
+  document.getElementById('backdrop').classList.remove('open');
+  editId = null;
+}
+
+async function saveMemory() {
+  const content = document.getElementById('f-content').value.trim();
+  if (!content) return notify('Content is required');
+
+  const tags = document.getElementById('f-tags').value.split(',').map(s => s.trim()).filter(Boolean);
+  const ttlRaw = document.getElementById('f-ttl').value;
+  const payload = {
+    content,
+    memory_type: document.getElementById('f-type').value,
+    confidence: parseFloat(document.getElementById('f-conf').value) || 1.0,
+    tags,
+    ttl_days: ttlRaw ? parseFloat(ttlRaw) : null,
+    local_only: document.getElementById('f-private').checked,
+    namespace: ns
+  };
+
+  const url = editId ? `/api/memories/${encodeURIComponent(editId)}` : '/api/memories';
+  const method = editId ? 'PUT' : 'POST';
+  const res = await fetch(url, {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+
+  if (res.ok) {
+    closeModal();
+    searchResults = null;
+    document.getElementById('search-input').value = '';
+    notify(editId ? 'Memory updated' : 'Memory saved');
+    await refreshAll();
+  } else {
+    notify('Failed to save memory');
+  }
+}
+
+async function delMemory(id) {
+  if (!confirm('Delete this memory?')) return;
+  const res = await fetch(`/api/memories/${encodeURIComponent(id)}?namespace=${encodeURIComponent(ns)}`, { method: 'DELETE' });
+  if (res.ok) {
+    memories = memories.filter(m => m.id !== id);
+    if (searchResults) searchResults = searchResults.filter(m => m.id !== id);
+    renderMemories();
+    notify('Memory deleted');
+    refreshAll();
+  }
+}
+
+async function loadConflicts() {
+  const list = await apiFetch(`/api/contradictions?namespace=${encodeURIComponent(ns)}`) || [];
+  const el = document.getElementById('conflicts-list');
+  if (!list.length) {
+    el.innerHTML = `<div class="empty">No unresolved conflicts in '${esc(ns)}'.</div>`;
+    return;
+  }
+  el.innerHTML = `<div class="list">` + list.map(c => `<div class="row" style="flex-direction:column">
+    <div style="display:flex;justify-content:space-between;width:100%;align-items:center">
+      <span class="row-meta"><span class="flag stale">conflict</span> similarity ${(c.similarity || 0).toFixed(2)} · ${relTime(c.detected_at)}</span>
+      <button class="btn" onclick="resolveConflict('${escAttr(c.id)}')">Mark Resolved</button>
+    </div>
+    <div class="conflict-grid" style="width:100%">
+      <div class="conflict-box old"><div style="font-size:10px;color:var(--subtle);margin-bottom:3px">EXISTING</div>${esc(c.existing_content)}</div>
+      <div class="conflict-box new"><div style="font-size:10px;color:var(--subtle);margin-bottom:3px">NEW</div>${esc(c.new_content)}</div>
+    </div>
+  </div>`).join('') + `</div>`;
+}
+
+async function resolveConflict(id) {
+  await fetch(`/api/contradictions/${encodeURIComponent(id)}/resolve?namespace=${encodeURIComponent(ns)}`, { method: 'POST' });
+  notify('Conflict resolved');
+  loadConflicts();
+  refreshAll();
+}
+
+async function loadPatterns() {
+  const data = await apiFetch(`/api/patterns?namespace=${encodeURIComponent(ns)}`);
+  if (!data) return;
+
+  const tEl = document.getElementById('patterns-topics');
+  tEl.innerHTML = (data.top_topics || []).length
+    ? `<div class="list">` + data.top_topics.map(t => `<div class="row">
+        <span class="row-content">${esc(t.query_text)}</span>
+        <span class="row-meta">${t.query_count} queries · avg sim ${(t.avg_similarity || 0).toFixed(2)}</span>
+      </div>`).join('') + `</div>`
+    : `<div class="empty">No queries logged yet.</div>`;
+
+  const gEl = document.getElementById('patterns-gaps');
+  gEl.innerHTML = (data.memory_gaps || []).length
+    ? `<div class="list">` + data.memory_gaps.map(g => `<div class="row">
+        <span class="row-content">${esc(g.query_text)}</span>
+        <span class="row-meta"><span class="flag stale">gap</span> asked ${g.query_count}× · avg sim ${(g.avg_similarity || 0).toFixed(2)}</span>
+      </div>`).join('') + `</div>`
+    : `<div class="empty">No memory gaps detected.</div>`;
+
+  const uEl = document.getElementById('patterns-unused');
+  uEl.innerHTML = (data.unused_memories || []).length
+    ? `<div class="list">` + data.unused_memories.map(m => `<div class="row">
+        <span class="row-content">${esc(m.content)}</span>
+        <button class="icon-btn del" onclick="delMemory('${escAttr(m.id)}')">✕</button>
+      </div>`).join('') + `</div>`
+    : `<div class="empty">No unused memories.</div>`;
+}
+
+async function loadAudit(filter = 'all', btn = null) {
+  if (btn) {
+    document.querySelectorAll('#panel-audit .chip').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+  }
+  const list = await apiFetch(`/api/audit?namespace=${encodeURIComponent(ns)}&limit=100&action=${filter}`) || [];
+  const el = document.getElementById('audit-list');
+  if (!list.length) {
+    el.innerHTML = `<div class="empty">No audit activity recorded yet.</div>`;
+    return;
+  }
+  el.innerHTML = `<div class="list">` + list.map(e => `<div class="row">
+    <div class="row-main">
+      <div class="row-top">
+        <span class="type-pill">${esc(e.action)}</span>
+        <span class="row-content">${esc(e.action === 'recall' ? e.query : e.content)}</span>
+      </div>
+      <div class="row-meta">
+        <span>by ${esc(e.agent_id || 'agent')}</span>
+        <span>${relTime(e.timestamp)}</span>
+        ${e.top_result ? `<span>→ "${esc(e.top_result.slice(0, 70))}"</span>` : ''}
+      </div>
+    </div>
+  </div>`).join('') + `</div>`;
+}
+
+async function loadNamespaces() {
+  const list = await apiFetch('/api/namespaces') || [];
+  const el = document.getElementById('namespaces-list');
+  if (!list.length) {
+    el.innerHTML = `<div class="empty">No namespaces found.</div>`;
+    return;
+  }
+  el.innerHTML = `<div class="list">` + list.map(n => `<div class="row" style="align-items:center">
+    <div class="row-main">
+      <div class="row-top">
+        <span class="row-content" style="font-weight:600;cursor:pointer" onclick="switchNamespace('${escAttr(n.namespace)}')">${esc(n.namespace)}</span>
+      </div>
+      <div class="row-meta">
+        <span>${n.memory_count} memories</span>
+        <span>${n.local_only_count} private</span>
+        <span>updated ${relTime(n.last_updated)}</span>
+      </div>
+    </div>
+    <div style="display:flex;gap:6px">
+      <button class="btn" onclick="exportNs('${escAttr(n.namespace)}')">Export</button>
+      <button class="btn btn-danger" onclick="deleteNs('${escAttr(n.namespace)}')">Delete</button>
+    </div>
+  </div>`).join('') + `</div>`;
+}
+
+async function exportNs(targetNs) {
+  const data = await apiFetch(`/api/export/${encodeURIComponent(targetNs)}?include_embeddings=false`);
+  if (!data) return;
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `mesh_${targetNs}.json`;
+  a.click();
+  notify(`Exported ${data.memory_count} memories`);
+}
+
+async function deleteNs(targetNs) {
+  if (!confirm(`Delete namespace '${targetNs}' and all its memories?`)) return;
+  await fetch(`/api/namespaces/${encodeURIComponent(targetNs)}`, { method: 'DELETE' });
+  notify(`Deleted ${targetNs}`);
+  loadNamespaces();
+  refreshAll();
+}
+
+async function loadDigest() {
+  const d = await apiFetch(`/api/digest?namespace=${encodeURIComponent(ns)}&hours=24`);
+  const el = document.getElementById('digest-list');
+  if (!d) return;
+  if (!d.new_count && !d.contradiction_count && !d.stale_count) {
+    el.innerHTML = `<div class="empty">All clear — no new activity or stale memories in the last 24h.</div>`;
+    return;
+  }
+  const items = (d.new_memories || []).map(m => `<div class="row">
+    <div class="row-main">
+      <div class="row-top"><span class="type-pill ${esc(m.memory_type)}">${esc(m.memory_type)}</span><span class="row-content">${esc(m.content)}</span></div>
+      <div class="row-meta"><span>by ${esc(m.source_agent)}</span><span>${relTime(m.created_at)}</span></div>
+    </div>
+  </div>`).join('');
+  el.innerHTML = `<div class="section-label">Last 24h: ${d.new_count} new · ${d.total_recalls} recalls · ${d.contradiction_count} conflicts</div>` +
+    (items ? `<div class="list">${items}</div>` : '');
+}
+
+function showTab(name, btn) {
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.getElementById('panel-' + name).classList.add('active');
+  btn.classList.add('active');
+  if (name === 'conflicts') loadConflicts();
+  if (name === 'patterns') loadPatterns();
+  if (name === 'audit') loadAudit();
+  if (name === 'namespaces') loadNamespaces();
+  if (name === 'digest') loadDigest();
 }
 
 function esc(s) {
-  return String(s || '').replace(/'/g, "\\'");
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function escAttr(s) {
+  return String(s ?? '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+function relTime(s) {
+  if (!s || s === 'never') return 'never';
+  const d = new Date(s);
+  if (isNaN(d)) return String(s).slice(0, 10);
+  const sec = (Date.now() - d.getTime()) / 1000;
+  if (sec < 60) return 'just now';
+  if (sec < 3600) return Math.floor(sec / 60) + 'm ago';
+  if (sec < 86400) return Math.floor(sec / 3600) + 'h ago';
+  if (sec < 604800) return Math.floor(sec / 86400) + 'd ago';
+  return d.toLocaleDateString();
+}
+function notify(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.style.display = 'block';
+  clearTimeout(t._timer);
+  t._timer = setTimeout(() => { t.style.display = 'none'; }, 2400);
 }
 
-function fmtDate(s) {
-  if (!s) return '';
-  try {
-    const d = new Date(s);
-    const now = new Date();
-    const diff = (now - d) / 1000;
-    if (diff < 60) return 'just now';
-    if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
-    if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
-    if (diff < 604800) return Math.floor(diff / 86400) + 'd ago';
-    return d.toLocaleDateString();
-  } catch { return s.slice(0, 10); }
-}
-
-function toast(msg, type = 'success') {
-  const el = document.createElement('div');
-  el.className = `toast ${type}`;
-  el.innerHTML = `<span>${type === 'success' ? '✓' : '✕'}</span> ${escHtml(msg)}`;
-  document.getElementById('toast-container').appendChild(el);
-  setTimeout(() => el.remove(), 3200);
-}
-
-// Keyboard shortcut: N = new memory
 document.addEventListener('keydown', e => {
-  if (e.key === 'n' && !e.ctrlKey && !e.metaKey &&
-      document.activeElement.tagName !== 'INPUT' &&
-      document.activeElement.tagName !== 'TEXTAREA') {
+  const activeTag = document.activeElement ? document.activeElement.tagName : '';
+  if (e.key === '/' && activeTag !== 'INPUT' && activeTag !== 'TEXTAREA') {
+    e.preventDefault();
+    document.getElementById('search-input').focus();
+  } else if (e.key === 'n' && !e.metaKey && !e.ctrlKey && activeTag !== 'INPUT' && activeTag !== 'TEXTAREA') {
+    e.preventDefault();
     openModal();
+  } else if (e.key === 'Escape') {
+    closeModal();
   }
-  if (e.key === 'Escape') closeModal();
 });
 </script>
 </body>
@@ -1834,32 +1284,39 @@ document.addEventListener('keydown', e => {
 
 
 @api.get("/", response_class=HTMLResponse)
-def dashboard():
+def dashboard() -> str:
     return DASHBOARD_HTML
 
 
 # ── CLI entry point ─────────────────────────────────────────────────────────
 
 @click.command()
-@click.option("--namespace", default="shared", envvar="MESH_NAMESPACE",
-              help="Mesh namespace to inspect (default: shared)")
+@click.option(
+    "--namespace",
+    default="shared",
+    envvar="MESH_NAMESPACE",
+    help="Mesh namespace to inspect (default: shared)",
+)
 @click.option("--port", default=7433, help="Port to run on (default: 7433)")
 @click.option("--no-browser", is_flag=True, help="Don't auto-open the browser")
-def run(namespace: str, port: int, no_browser: bool):
+def run(namespace: str, port: int, no_browser: bool) -> None:
     """Start the Mesh dashboard at http://localhost:<port>"""
-    global _mesh
+    global _mesh, _default_namespace
+    _default_namespace = namespace
     _mesh = Mesh(namespace=namespace, agent_id="dashboard")
+    threading.Thread(target=warmup_model, daemon=True).start()
 
     url = f"http://localhost:{port}"
-    print(f"\n  ◈  Mesh Dashboard")
-    print(f"     {url}")
-    print(f"     namespace: {namespace}")
-    print(f"     Press Ctrl+C to stop.\n")
+    print("\n  Mesh Dashboard")
+    print(f"  {url}")
+    print(f"  namespace: {namespace}")
+    print("  Press Ctrl+C to stop.\n")
 
     if not no_browser:
-        def open_browser():
-            time.sleep(1.2)
+        def open_browser() -> None:
+            time.sleep(1.0)
             webbrowser.open(url)
+
         threading.Thread(target=open_browser, daemon=True).start()
 
     uvicorn.run(api, host="127.0.0.1", port=port, log_level="error")
