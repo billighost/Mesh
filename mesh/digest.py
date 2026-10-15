@@ -1,106 +1,119 @@
 """
-mesh/digest.py — End-of-session digest.
+mesh/digest.py — Timezone-safe End-of-Session Digest for Mesh.
 Summarizes recent activity: what was learned, contradictions detected, stale memories.
-
-Usage:
-    mesh-digest                         # Digest for today
-    mesh-digest --hours 2               # Last 2 hours only
-    mesh-digest --namespace work
 """
 
-import sys
+from __future__ import annotations
+
+import argparse
+import json
 import os
 import sqlite3
-from datetime import datetime, timezone, timedelta
+from datetime import timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Any
+
+from .store import _parse_iso_utc, _utc_now
 
 MESH_DIR = Path.home() / ".mesh"
 
 
 def generate_digest(
     namespace: str = "shared",
-    hours: int = 24
-) -> dict:
+    hours: int = 24,
+) -> dict[str, Any]:
     """
-    Generate a session digest for the given namespace and time window.
-    
-    Returns:
-        Dict with: new_memories, contradictions, stale_memories, recalls, agents_active
+    Generate a session digest for the given namespace and time window using timezone-safe UTC timestamps.
     """
-    since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
-    
-    # Get new memories from SQLite
+    now = _utc_now()
+    since_dt = now - timedelta(hours=hours)
+    since_iso = since_dt.isoformat()
+
     db_path = MESH_DIR / f"mesh_{namespace}.db"
-    new_memories = []
-    contradictions = []
-    stale_memories = []
-    
+    new_memories: list[dict[str, Any]] = []
+    stale_memories: list[dict[str, Any]] = []
+
     if db_path.exists():
-        conn = sqlite3.connect(db_path)
+        conn = sqlite3.connect(db_path, timeout=5.0)
         conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        
-        # New memories in window
-        cursor.execute("""
-            SELECT content, memory_type, source_agent, confidence, created_at, local_only
-            FROM memories 
-            WHERE created_at >= ?
-            ORDER BY created_at DESC
-        """, (since,))
-        new_memories = [dict(r) for r in cursor.fetchall()]
-        
-        # Stale memories (past TTL)
-        cursor.execute("""
-            SELECT content, memory_type, created_at, ttl_days
-            FROM memories
-            WHERE ttl_days IS NOT NULL
-            AND julianday('now') - julianday(created_at) > ttl_days
-            ORDER BY created_at ASC
-        """)
-        stale_memories = [dict(r) for r in cursor.fetchall()]
-        
-        conn.close()
-    
-    # Get contradictions from audit log
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT content, memory_type, source_agent, confidence, created_at, local_only
+                FROM memories
+                WHERE created_at >= ?
+                ORDER BY created_at DESC
+                """,
+                (since_iso,),
+            )
+            new_memories = [dict(r) for r in cursor.fetchall()]
+
+            cursor.execute(
+                """
+                SELECT content, memory_type, created_at, ttl_days
+                FROM memories
+                WHERE ttl_days IS NOT NULL
+                AND created_at IS NOT NULL
+                """
+            )
+            all_ttl = cursor.fetchall()
+            for r in all_ttl:
+                created_at_dt = _parse_iso_utc(r["created_at"])
+                ttl = r["ttl_days"]
+                if created_at_dt and ttl:
+                    elapsed_days = (now - created_at_dt).total_seconds() / 86400.0
+                    if elapsed_days > float(ttl):
+                        stale_memories.append(dict(r))
+        finally:
+            conn.close()
+
     audit_db = MESH_DIR / f"audit_{namespace}.db"
+    contradictions: list[dict[str, Any]] = []
     recalls = 0
-    agents_active = []
-    
+    agents_active: list[str] = []
+
     if audit_db.exists():
-        conn = sqlite3.connect(audit_db)
+        conn = sqlite3.connect(audit_db, timeout=5.0)
         conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        
-        # Contradictions detected during window
-        cursor.execute("""
-            SELECT content, agent_id, timestamp
-            FROM audit_log
-            WHERE action = 'learn' AND had_conflict = 1 AND timestamp >= ?
-            ORDER BY timestamp DESC
-        """, (since,))
-        contradictions = [dict(r) for r in cursor.fetchall()]
-        
-        # Recall count
-        cursor.execute("""
-            SELECT COUNT(*) as c FROM audit_log 
-            WHERE action = 'recall' AND timestamp >= ?
-        """, (since,))
-        recalls = cursor.fetchone()["c"]
-        
-        # Active agents
-        cursor.execute("""
-            SELECT DISTINCT agent_id FROM audit_log
-            WHERE timestamp >= ? AND agent_id IS NOT NULL
-        """, (since,))
-        agents_active = [r["agent_id"] for r in cursor.fetchall()]
-        
-        conn.close()
-    
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT content, agent_id, timestamp
+                FROM audit_log
+                WHERE action = 'learn' AND had_conflict = 1 AND timestamp >= ?
+                ORDER BY timestamp DESC
+                """,
+                (since_iso,),
+            )
+            contradictions = [dict(r) for r in cursor.fetchall()]
+
+            cursor.execute(
+                """
+                SELECT COUNT(*) as c FROM audit_log
+                WHERE action = 'recall' AND timestamp >= ?
+                """,
+                (since_iso,),
+            )
+            row_recalls = cursor.fetchone()
+            recalls = int(row_recalls["c"]) if row_recalls else 0
+
+            cursor.execute(
+                """
+                SELECT DISTINCT agent_id FROM audit_log
+                WHERE timestamp >= ? AND agent_id IS NOT NULL
+                """,
+                (since_iso,),
+            )
+            agents_active = [row_agent["agent_id"] for row_agent in cursor.fetchall()]
+        finally:
+            conn.close()
+
     return {
         "namespace": namespace,
         "hours": hours,
-        "since": since,
+        "since": since_iso,
         "new_memories": new_memories,
         "new_count": len(new_memories),
         "contradictions": contradictions,
@@ -108,66 +121,65 @@ def generate_digest(
         "stale_memories": stale_memories,
         "stale_count": len(stale_memories),
         "total_recalls": recalls,
-        "agents_active": agents_active
+        "agents_active": agents_active,
     }
 
 
-def print_digest(digest: dict):
+def print_digest(digest: dict[str, Any]) -> None:
     """Print a human-readable digest to stdout."""
     hours = digest["hours"]
     window = f"last {hours}h" if hours < 24 else "today"
     ns = digest["namespace"]
-    
+
     print(f"\n{'='*50}")
     print(f"  Mesh Digest — {window} — namespace: {ns}")
     print(f"{'='*50}\n")
-    
-    # New memories
+
     if digest["new_count"] == 0:
-        print(f"  📭  No new memories stored {window}.")
+        print(f"  [OK] No new memories stored {window}.")
     else:
-        print(f"  📥  {digest['new_count']} new memor{'y' if digest['new_count'] == 1 else 'ies'} stored:\n")
+        print(f"  [INPUT] {digest['new_count']} new memor{'y' if digest['new_count'] == 1 else 'ies'} stored:\n")
         for mem in digest["new_memories"][:10]:
-            private = " 🔒" if mem.get("local_only") else ""
+            private = " [PRIVATE]" if mem.get("local_only") else ""
             print(f"     [{mem['memory_type']}]{private} {mem['content'][:75]}")
-            print(f"      → from {mem['source_agent']} at {mem['created_at'][:16]}")
+            print(f"      -> from {mem['source_agent']} at {str(mem['created_at'])[:16]}")
         if digest["new_count"] > 10:
             print(f"     ... and {digest['new_count'] - 10} more")
-    
+
     print()
-    
-    # Recalls
+
     if digest["total_recalls"] > 0:
         agents = ", ".join(digest["agents_active"]) if digest["agents_active"] else "unknown"
-        print(f"  🔍  {digest['total_recalls']} memory reads by: {agents}")
+        print(f"  [SEARCH] {digest['total_recalls']} memory reads by: {agents}")
         print()
-    
-    # Contradictions
+
     if digest["contradiction_count"] > 0:
-        print(f"  ⚠️   {digest['contradiction_count']} contradiction(s) detected:\n")
+        print(f"  [WARNING] {digest['contradiction_count']} contradiction(s) detected:\n")
         for c in digest["contradictions"]:
             print(f"     \"{c['content'][:75]}\"")
-            print(f"      → flagged by {c['agent_id']} at {c['timestamp'][:16]}")
+            print(f"      -> flagged by {c['agent_id']} at {str(c['timestamp'])[:16]}")
         print()
-    
-    # Stale memories
+
     if digest["stale_count"] > 0:
-        print(f"  🕰️   {digest['stale_count']} memor{'y' if digest['stale_count'] == 1 else 'ies'} going stale:\n")
+        print(f"  [STALE] {digest['stale_count']} memor{'y' if digest['stale_count'] == 1 else 'ies'} going stale:\n")
         for mem in digest["stale_memories"][:5]:
             print(f"     \"{mem['content'][:75]}\"")
-            print(f"      → TTL was {mem['ttl_days']} days, stored {mem['created_at'][:10]}")
+            print(f"      -> TTL was {mem['ttl_days']} days, stored {str(mem['created_at'])[:10]}")
         print()
-        print(f"     Run 'mesh-ask' to review and update these, or 'mesh-forget' to remove them.")
-    
-    if digest["new_count"] == 0 and digest["contradiction_count"] == 0 and digest["stale_count"] == 0:
-        print(f"  ✓   All clear. Mesh is up to date.")
-    
+        print("     Run 'mesh-ask' to review and update these, or 'mesh-forget' to remove them.")
+
+    if (
+        digest["new_count"] == 0
+        and digest["contradiction_count"] == 0
+        and digest["stale_count"] == 0
+    ):
+        print("  [OK] All clear. Mesh is up to date.")
+
     print()
 
 
-def digest_cmd():
+def digest_cmd() -> None:
     """Entry point for: mesh-digest"""
-    import argparse
     parser = argparse.ArgumentParser(
         description="Show a digest of recent Mesh activity.",
         epilog="""Examples:
@@ -175,20 +187,17 @@ def digest_cmd():
   mesh-digest --hours 2        # Last 2 hours
   mesh-digest --namespace work
   mesh-digest --json           # Machine-readable output
-        """
+        """,
     )
     parser.add_argument("--namespace", default=None)
-    parser.add_argument("--hours", type=int, default=24,
-                        help="Time window in hours (default: 24)")
-    parser.add_argument("--json", action="store_true",
-                        help="Output as JSON instead of human-readable")
+    parser.add_argument("--hours", type=int, default=24, help="Time window in hours (default: 24)")
+    parser.add_argument("--json", action="store_true", help="Output as JSON instead of human-readable")
     args = parser.parse_args()
 
     ns = args.namespace or os.environ.get("MESH_NAMESPACE", "shared")
     digest = generate_digest(namespace=ns, hours=args.hours)
-    
+
     if args.json:
-        import json
         print(json.dumps(digest, indent=2))
     else:
         print_digest(digest)

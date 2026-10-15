@@ -1,26 +1,30 @@
 """
-mesh/http_server.py — HTTP REST API for Mesh.
-Runs on localhost:7701. Separate from the dashboard (port 7700).
-Any tool that can POST to localhost can use Mesh through this server.
+mesh/http_server.py — High-speed HTTP REST API for Mesh.
+Runs on localhost:7701 by default. Separate from the dashboard (port 7433).
+Any tool or script that can make HTTP requests can use Mesh through this server.
 """
 
+from __future__ import annotations
+
+import json
+import os
+import threading
+from datetime import datetime, timezone
+from typing import Any, Optional
+
+import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import Optional
-import uvicorn
-import os
-import json
-from datetime import datetime, timezone
+from pydantic import BaseModel, Field
 
-from .memory import Mesh
-from .store import MeshStore
-from .audit import log_recall, log_learn
+from .audit import get_audit_log, log_forget, log_learn, log_recall, log_update
+from .context_builder import build_context
+from .memory import Mesh, warmup_model
 
 app = FastAPI(
     title="Mesh HTTP API",
-    description="Local HTTP interface for the Mesh shared memory layer.",
-    version="0.4"
+    description="Local HTTP interface for the Mesh shared agent memory layer.",
+    version="0.4",
 )
 
 app.add_middleware(
@@ -30,120 +34,210 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-def get_mesh(namespace: str = None, agent_id: str = None) -> Mesh:
-    ns = namespace or os.environ.get("MESH_NAMESPACE", "shared")
-    aid = agent_id or os.environ.get("MESH_AGENT_ID", "http-client")
-    return Mesh(namespace=ns, agent_id=aid)
+_MESH_LOCK = threading.RLock()
+_MESH_REGISTRY: dict[tuple[str, str], Mesh] = {}
 
 
-# --- Request/Response Models ---
+def get_mesh(namespace: Optional[str] = None, agent_id: Optional[str] = None) -> Mesh:
+    """Return a cached Mesh instance for the given namespace and agent_id."""
+    ns = (namespace or os.environ.get("MESH_NAMESPACE", "shared")).strip() or "shared"
+    aid = (agent_id or os.environ.get("MESH_AGENT_ID", "http-client")).strip() or "http-client"
+    key = (ns, aid)
+    with _MESH_LOCK:
+        mesh = _MESH_REGISTRY.get(key)
+        if mesh is None:
+            mesh = Mesh(namespace=ns, agent_id=aid)
+            _MESH_REGISTRY[key] = mesh
+        return mesh
+
+
+# --- Request Models ---
 
 class LearnRequest(BaseModel):
     content: str
     memory_type: Optional[str] = "fact"
     confidence: Optional[float] = 1.0
-    tags: Optional[list[str]] = []
+    tags: Optional[list[str]] = Field(default_factory=list)
     local_only: Optional[bool] = False
-    ttl_days: Optional[int] = None
+    ttl_days: Optional[float] = None
     namespace: Optional[str] = None
     agent_id: Optional[str] = None
+
 
 class RecallRequest(BaseModel):
     query: str
     count: Optional[int] = 5
     memory_type: Optional[str] = None
+    tags: Optional[list[str]] = None
+    source_agent: Optional[str] = None
+    min_similarity: Optional[float] = 0.0
     min_confidence: Optional[float] = 0.0
+    include_stale: Optional[bool] = True
     namespace: Optional[str] = None
     agent_id: Optional[str] = None
+
+
+class UpdateRequest(BaseModel):
+    memory_id: str
+    content: Optional[str] = None
+    memory_type: Optional[str] = None
+    confidence: Optional[float] = None
+    tags: Optional[list[str]] = None
+    local_only: Optional[bool] = None
+    ttl_days: Optional[float] = None
+    namespace: Optional[str] = None
+    agent_id: Optional[str] = None
+
 
 class ForgetRequest(BaseModel):
     memory_id: str
     namespace: Optional[str] = None
+    agent_id: Optional[str] = None
+
+
+class ResolveContradictionRequest(BaseModel):
+    contradiction_id: str
+    namespace: Optional[str] = None
+
 
 class ContextRequest(BaseModel):
     query: Optional[str] = None
     count: Optional[int] = 10
     namespace: Optional[str] = None
-    format: Optional[str] = "markdown"  # "markdown" | "plain" | "json"
+    format: Optional[str] = "markdown"  # "markdown" | "plain" | "xml" | "json"
+    min_confidence: Optional[float] = 0.3
+    memory_type: Optional[str] = None
+    tags: Optional[list[str]] = None
 
 
 # --- Endpoints ---
 
 @app.get("/health")
-async def health():
+async def health() -> dict[str, str]:
     """Health check. Returns ok if the server is running."""
     return {
         "status": "ok",
         "version": "0.4",
-        "timestamp": datetime.now(timezone.utc).isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
+
 @app.post("/learn")
-async def learn(req: LearnRequest):
+async def learn(req: LearnRequest) -> dict[str, Any]:
     """Store a memory. Returns the memory ID and any contradiction warnings."""
     try:
         mesh = get_mesh(req.namespace, req.agent_id)
         result = mesh.learn(
             content=req.content,
-            memory_type=req.memory_type,
-            confidence=req.confidence,
-            tags=req.tags,
-            local_only=req.local_only,
-            ttl_days=req.ttl_days
+            memory_type=req.memory_type or "fact",
+            confidence=req.confidence if req.confidence is not None else 1.0,
+            tags=req.tags or [],
+            local_only=bool(req.local_only),
+            ttl_days=req.ttl_days,
         )
         log_learn(
             content=req.content,
-            namespace=req.namespace or os.environ.get("MESH_NAMESPACE", "shared"),
-            agent_id=req.agent_id or os.environ.get("MESH_AGENT_ID", "http-client"),
-            result=result
+            namespace=mesh.namespace,
+            agent_id=mesh.agent_id,
+            result=result,
         )
         return {"status": "ok", "result": result}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.post("/recall")
-async def recall(req: RecallRequest):
-    """Retrieve memories relevant to a query. Returns ranked list with similarity scores."""
+async def recall(req: RecallRequest) -> dict[str, Any]:
+    """Retrieve memories relevant to a query using hybrid search."""
     try:
         mesh = get_mesh(req.namespace, req.agent_id)
         results = mesh.recall(
             query=req.query,
-            n=req.count,
-            min_confidence=req.min_confidence
+            n=req.count or 5,
+            min_similarity=req.min_similarity or 0.0,
+            min_confidence=req.min_confidence or 0.0,
+            include_stale=True if req.include_stale is None else req.include_stale,
+            memory_type=req.memory_type,
+            tags=req.tags,
+            source_agent=req.source_agent,
         )
         log_recall(
             query=req.query,
-            namespace=req.namespace or os.environ.get("MESH_NAMESPACE", "shared"),
-            agent_id=req.agent_id or os.environ.get("MESH_AGENT_ID", "http-client"),
-            results=results
+            namespace=mesh.namespace,
+            agent_id=mesh.agent_id,
+            results=results,
         )
         return {"status": "ok", "results": results, "count": len(results)}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.post("/update")
+async def update(req: UpdateRequest) -> dict[str, Any]:
+    """Update an existing memory in-place by ID."""
+    try:
+        mesh = get_mesh(req.namespace, req.agent_id)
+        result = mesh.update(
+            memory_id=req.memory_id,
+            content=req.content,
+            memory_type=req.memory_type,
+            confidence=req.confidence,
+            tags=req.tags,
+            ttl_days=req.ttl_days,
+            local_only=req.local_only,
+        )
+        log_update(
+            memory_id=req.memory_id,
+            content=req.content,
+            namespace=mesh.namespace,
+            agent_id=mesh.agent_id,
+        )
+        return {"status": "ok", "result": result}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/forget")
-async def forget(req: ForgetRequest):
+async def forget(req: ForgetRequest) -> dict[str, Any]:
     """Delete a memory by ID."""
     try:
-        mesh = get_mesh(req.namespace)
+        mesh = get_mesh(req.namespace, req.agent_id)
         mesh.forget(req.memory_id)
+        log_forget(
+            memory_id=req.memory_id,
+            namespace=mesh.namespace,
+            agent_id=mesh.agent_id,
+        )
         return {"status": "ok", "deleted": req.memory_id}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.get("/inspect")
-async def inspect(namespace: Optional[str] = None, limit: int = 50):
-    """List all memories in the namespace."""
+async def inspect(
+    namespace: Optional[str] = None,
+    limit: int = 50,
+    memory_type: Optional[str] = None,
+    tag: Optional[str] = None,
+) -> dict[str, Any]:
+    """List memories in the namespace."""
     try:
         mesh = get_mesh(namespace)
-        result = mesh.inspect(limit=limit)
-        return {"status": "ok", "memories": result}
+        result = mesh.inspect(limit=limit, memory_type=memory_type, tag=tag)
+        return {"status": "ok", "memories": result, "count": len(result)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.get("/patterns")
-async def patterns(namespace: Optional[str] = None):
-    """Return pattern analysis: top queries, memory gaps, unused memories."""
+async def patterns(namespace: Optional[str] = None) -> dict[str, Any]:
+    """Return pattern analysis: top queries, memory gaps, unused and stale memories."""
     try:
         mesh = get_mesh(namespace)
         result = mesh.patterns()
@@ -151,73 +245,76 @@ async def patterns(namespace: Optional[str] = None):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.get("/contradictions")
+async def contradictions(
+    namespace: Optional[str] = None,
+    resolved: bool = False,
+) -> dict[str, Any]:
+    """Return unresolved (or resolved) contradictions in the namespace."""
+    try:
+        mesh = get_mesh(namespace)
+        items = mesh.contradictions(resolved=resolved)
+        return {"status": "ok", "contradictions": items, "count": len(items)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/contradictions/resolve")
+async def resolve_contradiction(req: ResolveContradictionRequest) -> dict[str, Any]:
+    """Mark a contradiction as resolved."""
+    try:
+        mesh = get_mesh(req.namespace)
+        mesh.resolve_contradiction(req.contradiction_id)
+        return {"status": "ok", "resolved": req.contradiction_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/context")
-async def context(req: ContextRequest):
+async def context(req: ContextRequest) -> dict[str, Any]:
     """
     Return memories formatted as a system prompt block.
     Used by mesh-context CLI command and direct integrations.
     """
     try:
         mesh = get_mesh(req.namespace)
-        memories = mesh.recall(
-            query=req.query or "general project context",
-            n=req.count
+        formatted = build_context(
+            query=req.query,
+            namespace=mesh.namespace,
+            count=req.count or 10,
+            format=req.format or "markdown",
+            min_confidence=req.min_confidence if req.min_confidence is not None else 0.3,
+            memory_type=req.memory_type,
+            tags=req.tags,
+            agent_id="http-context",
         )
-        formatted = _format_context(memories, req.format)
+        # Estimate memory count returned
+        memories = (
+            mesh.recall(query=req.query, n=req.count or 10)
+            if req.query
+            else mesh.inspect(limit=req.count or 10)
+        )
         return {"status": "ok", "context": formatted, "memory_count": len(memories)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.get("/audit")
-async def audit(namespace: Optional[str] = None, limit: int = 50):
+async def audit(
+    namespace: Optional[str] = None,
+    limit: int = 50,
+    action: str = "all",
+) -> dict[str, Any]:
     """Return the audit trail: recent memory reads and writes."""
-    from .audit import get_audit_log
     ns = namespace or os.environ.get("MESH_NAMESPACE", "shared")
-    entries = get_audit_log(namespace=ns, limit=limit)
+    entries = get_audit_log(namespace=ns, limit=limit, action_filter=action)
     return {"status": "ok", "entries": entries}
 
 
-def _format_context(memories: list, format: str) -> str:
-    if not memories:
-        return ""
-    
-    if format == "json":
-        return json.dumps(memories, indent=2)
-    
-    if format == "plain":
-        lines = ["[MESH CONTEXT — Shared Agent Memory]", ""]
-        for i, mem in enumerate(memories, 1):
-            lines.append(f"{i}. {mem['content']}")
-            if mem.get("tags"):
-                lines.append(f"   tags: {', '.join(mem['tags'])}")
-        return "\n".join(lines)
-    
-    # Default: markdown
-    lines = [
-        "## Mesh Context",
-        "",
-        "The following facts have been stored by agents working on this project.",
-        "Use this context to avoid repeating work and to stay consistent with past decisions.",
-        "",
-    ]
-    
-    by_type = {}
-    for mem in memories:
-        t = mem.get("memory_type", "fact")
-        by_type.setdefault(t, []).append(mem)
-    
-    for mem_type, mems in by_type.items():
-        lines.append(f"### {mem_type.title()}")
-        for mem in mems:
-            conf = mem.get("effective_confidence", mem.get("confidence", 1.0))
-            stale = " ⚠️ (possibly stale)" if mem.get("is_stale") else ""
-            lines.append(f"- {mem['content']}{stale}")
-        lines.append("")
-    
-    return "\n".join(lines)
-
-
-def start():
+def start() -> None:
+    """Entry point for: mesh-http"""
+    threading.Thread(target=warmup_model, daemon=True).start()
     port = int(os.environ.get("MESH_HTTP_PORT", 7701))
     uvicorn.run("mesh.http_server:app", host="127.0.0.1", port=port, reload=False)
 

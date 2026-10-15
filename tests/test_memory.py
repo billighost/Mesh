@@ -3,20 +3,20 @@ Tests for Mesh core functionality.
 Run: python -m pytest tests/ -v
 """
 
-import pytest
 import uuid
-from mesh import Mesh
+import pytest
+from mesh import Mesh, VALID_MEMORY_TYPES
+from mesh.namespaces import delete_namespace
 
 
 @pytest.fixture
 def mesh():
-    """Fresh Mesh instance with unique namespace for each test."""
-    m = Mesh(
-        namespace=f"test-{uuid.uuid4().hex[:8]}",
-        agent_id="test-agent"
-    )
+    """Fresh Mesh instance with unique namespace for each test, fully removed on teardown."""
+    ns = f"test-{uuid.uuid4().hex[:8]}"
+    m = Mesh(namespace=ns, agent_id="test-agent")
     yield m
     m.clear()
+    delete_namespace(ns)
 
 
 class TestLearn:
@@ -42,12 +42,11 @@ class TestLearn:
             mesh.learn("content", memory_type="invalid_type")
 
     def test_learn_confidence_clamped(self, mesh):
-        # Should not raise even with out-of-range confidence
         result = mesh.learn("content", confidence=999.0)
         assert result["memory_id"] is not None
 
     def test_learn_all_memory_types(self, mesh):
-        for mtype in ["fact", "preference", "context", "result", "instruction"]:
+        for mtype in VALID_MEMORY_TYPES:
             result = mesh.learn(f"Memory of type {mtype}", memory_type=mtype)
             assert result["memory_id"] is not None
 
@@ -61,13 +60,17 @@ class TestRecall:
 
     def test_recall_semantic_similarity(self, mesh):
         mesh.learn("The user prefers dark mode in all editors")
-        # Query uses different words but same meaning
         results = mesh.recall("what visual theme does the user like?")
         assert len(results) >= 1
         assert results[0]["similarity"] > 0.3
 
     def test_recall_returns_correct_fields(self, mesh):
-        mesh.learn("Test memory content", memory_type="fact", confidence=0.9)
+        mesh.learn(
+            "Test memory content",
+            memory_type="fact",
+            confidence=0.9,
+            tags=["testing", "core"],
+        )
         results = mesh.recall("test memory")
         assert len(results) >= 1
         r = results[0]
@@ -77,6 +80,10 @@ class TestRecall:
         assert "source_agent" in r
         assert "memory_type" in r
         assert "confidence" in r
+        assert "tags" in r
+        assert "access_count" in r
+        assert r["tags"] == ["testing", "core"]
+        assert r["access_count"] >= 1
 
     def test_recall_source_agent_correct(self, mesh):
         mesh.learn("Agent identity test")
@@ -100,7 +107,7 @@ class TestRecall:
 
     def test_recall_respects_n(self, mesh):
         for i in range(10):
-            mesh.learn(f"Memory number {i} about various things")
+            mesh.learn(f"Memory number {i} about various distinct topics {uuid.uuid4().hex[:4]}")
         results = mesh.recall("memories", n=3)
         assert len(results) <= 3
 
@@ -108,6 +115,25 @@ class TestRecall:
         mesh.learn("Very specific technical memory about database indexing")
         results = mesh.recall("cats and dogs", min_similarity=0.99)
         assert len(results) == 0
+
+    def test_recall_filters_by_type_and_tags(self, mesh):
+        mesh.learn("Deploy script is at ./deploy.sh", memory_type="process", tags=["deploy", "ops"])
+        mesh.learn("Staging DB runs on port 5432", memory_type="fact", tags=["db"])
+
+        proc_only = mesh.recall("deploy or database", memory_type="process")
+        assert len(proc_only) == 1
+        assert proc_only[0]["memory_type"] == "process"
+
+        tag_only = mesh.recall("deploy or database", tags=["db"])
+        assert len(tag_only) == 1
+        assert "db" in tag_only[0]["tags"]
+
+    def test_hybrid_search_exact_identifier_boost(self, mesh):
+        mesh.learn("General note about server configuration and ports")
+        mesh.learn("Service ERR_CODE_9482_XYZ occurs when Redis times out")
+        results = mesh.recall("ERR_CODE_9482_XYZ", n=2)
+        assert len(results) >= 1
+        assert "ERR_CODE_9482_XYZ" in results[0]["content"]
 
 
 class TestCrossAgent:
@@ -117,14 +143,12 @@ class TestCrossAgent:
         try:
             agent_a = Mesh(namespace=ns, agent_id="agent-a")
             agent_b = Mesh(namespace=ns, agent_id="agent-b")
-
             agent_a.learn("The database password is stored in Vault under /secret/db")
-
             results = agent_b.recall("where is the database credential?")
             assert len(results) >= 1
             assert results[0]["source_agent"] == "agent-a"
         finally:
-            agent_a.clear()
+            delete_namespace(ns)
 
     def test_different_namespaces_isolated(self):
         """Agents in different namespaces cannot see each other's memories."""
@@ -133,16 +157,15 @@ class TestCrossAgent:
         try:
             agent_a = Mesh(namespace=ns_a, agent_id="agent-a")
             agent_b = Mesh(namespace=ns_b, agent_id="agent-b")
-
             agent_a.learn("Secret that only namespace A should see")
-
             results = agent_b.recall("secret namespace A")
             assert len(results) == 0
         finally:
-            agent_a.clear()
+            delete_namespace(ns_a)
+            delete_namespace(ns_b)
 
 
-class TestForget:
+class TestForgetAndUpdate:
     def test_forget_removes_memory(self, mesh):
         result = mesh.learn("Memory to delete")
         assert mesh.count() == 1
@@ -150,12 +173,41 @@ class TestForget:
         assert mesh.count() == 0
 
     def test_forget_specific_memory(self, mesh):
-        mid1 = mesh.learn("Keep this memory")
+        mesh.learn("Keep this memory")
         result2 = mesh.learn("Delete this memory")
         mesh.forget(result2["memory_id"])
         assert mesh.count() == 1
         results = mesh.recall("Keep this memory")
         assert len(results) == 1
+
+    def test_update_in_place_preserves_id_and_access_count(self, mesh):
+        learned = mesh.learn("Initial staging port is 3000", memory_type="fact", tags=["staging"])
+        mid = learned["memory_id"]
+
+        # Trigger a recall so access_count increments to 1
+        mesh.recall("staging port")
+        before = mesh.get(mid)
+        assert before is not None
+        assert before["access_count"] == 1
+
+        # Update content and tags in-place
+        updated = mesh.update(
+            memory_id=mid,
+            content="Updated staging port is 4000",
+            tags=["staging", "updated"],
+            confidence=0.95,
+        )
+        assert updated["status"] == "updated"
+        assert updated["memory_id"] == mid
+        assert updated["memory"]["content"] == "Updated staging port is 4000"
+        assert updated["memory"]["access_count"] == 1
+        assert updated["memory"]["created_at"] == before["created_at"]
+        assert "updated" in updated["memory"]["tags_list"]
+
+        # Verify semantic search finds the new content
+        recalled = mesh.recall("port 4000")
+        assert len(recalled) >= 1
+        assert recalled[0]["id"] == mid
 
 
 class TestInspect:
@@ -168,12 +220,12 @@ class TestInspect:
 
     def test_inspect_respects_limit(self, mesh):
         for i in range(10):
-            mesh.learn(f"Memory {i}")
+            mesh.learn(f"Memory {i} with distinct suffix {uuid.uuid4().hex[:6]}")
         result = mesh.inspect(limit=3)
         assert len(result) == 3
 
 
-class TestContradictionDetection:
+class TestContradictionAndDeduplication:
     def test_no_conflict_on_first_memory(self, mesh):
         result = mesh.learn("The sky is blue")
         assert result["status"] == "stored"
@@ -185,15 +237,26 @@ class TestContradictionDetection:
         assert result["status"] == "stored"
         assert result["conflict"] is None
 
+    def test_exact_duplicate_is_deduplicated_not_conflicted(self, mesh):
+        r1 = mesh.learn("Production Redis runs on port 6379", tags=["redis"])
+        r2 = mesh.learn("Production Redis runs on port 6379", tags=["cache"])
+        assert r2["deduplicated"] is True
+        assert r2["conflict"] is None
+        assert r2["memory_id"] == r1["memory_id"]
+        assert mesh.count() == 1
+        mem = mesh.get(r1["memory_id"])
+        assert set(mem["tags_list"]) == {"redis", "cache"}
+
     def test_conflict_detected_on_similar_content(self, mesh):
         mesh.learn("The API rate limit is 100 requests per minute")
         result = mesh.learn("The API rate limit is 200 requests per minute")
-        # These are very similar — should trigger contradiction detection
-        # (may or may not trigger depending on similarity threshold and embedding)
-        # Just assert the structure is correct
         assert "status" in result
         assert "conflict" in result
         assert "memory_id" in result
+        assert result["status"] == "stored_with_conflict"
+        assert result["conflict"] is not None
+        assert "existing_content" in result["conflict"]
+        assert "existing_memory" in result["conflict"]
 
     def test_learn_returns_dict(self, mesh):
         result = mesh.learn("Something to remember")
@@ -211,10 +274,7 @@ class TestContradictionDetection:
 
 class TestConfidenceDecay:
     def test_learn_with_ttl(self, mesh):
-        result = mesh.learn(
-            "Temporary staging server at 10.0.0.1",
-            ttl_days=30
-        )
+        result = mesh.learn("Temporary staging server at 10.0.0.1", ttl_days=30)
         assert result["status"] == "stored"
         assert result["memory_id"] is not None
 
@@ -243,8 +303,6 @@ class TestConfidenceDecay:
         assert r["effective_confidence"] == r["confidence"]
 
     def test_include_stale_false_excludes_low_confidence(self, mesh):
-        # We can't actually create a stale memory in tests without mocking time,
-        # but we can test that the parameter is accepted without error
         mesh.learn("Some memory")
         results = mesh.recall("Some memory", include_stale=False)
         assert isinstance(results, list)
@@ -272,7 +330,6 @@ class TestPatterns:
         mesh.learn("Something to recall")
         mesh.recall("something")
         p = mesh.patterns()
-        # After one recall, top_topics should have one entry
         assert len(p["top_topics"]) >= 1
 
 
@@ -282,13 +339,10 @@ class TestContradictionManagement:
         assert isinstance(result, list)
 
     def test_resolve_contradiction_works(self, mesh):
-        # Store two potentially conflicting memories to generate a contradiction ID
         mesh.learn("Rate limit is 100 req/min")
         result = mesh.learn("Rate limit is 200 req/min")
         if result["conflict"]:
             cid = result["conflict"]["contradiction_id"]
-            # Should not raise
             mesh.resolve_contradiction(cid)
-            # Should now appear in resolved list
             resolved = mesh.contradictions(resolved=True)
             assert any(c["id"] == cid for c in resolved)
