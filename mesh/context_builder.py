@@ -1,14 +1,30 @@
 """
 mesh/context_builder.py — Builds formatted system prompt context blocks from Mesh memories.
 """
-
 from __future__ import annotations
 
 import json
 import os
+import threading
 from typing import Any, Optional
 
 from .memory import Mesh
+
+_CONTEXT_MESH_LOCK = threading.Lock()
+_CONTEXT_MESH_CACHE: dict[tuple[str, str], Mesh] = {}
+
+
+def _get_cached_mesh(namespace: str, agent_id: str) -> Mesh:
+    key = (namespace, agent_id)
+    mesh = _CONTEXT_MESH_CACHE.get(key)
+    if mesh is not None:
+        return mesh
+    with _CONTEXT_MESH_LOCK:
+        mesh = _CONTEXT_MESH_CACHE.get(key)
+        if mesh is None:
+            mesh = Mesh(namespace=namespace, agent_id=agent_id)
+            _CONTEXT_MESH_CACHE[key] = mesh
+        return mesh
 
 
 def build_context(
@@ -20,6 +36,9 @@ def build_context(
     memory_type: Optional[str] = None,
     tags: Optional[list[str]] = None,
     agent_id: str = "context-builder",
+    max_memories: Optional[int] = None,
+    n: Optional[int] = None,
+    **_kwargs: Any,
 ) -> str:
     """
     Build a formatted context block from the most relevant memories.
@@ -33,24 +52,33 @@ def build_context(
         memory_type: Optional memory_type filter.
         tags: Optional tag filters.
         agent_id: Agent ID to log this context pull under.
+        max_memories: Optional alias for `count` (used by benchmark and external integrations).
+        n: Optional alias for `count`.
 
     Returns:
         Formatted string ready to paste into a system prompt.
     """
-    ns = namespace or os.environ.get("MESH_NAMESPACE", "shared")
-    mesh = Mesh(namespace=ns, agent_id=agent_id)
+    limit_count = (
+        int(max_memories)
+        if max_memories is not None
+        else (int(n) if n is not None else int(count or 10))
+    )
+    limit_count = max(1, limit_count)
+
+    ns = (namespace or os.environ.get("MESH_NAMESPACE", "shared")).strip() or "shared"
+    mesh = _get_cached_mesh(ns, agent_id)
 
     if query:
         memories = mesh.recall(
             query=query,
-            n=count,
+            n=limit_count,
             min_confidence=min_confidence,
             memory_type=memory_type,
             tags=tags,
         )
     else:
         # No query: pull inspect list, sort by access count and composite relevance, then filter
-        raw_mems = mesh.inspect(limit=max(count * 3, 30), memory_type=memory_type)
+        raw_mems = mesh.inspect(limit=max(limit_count * 3, 30), memory_type=memory_type)
         filtered = [
             m
             for m in raw_mems
@@ -70,7 +98,7 @@ def build_context(
             ),
             reverse=True,
         )
-        memories = filtered[:count]
+        memories = filtered[:limit_count]
 
     if not memories:
         return ""

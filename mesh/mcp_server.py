@@ -13,19 +13,17 @@ Tools exposed:
   mesh_resolve_contradiction — mark a conflict as resolved
   mesh_sync                  — capture memories from session summary and incremental agent logs
 """
-
 from __future__ import annotations
 
 import asyncio
 import contextlib
 import glob
+import http.client
 import json
 import os
 import sys
 import threading
 import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
@@ -35,7 +33,7 @@ from mcp.server.stdio import stdio_server
 
 from .audit import log_forget, log_learn, log_recall, log_update
 from .context_builder import _format
-from .memory import VALID_MEMORY_TYPES, Mesh, warmup_model
+from .memory import VALID_MEMORY_TYPES, Mesh, ensure_model_downloaded, warmup_model
 
 NAMESPACE = os.environ.get("MESH_NAMESPACE", "shared")
 AGENT_ID = os.environ.get("MESH_AGENT_ID", "mcp-agent")
@@ -57,9 +55,11 @@ _ACTIVE_TOOL_CALLS = 0
 _LAST_TOOL_CALL_TS = 0.0
 _STDIO_SERVER_ACTIVE = False
 
-# Daemon proxy state (avoids duplicate models across multiple IDE stdio processes)
+# Daemon proxy state & persistent HTTP keep-alive connection
+_DAEMON_LOCK = threading.Lock()
 _DAEMON_CHECK_TS = 0.0
 _DAEMON_AVAILABLE = False
+_DAEMON_CONN: Optional[http.client.HTTPConnection] = None
 
 # Tracks (mtime_ns, byte_offset) per log file so passive sync only reads new log output
 _LOG_WATERMARKS: dict[str, tuple[int, int]] = {}
@@ -119,23 +119,24 @@ def _is_foreground_busy(cooldown_seconds: float = 10.0) -> bool:
 def _try_proxy_via_daemon(name: str, arguments: dict[str, Any]) -> Optional[dict[str, Any]]:
     """
     If running as a stdio MCP process and a local Mesh HTTP daemon is active on
-    127.0.0.1:7701 (or MESH_HTTP_PORT), proxy the tool execution through the daemon
-    so multiple IDE windows share one warm cache and zero duplicate models.
+    127.0.0.1:7701 (or MESH_HTTP_PORT), proxy the tool execution over a persistent
+    keep-alive connection so multiple IDE windows share one warm cache and model.
+    If the daemon is not running yet, triggers an immediate non-blocking background
+    daemon start so subsequent tool calls hit the warm daemon.
     """
-    global _DAEMON_CHECK_TS, _DAEMON_AVAILABLE
+    global _DAEMON_CHECK_TS, _DAEMON_AVAILABLE, _DAEMON_CONN
     if not _STDIO_SERVER_ACTIVE:
         return None
     if os.environ.get("MESH_NO_DAEMON_PROXY", "").strip().lower() in ("1", "true", "yes"):
         return None
 
     now = time.monotonic()
-    port = int(os.environ.get("MESH_HTTP_PORT", 7701))
-    base_url = f"http://127.0.0.1:{port}"
-
-    if not _DAEMON_AVAILABLE and (now - _DAEMON_CHECK_TS) < 5.0:
+    if not _DAEMON_AVAILABLE and (now - _DAEMON_CHECK_TS) < 3.0:
         return None
-
     _DAEMON_CHECK_TS = now
+
+    host = os.environ.get("MESH_HTTP_HOST", "127.0.0.1")
+    port = int(os.environ.get("MESH_HTTP_PORT", 7701))
     payload_bytes = json.dumps(
         {
             "name": name,
@@ -145,21 +146,47 @@ def _try_proxy_via_daemon(name: str, arguments: dict[str, Any]) -> Optional[dict
         }
     ).encode("utf-8")
 
-    req = urllib.request.Request(
-        f"{base_url}/mcp",
-        data=payload_bytes,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
+    with _DAEMON_LOCK:
+        for attempt in range(2):
+            try:
+                if _DAEMON_CONN is None:
+                    _DAEMON_CONN = http.client.HTTPConnection(host, port, timeout=15.0)
+                _DAEMON_CONN.request(
+                    "POST",
+                    "/mcp",
+                    body=payload_bytes,
+                    headers={
+                        "Content-Type": "application/json",
+                        "Connection": "keep-alive",
+                    },
+                )
+                resp = _DAEMON_CONN.getresponse()
+                raw_body = resp.read()
+                if resp.status == 200:
+                    _DAEMON_AVAILABLE = True
+                    data = json.loads(raw_body.decode("utf-8"))
+                    if isinstance(data, dict) and "payload" in data:
+                        return data["payload"]
+                break
+            except Exception:
+                if _DAEMON_CONN is not None:
+                    try:
+                        _DAEMON_CONN.close()
+                    except Exception:
+                        pass
+                    _DAEMON_CONN = None
+                if attempt == 0 and _DAEMON_AVAILABLE:
+                    continue
+                _DAEMON_AVAILABLE = False
+                break
+
+    # Daemon was unreachable — auto-start it in the background without blocking this tool call
     try:
-        with urllib.request.urlopen(req, timeout=15.0) as resp:
-            if resp.status == 200:
-                _DAEMON_AVAILABLE = True
-                data = json.loads(resp.read().decode("utf-8"))
-                if isinstance(data, dict) and "payload" in data:
-                    return data["payload"]
-    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
-        _DAEMON_AVAILABLE = False
+        from .daemon import ensure_daemon_running
+
+        ensure_daemon_running(host=host, port=port, wait=False)
+    except Exception:
+        pass
     return None
 
 
@@ -168,15 +195,12 @@ def get_mesh(namespace: Optional[str] = None, agent_id: Optional[str] = None) ->
     global _mesh
     ns = (namespace or NAMESPACE).strip() or "shared"
     aid = (agent_id or AGENT_ID).strip() or "mcp-agent"
-
     if ns == NAMESPACE and aid == AGENT_ID and _mesh is not None:
         return _mesh
-
     key = (ns, aid)
     instance = _MESH_INSTANCES.get(key)
     if instance is not None:
         return instance
-
     with _MESH_LOCK:
         if ns == NAMESPACE and aid == AGENT_ID and _mesh is not None:
             return _mesh
@@ -251,7 +275,6 @@ def _collect_incremental_logs(
     Uses `_LOG_WATERMARKS` so already-processed log segments are not re-ingested.
     """
     candidate_files: list[tuple[int, int, Path]] = []
-
     for raw_path in paths:
         p = Path(raw_path).expanduser()
         if not p.exists():
@@ -295,9 +318,11 @@ def _collect_incremental_logs(
             start_offset = prev_offset if size >= prev_offset else 0
             if size - start_offset > max_bytes_per_file:
                 start_offset = max(0, size - max_bytes_per_file)
+
             with open(file_path, "rb") as f:
                 f.seek(start_offset)
                 raw_bytes = f.read(max_bytes_per_file)
+
             _LOG_WATERMARKS[key] = (mtime_ns, size)
             text = raw_bytes.decode("utf-8", errors="ignore").strip()
             if text:
@@ -310,7 +335,8 @@ def _collect_incremental_logs(
 
 def background_sync_worker() -> None:
     """
-    Periodically runs passive capture on newly appended agent logs when idle.
+    Ensures the background daemon and ONNX model are ready, then periodically runs
+    passive capture on newly appended agent logs when idle.
     Never contends with foreground MCP tool calls.
     """
     from .passive import extract_memories_from_log
@@ -323,9 +349,16 @@ def background_sync_worker() -> None:
         pass
 
     # Brief pause so MCP stdio handshake completes with zero CPU/lock contention
-    time.sleep(0.25)
-    if not _is_foreground_busy(cooldown_seconds=2.0):
-        with _safe_redirect_stdout_to_stderr():
+    time.sleep(0.15)
+    with _safe_redirect_stdout_to_stderr():
+        try:
+            ensure_model_downloaded(blocking=False)
+            from .daemon import ensure_daemon_running
+
+            ensure_daemon_running(wait=False)
+        except Exception:
+            pass
+        if not _is_foreground_busy(cooldown_seconds=2.0):
             get_mesh(NAMESPACE, AGENT_ID)
             warmup_model(NAMESPACE)
 
@@ -595,6 +628,12 @@ _MCP_TOOLS: list[types.Tool] = [
                     "minimum": 1,
                     "maximum": 50,
                 },
+                "max_memories": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 50,
+                    "description": "Optional alias for count.",
+                },
                 "format": {
                     "type": "string",
                     "enum": ["markdown", "plain", "xml", "json"],
@@ -742,7 +781,6 @@ def _execute_tool_sync(
                         "Review and delete or update the old one if this new memory supersedes it."
                     )
                     response["conflict"] = result["conflict"]
-
                 log_learn(
                     content=arguments["content"],
                     namespace=mesh.namespace,
@@ -752,9 +790,10 @@ def _execute_tool_sync(
                 return response
 
             elif name == "mesh_recall":
+                limit_n = int(arguments.get("n") or arguments.get("count") or 5)
                 memories = mesh.recall(
                     query=arguments["query"],
-                    n=int(arguments.get("n", 5)),
+                    n=limit_n,
                     min_similarity=float(arguments.get("min_similarity", 0.0)),
                     min_confidence=float(arguments.get("min_confidence", 0.0)),
                     include_stale=bool(arguments.get("include_stale", True)),
@@ -828,7 +867,13 @@ def _execute_tool_sync(
 
             elif name == "mesh_context":
                 query = arguments.get("query")
-                count = int(arguments.get("count", 10))
+                raw_limit = (
+                    arguments.get("max_memories")
+                    or arguments.get("n")
+                    or arguments.get("count")
+                    or 10
+                )
+                count = max(1, int(raw_limit))
                 fmt = arguments.get("format", "markdown")
                 min_conf = float(arguments.get("min_confidence", 0.3))
                 mtype = arguments.get("memory_type")

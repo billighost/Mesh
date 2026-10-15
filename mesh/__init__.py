@@ -1,7 +1,6 @@
 """
 mesh/__init__.py — Public API surface for Mesh.
 """
-
 from .audit import (
     get_audit_log,
     get_audit_stats,
@@ -16,6 +15,7 @@ from .io import export_namespace, import_namespace
 from .memory import (
     VALID_MEMORY_TYPES,
     Mesh,
+    ensure_model_downloaded,
     get_engine_status,
     set_idle_unload_seconds,
     unload_model,
@@ -33,6 +33,7 @@ from .version import VERSION
 __all__ = [
     "Mesh",
     "VALID_MEMORY_TYPES",
+    "ensure_model_downloaded",
     "warmup_model",
     "unload_model",
     "get_engine_status",

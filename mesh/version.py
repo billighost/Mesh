@@ -1,7 +1,6 @@
 """
 mesh/version.py — Package version metadata and non-blocking PyPI update checker.
 """
-
 from __future__ import annotations
 
 import os
@@ -9,7 +8,7 @@ import sys
 import threading
 from typing import Optional
 
-VERSION = "0.5.3"
+VERSION = "0.6.0"
 PACKAGE_NAME = "mesh-context-layer"
 
 

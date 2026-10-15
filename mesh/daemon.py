@@ -1,11 +1,11 @@
 """
 mesh/daemon.py — Windowless background daemon & OS login auto-start manager for Mesh.
 
-Updates:
-  - `install-startup` now automatically triggers `start_daemon()` immediately upon registration.
-  - Ensures seamless zero-friction background operations.
+Capabilities:
+  - Non-blocking background daemon auto-starter (`ensure_daemon_running`)
+  - Automatic first-run OS login registration so Mesh stays ready across reboots
+  - Fast health polling and model warmup (`mesh-daemon warmup`)
 """
-
 from __future__ import annotations
 
 import argparse
@@ -14,6 +14,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -24,12 +25,17 @@ from .store import MESH_DIR
 
 DAEMON_PID_FILE = MESH_DIR / "daemon.pid"
 DAEMON_LOG_FILE = MESH_DIR / "daemon.log"
+AUTOSTART_MARKER_FILE = MESH_DIR / ".autostart_registered"
+
 DEFAULT_PORT = int(os.environ.get("MESH_HTTP_PORT", 7701))
 DEFAULT_HOST = os.environ.get("MESH_HTTP_HOST", "127.0.0.1")
 DEFAULT_IDLE_TIMEOUT = float(os.environ.get("MESH_IDLE_UNLOAD_SECONDS", "180"))
 
 _WIN_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 _WIN_RUN_VALUE_NAME = "MeshContextDaemon"
+
+_SPAWN_LOCK = threading.Lock()
+_LAST_SPAWN_TS = 0.0
 
 
 def _health_url(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> str:
@@ -39,7 +45,7 @@ def _health_url(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> str:
 def get_daemon_health(
     host: str = DEFAULT_HOST,
     port: int = DEFAULT_PORT,
-    timeout: float = 1.0,
+    timeout: float = 0.6,
 ) -> Optional[dict[str, Any]]:
     """Query the local daemon `/health` endpoint. Returns the JSON dict if alive, else None."""
     try:
@@ -119,14 +125,64 @@ def _resolve_background_python() -> str:
     return str(exe)
 
 
+def ensure_daemon_running(
+    host: str = DEFAULT_HOST,
+    port: int = DEFAULT_PORT,
+    idle_timeout: float = DEFAULT_IDLE_TIMEOUT,
+    wait: bool = False,
+) -> dict[str, Any]:
+    """
+    Ensure the Mesh background HTTP daemon is running and registered for OS startup.
+    When `wait=False`, spawns the daemon in the background and returns in <2ms without blocking.
+    """
+    global _LAST_SPAWN_TS
+    if os.environ.get("MESH_IN_DAEMON", "").strip().lower() in ("1", "true", "yes"):
+        return {"running": True, "already_running": True, "pid": os.getpid(), "host": host, "port": port}
+
+    health = get_daemon_health(host=host, port=port, timeout=0.18)
+    if health is not None:
+        return {
+            "running": True,
+            "already_running": True,
+            "pid": health.get("pid"),
+            "host": host,
+            "port": port,
+            "health": health,
+        }
+
+    with _SPAWN_LOCK:
+        now = time.monotonic()
+        if not wait and (now - _LAST_SPAWN_TS) < 4.0:
+            pid = _read_pid_file()
+            return {"running": False, "spawning": True, "pid": pid, "host": host, "port": port}
+        _LAST_SPAWN_TS = now
+
+    # Auto-register OS login startup once unless explicitly disabled
+    if (
+        not AUTOSTART_MARKER_FILE.exists()
+        and "pytest" not in sys.modules
+        and os.environ.get("MESH_NO_AUTO_STARTUP", "").strip().lower() not in ("1", "true", "yes")
+    ):
+        try:
+            MESH_DIR.mkdir(parents=True, exist_ok=True)
+            AUTOSTART_MARKER_FILE.write_text("1", encoding="utf-8")
+            if not is_startup_installed():
+                install_startup(host=host, port=port, idle_timeout=idle_timeout, start_now=False)
+        except Exception:
+            pass
+
+    return start_daemon(host=host, port=port, idle_timeout=idle_timeout, lazy=False, wait=wait)
+
+
 def start_daemon(
     host: str = DEFAULT_HOST,
     port: int = DEFAULT_PORT,
     idle_timeout: float = DEFAULT_IDLE_TIMEOUT,
     lazy: bool = False,
+    wait: bool = True,
 ) -> dict[str, Any]:
     """Start the Mesh background HTTP daemon if not already running."""
-    existing_health = get_daemon_health(host=host, port=port, timeout=0.8)
+    existing_health = get_daemon_health(host=host, port=port, timeout=0.4 if wait else 0.15)
     if existing_health is not None:
         pid = existing_health.get("pid") or _read_pid_file()
         if pid:
@@ -160,6 +216,7 @@ def start_daemon(
     env["MESH_HTTP_HOST"] = host
     env["MESH_HTTP_PORT"] = str(port)
     env["MESH_IDLE_UNLOAD_SECONDS"] = str(idle_timeout)
+    env["MESH_IN_DAEMON"] = "1"
 
     log_handle = open(DAEMON_LOG_FILE, "a", encoding="utf-8")
     try:
@@ -193,10 +250,21 @@ def start_daemon(
 
     _write_pid_file(proc.pid)
 
+    if not wait:
+        return {
+            "running": True,
+            "already_running": False,
+            "spawning": True,
+            "pid": proc.pid,
+            "host": host,
+            "port": port,
+            "health": None,
+        }
+
     health: Optional[dict[str, Any]] = None
-    for _ in range(30):
-        time.sleep(0.15)
-        health = get_daemon_health(host=host, port=port, timeout=0.5)
+    for i in range(40):
+        time.sleep(0.04 if i < 10 else 0.12)
+        health = get_daemon_health(host=host, port=port, timeout=0.35)
         if health is not None:
             break
 
@@ -212,16 +280,14 @@ def start_daemon(
 
 def stop_daemon(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> dict[str, Any]:
     """Stop the running Mesh daemon."""
-    health = get_daemon_health(host=host, port=port, timeout=0.6)
+    health = get_daemon_health(host=host, port=port, timeout=0.5)
     pid = (health.get("pid") if health else None) or _read_pid_file()
-
     if not pid:
         _remove_pid_file()
         return {"stopped": False, "reason": "not_running", "pid": None}
 
     pid = int(pid)
     killed = False
-
     if os.name == "nt":
         try:
             subprocess.run(
@@ -240,7 +306,7 @@ def stop_daemon(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> dict[str,
             for _ in range(15):
                 if not _is_pid_alive(pid):
                     break
-                time.sleep(0.1)
+                time.sleep(0.05)
             if _is_pid_alive(pid):
                 os.kill(pid, signal.SIGKILL)
             killed = True
@@ -255,6 +321,7 @@ def install_startup(
     host: str = DEFAULT_HOST,
     port: int = DEFAULT_PORT,
     idle_timeout: float = DEFAULT_IDLE_TIMEOUT,
+    start_now: bool = True,
 ) -> dict[str, Any]:
     """Register the Mesh daemon for OS login auto-start AND start it immediately."""
     python_exe = _resolve_background_python()
@@ -284,6 +351,7 @@ def install_startup(
             winreg.SetValueEx(key, _WIN_RUN_VALUE_NAME, 0, winreg.REG_SZ, quoted_cmd)
         loc = f"HKCU\\{_WIN_RUN_KEY}\\{_WIN_RUN_VALUE_NAME}"
         platform_name = "windows"
+
     elif sys.platform == "darwin":
         plist_dir = Path.home() / "Library" / "LaunchAgents"
         plist_dir.mkdir(parents=True, exist_ok=True)
@@ -313,6 +381,7 @@ def install_startup(
         plist_path.write_text(plist_content, encoding="utf-8")
         loc = str(plist_path)
         platform_name = "macos"
+
     else:
         autostart_dir = Path.home() / ".config" / "autostart"
         autostart_dir.mkdir(parents=True, exist_ok=True)
@@ -331,8 +400,8 @@ def install_startup(
         loc = str(desktop_path)
         platform_name = "linux"
 
-    # Immediately start the daemon right after registering startup
-    start_daemon(host=host, port=port, idle_timeout=idle_timeout, lazy=True)
+    if start_now:
+        start_daemon(host=host, port=port, idle_timeout=idle_timeout, lazy=True)
 
     return {
         "installed": True,
@@ -344,6 +413,11 @@ def install_startup(
 
 def remove_startup() -> dict[str, Any]:
     """Remove login auto-start registration."""
+    try:
+        AUTOSTART_MARKER_FILE.unlink(missing_ok=True)
+    except OSError:
+        pass
+
     if os.name == "nt":
         import winreg
 
@@ -388,10 +462,8 @@ def is_startup_installed() -> bool:
                 return bool(val)
         except OSError:
             return False
-
     if sys.platform == "darwin":
         return (Path.home() / "Library" / "LaunchAgents" / "com.mesh.daemon.plist").exists()
-
     return (Path.home() / ".config" / "autostart" / "mesh-daemon.desktop").exists()
 
 
@@ -408,6 +480,7 @@ def daemon_cmd() -> None:
             "restart",
             "status",
             "unload",
+            "warmup",
             "install-startup",
             "remove-startup",
         ],
@@ -419,11 +492,35 @@ def daemon_cmd() -> None:
     args = parser.parse_args()
 
     if args.action == "start":
-        res = start_daemon(host=args.host, port=args.port, idle_timeout=args.idle_timeout, lazy=args.lazy)
+        from .memory import ensure_model_downloaded
+
+        ensure_model_downloaded(blocking=False)
+        res = start_daemon(
+            host=args.host,
+            port=args.port,
+            idle_timeout=args.idle_timeout,
+            lazy=args.lazy,
+        )
         if res["already_running"]:
             print(f"[OK] Mesh daemon already running on http://{args.host}:{args.port} (PID: {res['pid']})")
         else:
             print(f"[OK] Started Mesh daemon on http://{args.host}:{args.port} (PID: {res['pid']})")
+
+    elif args.action == "warmup":
+        from .memory import ensure_model_downloaded, warmup_model
+
+        print("[Mesh] Ensuring local ONNX embedding model is downloaded...")
+        pair = ensure_model_downloaded(blocking=True, timeout=60.0)
+        if pair:
+            print(f"[OK] ONNX model cached at {pair[0].parent}")
+        warmup_model()
+        res = start_daemon(
+            host=args.host,
+            port=args.port,
+            idle_timeout=args.idle_timeout,
+            lazy=False,
+        )
+        print(f"[OK] Mesh daemon warm and running on http://{args.host}:{args.port} (PID: {res['pid']})")
 
     elif args.action == "stop":
         res = stop_daemon(host=args.host, port=args.port)
@@ -434,7 +531,12 @@ def daemon_cmd() -> None:
 
     elif args.action == "restart":
         stop_daemon(host=args.host, port=args.port)
-        res = start_daemon(host=args.host, port=args.port, idle_timeout=args.idle_timeout, lazy=args.lazy)
+        res = start_daemon(
+            host=args.host,
+            port=args.port,
+            idle_timeout=args.idle_timeout,
+            lazy=args.lazy,
+        )
         print(f"[OK] Restarted Mesh daemon on http://{args.host}:{args.port} (PID: {res['pid']})")
 
     elif args.action == "unload":
@@ -445,7 +547,11 @@ def daemon_cmd() -> None:
             print("[OK] Unloaded neural model weights from RAM.")
 
     elif args.action == "install-startup":
-        info = install_startup(host=args.host, port=args.port, idle_timeout=args.idle_timeout)
+        info = install_startup(
+            host=args.host,
+            port=args.port,
+            idle_timeout=args.idle_timeout,
+        )
         print(f"[OK] Registered Mesh daemon for OS login and started it immediately ({info['platform']})")
         print(f"     Location: {info['location']}")
 
@@ -463,13 +569,13 @@ def daemon_cmd() -> None:
             print(f"\nMesh Daemon: STOPPED (http://{args.host}:{args.port})")
             print(f"  Login auto-start: {auto_start}\n")
             return
-
         eng = health.get("engine") or {}
         loaded_str = "LOADED (warm)" if eng.get("model_loaded") else "SLEEPING (~0 MB model RAM)"
         print(f"\nMesh Daemon: RUNNING on http://{args.host}:{args.port}")
         print(f"  PID:              {health.get('pid')}")
         print(f"  Model state:      {loaded_str}")
         print(f"  Engine backend:   {eng.get('backend', 'unloaded')}")
+        print(f"  ONNX cached:      {eng.get('onnx_cached_on_disk', False)}")
         print(f"  Login auto-start: {auto_start}\n")
 
 

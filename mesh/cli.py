@@ -1,20 +1,125 @@
 """
 mesh/cli.py — Command-line interface for Mesh.
 """
-
 from __future__ import annotations
 
 import argparse
 import json
 import os
 import sys
-from typing import Optional
+import urllib.error
+import urllib.request
+from typing import Any, Optional
 
 from .version import VERSION, check_for_updates
 
 
 def _resolve_namespace(ns_arg: Optional[str]) -> str:
     return (ns_arg or os.environ.get("MESH_NAMESPACE", "shared")).strip() or "shared"
+
+
+def _daemon_request(
+    path: str,
+    payload: Optional[dict[str, Any]] = None,
+    method: str = "POST",
+    timeout: float = 2.0,
+) -> Optional[dict[str, Any]]:
+    """
+    Attempt to execute a CLI operation via the warm background HTTP daemon (127.0.0.1:7701)
+    for 0ms model cold-start. If the daemon is not running, triggers a non-blocking
+    background start and returns None so the CLI executes locally without stalling.
+    """
+    if "pytest" in sys.modules:
+        return None
+    if os.environ.get("MESH_NO_DAEMON_PROXY", "").strip().lower() in ("1", "true", "yes"):
+        return None
+
+    host = os.environ.get("MESH_HTTP_HOST", "127.0.0.1")
+    port = int(os.environ.get("MESH_HTTP_PORT", 7701))
+    url = f"http://{host}:{port}{path}"
+    data = json.dumps(payload).encode("utf-8") if payload is not None else None
+    headers = {"Content-Type": "application/json"} if data is not None else {}
+
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if resp.status == 200:
+                return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        try:
+            err_body = json.loads(e.read().decode("utf-8"))
+            detail = err_body.get("detail") if isinstance(err_body, dict) else str(e)
+        except Exception:
+            detail = str(e)
+        return {"_http_error": e.code, "detail": detail}
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+        try:
+            from .daemon import ensure_daemon_running
+
+            ensure_daemon_running(host=host, port=port, wait=False)
+        except Exception:
+            pass
+    return None
+
+
+def setup_cmd() -> None:
+    """Entry point for: mesh-setup / mesh setup (Non-blocking instant setup)"""
+    parser = argparse.ArgumentParser(
+        description="Launch background worker to download ONNX model, warm cache, and enable daemon.",
+        epilog="Example: mesh-setup --namespace shared",
+    )
+    parser.add_argument("--namespace", default=None, help="Default namespace to warm up (default: shared)")
+    parser.add_argument("--no-startup", action="store_true", help="Skip OS login auto-start registration")
+    parser.add_argument("--wait", action="store_true", help="Wait synchronously for background download to finish")
+    args = parser.parse_args()
+
+    from .daemon import (
+        DAEMON_LOG_FILE,
+        DEFAULT_HOST,
+        DEFAULT_IDLE_TIMEOUT,
+        DEFAULT_PORT,
+        install_startup,
+        start_daemon,
+    )
+    from .memory import _ONNX_MODEL_DIR, _has_local_onnx_pair, ensure_model_downloaded
+
+    ns = _resolve_namespace(args.namespace)
+    print(f"[Mesh] Initializing Mesh v{VERSION} (namespace: '{ns}')...")
+
+    if not args.no_startup:
+        info = install_startup(
+            host=DEFAULT_HOST,
+            port=DEFAULT_PORT,
+            idle_timeout=DEFAULT_IDLE_TIMEOUT,
+            start_now=False,
+        )
+        print(f"  [OK] Registered OS login auto-start ({info['platform']})")
+
+    res = start_daemon(
+        host=DEFAULT_HOST,
+        port=DEFAULT_PORT,
+        idle_timeout=DEFAULT_IDLE_TIMEOUT,
+        lazy=False,
+        wait=args.wait,
+    )
+    print(
+        f"  [OK] Background daemon worker active on http://{DEFAULT_HOST}:{DEFAULT_PORT} "
+        f"(PID: {res.get('pid')})"
+    )
+
+    pair = _has_local_onnx_pair()
+    if pair is not None:
+        print(f"  [OK] Local ONNX model cached and ready: {pair[0].parent}")
+    elif args.wait:
+        print("  [..] Waiting for background ONNX model download...")
+        pair = ensure_model_downloaded(blocking=True, timeout=45.0)
+        if pair is not None:
+            print(f"  [OK] Local ONNX model downloaded: {pair[0].parent}")
+        else:
+            print(f"  [OK] Background worker continuing download in {DAEMON_LOG_FILE}")
+    else:
+        print(f"  [OK] Background daemon is downloading ONNX weights into {_ONNX_MODEL_DIR}")
+        print("       Mesh is ready for immediate use (zero wait).")
 
 
 def export_cmd() -> None:
@@ -87,7 +192,7 @@ def namespaces_cmd() -> None:
   mesh-namespaces stats work              Show stats for namespace 'work'
         """,
     )
-    parser.add_argument("command", choices=["list", "delete", "rename", "stats"])
+    parser.add_argument("command", nargs="?", default="list", choices=["list", "delete", "rename", "stats"])
     parser.add_argument("args", nargs="*", help="Arguments for the command")
     parsed = parser.parse_args()
 
@@ -168,6 +273,7 @@ Pipe directly into agent invocations:
     parser.add_argument("--query", default=None, help="Focus context on a specific topic")
     parser.add_argument("--namespace", default=None, help="Namespace to query (default: shared)")
     parser.add_argument("--count", type=int, default=10, help="Number of memories to include")
+    parser.add_argument("--max-memories", type=int, default=None, help="Alias for --count")
     parser.add_argument("--format", choices=["markdown", "plain", "xml", "json"], default="markdown")
     parser.add_argument("--min-confidence", type=float, default=0.3)
     parser.add_argument(
@@ -180,18 +286,37 @@ Pipe directly into agent invocations:
     parser.add_argument("--tags", default="", help="Comma-separated tags to filter by")
     args = parser.parse_args()
 
-    from .context_builder import build_context
-
+    ns = _resolve_namespace(args.namespace)
+    limit_count = args.max_memories if args.max_memories is not None else args.count
     tags = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else None
-    result = build_context(
-        query=args.query,
-        namespace=args.namespace,
-        count=args.count,
-        format=args.format,
-        min_confidence=args.min_confidence,
-        memory_type=args.memory_type,
-        tags=tags,
+
+    proxied = _daemon_request(
+        "/context",
+        payload={
+            "query": args.query,
+            "namespace": ns,
+            "count": limit_count,
+            "format": args.format,
+            "min_confidence": args.min_confidence,
+            "memory_type": args.memory_type,
+            "tags": tags,
+        },
     )
+    if proxied and proxied.get("status") == "ok":
+        result = proxied.get("context", "")
+    else:
+        from .context_builder import build_context
+
+        result = build_context(
+            query=args.query,
+            namespace=ns,
+            count=limit_count,
+            format=args.format,
+            min_confidence=args.min_confidence,
+            memory_type=args.memory_type,
+            tags=tags,
+        )
+
     if result:
         print(result)
     else:
@@ -201,8 +326,7 @@ Pipe directly into agent invocations:
 
 def add_cmd() -> None:
     """Entry point for: mesh-add"""
-    from .audit import log_learn
-    from .memory import VALID_MEMORY_TYPES, Mesh
+    from .memory import VALID_MEMORY_TYPES
 
     parser = argparse.ArgumentParser(
         description="Store a memory directly into Mesh.",
@@ -233,24 +357,42 @@ def add_cmd() -> None:
     args = parser.parse_args()
 
     ns = _resolve_namespace(args.namespace)
-    mesh = Mesh(namespace=ns, agent_id="human-cli")
     tags = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else []
 
-    result = mesh.learn(
-        content=args.content,
-        memory_type=args.memory_type,
-        confidence=args.confidence,
-        tags=tags,
-        local_only=args.private,
-        ttl_days=args.ttl,
+    proxied = _daemon_request(
+        "/learn",
+        payload={
+            "content": args.content,
+            "memory_type": args.memory_type,
+            "confidence": args.confidence,
+            "tags": tags,
+            "local_only": args.private,
+            "ttl_days": args.ttl,
+            "namespace": ns,
+            "agent_id": "human-cli",
+        },
     )
+    if proxied and proxied.get("status") == "ok":
+        result = proxied["result"]
+    else:
+        from .audit import log_learn
+        from .memory import Mesh
 
-    log_learn(
-        content=args.content,
-        namespace=ns,
-        agent_id="human-cli",
-        result=result,
-    )
+        mesh = Mesh(namespace=ns, agent_id="human-cli")
+        result = mesh.learn(
+            content=args.content,
+            memory_type=args.memory_type,
+            confidence=args.confidence,
+            tags=tags,
+            local_only=args.private,
+            ttl_days=args.ttl,
+        )
+        log_learn(
+            content=args.content,
+            namespace=ns,
+            agent_id="human-cli",
+            result=result,
+        )
 
     private_note = " (private - will not be exported or synced)" if args.private else ""
     dedup_note = " (deduplicated existing memory)" if result.get("deduplicated") else ""
@@ -268,8 +410,7 @@ def add_cmd() -> None:
 
 def ask_cmd() -> None:
     """Entry point for: mesh-ask"""
-    from .audit import log_recall
-    from .memory import VALID_MEMORY_TYPES, Mesh
+    from .memory import VALID_MEMORY_TYPES
 
     parser = argparse.ArgumentParser(
         description="Search Mesh for memories relevant to a question.",
@@ -292,25 +433,44 @@ def ask_cmd() -> None:
     args = parser.parse_args()
 
     ns = _resolve_namespace(args.namespace)
-    mesh = Mesh(namespace=ns, agent_id="human-cli")
     tags = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else None
 
-    results = mesh.recall(
-        query=args.query,
-        n=args.count,
-        min_similarity=args.min_similarity,
-        min_confidence=args.min_confidence,
-        include_stale=not args.no_stale,
-        memory_type=args.memory_type,
-        tags=tags,
+    proxied = _daemon_request(
+        "/recall",
+        payload={
+            "query": args.query,
+            "n": args.count,
+            "min_similarity": args.min_similarity,
+            "min_confidence": args.min_confidence,
+            "include_stale": not args.no_stale,
+            "memory_type": args.memory_type,
+            "tags": tags,
+            "namespace": ns,
+            "agent_id": "human-cli",
+        },
     )
+    if proxied and proxied.get("status") == "ok":
+        results = proxied.get("results", [])
+    else:
+        from .audit import log_recall
+        from .memory import Mesh
 
-    log_recall(
-        query=args.query,
-        namespace=ns,
-        agent_id="human-cli",
-        results=results,
-    )
+        mesh = Mesh(namespace=ns, agent_id="human-cli")
+        results = mesh.recall(
+            query=args.query,
+            n=args.count,
+            min_similarity=args.min_similarity,
+            min_confidence=args.min_confidence,
+            include_stale=not args.no_stale,
+            memory_type=args.memory_type,
+            tags=tags,
+        )
+        log_recall(
+            query=args.query,
+            namespace=ns,
+            agent_id="human-cli",
+            results=results,
+        )
 
     if not results:
         print(f"No memories found for: {args.query}")
@@ -335,8 +495,7 @@ def ask_cmd() -> None:
 
 def update_cmd() -> None:
     """Entry point for: mesh-update"""
-    from .audit import log_update
-    from .memory import VALID_MEMORY_TYPES, Mesh
+    from .memory import VALID_MEMORY_TYPES
 
     parser = argparse.ArgumentParser(
         description="Update an existing memory in-place by its ID.",
@@ -360,9 +519,34 @@ def update_cmd() -> None:
     args = parser.parse_args()
 
     ns = _resolve_namespace(args.namespace)
-    mesh = Mesh(namespace=ns, agent_id="human-cli")
     tags = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags is not None else None
 
+    proxied = _daemon_request(
+        "/update",
+        payload={
+            "memory_id": args.memory_id,
+            "content": args.content,
+            "memory_type": args.memory_type,
+            "confidence": args.confidence,
+            "tags": tags,
+            "ttl_days": args.ttl,
+            "local_only": args.private,
+            "namespace": ns,
+            "agent_id": "human-cli",
+        },
+    )
+    if proxied is not None:
+        if "_http_error" in proxied:
+            print(f"Error: {proxied.get('detail')}", file=sys.stderr)
+            sys.exit(1)
+        if proxied.get("status") == "ok":
+            print(f"[OK] Updated memory '{args.memory_id}' in namespace '{ns}'")
+            return
+
+    from .audit import log_update
+    from .memory import Mesh
+
+    mesh = Mesh(namespace=ns, agent_id="human-cli")
     try:
         mesh.update(
             memory_id=args.memory_id,
@@ -387,9 +571,6 @@ def update_cmd() -> None:
 
 def forget_cmd() -> None:
     """Entry point for: mesh-forget"""
-    from .audit import log_forget
-    from .memory import Mesh
-
     parser = argparse.ArgumentParser(
         description="Delete a specific memory by its ID.",
         epilog="Example: mesh-forget 123e4567-e89b-12d3-a456-426614174000 --namespace shared",
@@ -399,6 +580,24 @@ def forget_cmd() -> None:
     args = parser.parse_args()
 
     ns = _resolve_namespace(args.namespace)
+    proxied = _daemon_request(
+        "/forget",
+        payload={
+            "memory_id": args.memory_id,
+            "namespace": ns,
+            "agent_id": "human-cli",
+        },
+    )
+    if proxied is not None and proxied.get("status") in ("ok", "not_found"):
+        if proxied.get("status") == "ok":
+            print(f"[OK] Deleted memory '{args.memory_id}' from namespace '{ns}'")
+            return
+        print(f"Memory '{args.memory_id}' not found in namespace '{ns}'", file=sys.stderr)
+        sys.exit(1)
+
+    from .audit import log_forget
+    from .memory import Mesh
+
     mesh = Mesh(namespace=ns, agent_id="human-cli")
     deleted = mesh.forget(args.memory_id)
     if deleted:
@@ -463,6 +662,8 @@ def status_cmd() -> None:
     args = parser.parse_args()
 
     from .audit import get_audit_log
+    from .daemon import get_daemon_health
+    from .memory import get_engine_status
     from .namespaces import list_namespaces, namespace_stats
 
     ns = _resolve_namespace(args.namespace)
@@ -475,6 +676,9 @@ def status_cmd() -> None:
 
     recent = get_audit_log(namespace=ns, limit=5)
     last_activity = str(recent[0]["timestamp"])[:19] if recent else "never"
+    health = get_daemon_health(timeout=0.2)
+    eng = (health.get("engine") if health else None) or get_engine_status()
+    daemon_str = f"running (PID {health.get('pid')})" if health else "stopped"
 
     print(f"\nMesh Status - namespace: {ns}\n")
     print(
@@ -486,6 +690,8 @@ def status_cmd() -> None:
     print(f"  Total recalls:  {stats['total_recalls']}")
     print(f"  Last activity:  {last_activity}")
     print(f"  Types:          {stats['type_breakdown']}")
+    print(f"  Daemon:         {daemon_str}")
+    print(f"  ONNX cached:    {eng.get('onnx_cached_on_disk', False)}")
 
     all_ns = list_namespaces()
     if len(all_ns) > 1:
@@ -500,6 +706,7 @@ def help_cmd() -> None:
     print(f"Mesh Collective Memory (v{VERSION})")
     print("Usage: mesh <command> [options]\n")
     print("Available Commands:")
+    print("  mesh-setup      Launch background worker to download ONNX model & start daemon")
     print("  mesh-add        Store a memory manually")
     print("  mesh-ask        Search for memories by topic or question (hybrid search)")
     print("  mesh-update     Update an existing memory in-place by ID")
@@ -542,6 +749,8 @@ def main() -> None:
     from .passive import capture_cmd
 
     mapping = {
+        "setup": setup_cmd,
+        "warmup": setup_cmd,
         "add": add_cmd,
         "ask": ask_cmd,
         "update": update_cmd,

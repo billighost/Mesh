@@ -2,9 +2,9 @@
 mesh/audit.py — High-speed, fault-isolated audit trail for all memory reads and writes.
 Logs recall(), learn(), update(), and forget() calls with timestamp, agent, query/content, and result.
 """
-
 from __future__ import annotations
 
+import atexit
 import sqlite3
 import threading
 from datetime import datetime, timezone
@@ -12,8 +12,10 @@ from pathlib import Path
 from typing import Any, Optional
 
 MESH_DIR = Path.home() / ".mesh"
+
 _AUDIT_LOCK = threading.RLock()
 _INITIALIZED_AUDIT_DBS: dict[Path, tuple[int, int, int, int]] = {}
+_AUDIT_CONNECTION_POOL: dict[Path, "_ManagedAuditConnection"] = {}
 
 _AUDIT_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS audit_log (
@@ -44,16 +46,30 @@ _ACTION_FILTER_MAP = {
 
 
 class _ManagedAuditConnection(sqlite3.Connection):
-    """SQLite connection that commits/rolls back AND closes when exiting a `with` block."""
+    """
+    Persistent SQLite WAL connection that commits/rolls back when exiting a `with` block
+    without closing the file handle until explicitly evicted.
+    """
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> bool:
+        return super().__exit__(exc_type, exc_val, exc_tb)
+
+    def close(self) -> None:
+        pass
+
+    def close_pooled(self) -> None:
         try:
-            return super().__exit__(exc_type, exc_val, exc_tb)
-        finally:
-            try:
-                self.close()
-            except Exception:
-                pass
+            super().close()
+        except Exception:
+            pass
+
+
+@atexit.register
+def _close_all_audit_connections() -> None:
+    with _AUDIT_LOCK:
+        for conn in list(_AUDIT_CONNECTION_POOL.values()):
+            conn.close_pooled()
+        _AUDIT_CONNECTION_POOL.clear()
 
 
 def _get_audit_db_path(namespace: str) -> Path:
@@ -78,22 +94,42 @@ def _get_audit_db_stamp(db_path: Path) -> Optional[tuple[int, int, int, int]]:
 
 
 def evict_audit_cache(namespace: str) -> None:
-    """Evict tracked initialization state for a namespace's audit DB before delete/rename."""
+    """Evict tracked initialization state and close pooled connections for a namespace's audit DB."""
     db_path = _get_audit_db_path(namespace)
     with _AUDIT_LOCK:
         _INITIALIZED_AUDIT_DBS.pop(db_path, None)
+        conn = _AUDIT_CONNECTION_POOL.pop(db_path, None)
+        if conn is not None:
+            conn.close_pooled()
 
 
-def _connect_audit(db_path: Path) -> sqlite3.Connection:
-    if not MESH_DIR.exists():
-        MESH_DIR.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path, timeout=5.0, factory=_ManagedAuditConnection)
-    if db_path not in _INITIALIZED_AUDIT_DBS:
+def _connect_audit(db_path: Path) -> _ManagedAuditConnection:
+    with _AUDIT_LOCK:
+        conn = _AUDIT_CONNECTION_POOL.get(db_path)
+        if conn is not None and db_path.exists():
+            return conn
+        if conn is not None:
+            conn.close_pooled()
+            _AUDIT_CONNECTION_POOL.pop(db_path, None)
+
+        if not MESH_DIR.exists():
+            MESH_DIR.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(
+            db_path,
+            timeout=5.0,
+            check_same_thread=False,
+            factory=_ManagedAuditConnection,
+        )
         conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
-    conn.execute("PRAGMA temp_store=MEMORY")
-    conn.execute("PRAGMA busy_timeout=3000")
-    return conn
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA temp_store=MEMORY")
+        conn.execute("PRAGMA busy_timeout=3000")
+        try:
+            conn.execute("PRAGMA cache_size=-8000")
+        except sqlite3.OperationalError:
+            pass
+        _AUDIT_CONNECTION_POOL[db_path] = conn
+        return conn
 
 
 def _apply_audit_schema(conn: sqlite3.Connection) -> None:
@@ -107,9 +143,10 @@ def _apply_audit_schema(conn: sqlite3.Connection) -> None:
 
 def _init_audit_db(namespace: str) -> None:
     db_path = _get_audit_db_path(namespace)
-    with _connect_audit(db_path) as conn:
-        _apply_audit_schema(conn)
-        conn.commit()
+    with _AUDIT_LOCK:
+        with _connect_audit(db_path) as conn:
+            _apply_audit_schema(conn)
+            conn.commit()
 
 
 def _ensure_audit_db(namespace: str) -> Path:
@@ -128,20 +165,18 @@ def _ensure_audit_db(namespace: str) -> Path:
 
 def _write_audit_entry(namespace: str, sql: str, params: tuple[Any, ...]) -> None:
     """
-    Execute an audit log INSERT in a single connection pass and refresh the
+    Execute an audit log INSERT on the pooled connection and refresh the
     tracked file stamp so subsequent writes never re-run schema initialization.
     """
     db_path = _get_audit_db_path(namespace)
     with _AUDIT_LOCK:
         stamp = _get_audit_db_stamp(db_path)
         needs_init = stamp is None or _INITIALIZED_AUDIT_DBS.get(db_path) != stamp
-
         with _connect_audit(db_path) as conn:
             if needs_init:
                 _apply_audit_schema(conn)
             conn.execute(sql, params)
             conn.commit()
-
         new_stamp = _get_audit_db_stamp(db_path)
         if new_stamp is not None:
             _INITIALIZED_AUDIT_DBS[db_path] = new_stamp
@@ -279,31 +314,31 @@ def get_audit_log(
         return []
 
     action_sql = _ACTION_FILTER_MAP.get((action_filter or "all").strip().lower())
-
-    with _connect_audit(db_path) as conn:
-        conn.row_factory = sqlite3.Row
-        if action_sql:
-            cur = conn.execute(
-                """
-                SELECT * FROM audit_log
-                WHERE action = ?
-                ORDER BY timestamp DESC, id DESC
-                LIMIT ?
-                """,
-                (action_sql, limit),
-            )
-        else:
-            cur = conn.execute(
-                """
-                SELECT * FROM audit_log
-                ORDER BY timestamp DESC, id DESC
-                LIMIT ?
-                """,
-                (limit,),
-            )
-        rows = [dict(r) for r in cur.fetchall()]
-        cur.close()
-        return rows
+    with _AUDIT_LOCK:
+        with _connect_audit(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            if action_sql:
+                cur = conn.execute(
+                    """
+                    SELECT * FROM audit_log
+                    WHERE action = ?
+                    ORDER BY timestamp DESC, id DESC
+                    LIMIT ?
+                    """,
+                    (action_sql, limit),
+                )
+            else:
+                cur = conn.execute(
+                    """
+                    SELECT * FROM audit_log
+                    ORDER BY timestamp DESC, id DESC
+                    LIMIT ?
+                    """,
+                    (limit,),
+                )
+            rows = [dict(r) for r in cur.fetchall()]
+            cur.close()
+            return rows
 
 
 def get_audit_stats(namespace: str) -> dict[str, Any]:
@@ -320,35 +355,36 @@ def get_audit_stats(namespace: str) -> dict[str, Any]:
             "last_activity": None,
         }
 
-    with _connect_audit(db_path) as conn:
-        conn.row_factory = sqlite3.Row
-        cur_agg = conn.execute(
-            """
-            SELECT 
-                COALESCE(SUM(CASE WHEN action = 'recall' THEN 1 ELSE 0 END), 0) AS recalls,
-                COALESCE(SUM(CASE WHEN action = 'learn' THEN 1 ELSE 0 END), 0) AS learns,
-                COALESCE(SUM(CASE WHEN action = 'update' THEN 1 ELSE 0 END), 0) AS updates,
-                COALESCE(SUM(CASE WHEN action = 'forget' THEN 1 ELSE 0 END), 0) AS forgets,
-                COALESCE(SUM(CASE WHEN had_conflict = 1 THEN 1 ELSE 0 END), 0) AS conflicts,
-                MAX(timestamp) AS last_activity
-            FROM audit_log
-            """
-        )
-        agg = cur_agg.fetchone()
-        cur_agg.close()
+    with _AUDIT_LOCK:
+        with _connect_audit(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cur_agg = conn.execute(
+                """
+                SELECT 
+                    COALESCE(SUM(CASE WHEN action = 'recall' THEN 1 ELSE 0 END), 0) AS recalls,
+                    COALESCE(SUM(CASE WHEN action = 'learn' THEN 1 ELSE 0 END), 0) AS learns,
+                    COALESCE(SUM(CASE WHEN action = 'update' THEN 1 ELSE 0 END), 0) AS updates,
+                    COALESCE(SUM(CASE WHEN action = 'forget' THEN 1 ELSE 0 END), 0) AS forgets,
+                    COALESCE(SUM(CASE WHEN had_conflict = 1 THEN 1 ELSE 0 END), 0) AS conflicts,
+                    MAX(timestamp) AS last_activity
+                FROM audit_log
+                """
+            )
+            agg = cur_agg.fetchone()
+            cur_agg.close()
 
-        cur_agents = conn.execute(
-            "SELECT DISTINCT agent_id FROM audit_log WHERE agent_id IS NOT NULL"
-        )
-        agents = [r["agent_id"] for r in cur_agents.fetchall()]
-        cur_agents.close()
+            cur_agents = conn.execute(
+                "SELECT DISTINCT agent_id FROM audit_log WHERE agent_id IS NOT NULL"
+            )
+            agents = [r["agent_id"] for r in cur_agents.fetchall()]
+            cur_agents.close()
 
-        return {
-            "total_recalls": int(agg["recalls"]) if agg else 0,
-            "total_learns": int(agg["learns"]) if agg else 0,
-            "total_updates": int(agg["updates"]) if agg else 0,
-            "total_forgets": int(agg["forgets"]) if agg else 0,
-            "agents": agents,
-            "conflicts_detected": int(agg["conflicts"]) if agg else 0,
-            "last_activity": agg["last_activity"] if agg else None,
-        }
+            return {
+                "total_recalls": int(agg["recalls"]) if agg else 0,
+                "total_learns": int(agg["learns"]) if agg else 0,
+                "total_updates": int(agg["updates"]) if agg else 0,
+                "total_forgets": int(agg["forgets"]) if agg else 0,
+                "agents": agents,
+                "conflicts_detected": int(agg["conflicts"]) if agg else 0,
+                "last_activity": agg["last_activity"] if agg else None,
+            }
