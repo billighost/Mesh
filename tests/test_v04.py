@@ -34,7 +34,10 @@ from mesh.passive import (
     detect_provider,
     extract_memories_from_log,
 )
+from mesh.dashboard import verify_dashboard_auth
+from mesh.http_server import verify_request_auth
 from mesh.store import _vector_to_blob
+from mesh.version import VERSION
 
 
 def _cleanup_ns(ns: str) -> None:
@@ -93,7 +96,7 @@ def test_audit_log_learn_update_forget():
         update_entries = [e for e in entries if e["action"] == "update"]
         forget_entries = [e for e in entries if e["action"] == "forget"]
         assert len(learn_entries) > 0
-        assert "test learn event" in learn_entries[0]["content"]
+        assert learn_entries[0]["content"] in ("test learn event", "[PURGED]")
         assert len(update_entries) == 1
         assert len(forget_entries) == 1
     finally:
@@ -153,7 +156,6 @@ def test_namespace_delete_and_rename_cleans_audit_db():
     try:
         mesh = Mesh(namespace=ns_old, agent_id="test")
         res = mesh.learn("fact inside old namespace")
-        log_learn("fact inside old namespace", namespace=ns_old, agent_id="test", result=res)
         assert _get_audit_db_path(ns_old).exists()
 
         rename_namespace(ns_old, ns_new)
@@ -266,6 +268,7 @@ def test_dashboard_api_crud_and_namespace_deletion():
     from mesh.dashboard import api
 
     ns = "test_dashboard_api"
+    api.dependency_overrides[verify_dashboard_auth] = lambda: None
     client = TestClient(api)
     try:
         # 1. Root HTML loads
@@ -310,6 +313,7 @@ def test_dashboard_api_crud_and_namespace_deletion():
         ns_list = [x["namespace"] for x in client.get("/api/namespaces").json()]
         assert ns not in ns_list
     finally:
+        api.dependency_overrides.clear()
         _cleanup_ns(ns)
 
 
@@ -433,21 +437,25 @@ def test_http_health_and_engine_endpoints():
     from fastapi.testclient import TestClient
     from mesh.http_server import app
 
+    app.dependency_overrides[verify_request_auth] = lambda: None
     client = TestClient(app)
-    response = client.get("/health")
-    assert response.status_code == 200
-    data = response.json()
-    assert data["status"] == "ok"
-    assert data["version"] == "0.4"
-    assert "engine" in data
+    try:
+        response = client.get("/health")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "ok"
+        assert data["version"] == VERSION
+        assert "engine" in data
 
-    eng_res = client.get("/engine")
-    assert eng_res.status_code == 200
-    assert eng_res.json()["status"] == "ok"
+        eng_res = client.get("/engine")
+        assert eng_res.status_code == 200
+        assert eng_res.json()["status"] == "ok"
 
-    unload_res = client.post("/unload")
-    assert unload_res.status_code == 200
-    assert unload_res.json()["engine"]["model_loaded"] is False
+        unload_res = client.post("/unload")
+        assert unload_res.status_code == 200
+        assert unload_res.json()["engine"]["model_loaded"] is False
+    finally:
+        app.dependency_overrides.clear()
 
 
 def test_http_learn_update_and_recall():
@@ -456,6 +464,7 @@ def test_http_learn_update_and_recall():
     from mesh.http_server import app
 
     ns = "test_http_e2e"
+    app.dependency_overrides[verify_request_auth] = lambda: None
     prev_ns = os.environ.get("MESH_NAMESPACE")
     os.environ["MESH_NAMESPACE"] = ns
     client = TestClient(app)
@@ -512,6 +521,7 @@ def test_http_learn_update_and_recall():
         forgets = get_audit_log(ns, action_filter="forget")
         assert len(forgets) == 0
     finally:
+        app.dependency_overrides.clear()
         if prev_ns is None:
             os.environ.pop("MESH_NAMESPACE", None)
         else:
@@ -525,6 +535,7 @@ def test_http_local_only_stored():
     from mesh.http_server import app
 
     ns = "test_http_private"
+    app.dependency_overrides[verify_request_auth] = lambda: None
     client = TestClient(app)
     try:
         r = client.post(
@@ -537,6 +548,7 @@ def test_http_local_only_stored():
         )
         assert r.status_code == 200
     finally:
+        app.dependency_overrides.clear()
         _cleanup_ns(ns)
 
 
@@ -755,6 +767,7 @@ def test_extract_anthropic_stores_memories():
                     log_text="we set production to use port 8080",
                     namespace=ns,
                     dry_run=False,
+                    assume_yes=True,
                 )
         assert result["stored_count"] >= 1
     finally:

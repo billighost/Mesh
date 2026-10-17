@@ -17,31 +17,35 @@ Every AI agent starts each session with amnesia. Claude in your terminal doesn't
 ## The Solution
 
 Mesh provides persistent, shared agent memory with:
-- **3-Stage Hybrid Search**: Dense Vector SIMD Cosine (`cache.matrix @ q_vec` in `<0.1 ms`) + SQLite FTS5 BM25 + Exact Token Overlap.
-- **Unified Local Storage**: Pure SQLite WAL per namespace — zero external database daemons, zero multi-process synchronization issues.
+- **5-Stage Hybrid Search**: Dense Vector SIMD Cosine (`cache.matrix @ q_vec` in `<0.1 ms`) + SQLite FTS5 BM25 + Robertson-Sparck Jones Smoothed IDF + Domain Synonyms + Exact Token Overlap.
+- **Unified Local Storage**: Pure SQLite WAL per namespace (`~/.mesh/`, mode `0700`) — zero external database daemons, zero multi-process synchronization issues.
 - **Smart Deduplication & Contradiction Tracking**: Identical facts are reinforced in-place; contradictory facts are flagged for review without silent data loss.
-- **Time-to-Live (TTL) Confidence Decay**: Ephemeral facts gradually decay towards staleness.
+- **Time-to-Live (TTL) Confidence Decay**: Ephemeral facts gradually decay towards staleness (`--ttl <days>` / `--clear-ttl`).
+- **Explicit Consent for Background Actions**: Interactive `y/n` user permission prompts before starting background processes, registering OS login auto-start, downloading model weights, or sending logs to cloud APIs (bypassable in automation via `--yes` or `MESH_AUTO_APPROVE=1`).
 - **Multi-Interface**: MCP Server (10 tools for Claude Desktop, Cursor, Windsurf), Web Dashboard, HTTP REST API, and CLI.
 
 ---
 
 ## Quickstart
 
-### 1. Installation & Instant Setup
+### 1. Installation & Setup
 
 ```bash
 pip install mesh-context-layer
 
-# Optional: Instant setup (spawns background daemon and warms ONNX model in <150 ms)
+# Interactive setup (asks y/n before registering auto-start, starting the daemon, or downloading the ONNX model)
 mesh setup
+
+# Non-interactive setup for CI or automated environments
+mesh setup --yes
 ```
 
-### Zero-Friction Auto-Daemon & Non-Blocking Background Model Downloader
+### Explicit Consent & Non-Blocking Embedding Engine
 
-Mesh is zero-configuration:
-- **Zero-Friction Auto-Daemon**: On first use, Mesh automatically spawns a persistent local background daemon (`http://127.0.0.1:7701`) with zero cold start.
-- **Non-Blocking Background Model Downloader**: Downloads `all-MiniLM-L6-v2` ONNX weights into `~/.mesh/models/` in a background daemon thread prioritizing fast Google Cloud Storage and CDN mirrors—**no Hugging Face token required and zero network rate limits**.
-- While the background download completes, Mesh serves requests instantly in `<0.05 ms` using a concept-aware 384-dimensional semantic feature-hash engine (`onnx-warming`) and automatically backfills neural embeddings once the ONNX model lands on disk.
+Mesh respects your machine and network:
+- **No Silent Background Daemons or Downloads**: Mesh asks for `y/n` confirmation before starting the background HTTP daemon (`[http://127.0.0.1:7701](http://127.0.0.1:7701)`), registering OS login auto-start, or downloading the ~90 MB `all-MiniLM-L6-v2` ONNX weights into `~/.mesh/models/`.
+- **Instant Local Fallback**: In non-interactive environments (or if you decline the ONNX download), Mesh serves requests in `<0.05 ms` using its built-in 384-dimensional semantic feature-hash engine (`hash-384`), and automatically heals vectors in-place if the ONNX model is downloaded later.
+- **No Silent Phone-Home**: `mesh status` and `mesh help` never contact PyPI unless you pass `mesh status --check-updates` or set `MESH_CHECK_UPDATES=1`.
 
 ### 2. Python SDK
 
@@ -71,13 +75,17 @@ for r in results:
 Mesh provides **10 MCP tools** directly to your AI agents.
 
 ### Claude Desktop Configuration
-Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (Mac) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
+Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
 
 ```json
 {
   "mcpServers": {
     "mesh": {
-      "command": "mesh-server"
+      "command": "mesh-server",
+      "env": {
+        "MESH_NAMESPACE": "my-project",
+        "MESH_AGENT_ID": "claude-desktop"
+      }
     }
   }
 }
@@ -90,7 +98,11 @@ Create `.cursor/mcp.json` in your project root:
 {
   "mcpServers": {
     "mesh": {
-      "command": "mesh-server"
+      "command": "mesh-server",
+      "env": {
+        "MESH_NAMESPACE": "my-project",
+        "MESH_AGENT_ID": "cursor"
+      }
     }
   }
 }
@@ -101,15 +113,15 @@ Create `.cursor/mcp.json` in your project root:
 | MCP Tool | Description |
 | :--- | :--- |
 | `mesh_learn` | Store a fact, preference, instruction, or decision with deduplication and contradiction checking. |
-| `mesh_recall` | 3-stage hybrid search across shared memory with confidence filtering and score breakdown. |
-| `mesh_update` | Update existing memory content and tags in-place preserving UUID and history. |
-| `mesh_forget` | Remove a specific memory by its ID. |
-| `mesh_inspect` | Browse recent memories in a namespace with pagination and type filtering. |
-| `mesh_context` | Generate formatted context blocks (Markdown, XML, JSON, or Plain) for system prompts. |
-| `mesh_patterns` | Discover frequently accessed topics, memory gaps, and stale memories. |
+| `mesh_recall` | 5-stage hybrid search across shared memory (excludes `local_only` private memories by default unless `include_private=true`). |
+| `mesh_update` | Update existing memory content, tags, or TTL (`clear_ttl=true` supported) in-place preserving UUID and history. |
+| `mesh_forget` | Permanently delete a specific memory by its ID (scrubbing audit & contradiction logs). |
+| `mesh_inspect` | Browse recent memories in a namespace (excludes `local_only` memories by default unless `include_private=true`). |
+| `mesh_context` | Generate prompt-injection-safe context blocks (`markdown`, `xml`, `json`, or `plain`) for system prompts. |
+| `mesh_patterns` | Discover frequently accessed topics, memory gaps, unused memories, and stale memories. |
 | `mesh_contradictions` | Inspect conflicting memories identified during learning. |
-| `mesh_resolve_contradiction`| Mark a contradiction as resolved after reviewing the conflict. |
-| `mesh_sync` | Save a turn summary and automatically capture facts from session transcripts. |
+| `mesh_resolve_contradiction`| Mark a contradiction ID (or 4+ char short ID) as resolved. |
+| `mesh_sync` | Save a turn summary and incrementally capture facts from session logs using local extraction. |
 
 ---
 
@@ -121,28 +133,12 @@ Launch the zero-build local visualizer:
 mesh-dashboard --namespace checkout-service --port 7433
 ```
 
-Open `http://localhost:7433` in your browser. Features:
-- **Real-Time Hybrid Search** with instant score breakdowns.
+Mesh prints and opens a pre-authenticated launch URL (`http://localhost:7433/?ns=checkout-service&token=...`) that sets an `HttpOnly; SameSite=Strict` session cookie and strips the token from the URL bar. Features:
+- **Real-Time Hybrid Search** with instant score breakdowns and peripheral snippets.
 - **Contradiction Inspector**: Review and resolve flagged memory conflicts.
 - **Memory Gaps & Patterns**: See queries agents asked that had low recall similarity.
-- **Audit Stream**: Real-time log of agent reads and writes.
+- **Audit Stream**: Real-time log of agent reads, writes, updates, and deletes.
 - **Keyboard Shortcuts**: `/` to focus search, `n` to create a memory, `Esc` to close modals.
-
----
-
-## Memory Types
-
-| Type | Intended Purpose |
-| :--- | :--- |
-| `fact` | Objective project realities (e.g., ports, hostnames, library versions). |
-| `preference` | User preferences, code style requirements, framework conventions. |
-| `instruction` | Strict rules and guidelines agents must obey. |
-| `decision` | Architectural and technical decisions with rationale. |
-| `process` | Multi-step workflows and deployment sequences. |
-| `context` | Broad project background or domain context. |
-| `result` | Verification outcomes, benchmark results, test findings. |
-| `error` | Discovered bugs, root causes, and workarounds. |
-| `general` | General unstructured observations. |
 
 ---
 
@@ -154,121 +150,74 @@ Start the local background server:
 mesh-http --port 7701
 ```
 
-From any terminal, script, or language:
+All endpoints (except `GET /health`) require your local per-user token (`~/.mesh/auth_token`, mode `0600`) via `Authorization: Bearer <token>` or `X-Mesh-Token: <token>`:
 
 ```bash
+TOKEN=$(cat ~/.mesh/auth_token)
+
 # Store a memory
-curl -s -X POST http://localhost:7701/learn \
+curl -s -X POST http://127.0.0.1:7701/learn \
   -H "Content-Type: application/json" \
+  -H "X-Mesh-Token: $TOKEN" \
   -d '{"content": "Auth service requires JWT RS256 signatures", "memory_type": "instruction"}'
 
 # Recall memories
-curl -s -X POST http://localhost:7701/recall \
+curl -s -X POST http://127.0.0.1:7701/recall \
   -H "Content-Type: application/json" \
+  -H "X-Mesh-Token: $TOKEN" \
   -d '{"query": "auth JWT algorithm", "n": 3}'
-
-# Format context directly into agent system prompts
-curl -s -X POST http://localhost:7701/context \
-  -H "Content-Type: application/json" \
-  -d '{"count": 10, "format": "markdown"}'
 ```
 
 ---
 
 ## CLI Commands
 
-Mesh provides both unified `mesh <subcommand>` routing and dedicated script entry points:
-
 ```bash
 # Setup & daemon management
-mesh setup                        # Instant setup & model caching (<150 ms)
-mesh-setup                        # Direct alias for mesh setup
+mesh setup                        # Interactive setup (daemon + ONNX model)
 mesh daemon start                 # Start background daemon (port 7701)
 mesh daemon stop                  # Stop background daemon
 mesh daemon status                # Inspect daemon health & model RAM residency
 mesh daemon warmup                # Cache ONNX model & warm local daemon
 mesh daemon unload                # Immediately release model weights from RAM
-mesh-daemon status                # Direct script entry point for daemon control
 
 # Memory operations (automatically proxy through warm local daemon)
 mesh add "PostgreSQL 16 runs on port 5432" --tags db,prod --type fact
 mesh ask "what port does postgres use?" --n 3
-mesh update <id> --content "Updated content"
+mesh update <id> --content "Updated content" --clear-ttl
 mesh forget <id>
 mesh context --query "database config" --format markdown
 
-# Inspection, tools & utilities
-mesh namespaces                   # List and inspect namespaces
-mesh export backup.json           # Export memories to JSON
-mesh import backup.json           # High-speed batch import
-mesh dashboard --port 7433        # Launch visualizer
-mesh server                       # Start MCP stdio server
+# Inspection, diagnostics & utilities
+mesh inspect                      # Browse memories in namespace
+mesh conflicts                    # List or --resolve contradictions
+mesh patterns                     # View top queries & memory gaps
+mesh doctor                       # Verify SQLite FTS5, permissions, ONNX SHA-256 & MCP configs
+mesh shell                        # Interactive REPL shell
+mesh completion zsh --install     # Install shell Tab completion (bash, zsh, fish, powershell)
+mesh namespaces                   # List, stats, rename, or delete namespaces
+mesh export backup.json           # Export non-private memories to JSON
+mesh import backup.json           # High-speed validated batch import
 mesh capture --file session.log   # Extract memories from logs
 mesh digest --hours 24            # UTC session summary
 ```
 
 ---
 
-## Portability & Privacy
+## Security, Privacy & Boundaries
 
-### Privacy Flags
-Mark sensitive memories as `local_only=True` to guarantee they are never exported or synced:
-```python
-mesh.learn("Staging DB password: secret-pass", local_only=True, tags=["credentials"])
-```
+### `local_only=True` (`--private`)
+Marking a memory as `local_only=True`:
+- **Excludes** it from `mesh export` (`export_namespace()`).
+- **Excludes** it by default from `mesh context` (`build_context()`), `mesh_recall`, `mesh_inspect`, `/recall`, and `/inspect` unless `include_private=True` is explicitly passed.
+- **Redacts** its text in `audit_log`, `contradictions`, `mesh digest`, and conflict warnings returned by `learn()`.
+- **Scrubs** previous versions from `audit_log` and `contradictions` whenever a memory is edited via `update()` or deleted via `forget()`.
 
-### Backup & Restore
-```bash
-# Export all public memories to JSON
-mesh-export backup.json --namespace checkout-service
-
-# High-speed batch import (with automatic deduplication)
-mesh-import backup.json --namespace checkout-staging --merge-strategy skip_existing
-```
-
----
-
-## Detailed Changelog
-
-### v0.6.0 (Latest)
-- **Direct Zero-Network ONNX Runtime Engine (`_DirectOnnxEmbedding`)**: Replaced blocking Hugging Face Hub calls with direct `onnxruntime.InferenceSession` + `tokenizers.Tokenizer` execution (`~80 ms` cold start, `~1.5–3 ms` CPU inference, zero PyTorch overhead). Routed `_encode_texts()` directly through the 4,096-entry `_EMBED_CACHE` for `<0.01 ms` LRU cache hits.
-- **Non-Blocking Multi-Mirror Background ONNX Auto-Downloader**: Automatically downloads `model.onnx` and `tokenizer.json` into `~/.mesh/models/all-MiniLM-L6-v2-onnx/` in a background daemon thread prioritizing Google Cloud Storage (`storage.googleapis.com`, immune to Hugging Face rate limits) and CDN mirrors (`hf-mirror.com` and `huggingface.co` with `HF_TOKEN` support).
-- **Concept-Aware Fallback & Automatic Backfill**: Serves requests in `<0.05 ms` via a concept-aware 384-dim semantic feature-hash engine (`onnx-warming`) while background download runs, then automatically backfills neural embeddings (`_backfill_pending_embeddings`) once the ONNX model lands on disk.
-- **Instant Non-Blocking `mesh setup` / `mesh-setup` CLI**: Added `mesh-setup` (`mesh setup`) and `mesh-daemon warmup`, registering OS login auto-start and launching the detached background daemon worker (`wait=False`) in `<150 ms`.
-- **In-Memory Metadata Cache & Capacity-Doubling Vector Buffer (`mesh/store.py`)**: Cached full row metadata and parsed `tags_list` in RAM (`_VectorCacheEntry.rows_by_id`) alongside a capacity-doubling `float32` NumPy matrix buffer, making `get()`, `count()`, `list_all()` (`inspect`), and `query()` 100% in-memory (`<0.03 ms`, zero SQLite reads) and eliminating `np.vstack()` reallocations on `learn()`.
-- **Persistent SQLite WAL Connection Pooling (`mesh/store.py` & `mesh/audit.py`)**: Replaced per-call connection closing with persistent pooled SQLite WAL connections (`_PooledConnection` and `_ManagedAuditConnection`) synchronized via composite `(.db, .db-wal)` file stamps and `PRAGMA data_version`.
-- **Zero-Cold-Start Daemon Proxy Across CLI & MCP (`mesh/cli.py` & `mesh/mcp_server.py`)**: `mesh-add`, `mesh-ask`, `mesh-update`, `mesh-forget`, and `mesh-context` automatically proxy through the warm local daemon (`127.0.0.1:7701`), auto-spawning the daemon in the background (`ensure_daemon_running(wait=False)`) if stopped. Upgraded `mcp_server.py` daemon proxy to use persistent HTTP `keep-alive` connections.
-- **Precision Contradiction Detection & Compatibility Fixes**: Added `_is_true_contradiction()` in `mesh/memory.py` to prevent false conflict alerts when elaborating on compatible facts while catching numeric and negation polarity conflicts. Added `max_memories` and `n` parameter aliases to `build_context()`, `mesh_context`, `/context`, and `mesh-context`. Fixed `mesh-namespaces` script entry point.
-
-### v0.5.3
-- **Instant Background Daemon Activation (`mesh daemon install-startup`)**: `install-startup` automatically triggers `start_daemon()` immediately upon registration without requiring an extra manual start command.
-- **New Daemon Management & Residency Endpoints**: Added `GET /engine` and `POST /unload` REST endpoints to inspect model status and immediately release model weights from memory. Added `mesh-daemon` CLI commands (`start`, `stop`, `restart`, `status`, `unload`, `install-startup`, `remove-startup`).
-- **3-Tier Lightweight ONNX / FastEmbed Engine**: Integrated `fastembed` as the primary ONNX runtime embedding engine, dropping cold startup down to ~120 ms and idle RAM to ~20 MB while preserving exact 384-dimensional `all-MiniLM-L6-v2` vector compatibility.
-- **Automatic Idle Model Unloading**: Background inactivity watchdog (`MESH_IDLE_UNLOAD_SECONDS=180`) automatically unloads model weights from RAM after 3 minutes while keeping the 4,096-entry LRU embedding cache hot for `<0.01 ms` queries.
-- **Cross-Process SQLite WAL Cache Sync**: Composite `(db_mtime_ns, db_size, wal_mtime_ns, wal_size)` stamp ensures external writes from other processes are detected instantly in $O(1)$ time.
-- **Dashboard UI Fixes**: Escaped raw string formatting fixing JavaScript regex errors, restored action icons (`↻`, `✎`, `✕`), added `general` type chip and `Deletes` audit filter.
-- **Audit Logging Precision**: Guarded `log_forget()` and `POST /forget` against false deletion events on missing IDs.
-
-### v0.5.2
-- **Windowless Background Process Spawning**: Implemented silent background daemon spawning on Windows via `pythonw.exe` / `CREATE_NO_WINDOW`.
-
-### v0.5.1
-- **High-Speed Batch Import/Export**: `import_namespace` now commits all memories in a single atomic SQLite WAL transaction via `upsert_batch()` and utilizes O(1) in-memory vector cache ID lookups, removing N+1 database queries. Missing embeddings are computed in a single forward pass.
-- **MCP Stdio Redirection Safety**: Added thread-safe stdout redirection to ensure print statements never corrupt stdio JSON-RPC payloads in Claude Desktop or Cursor.
-- **Optimized Context Generation**: Streamlined single-pass context assembly for `/context` HTTP endpoint and `mesh_context` MCP tool with tag and memory type filtering.
-- **Fast-Path Registry**: Added lockless fast-path lookups to the HTTP server's Mesh instance registry.
-- **Showcase Suite**: Added `examples/full_showcase.py` verifying all 11 core engine stages end-to-end.
-- **Windows Console Resiliency**: Safe UTF-8 console output handling preventing CP1252 character map errors.
-
-### v0.5.0
-- **ChromaDB Removal**: Transitioned to a unified SQLite WAL + NumPy SIMD in-memory vector cache engine, eliminating external C++ dependencies, multi-database sync bugs, and heavy binary bloat.
-- **3-Stage Hybrid Search**: Combines Dense Cosine Similarity (`<0.1 ms`), SQLite FTS5 BM25 lexical ranking, and exact token overlap boosting.
-- **Automatic Deduplication Engine**: Near-identical memories ($\ge 0.985$ similarity) reinforce existing records rather than creating duplicate rows.
-- **Contradiction Tracking**: Conflicting statements ($\ge 0.82$ similarity with numeric/negation polarity changes) are stored and recorded in a contradiction log for review.
-- **Time-to-Live (TTL) & Confidence Decay**: Linear time-based confidence decay for temporary facts.
-- **Full 10-Tool MCP Server**: Complete tool suite for LLMs.
-- **Interactive Web Dashboard**: Single-file dark/light UI with search, contradiction management, pattern analysis, and audit trails.
-- **Passive Capture & Daily Digests**: Automated memory extraction from AI session logs (`mesh-capture`) and Markdown summary generation (`mesh-digest`).
+### Namespace Isolation (`MESH_LOCKED_NAMESPACE`) & Dynamic Storage (`MESH_HOME`)
+- **`MESH_HOME` / `MESH_DIR`**: Override the default `~/.mesh` directory dynamically for full test isolation or containerized volumes.
+- **`MESH_LOCKED_NAMESPACE`**: Namespaces (`mesh_<namespace>.db`) are logical project partitions designed to keep different codebases separated; by default, any authenticated local agent with your `~/.mesh/auth_token` can pass a `namespace` parameter. If you want to strictly confine an MCP server or HTTP instance to a single namespace, set `MESH_LOCKED_NAMESPACE=1` (or `MESH_LOCKED_NAMESPACE=<allowed-namespace>`) in its environment.
+- **`MESH_ENFORCE_AGENT_OWNERSHIP`**: When set to `1`, prevents agents from updating or forgetting memories authored by other agents (`human-cli` and `dashboard` remain exempt).
+- **`MESH_INCLUDE_PRIVATE`**: Set to `0` or `false` to globally exclude `local_only` private memories in Python SDK `recall()` and `inspect()` calls.
 
 ---
 

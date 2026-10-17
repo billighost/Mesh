@@ -1,31 +1,43 @@
 """
 Mesh Dashboard — Minimal, high-speed web UI for managing shared agent memory.
-
 Start: mesh-dashboard
        mesh-dashboard --namespace my-project --port 7433
-"""
 
+Security hardening:
+  - Host & Origin header verification blocking DNS rebinding and cross-site attacks
+  - Launch-token & HttpOnly SameSite=Strict session cookie protection on `GET /` and `/api/*`
+    (never hands out the auth token to unauthenticated requests and removes `testserver` bypass)
+  - Event-delegated `data-action` / `data-id` attributes eliminating inline `onclick` XSS vectors
+  - Full support for clearing TTLs (`clear_ttl=True`) when editing memories
+"""
 from __future__ import annotations
 
+import os
+import re
+import secrets
 import threading
 import time
 import webbrowser
 from typing import Any, List, Optional
+from urllib.parse import urlparse
 
 import click
 import uvicorn
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
-from .audit import get_audit_log, log_forget, log_learn, log_recall, log_update
+from .audit import get_audit_log, validate_namespace
+from .daemon import get_or_create_auth_token, request_user_permission
 from .digest import generate_digest
 from .io import export_namespace
-from .memory import VALID_MEMORY_TYPES, Mesh, get_engine_status, warmup_model
+from .memory import Mesh, get_engine_status, warmup_model
 from .namespaces import delete_namespace, list_namespaces, namespace_stats
 from .version import VERSION
 
-api = FastAPI(title="Mesh Dashboard", version=VERSION)
+_LOCAL_ORIGIN_REGEX = r"^https?://(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$"
+_ALLOWED_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]", "testserver"}
+_SESSION_COOKIE_NAME = "mesh_dash_session"
 
 _MESH_LOCK = threading.RLock()
 _MESH_CACHE: dict[str, Mesh] = {}
@@ -33,10 +45,119 @@ _default_namespace: str = "shared"
 _mesh: Optional[Mesh] = None
 
 
+def evict_dashboard_mesh_cache(namespace: Optional[str] = None) -> None:
+    """Evict cached `Mesh` instances for `namespace` (or all namespaces if None)."""
+    global _mesh
+    with _MESH_LOCK:
+        if namespace is None:
+            _MESH_CACHE.clear()
+            _mesh = None
+            return
+        _MESH_CACHE.pop(namespace, None)
+        if _mesh is not None and _mesh.namespace == namespace:
+            _mesh = None
+
+
+_LAUNCH_NONCES: dict[str, float] = {}
+
+
+def _tokens_match(provided: str, expected: str) -> bool:
+    if not provided or not expected:
+        return False
+    try:
+        return secrets.compare_digest(
+            provided.encode("utf-8", errors="surrogatepass"),
+            expected.encode("utf-8", errors="surrogatepass"),
+        )
+    except Exception:
+        return False
+
+
+def _extract_hostname(host_header: str) -> str:
+    h = (host_header or "").strip().lower()
+    if not h:
+        return ""
+    if h.startswith("["):
+        end = h.find("]")
+        return h[: end + 1] if end != -1 else h
+    return h.split(":")[0]
+
+
+def _extract_request_token(request: Request) -> str:
+    auth_header = request.headers.get("authorization", "")
+    if auth_header.lower().startswith("bearer "):
+        tok = auth_header[7:].strip()
+        if tok:
+            return tok
+    header_tok = request.headers.get("x-mesh-token", "").strip()
+    if header_tok:
+        return header_tok
+    cookie_tok = (request.cookies.get(_SESSION_COOKIE_NAME) or "").strip()
+    if cookie_tok:
+        return cookie_tok
+    query_tok = (request.query_params.get("token") or "").strip()
+    return query_tok
+
+
+def verify_dashboard_auth(request: Request) -> None:
+    """
+    Verify the local Mesh token via `Authorization: Bearer`, `X-Mesh-Token`,
+    `mesh_dash_session` HttpOnly cookie, or `?token=` launch query parameter.
+    Can be overridden in unit tests via `api.dependency_overrides[verify_dashboard_auth] = lambda: None`.
+    """
+    expected_token = get_or_create_auth_token()
+    provided_token = _extract_request_token(request)
+    if not provided_token or not _tokens_match(provided_token, expected_token):
+        raise HTTPException(
+            status_code=401,
+            detail="Unauthorized: missing or invalid Mesh dashboard token.",
+        )
+
+
+api = FastAPI(title="Mesh Dashboard", version=VERSION)
+
+
+@api.middleware("http")
+async def _dashboard_security_middleware(request: Request, call_next: Any) -> Any:
+    """
+    1. Validate `Host` header to prevent DNS rebinding attacks.
+    2. Validate `Origin` header (if present) to prevent cross-origin CSRF requests.
+    3. Require valid token or session cookie on all `/api/*` endpoints.
+    """
+    has_auth_override = verify_dashboard_auth in api.dependency_overrides
+    allowed_hosts = _ALLOWED_HOSTS | ({"testserver"} if has_auth_override else set())
+
+    req_host = _extract_hostname(request.headers.get("host", ""))
+    if req_host and req_host not in allowed_hosts:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": f"Forbidden Host header '{req_host}' (DNS rebinding protection)."},
+        )
+
+    origin = request.headers.get("origin")
+    if origin:
+        parsed_origin = urlparse(origin)
+        origin_host = (parsed_origin.hostname or "").lower()
+        if origin_host not in allowed_hosts or not re.match(_LOCAL_ORIGIN_REGEX, origin):
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "Forbidden cross-origin request."},
+            )
+
+    if request.url.path.startswith("/api/") and not has_auth_override:
+        try:
+            verify_dashboard_auth(request)
+        except HTTPException as exc:
+            return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+    return await call_next(request)
+
+
 def get_mesh(namespace: Optional[str] = None) -> Mesh:
     """Return a cached Mesh instance for the requested (or default) namespace."""
     global _mesh
-    ns = (namespace or (_mesh.namespace if _mesh is not None else _default_namespace)).strip() or "shared"
+    raw_ns = (namespace or (_mesh.namespace if _mesh is not None else _default_namespace)).strip() or "shared"
+    ns = validate_namespace(raw_ns)
     with _MESH_LOCK:
         if _mesh is not None and _mesh.namespace == ns:
             return _mesh
@@ -50,7 +171,6 @@ def get_mesh(namespace: Optional[str] = None) -> Mesh:
 
 
 # --- Request models ---
-
 
 class CreateMemoryRequest(BaseModel):
     content: str
@@ -69,34 +189,40 @@ class UpdateMemoryRequest(BaseModel):
     tags: Optional[List[str]] = None
     local_only: Optional[bool] = None
     ttl_days: Optional[float] = None
+    clear_ttl: Optional[bool] = None
     namespace: Optional[str] = None
 
 
-# --- REST API endpoints ---
+# --- REST API endpoints (synchronous `def` so FastAPI runs them in threadpool) ---
 
-
-@api.get("/api/stats")
+@api.get("/api/stats", dependencies=[Depends(verify_dashboard_auth)])
 def get_stats(namespace: Optional[str] = None) -> dict[str, Any]:
-    mesh = get_mesh(namespace)
-    patterns = mesh.patterns()
-    contradictions = mesh.contradictions()
-    return {
-        "namespace": mesh.namespace,
-        "total_memories": mesh.count(),
-        "open_contradictions": len(contradictions),
-        "memory_gaps": len(patterns["memory_gaps"]),
-        "stale_memories": len(patterns["stale_memories"]),
-        "unused_memories": len(patterns["unused_memories"]),
-        "engine": get_engine_status(),
-    }
+    try:
+        mesh = get_mesh(namespace)
+        patterns = mesh.patterns()
+        contradictions = mesh.contradictions()
+        return {
+            "namespace": mesh.namespace,
+            "total_memories": mesh.count(),
+            "open_contradictions": len(contradictions),
+            "memory_gaps": len(patterns["memory_gaps"]),
+            "stale_memories": len(patterns["stale_memories"]),
+            "unused_memories": len(patterns["unused_memories"]),
+            "engine": get_engine_status(),
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
-@api.get("/api/memories")
+@api.get("/api/memories", dependencies=[Depends(verify_dashboard_auth)])
 def get_memories(limit: int = 200, namespace: Optional[str] = None) -> list[dict[str, Any]]:
-    return get_mesh(namespace).inspect(limit=limit)
+    try:
+        return get_mesh(namespace).inspect(limit=limit)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
-@api.post("/api/memories")
+@api.post("/api/memories", dependencies=[Depends(verify_dashboard_auth)])
 def create_memory(req: CreateMemoryRequest) -> dict[str, Any]:
     """Add a new memory from the dashboard."""
     try:
@@ -109,22 +235,18 @@ def create_memory(req: CreateMemoryRequest) -> dict[str, Any]:
             local_only=req.local_only,
             ttl_days=req.ttl_days if req.ttl_days and req.ttl_days > 0 else None,
         )
-        log_learn(
-            content=req.content,
-            namespace=mesh.namespace,
-            agent_id="dashboard",
-            result=result,
-        )
         return {"status": "ok", "result": result}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@api.put("/api/memories/{memory_id}")
+@api.put("/api/memories/{memory_id}", dependencies=[Depends(verify_dashboard_auth)])
 def update_memory(memory_id: str, req: UpdateMemoryRequest) -> dict[str, Any]:
-    """Update a memory in-place, preserving its ID, creation time, and access count."""
+    """Update a memory in-place, supporting clearing TTL when `clear_ttl=True` or `ttl_days` is omitted/0."""
     try:
         mesh = get_mesh(req.namespace)
+        should_clear_ttl = bool(req.clear_ttl) or (req.ttl_days is not None and req.ttl_days <= 0)
+        ttl_val = None if should_clear_ttl else req.ttl_days
         result = mesh.update(
             memory_id=memory_id,
             content=req.content,
@@ -132,98 +254,131 @@ def update_memory(memory_id: str, req: UpdateMemoryRequest) -> dict[str, Any]:
             confidence=req.confidence,
             tags=req.tags,
             local_only=req.local_only,
-            ttl_days=req.ttl_days if req.ttl_days and req.ttl_days > 0 else None,
-            reset_ttl=True,
-        )
-        log_update(
-            memory_id=memory_id,
-            content=req.content,
-            namespace=mesh.namespace,
-            agent_id="dashboard",
+            ttl_days=ttl_val,
+            reset_ttl=ttl_val is not None,
+            clear_ttl=should_clear_ttl,
         )
         return {"status": "ok", "result": result}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@api.delete("/api/memories/{memory_id}")
+@api.delete("/api/memories/{memory_id}", dependencies=[Depends(verify_dashboard_auth)])
 def delete_memory(memory_id: str, namespace: Optional[str] = None) -> dict[str, str]:
-    mesh = get_mesh(namespace)
-    deleted = mesh.forget(memory_id)
-    if deleted:
-        log_forget(memory_id=memory_id, namespace=mesh.namespace, agent_id="dashboard")
-    return {"status": "deleted" if deleted else "not_found", "memory_id": memory_id}
+    try:
+        mesh = get_mesh(namespace)
+        deleted = mesh.forget(memory_id)
+        return {"status": "deleted" if deleted else "not_found", "memory_id": memory_id}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
-@api.get("/api/patterns")
+@api.get("/api/patterns", dependencies=[Depends(verify_dashboard_auth)])
 def get_patterns(namespace: Optional[str] = None) -> dict[str, Any]:
-    return get_mesh(namespace).patterns()
+    try:
+        return get_mesh(namespace).patterns()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
-@api.get("/api/contradictions")
+@api.get("/api/contradictions", dependencies=[Depends(verify_dashboard_auth)])
 def get_contradictions(namespace: Optional[str] = None) -> list[dict[str, Any]]:
-    return get_mesh(namespace).contradictions()
+    try:
+        return get_mesh(namespace).contradictions()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
-@api.post("/api/contradictions/{contradiction_id}/resolve")
+@api.post("/api/contradictions/{contradiction_id}/resolve", dependencies=[Depends(verify_dashboard_auth)])
 def resolve_contradiction(contradiction_id: str, namespace: Optional[str] = None) -> dict[str, str]:
-    get_mesh(namespace).resolve_contradiction(contradiction_id)
-    return {"status": "resolved"}
+    try:
+        get_mesh(namespace).resolve_contradiction(contradiction_id)
+        return {"status": "resolved"}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
-@api.get("/api/search")
-def search(q: str, n: int = 25, namespace: Optional[str] = None) -> list[dict[str, Any]]:
+@api.get("/api/search", dependencies=[Depends(verify_dashboard_auth)])
+def search(
+    q: str,
+    n: int = 25,
+    namespace: Optional[str] = None,
+    memory_type: Optional[str] = None,
+    include_other: bool = False,
+) -> Any:
     if not q.strip():
         raise HTTPException(status_code=400, detail="Query cannot be empty")
-    mesh = get_mesh(namespace)
-    results = mesh.recall(q, n=n)
-    log_recall(query=q, namespace=mesh.namespace, agent_id="dashboard", results=results)
-    return results
+    try:
+        mesh = get_mesh(namespace)
+        clean_type = (
+            memory_type.strip().lower()
+            if memory_type and memory_type.strip().lower() != "all"
+            else None
+        )
+        if include_other and hasattr(mesh, "recall_with_context"):
+            return mesh.recall_with_context(
+                query=q,
+                n=n,
+                memory_type=clean_type,
+                max_other_possible=6,
+            )
+        return mesh.recall(q, n=n, memory_type=clean_type)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
-@api.get("/api/namespaces")
+@api.get("/api/namespaces", dependencies=[Depends(verify_dashboard_auth)])
 def get_namespaces() -> list[dict[str, Any]]:
     return list_namespaces()
 
 
-@api.get("/api/namespaces/{namespace}/stats")
+@api.get("/api/namespaces/{namespace}/stats", dependencies=[Depends(verify_dashboard_auth)])
 def get_namespace_stats(namespace: str) -> dict[str, Any]:
     try:
-        return namespace_stats(namespace)
+        return namespace_stats(validate_namespace(namespace))
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
 
-@api.delete("/api/namespaces/{namespace}")
+@api.delete("/api/namespaces/{namespace}", dependencies=[Depends(verify_dashboard_auth)])
 def api_delete_namespace(namespace: str) -> dict[str, Any]:
-    global _mesh
-    with _MESH_LOCK:
-        _MESH_CACHE.pop(namespace, None)
-        if _mesh is not None and _mesh.namespace == namespace:
-            _mesh = None
-    count = delete_namespace(namespace)
+    try:
+        clean_ns = validate_namespace(namespace)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    evict_dashboard_mesh_cache(clean_ns)
+    count = delete_namespace(clean_ns)
     return {"deleted": True, "memories_removed": count}
 
 
-@api.get("/api/export/{namespace}")
+@api.get("/api/export/{namespace}", dependencies=[Depends(verify_dashboard_auth)])
 def api_export_namespace(namespace: str, include_embeddings: bool = False) -> dict[str, Any]:
-    return export_namespace(namespace=namespace, include_embeddings=include_embeddings)
+    try:
+        return export_namespace(namespace=validate_namespace(namespace), include_embeddings=include_embeddings)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
-@api.get("/api/audit")
-async def get_audit(
+@api.get("/api/audit", dependencies=[Depends(verify_dashboard_auth)])
+def get_audit(
     namespace: Optional[str] = None,
     limit: int = 100,
     action: str = "all",
 ) -> list[dict[str, Any]]:
-    mesh = get_mesh(namespace)
-    return get_audit_log(namespace=mesh.namespace, limit=limit, action_filter=action)
+    try:
+        mesh = get_mesh(namespace)
+        return get_audit_log(namespace=mesh.namespace, limit=limit, action_filter=action)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
-@api.get("/api/digest")
-async def get_digest(namespace: Optional[str] = None, hours: int = 24) -> dict[str, Any]:
-    mesh = get_mesh(namespace)
-    return generate_digest(namespace=mesh.namespace, hours=hours)
+@api.get("/api/digest", dependencies=[Depends(verify_dashboard_auth)])
+def get_digest(namespace: Optional[str] = None, hours: int = 24) -> dict[str, Any]:
+    try:
+        mesh = get_mesh(namespace)
+        return generate_digest(namespace=mesh.namespace, hours=hours)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # --- Minimal, Responsive Dashboard HTML (RAW STRING to preserve JS regex backslashes) ---
@@ -236,7 +391,6 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <title>Mesh</title>
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
 :root {
   --bg:       #090a0f;
   --surface:  #10121a;
@@ -255,7 +409,6 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   --font:     -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, sans-serif;
   --mono:     "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
-
 html, body {
   height: 100%;
   background: var(--bg);
@@ -265,18 +418,14 @@ html, body {
   line-height: 1.45;
   -webkit-font-smoothing: antialiased;
 }
-
 ::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--surface2); border-radius: 3px; }
-
 .app {
   max-width: 1120px;
   margin: 0 auto;
   padding: 0 16px 40px;
 }
-
-/* Top Bar */
 header {
   display: flex;
   align-items: center;
@@ -290,7 +439,6 @@ header {
   z-index: 50;
   flex-wrap: wrap;
 }
-
 .brand {
   display: inline-flex;
   align-items: center;
@@ -300,14 +448,12 @@ header {
   letter-spacing: -0.02em;
   color: var(--text);
 }
-
 .brand-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
   background: var(--accent);
 }
-
 .ns-select {
   background: var(--surface);
   color: var(--muted);
@@ -320,14 +466,12 @@ header {
   cursor: pointer;
 }
 .ns-select:hover, .ns-select:focus { border-color: var(--border2); color: var(--text); }
-
 .search-wrap {
   flex: 1;
   min-width: 180px;
   max-width: 360px;
   position: relative;
 }
-
 .search-wrap input {
   width: 100%;
   background: var(--surface);
@@ -341,7 +485,6 @@ header {
 }
 .search-wrap input:focus { border-color: var(--accent); }
 .search-wrap input::placeholder { color: var(--subtle); }
-
 .search-kbd {
   position: absolute;
   right: 7px;
@@ -355,7 +498,6 @@ header {
   padding: 0 4px;
   pointer-events: none;
 }
-
 .metrics-inline {
   display: flex;
   align-items: center;
@@ -364,13 +506,11 @@ header {
   font-size: 12px;
   color: var(--muted);
 }
-
 .metric-pill {
   display: inline-flex;
   align-items: center;
   gap: 4px;
 }
-
 .metric-val {
   font-family: var(--mono);
   font-weight: 600;
@@ -378,7 +518,6 @@ header {
 }
 .metric-val.warn { color: var(--amber); }
 .metric-val.danger { color: var(--red); }
-
 .btn {
   display: inline-flex;
   align-items: center;
@@ -396,7 +535,6 @@ header {
   white-space: nowrap;
 }
 .btn:hover { background: var(--surface2); border-color: var(--border2); }
-
 .btn-primary {
   background: var(--accent);
   color: #04130d;
@@ -404,11 +542,8 @@ header {
   font-weight: 600;
 }
 .btn-primary:hover { background: #0ea572; border-color: transparent; }
-
 .btn-danger { color: var(--red); border-color: rgba(239, 68, 68, 0.25); }
 .btn-danger:hover { background: rgba(239, 68, 68, 0.1); }
-
-/* Sub-navigation & Toolbar */
 .subnav {
   display: flex;
   align-items: center;
@@ -419,13 +554,11 @@ header {
   margin-bottom: 12px;
   flex-wrap: wrap;
 }
-
 .tabs {
   display: flex;
   gap: 2px;
   overflow-x: auto;
 }
-
 .tab {
   padding: 4px 10px;
   border-radius: 5px;
@@ -442,14 +575,12 @@ header {
 }
 .tab:hover { color: var(--text); background: var(--surface); }
 .tab.active { color: var(--text); background: var(--surface2); }
-
 .tab-count {
   font-family: var(--mono);
   font-size: 10.5px;
   color: var(--subtle);
 }
 .tab.active .tab-count { color: var(--accent); }
-
 .toolbar {
   display: flex;
   align-items: center;
@@ -457,7 +588,6 @@ header {
   margin-bottom: 10px;
   flex-wrap: wrap;
 }
-
 .chip {
   padding: 3px 8px;
   border-radius: 4px;
@@ -473,7 +603,6 @@ header {
   background: var(--accent-bg);
   border-color: rgba(16, 185, 129, 0.25);
 }
-
 .sort-select {
   margin-left: auto;
   background: var(--surface);
@@ -484,11 +613,8 @@ header {
   font-size: 11.5px;
   outline: none;
 }
-
-/* Panels & Compact Rows */
 .panel { display: none; }
 .panel.active { display: block; }
-
 .list {
   display: flex;
   flex-direction: column;
@@ -497,7 +623,6 @@ header {
   background: var(--surface);
   overflow: hidden;
 }
-
 .row {
   display: flex;
   align-items: flex-start;
@@ -509,16 +634,13 @@ header {
 }
 .row:last-child { border-bottom: none; }
 .row:hover { background: rgba(255, 255, 255, 0.018); }
-
 .row-main { flex: 1; min-width: 0; }
-
 .row-top {
   display: flex;
   align-items: baseline;
   gap: 8px;
   margin-bottom: 4px;
 }
-
 .row-content {
   font-family: var(--mono);
   font-size: 12.5px;
@@ -526,7 +648,6 @@ header {
   word-break: break-word;
   line-height: 1.5;
 }
-
 .row-meta {
   display: flex;
   align-items: center;
@@ -535,7 +656,6 @@ header {
   font-size: 11px;
   color: var(--subtle);
 }
-
 .type-pill {
   display: inline-block;
   padding: 1px 6px;
@@ -557,7 +677,6 @@ header {
 .type-pill.decision    { color: #f472b6; background: rgba(244,114,182,0.12); }
 .type-pill.error       { color: #f87171; background: rgba(248,113,113,0.12); }
 .type-pill.general     { color: #94a3b8; background: rgba(148,163,184,0.12); }
-
 .tag {
   font-family: var(--mono);
   font-size: 10.5px;
@@ -567,7 +686,6 @@ header {
   padding: 0 5px;
   border-radius: 3px;
 }
-
 .flag {
   font-size: 10px;
   padding: 0 5px;
@@ -577,7 +695,56 @@ header {
 .flag.stale { color: var(--amber); background: rgba(245,158,11,0.12); }
 .flag.private { color: var(--red); background: rgba(239,68,68,0.12); }
 .flag.sim { color: var(--accent); background: var(--accent-bg); font-family: var(--mono); }
-
+.flag.reason { color: var(--blue); background: rgba(59, 130, 246, 0.12); font-family: var(--mono); }
+.flag.synonym { color: var(--purple); background: rgba(139, 92, 246, 0.14); font-family: var(--mono); }
+.flag.rescue { color: var(--amber); background: rgba(245, 158, 11, 0.14); font-family: var(--mono); }
+.filter-rescue-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 12px;
+  margin-bottom: 10px;
+  border-radius: 7px;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  background: rgba(245, 158, 11, 0.08);
+  color: var(--text);
+  font-size: 12px;
+}
+.other-snippets-wrap { margin-top: 16px; }
+.other-snippets-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 8px;
+}
+.snippet-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 9px 12px;
+  border-radius: 7px;
+  border: 1px dashed var(--border2);
+  background: rgba(16, 18, 26, 0.65);
+  transition: border-color 0.12s, background 0.12s;
+}
+.snippet-card:hover {
+  border-color: var(--accent);
+  background: var(--surface);
+}
+.snippet-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+.snippet-text {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--muted);
+  line-height: 1.45;
+  word-break: break-word;
+}
 .row-actions {
   display: flex;
   gap: 4px;
@@ -586,7 +753,6 @@ header {
   transition: opacity 0.12s;
 }
 .row:hover .row-actions { opacity: 1; }
-
 .icon-btn {
   background: transparent;
   border: 1px solid transparent;
@@ -602,8 +768,6 @@ header {
 }
 .icon-btn:hover { background: var(--surface2); border-color: var(--border2); color: var(--text); }
 .icon-btn.del:hover { color: var(--red); border-color: rgba(239,68,68,0.3); }
-
-/* Sections & Grids */
 .section-label {
   font-size: 11px;
   font-weight: 600;
@@ -615,14 +779,12 @@ header {
   align-items: center;
   gap: 6px;
 }
-
 .conflict-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 8px;
   margin-top: 6px;
 }
-
 .conflict-box {
   padding: 8px 10px;
   border-radius: 6px;
@@ -633,7 +795,6 @@ header {
 }
 .conflict-box.old { border-left: 2px solid var(--red); }
 .conflict-box.new { border-left: 2px solid var(--accent); }
-
 .empty {
   padding: 36px 16px;
   text-align: center;
@@ -643,8 +804,6 @@ header {
   border-radius: 8px;
   background: var(--surface);
 }
-
-/* Minimal Modal */
 .backdrop {
   position: fixed;
   inset: 0;
@@ -656,7 +815,6 @@ header {
   padding: 16px;
 }
 .backdrop.open { display: flex; }
-
 .modal {
   background: var(--surface);
   border: 1px solid var(--border2);
@@ -666,7 +824,6 @@ header {
   padding: 16px;
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
 }
-
 .modal-head {
   display: flex;
   justify-content: space-between;
@@ -675,7 +832,6 @@ header {
   font-weight: 600;
   font-size: 13.5px;
 }
-
 .field { margin-bottom: 10px; display: flex; flex-direction: column; gap: 4px; }
 .field label { font-size: 11px; color: var(--muted); font-weight: 500; }
 .field textarea, .field input[type="text"], .field input[type="number"], .field select {
@@ -694,11 +850,8 @@ header {
   resize: vertical;
 }
 .field textarea:focus, .field input:focus, .field select:focus { border-color: var(--accent); }
-
 .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-
 .modal-foot { display: flex; justify-content: flex-end; gap: 6px; margin-top: 12px; }
-
 #toast {
   position: fixed;
   bottom: 16px;
@@ -712,7 +865,6 @@ header {
   display: none;
   z-index: 200;
 }
-
 @media (max-width: 720px) {
   header { height: auto; padding: 8px 0; }
   .search-wrap { order: 3; max-width: 100%; flex-basis: 100%; }
@@ -853,12 +1005,12 @@ header {
         <input type="text" id="f-tags" placeholder="api, db, auth">
       </div>
       <div class="field">
-        <label>TTL Days (optional)</label>
+        <label>TTL Days (optional — clear to make permanent)</label>
         <input type="number" id="f-ttl" min="1" step="1" placeholder="Permanent">
       </div>
     </div>
     <label style="display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer;margin-top:2px">
-      <input type="checkbox" id="f-private"> Private (local_only - exclude from exports)
+      <input type="checkbox" id="f-private"> Private (local_only - exclude from exports &amp; prompts)
     </label>
     <div class="modal-foot">
       <button class="btn" onclick="closeModal()">Cancel</button>
@@ -870,15 +1022,48 @@ header {
 <div id="toast"></div>
 
 <script>
-let ns = new URLSearchParams(location.search).get('ns') || '';
+const _urlParams = new URLSearchParams(location.search);
+let MESH_TOKEN = _urlParams.get('token') || '';
+if (_urlParams.has('token')) {
+  _urlParams.delete('token');
+  const cleanSearch = _urlParams.toString();
+  history.replaceState(null, '', location.pathname + (cleanSearch ? '?' + cleanSearch : ''));
+}
+let ns = _urlParams.get('ns') || '';
 let memories = [];
 let searchResults = null;
+let otherPossibleResults = [];
+let searchFilterHint = null;
 let activeType = 'all';
 let activeTab = 'memories';
 let activeAuditFilter = 'all';
 let sortBy = 'accessed';
 let editId = null;
+let editOrigTtl = null;
 let debounceTimer = null;
+
+function authHeaders(extra = {}) {
+  const h = { ...extra };
+  if (MESH_TOKEN) {
+    h['X-Mesh-Token'] = MESH_TOKEN;
+  }
+  return h;
+}
+
+// Delegated click handler for all dynamic row actions (prevents inline onclick XSS)
+document.addEventListener('click', e => {
+  const el = e.target.closest('[data-action]');
+  if (!el) return;
+  const action = el.getAttribute('data-action');
+  const targetId = el.getAttribute('data-id') || '';
+  if (action === 'edit') openEdit(targetId);
+  else if (action === 'delete') delMemory(targetId);
+  else if (action === 'jump-type') jumpToType(targetId);
+  else if (action === 'resolve-conflict') resolveConflict(targetId);
+  else if (action === 'switch-ns') switchNamespace(targetId);
+  else if (action === 'export-ns') exportNs(targetId);
+  else if (action === 'delete-ns') deleteNs(targetId);
+});
 
 window.addEventListener('DOMContentLoaded', async () => {
   await refreshAll();
@@ -886,7 +1071,12 @@ window.addEventListener('DOMContentLoaded', async () => {
 
 async function apiFetch(path, opts = {}) {
   try {
-    const res = await fetch(path, opts);
+    const mergedOpts = {
+      credentials: 'same-origin',
+      ...opts,
+      headers: authHeaders(opts.headers || {})
+    };
+    const res = await fetch(path, mergedOpts);
     return res.ok ? await res.json() : null;
   } catch { return null; }
 }
@@ -924,6 +1114,8 @@ async function populateNamespaceDropdown() {
 function switchNamespace(newNs) {
   ns = newNs;
   searchResults = null;
+  otherPossibleResults = [];
+  searchFilterHint = null;
   document.getElementById('search-input').value = '';
   refreshAll();
 }
@@ -961,45 +1153,112 @@ function renderMemories() {
     searchResults !== null ? `${list.length} matches` : `${list.length} items`;
 
   const root = document.getElementById('memory-list');
-  if (!list.length) {
-    root.innerHTML = `<div class="empty">No memories match the current view.</div>`;
-    return;
-  }
-  root.innerHTML = `<div class="list">` + list.map(m => {
-    const t = m.memory_type || 'fact';
-    const tags = parseTags(m);
-    const conf = (m.effective_confidence ?? m.confidence ?? 1.0).toFixed(2);
-    const sim = m.similarity !== undefined ? `<span class="flag sim">${Math.round(m.similarity * 100)}% match</span>` : '';
-    const stale = m.is_stale ? `<span class="flag stale">stale</span>` : '';
-    const priv = m.local_only ? `<span class="flag private">private</span>` : '';
-    return `<div class="row">
-      <div class="row-main">
-        <div class="row-top">
-          <span class="type-pill ${esc(t)}">${esc(t)}</span>
-          <span class="row-content">${esc(m.content)}</span>
-        </div>
-        <div class="row-meta">
-          ${sim}${stale}${priv}
-          <span>conf ${conf}</span>
-          <span>by ${esc(m.source_agent || 'agent')}</span>
-          ${m.access_count ? `<span>${m.access_count}x read</span>` : ''}
-          ${m.created_at ? `<span>${relTime(m.created_at)}</span>` : ''}
-          ${tags.map(tag => `<span class="tag">#${esc(tag)}</span>`).join('')}
-        </div>
-      </div>
-      <div class="row-actions">
-        <button class="icon-btn" title="Edit" onclick="openEdit('${escAttr(m.id)}')">&#x270e;</button>
-        <button class="icon-btn del" title="Delete" onclick="delMemory('${escAttr(m.id)}')">&#x2715;</button>
-      </div>
+  let html = '';
+  const rescuedCount = otherPossibleResults.filter(x => String(x.reason || '').startsWith('matched_in_other_type_or_tag')).length;
+  if (searchResults !== null && activeType !== 'all' && rescuedCount > 0) {
+    html += `<div class="filter-rescue-banner">
+      <span><strong>${rescuedCount} strong match${rescuedCount > 1 ? 'es' : ''}</strong> found in other memory types (hidden by active <code>${esc(activeType)}</code> filter).</span>
+      <button class="btn" onclick="resetTypeFilter()">Show All Types</button>
     </div>`;
-  }).join('') + `</div>`;
+  } else if (searchFilterHint) {
+    html += `<div class="filter-rescue-banner">
+      <span>${esc(searchFilterHint)}</span>
+      <button class="btn" onclick="resetTypeFilter()">Show All Types</button>
+    </div>`;
+  }
+
+  if (!list.length) {
+    html += `<div class="empty">No memories match the current view.</div>`;
+  } else {
+    html += `<div class="list">` + list.map(m => {
+      const t = m.memory_type || 'fact';
+      const tags = parseTags(m);
+      const conf = (m.effective_confidence ?? m.confidence ?? 1.0).toFixed(2);
+      const sim = m.similarity !== undefined ? `<span class="flag sim">${Math.round(m.similarity * 100)}% match</span>` : '';
+      const reasonRaw = m.match_reason || '';
+      const reasonClass = reasonRaw.includes('synonym') ? 'synonym' : 'reason';
+      const reasonBadge = (m.similarity !== undefined && reasonRaw) ? `<span class="flag ${reasonClass}">${esc(reasonRaw)}</span>` : '';
+      const stale = m.is_stale ? `<span class="flag stale">stale</span>` : '';
+      const priv = m.local_only ? `<span class="flag private">private</span>` : '';
+      return `<div class="row">
+        <div class="row-main">
+          <div class="row-top">
+            <span class="type-pill ${esc(t)}">${esc(t)}</span>
+            <span class="row-content">${esc(m.content)}</span>
+          </div>
+          <div class="row-meta">
+            ${sim}${reasonBadge}${stale}${priv}
+            <span>conf ${conf}</span>
+            <span>by ${esc(m.source_agent || 'agent')}</span>
+            ${m.access_count ? `<span>${m.access_count}x read</span>` : ''}
+            ${m.created_at ? `<span>${relTime(m.created_at)}</span>` : ''}
+            ${tags.map(tag => `<span class="tag">#${esc(tag)}</span>`).join('')}
+          </div>
+        </div>
+        <div class="row-actions">
+          <button class="icon-btn" title="Edit" data-action="edit" data-id="${escAttr(m.id)}">&#x270e;</button>
+          <button class="icon-btn del" title="Delete" data-action="delete" data-id="${escAttr(m.id)}">&#x2715;</button>
+        </div>
+      </div>`;
+    }).join('') + `</div>`;
+  }
+
+  const shownIds = new Set(list.map(m => m.id));
+  const snippets = (searchResults !== null ? otherPossibleResults : []).filter(s => s.id && !shownIds.has(s.id));
+  if (snippets.length > 0) {
+    html += `<div class="other-snippets-wrap">
+      <div class="section-label">Other Possible Memories in '${esc(ns)}' (Peripheral Snippets &middot; ${snippets.length})</div>
+      <div class="other-snippets-grid">` +
+      snippets.map(s => {
+        const st = s.memory_type || 'fact';
+        const stags = parseTags(s);
+        const sSim = s.similarity && s.similarity > 0 ? `<span class="flag sim">${Math.round(s.similarity * 100)}%</span>` : '';
+        const isRescue = String(s.reason || '').startsWith('matched_in_other_type_or_tag');
+        const sReason = `<span class="flag ${isRescue ? 'rescue' : 'reason'}">${esc(s.reason || 'context')}</span>`;
+        const preview = s.snippet || s.content || '';
+        return `<div class="snippet-card">
+          <div class="snippet-top">
+            <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+              <span class="type-pill ${esc(st)}" style="cursor:pointer" title="Filter by ${esc(st)}" data-action="jump-type" data-id="${escAttr(st)}">${esc(st)}</span>
+              ${sSim}${sReason}
+            </div>
+            <div class="row-actions" style="opacity:0.85">
+              <button class="icon-btn" title="Edit Memory" data-action="edit" data-id="${escAttr(s.id)}">&#x270e;</button>
+            </div>
+          </div>
+          <div class="snippet-text">${esc(preview)}</div>
+          <div class="row-meta">
+            <span>id ${esc(String(s.id).slice(0, 8))}..</span>
+            ${stags.map(tag => `<span class="tag">#${esc(tag)}</span>`).join('')}
+          </div>
+        </div>`;
+      }).join('') +
+      `</div></div>`;
+  }
+  root.innerHTML = html;
+}
+
+function resetTypeFilter() {
+  const allBtn = document.querySelector('#panel-memories .chip');
+  if (allBtn) setType('all', allBtn);
+}
+
+function jumpToType(type) {
+  const chips = Array.from(document.querySelectorAll('#panel-memories .chip'));
+  const target = chips.find(c => c.textContent.trim().toLowerCase() === type.toLowerCase());
+  if (target) setType(type.toLowerCase(), target);
 }
 
 function setType(type, btn) {
   activeType = type;
   document.querySelectorAll('#panel-memories .chip').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
-  renderMemories();
+  if (btn) btn.classList.add('active');
+  const q = document.getElementById('search-input').value.trim();
+  if (q.length >= 2) {
+    onSearch(q);
+  } else {
+    renderMemories();
+  }
 }
 
 function setSort(val) {
@@ -1012,28 +1271,56 @@ function onSearch(val) {
   const q = val.trim();
   if (!q) {
     searchResults = null;
+    otherPossibleResults = [];
+    searchFilterHint = null;
     renderMemories();
     return;
   }
   const ql = q.toLowerCase();
-  searchResults = memories.filter(m =>
+  const matchedAll = memories.filter(m =>
     (m.content || '').toLowerCase().includes(ql) ||
     parseTags(m).some(t => t.toLowerCase().includes(ql))
   );
+  searchResults = activeType === 'all'
+    ? matchedAll
+    : matchedAll.filter(m => (m.memory_type || 'fact') === activeType);
+  const primaryIds = new Set(searchResults.map(m => m.id));
+  otherPossibleResults = [
+    ...matchedAll.filter(m => !primaryIds.has(m.id)).map(m => ({
+      ...m,
+      snippet: (m.content || '').slice(0, 120),
+      reason: `matched_in_other_type_or_tag (type=${m.memory_type || 'fact'})`
+    })),
+    ...memories.filter(m => !primaryIds.has(m.id) && !matchedAll.includes(m)).slice(0, 4).map(m => ({
+      ...m,
+      snippet: (m.content || '').slice(0, 120),
+      reason: 'namespace_context'
+    }))
+  ].slice(0, 6);
   renderMemories();
+
   if (q.length >= 2) {
     debounceTimer = setTimeout(async () => {
-      const res = await apiFetch(`/api/search?q=${encodeURIComponent(q)}&n=25&namespace=${encodeURIComponent(ns)}`);
-      if (Array.isArray(res)) {
+      const typeParam = activeType !== 'all' ? `&memory_type=${encodeURIComponent(activeType)}` : '';
+      const res = await apiFetch(
+        `/api/search?q=${encodeURIComponent(q)}&n=25&include_other=true&namespace=${encodeURIComponent(ns)}${typeParam}`
+      );
+      if (res && Array.isArray(res.results)) {
+        searchResults = res.results;
+        otherPossibleResults = Array.isArray(res.other_possible_memories) ? res.other_possible_memories : [];
+        searchFilterHint = res.filter_hint || null;
+        renderMemories();
+      } else if (Array.isArray(res)) {
         searchResults = res;
         renderMemories();
       }
-    }, 220);
+    }, 180);
   }
 }
 
 function openModal() {
   editId = null;
+  editOrigTtl = null;
   document.getElementById('modal-title').textContent = 'New Memory';
   document.getElementById('f-content').value = '';
   document.getElementById('f-type').value = 'fact';
@@ -1046,12 +1333,17 @@ function openModal() {
 }
 
 function openEdit(id) {
-  const pool = searchResults !== null ? [...searchResults, ...memories] : memories;
+  const pool = [
+    ...(searchResults || []),
+    ...(otherPossibleResults || []),
+    ...memories
+  ];
   const m = pool.find(x => x.id === id);
   if (!m) return;
   editId = id;
+  editOrigTtl = m.ttl_days ?? null;
   document.getElementById('modal-title').textContent = 'Edit Memory';
-  document.getElementById('f-content').value = m.content || '';
+  document.getElementById('f-content').value = m.content || m.snippet || '';
   document.getElementById('f-type').value = m.memory_type || 'fact';
   document.getElementById('f-conf').value = m.confidence ?? 1.0;
   document.getElementById('f-tags').value = parseTags(m).join(', ');
@@ -1063,33 +1355,51 @@ function openEdit(id) {
 function closeModal() {
   document.getElementById('backdrop').classList.remove('open');
   editId = null;
+  editOrigTtl = null;
 }
 
 async function saveMemory() {
   const content = document.getElementById('f-content').value.trim();
   if (!content) return notify('Content is required');
   const tags = document.getElementById('f-tags').value.split(',').map(s => s.trim()).filter(Boolean);
-  const ttlRaw = document.getElementById('f-ttl').value;
+  const ttlRaw = document.getElementById('f-ttl').value.trim();
+  const parsedTtl = ttlRaw ? parseFloat(ttlRaw) : null;
+  const ttlChanged = parsedTtl !== editOrigTtl;
   const payload = {
     content,
     memory_type: document.getElementById('f-type').value,
     confidence: parseFloat(document.getElementById('f-conf').value) || 1.0,
     tags,
-    ttl_days: ttlRaw ? parseFloat(ttlRaw) : null,
     local_only: document.getElementById('f-private').checked,
     namespace: ns
   };
+  if (editId) {
+    if (ttlChanged) {
+      if (parsedTtl && parsedTtl > 0) {
+        payload.ttl_days = parsedTtl;
+      } else if (editOrigTtl !== null) {
+        payload.clear_ttl = true;
+      }
+    }
+  } else {
+    if (parsedTtl && parsedTtl > 0) {
+      payload.ttl_days = parsedTtl;
+    }
+  }
   const url = editId ? `/api/memories/${encodeURIComponent(editId)}` : '/api/memories';
   const method = editId ? 'PUT' : 'POST';
   const res = await fetch(url, {
     method,
-    headers: { 'Content-Type': 'application/json' },
+    credentials: 'same-origin',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(payload)
   });
   if (res.ok) {
     const wasEdit = Boolean(editId);
     closeModal();
     searchResults = null;
+    otherPossibleResults = [];
+    searchFilterHint = null;
     document.getElementById('search-input').value = '';
     notify(wasEdit ? 'Memory updated' : 'Memory saved');
     await refreshAll();
@@ -1100,10 +1410,15 @@ async function saveMemory() {
 
 async function delMemory(id) {
   if (!confirm('Delete this memory?')) return;
-  const res = await fetch(`/api/memories/${encodeURIComponent(id)}?namespace=${encodeURIComponent(ns)}`, { method: 'DELETE' });
+  const res = await fetch(`/api/memories/${encodeURIComponent(id)}?namespace=${encodeURIComponent(ns)}`, {
+    method: 'DELETE',
+    credentials: 'same-origin',
+    headers: authHeaders()
+  });
   if (res.ok) {
     memories = memories.filter(m => m.id !== id);
     if (searchResults) searchResults = searchResults.filter(m => m.id !== id);
+    if (otherPossibleResults) otherPossibleResults = otherPossibleResults.filter(m => m.id !== id);
     renderMemories();
     notify('Memory deleted');
     refreshAll();
@@ -1120,7 +1435,7 @@ async function loadConflicts() {
   el.innerHTML = `<div class="list">` + list.map(c => `<div class="row" style="flex-direction:column">
     <div style="display:flex;justify-content:space-between;width:100%;align-items:center">
       <span class="row-meta"><span class="flag stale">conflict</span> similarity ${(c.similarity || 0).toFixed(2)} &middot; ${relTime(c.detected_at)}</span>
-      <button class="btn" onclick="resolveConflict('${escAttr(c.id)}')">Mark Resolved</button>
+      <button class="btn" data-action="resolve-conflict" data-id="${escAttr(c.id)}">Mark Resolved</button>
     </div>
     <div class="conflict-grid" style="width:100%">
       <div class="conflict-box old"><div style="font-size:10px;color:var(--subtle);margin-bottom:3px">EXISTING</div>${esc(c.existing_content)}</div>
@@ -1130,7 +1445,11 @@ async function loadConflicts() {
 }
 
 async function resolveConflict(id) {
-  await fetch(`/api/contradictions/${encodeURIComponent(id)}/resolve?namespace=${encodeURIComponent(ns)}`, { method: 'POST' });
+  await fetch(`/api/contradictions/${encodeURIComponent(id)}/resolve?namespace=${encodeURIComponent(ns)}`, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: authHeaders()
+  });
   notify('Conflict resolved');
   loadConflicts();
   refreshAll();
@@ -1159,7 +1478,7 @@ async function loadPatterns() {
   uEl.innerHTML = (data.unused_memories || []).length
     ? `<div class="list">` + data.unused_memories.map(m => `<div class="row">
         <span class="row-content">${esc(m.content)}</span>
-        <button class="icon-btn del" title="Delete" onclick="delMemory('${escAttr(m.id)}')">&#x2715;</button>
+        <button class="icon-btn del" title="Delete" data-action="delete" data-id="${escAttr(m.id)}">&#x2715;</button>
       </div>`).join('') + `</div>`
     : `<div class="empty">No unused memories.</div>`;
 }
@@ -1201,7 +1520,7 @@ async function loadNamespaces() {
   el.innerHTML = `<div class="list">` + list.map(n => `<div class="row" style="align-items:center">
     <div class="row-main">
       <div class="row-top">
-        <span class="row-content" style="font-weight:600;cursor:pointer" onclick="switchNamespace('${escAttr(n.namespace)}')">${esc(n.namespace)}</span>
+        <span class="row-content" style="font-weight:600;cursor:pointer" data-action="switch-ns" data-id="${escAttr(n.namespace)}">${esc(n.namespace)}</span>
       </div>
       <div class="row-meta">
         <span>${n.memory_count} memories</span>
@@ -1210,8 +1529,8 @@ async function loadNamespaces() {
       </div>
     </div>
     <div style="display:flex;gap:6px">
-      <button class="btn" onclick="exportNs('${escAttr(n.namespace)}')">Export</button>
-      <button class="btn btn-danger" onclick="deleteNs('${escAttr(n.namespace)}')">Delete</button>
+      <button class="btn" data-action="export-ns" data-id="${escAttr(n.namespace)}">Export</button>
+      <button class="btn btn-danger" data-action="delete-ns" data-id="${escAttr(n.namespace)}">Delete</button>
     </div>
   </div>`).join('') + `</div>`;
 }
@@ -1229,10 +1548,16 @@ async function exportNs(targetNs) {
 
 async function deleteNs(targetNs) {
   if (!confirm(`Delete namespace '${targetNs}' and all its memories?`)) return;
-  await fetch(`/api/namespaces/${encodeURIComponent(targetNs)}`, { method: 'DELETE' });
+  await fetch(`/api/namespaces/${encodeURIComponent(targetNs)}`, {
+    method: 'DELETE',
+    credentials: 'same-origin',
+    headers: authHeaders()
+  });
   if (targetNs === ns) {
     ns = '';
     searchResults = null;
+    otherPossibleResults = [];
+    searchFilterHint = null;
   }
   notify(`Deleted ${targetNs}`);
   await loadNamespaces();
@@ -1271,11 +1596,16 @@ function showTab(name, btn) {
 }
 
 function esc(s) {
-  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  return String(s ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 function escAttr(s) {
-  return String(s ?? '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  return esc(s).replace(/\\/g, '\\\\');
 }
 
 function relTime(s) {
@@ -1316,12 +1646,39 @@ document.addEventListener('keydown', e => {
 
 
 @api.get("/", response_class=HTMLResponse)
-def dashboard() -> str:
-    return DASHBOARD_HTML
+def dashboard(request: Request) -> HTMLResponse:
+    """
+    Serve the Dashboard UI.
+    Never embeds `~/.mesh/auth_token` into unauthenticated HTML responses.
+    If the caller presents a valid `?token=` launch parameter, `?code=` launch nonce,
+    header, or cookie, sets an `HttpOnly; SameSite=Strict` session cookie for subsequent `/api/*` calls.
+    """
+    expected_token = get_or_create_auth_token()
+    provided_token = _extract_request_token(request)
+    code = (request.query_params.get("code") or "").strip()
+    if code and code in _LAUNCH_NONCES:
+        if (time.time() - _LAUNCH_NONCES[code]) < 60.0:
+            provided_token = expected_token
+        _LAUNCH_NONCES.pop(code, None)
+
+    has_auth_override = verify_dashboard_auth in api.dependency_overrides
+    is_authenticated = has_auth_override or (
+        bool(provided_token) and _tokens_match(provided_token, expected_token)
+    )
+
+    response = HTMLResponse(content=DASHBOARD_HTML, status_code=200)
+    if is_authenticated:
+        response.set_cookie(
+            key=_SESSION_COOKIE_NAME,
+            value=expected_token,
+            httponly=True,
+            samesite="strict",
+            path="/",
+        )
+    return response
 
 
 # --- CLI entry point ---
-
 
 @click.command()
 @click.option(
@@ -1332,23 +1689,40 @@ def dashboard() -> str:
 )
 @click.option("--port", default=7433, help="Port to run on (default: 7433)")
 @click.option("--no-browser", is_flag=True, help="Don't auto-open the browser")
-def run(namespace: str, port: int, no_browser: bool) -> None:
+@click.option("--yes", "-y", is_flag=True, help="Skip interactive y/n permission prompts")
+def run(namespace: str, port: int, no_browser: bool, yes: bool = False) -> None:
     """Start the Mesh dashboard at http://localhost:<port>"""
     global _mesh, _default_namespace
-    _default_namespace = namespace
-    _mesh = Mesh(namespace=namespace, agent_id="dashboard")
-    threading.Thread(target=warmup_model, args=(namespace,), daemon=True).start()
 
-    url = f"http://localhost:{port}"
+    clean_ns = validate_namespace(namespace)
+    _default_namespace = clean_ns
+    get_or_create_auth_token()
+    _mesh = Mesh(namespace=clean_ns, agent_id="dashboard")
+
+    from .memory import _has_local_onnx_pair
+
+    if _has_local_onnx_pair() is None:
+        if request_user_permission(
+            "download the ~90MB ONNX embedding model and start the background warmup worker for the Dashboard",
+            assume_yes=yes,
+        ):
+            threading.Thread(target=warmup_model, args=(clean_ns, False, True), daemon=True).start()
+    else:
+        threading.Thread(target=warmup_model, args=(clean_ns, False, False), daemon=True).start()
+
+    nonce = secrets.token_urlsafe(16)
+    _LAUNCH_NONCES[nonce] = time.time()
+    launch_url = f"http://localhost:{port}/?ns={clean_ns}&code={nonce}"
+
     print("\n  Mesh Dashboard")
-    print(f"  {url}")
-    print(f"  namespace: {namespace}")
+    print(f"  {launch_url}")
+    print(f"  namespace: {clean_ns}")
     print("  Press Ctrl+C to stop.\n")
 
     if not no_browser:
         def open_browser() -> None:
             time.sleep(1.0)
-            webbrowser.open(url)
+            webbrowser.open(launch_url)
 
         threading.Thread(target=open_browser, daemon=True).start()
 

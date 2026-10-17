@@ -12,6 +12,7 @@ from mesh.namespaces import (
     namespace_stats,
     rename_namespace,
 )
+from mesh.version import VERSION
 
 
 # --- Privacy Flag Tests ---
@@ -89,7 +90,7 @@ def test_export_creates_valid_json():
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
 
-        assert data["mesh_version"] == "0.3"
+        assert data["mesh_version"] == VERSION
         assert data["namespace"] == "test_export"
         assert data["memory_count"] == 2
         assert len(data["memories"]) == 2
