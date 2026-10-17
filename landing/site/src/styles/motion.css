@@ -1,0 +1,285 @@
+@keyframes blink {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+
+@keyframes lineIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes panelIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes toastIn {
+  from { opacity: 0; transform: translate(-50%, 8px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+
+@keyframes marquee {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+
+@keyframes travel {
+  0% { left: 0; opacity: 0; }
+  12% { opacity: 1; }
+  88% { opacity: 1; }
+  100% { left: calc(100% - 6px); opacity: 0; }
+}
+
+@keyframes hubPulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent); }
+  45% { box-shadow: 0 0 0 8px color-mix(in srgb, var(--accent) 18%, transparent); }
+}
+
+@keyframes softPulse {
+  0%, 100% { opacity: .35; transform: scale(1); }
+  50% { opacity: .9; transform: scale(1.5); }
+}
+
+@keyframes progressGrow {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
+}
+
+.reveal {
+  opacity: 0;
+  transform: translateY(14px);
+  transition:
+    opacity .62s var(--ease-out),
+    transform .62s var(--ease-out);
+  transition-delay: var(--reveal-delay, 0ms);
+}
+
+.reveal.is-in {
+  opacity: 1;
+  transform: none;
+}
+
+[data-motion="on"] .hero__copy > * {
+  animation: fadeUp .65s var(--ease-out) both;
+}
+
+[data-motion="on"] .hero__copy > *:nth-child(1) { animation-delay: .04s; }
+[data-motion="on"] .hero__copy > *:nth-child(2) { animation-delay: .1s; }
+[data-motion="on"] .hero__copy > *:nth-child(3) { animation-delay: .16s; }
+[data-motion="on"] .hero__copy > *:nth-child(4) { animation-delay: .22s; }
+[data-motion="on"] .hero__copy > *:nth-child(5) { animation-delay: .28s; }
+
+[data-motion="on"] .hero__visual {
+  animation: fadeUp .8s var(--ease-out) .3s both;
+}
+
+[data-motion="on"] .hero__flow {
+  animation: fadeUp .7s var(--ease-out) .5s both;
+}
+
+[data-motion="on"] .panel-enter {
+  animation: panelIn .3s var(--ease-out) both;
+}
+
+.how__packet {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 6px;
+  height: 6px;
+  margin-top: -3px;
+  background: var(--accent-text);
+  transform: rotate(45deg);
+  pointer-events: none;
+}
+
+[data-motion="on"] .how__packet.is-on {
+  animation: travel .72s var(--ease) both;
+}
+
+[data-motion="on"] .how__hub.is-indexing {
+  animation: hubPulse .9s var(--ease) 2;
+}
+
+[data-motion="on"] .presence-dot {
+  animation: softPulse 2.4s var(--ease) infinite;
+}
+
+/* The mark is a small mesh; a lime signal runs top -> nodes -> base. */
+.mark__signal-line {
+  stroke: var(--accent);
+  stroke-width: 4.5;
+  stroke-dasharray: .16 1;
+  stroke-dashoffset: .25;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.mark__halo {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.6;
+  opacity: 0;
+  transform-box: fill-box;
+  transform-origin: center;
+  pointer-events: none;
+}
+
+[data-motion="on"] .mark__signal-line {
+  animation: markSignal 3.4s linear infinite;
+}
+
+[data-motion="on"] .mark__signal-line--left,
+[data-motion="on"] .mark__signal-line--right {
+  animation-delay: .08s;
+}
+
+[data-motion="on"] .mark__signal-line--base {
+  animation-delay: .5s;
+}
+
+[data-motion="on"] .mark__halo {
+  animation: markHalo 3.4s var(--ease) infinite;
+}
+
+[data-motion="on"] .mark__halo--top {
+  animation-delay: 0s;
+}
+
+[data-motion="on"] .mark__halo--left,
+[data-motion="on"] .mark__halo--right {
+  animation-delay: .62s;
+}
+
+@keyframes markSignal {
+  0% {
+    stroke-dashoffset: .25;
+    opacity: 1;
+  }
+  42% {
+    stroke-dashoffset: -1.2;
+    opacity: 1;
+  }
+  44%, 100% {
+    stroke-dashoffset: .25;
+    opacity: 0;
+  }
+}
+
+@keyframes markHalo {
+  0%, 62%, 100% {
+    opacity: 0;
+    transform: scale(1);
+  }
+  67% {
+    opacity: .9;
+    transform: scale(1.35);
+  }
+  82% {
+    opacity: 0;
+    transform: scale(2.15);
+  }
+}
+
+[data-motion="on"] .stage-row__fill {
+  transition: width .5s var(--ease);
+}
+
+.stage-row__fill {
+  transition: width .5s var(--ease);
+}
+
+[data-motion="on"] .marquee__track {
+  animation: marquee 30s linear infinite;
+}
+
+[data-motion="on"] .terminal__live-dot {
+  animation: softPulse 2.2s var(--ease) infinite;
+}
+
+[data-motion="off"] .reveal,
+[data-motion="off"] .hero__copy > *,
+[data-motion="off"] .hero__visual,
+[data-motion="off"] .hero__flow {
+  opacity: 1;
+  transform: none;
+  transition: none;
+  animation: none;
+}
+
+[data-motion="off"] .terminal__line,
+[data-motion="off"] .terminal__cursor,
+[data-motion="off"] .terminal__live-dot,
+[data-motion="off"] .presence-dot,
+[data-motion="off"] .how__packet,
+[data-motion="off"] .how__hub,
+[data-motion="off"] .marquee__track {
+  animation: none;
+}
+
+[data-motion="off"] .terminal__cursor {
+  opacity: 1;
+}
+
+[data-motion="off"] .marquee__track {
+  transform: none;
+}
+
+[data-motion="off"] .magnetic {
+  transform: none !important;
+  transition: none;
+}
+
+[data-motion="off"] .tilt {
+  transform: none !important;
+  transition: none;
+}
+
+[data-motion="off"] .cursor-spotlight {
+  display: none;
+}
+
+[data-motion="off"] .footer__word-svg--ink,
+[data-motion="off"] .footer__word-lines {
+  opacity: 0 !important;
+}
+
+[data-motion="off"] .footer__word-letter {
+  transform: none !important;
+  transition: none;
+}
+
+[data-motion="off"] .footer__word-caret {
+  animation: none;
+}
+
+[data-motion="off"] .mark__signal-line,
+[data-motion="off"] .mark__halo {
+  animation: none;
+  opacity: 0;
+}
+
+[data-motion="off"] .mobile-menu,
+[data-motion="off"] .mobile-menu * {
+  animation: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .reveal {
+    opacity: 1;
+    transform: none;
+  }
+}
