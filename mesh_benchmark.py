@@ -71,9 +71,9 @@ def main() -> None:
         # ── Warmup ─────────────────────────────────────────────────────────────
         print("[ WARMUP ] Initializing embedding engine & vector cache...")
         # Wait briefly if a first-time background ONNX download is finishing
-        ensure_model_downloaded(blocking=False)
+        ensure_model_downloaded(blocking=False, interactive_prompt=False)
         t0 = time.perf_counter()
-        warmup_model(namespace=NS, blocking=False)
+        warmup_model(namespace=NS, blocking=False, assume_yes=False)
         warmup_ms = (time.perf_counter() - t0) * 1000.0
         st = get_engine_status()
         print(

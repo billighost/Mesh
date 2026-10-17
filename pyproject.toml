@@ -4,12 +4,12 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mesh-context-layer"
-version = "0.6.0"
+version = "0.6.1"
 description = "High-speed shared semantic & hybrid memory layer for AI agents — MCP server, CLI, and Python library"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-keywords = ["ai", "agents", "memory", "mcp", "llm", "claude", "cursor", "hybrid-search", "fastembed", "onnx"]
+keywords = ["ai", "agents", "memory", "mcp", "llm", "claude", "cursor", "hybrid-search", "onnx"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -24,8 +24,6 @@ dependencies = [
     "numpy>=1.24.0",
     "onnxruntime>=1.17.0",
     "tokenizers>=0.15.0",
-    "fastembed>=0.3.0",
-    "sentence-transformers>=3.0.0",
     "mcp>=1.0.0",
     "click>=8.0.0",
     "fastapi>=0.110.0",
@@ -35,6 +33,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+pytorch = [
+    "sentence-transformers>=3.0.0",
+]
+fastembed = [
+    "fastembed>=0.3.0",
+]
 legacy = [
     "chromadb>=0.5.0",
 ]
@@ -64,10 +68,16 @@ mesh-daemon = "mesh.daemon:daemon_cmd"
 mesh-context = "mesh.cli:context_cmd"
 mesh-add = "mesh.cli:add_cmd"
 mesh-ask = "mesh.cli:ask_cmd"
+mesh-inspect = "mesh.cli:inspect_cmd"
 mesh-update = "mesh.cli:update_cmd"
 mesh-forget = "mesh.cli:forget_cmd"
 mesh-why = "mesh.cli:why_cmd"
 mesh-status = "mesh.cli:status_cmd"
+mesh-conflicts = "mesh.cli:conflicts_cmd"
+mesh-patterns = "mesh.cli:patterns_cmd"
+mesh-doctor = "mesh.cli:doctor_cmd"
+mesh-shell = "mesh.cli:shell_cmd"
+mesh-completion = "mesh.cli:completion_cmd"
 mesh-capture = "mesh.passive:capture_cmd"
 mesh-digest = "mesh.digest:digest_cmd"
 

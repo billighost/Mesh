@@ -1,20 +1,29 @@
 """
 mesh/io.py — High-speed export and import for Mesh memory stores.
-"""
 
+Security & Integrity:
+  - Validates target namespaces against path traversal (`validate_namespace`)
+  - Validates memory IDs via `validate_memory_id()` during imports to prevent stored XSS
+  - Verifies export file schema version compatibility via `is_version_compatible()`
+  - Enforces 384-dimensional vector validation during imports
+  - Fast batch upsert transaction handling
+"""
 from __future__ import annotations
 
 import json
+import math
+import os
+import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from .memory import VALID_MEMORY_TYPES, _embed_batch, _parse_tags
+from .audit import secure_file_permissions, validate_namespace
+from .memory import MAX_CONTENT_LENGTH, VALID_MEMORY_TYPES, _embed_batch, _parse_tags
 from .passive import _normalize_memory_type
-from .store import MeshStore
-
-MESH_VERSION = "0.3"
+from .store import EMBEDDING_DIM, MeshStore, _parse_iso_utc, validate_memory_id
+from .version import VERSION, is_version_compatible
 
 
 def export_namespace(
@@ -24,22 +33,19 @@ def export_namespace(
 ) -> dict[str, Any]:
     """
     Export all non-private memories from a namespace to a JSON file.
-
     Args:
         namespace: The namespace to export. Defaults to "shared".
         output_path: Path to write the JSON file. If None, returns the dict only.
         include_embeddings: Whether to include embedding vectors.
-                            Set False for human-readable exports (much smaller file).
-
     Returns:
         Export dict (also written to file if output_path is provided).
     """
-    store = MeshStore(namespace=namespace)
+    clean_ns = validate_namespace(namespace)
+    store = MeshStore(namespace=clean_ns)
     total_count = store.count()
     raw_exportable = store.get_exportable_memories(include_embeddings=include_embeddings)
 
     exportable: list[dict[str, Any]] = []
-    missing_emb_indices: dict[str, int] = {}
 
     for mem in raw_exportable:
         if mem.get("local_only"):
@@ -57,36 +63,17 @@ def export_namespace(
             "ttl_days": mem.get("ttl_days"),
             "decay_start_at": mem.get("decay_start_at"),
             "access_count": int(mem.get("access_count", 0)),
+            "embedding_model": mem.get("embedding_model", "onnx-minilm-l6-v2"),
         }
         if include_embeddings:
-            emb = mem.get("embedding")
-            entry["embedding"] = emb
-            if emb is None:
-                missing_emb_indices[mid] = len(exportable)
+            entry["embedding"] = mem.get("embedding")
         exportable.append(entry)
 
-    # Batch-fetch any missing embeddings in a single query instead of N+1 lookups
-    if include_embeddings and missing_emb_indices:
-        try:
-            res = store.collection.get(
-                ids=list(missing_emb_indices.keys()),
-                include=["embeddings"],
-            )
-            got_ids = res.get("ids") or []
-            got_embs = res.get("embeddings") or []
-            for mid, emb in zip(got_ids, got_embs):
-                idx = missing_emb_indices.get(mid)
-                if idx is not None and emb is not None:
-                    exportable[idx]["embedding"] = emb
-        except Exception:
-            pass
-
     skipped_count = max(0, total_count - len(exportable))
-
     export_data: dict[str, Any] = {
-        "mesh_version": MESH_VERSION,
+        "mesh_version": VERSION,
         "exported_at": datetime.now(timezone.utc).isoformat(),
-        "namespace": namespace,
+        "namespace": clean_ns,
         "memory_count": len(exportable),
         "skipped_local_only": skipped_count,
         "memories": exportable,
@@ -95,8 +82,15 @@ def export_namespace(
     if output_path:
         path = Path(output_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(export_data, f, indent=2, ensure_ascii=False)
+        content_str = json.dumps(export_data, indent=2, ensure_ascii=False)
+        if os.name == "nt":
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(content_str)
+        else:
+            fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with open(fd, "w", encoding="utf-8") as f:
+                f.write(content_str)
+        secure_file_permissions(path)
         print(f"[OK] Exported {len(exportable)} memories to {path}")
         if skipped_count > 0:
             print(f"  (Skipped {skipped_count} local_only memories — these are never exported)")
@@ -111,17 +105,12 @@ def import_namespace(
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """
-    Import memories from a JSON export file into a namespace.
-
+    Import memories from a JSON export file into a validated namespace.
     Args:
         input_path: Path to the JSON export file.
         target_namespace: Override the namespace from the export file.
-                          If None, uses the namespace stored in the export.
-        merge_strategy: How to handle memories that already exist:
-                        "skip_existing" — skip if ID already exists (default, safe)
-                        "overwrite" — overwrite if ID already exists
-        dry_run: If True, print what would happen without writing anything.
-
+        merge_strategy: "skip_existing" or "overwrite".
+        dry_run: If True, preview import stats without writing anything.
     Returns:
         Dict with import stats: imported, skipped, errors, namespace.
     """
@@ -132,10 +121,17 @@ def import_namespace(
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
-    if not isinstance(data, dict) or "mesh_version" not in data or "memories" not in data:
+    if not isinstance(data, dict) or "memories" not in data:
         raise ValueError("Invalid Mesh export file format.")
 
-    namespace = target_namespace or data.get("namespace", "shared")
+    file_version = data.get("mesh_version")
+    if not is_version_compatible(file_version, VERSION):
+        raise ValueError(
+            f"Export file version '{file_version}' is incompatible with Mesh v{VERSION}."
+        )
+
+    raw_ns = target_namespace or data.get("namespace", "shared")
+    namespace = validate_namespace(raw_ns)
     memories = data.get("memories", [])
 
     stats: dict[str, Any] = {
@@ -157,17 +153,14 @@ def import_namespace(
         return stats
 
     store = MeshStore(namespace=namespace)
-
-    # Resolve all existing IDs in O(1) via the in-memory vector cache instead of N+1 SQLite queries
     existing_ids: set[str] = set()
     if merge_strategy == "skip_existing":
         try:
             cache = store._get_vector_cache()
-            existing_ids = set(getattr(cache, "all_ids", None) or cache.ids)
+            existing_ids = set(cache.all_ids)
         except Exception:
             existing_ids = set()
 
-    # First pass: determine which memories need importing and which need fresh embeddings
     to_import: list[tuple[str, dict[str, Any]]] = []
     texts_to_embed: list[str] = []
     embed_owner_indices: list[int] = []
@@ -175,33 +168,50 @@ def import_namespace(
     for mem in memories:
         try:
             content = str(mem.get("content") or "").strip()
-            if not content:
+            if not content or len(content) > MAX_CONTENT_LENGTH:
                 stats["errors"] += 1
                 continue
 
-            mem_id = str(mem.get("id") or uuid.uuid4())
+            raw_id = str(mem.get("id") or uuid.uuid4())
+            try:
+                mem_id = validate_memory_id(raw_id)
+            except ValueError:
+                mem_id = validate_memory_id(str(uuid.uuid4()))
+
             if merge_strategy == "skip_existing":
                 if mem_id in existing_ids or (not existing_ids and store.get(mem_id) is not None):
                     stats["skipped"] += 1
                     continue
                 existing_ids.add(mem_id)
+            elif merge_strategy == "overwrite":
+                existing_row = store.get(mem_id)
+                if existing_row and existing_row.get("local_only") and not mem.get("local_only"):
+                    stats["skipped"] += 1
+                    continue
 
             idx = len(to_import)
             to_import.append((mem_id, mem))
-            if not mem.get("embedding"):
+
+            raw_emb = mem.get("embedding")
+            valid_emb = False
+            if raw_emb and isinstance(raw_emb, list) and len(raw_emb) == EMBEDDING_DIM:
+                if all(isinstance(x, (int, float)) and math.isfinite(x) for x in raw_emb):
+                    valid_emb = True
+
+            if not valid_emb:
                 embed_owner_indices.append(idx)
                 texts_to_embed.append(content)
         except Exception as e:
             stats["errors"] += 1
-            print(f"  Error preparing memory '{str(mem.get('content', ''))[:50]}': {e}")
+            print(f"  Error preparing memory: {e}")
 
-    # Batch-compute any missing embeddings in one forward pass (with LRU cache lookup)
     computed_embeddings: dict[int, list[float]] = {}
     if texts_to_embed:
         try:
             vecs = _embed_batch(texts_to_embed)
             for item_idx, vec in zip(embed_owner_indices, vecs):
-                computed_embeddings[item_idx] = vec
+                if len(vec) == EMBEDDING_DIM and all(math.isfinite(x) for x in vec):
+                    computed_embeddings[item_idx] = vec
         except Exception as e:
             print(f"  Error batch-embedding imported memories: {e}")
 
@@ -211,9 +221,16 @@ def import_namespace(
     for idx, (mem_id, mem) in enumerate(to_import):
         try:
             content = str(mem["content"]).strip()
-            embedding = mem.get("embedding") or computed_embeddings.get(idx)
-            if not embedding:
-                raise ValueError("Missing embedding vector")
+            raw_emb = mem.get("embedding")
+            embedding = None
+            if raw_emb and isinstance(raw_emb, list) and len(raw_emb) == EMBEDDING_DIM:
+                if all(isinstance(x, (int, float)) and math.isfinite(x) for x in raw_emb):
+                    embedding = [float(x) for x in raw_emb]
+            if embedding is None:
+                embedding = computed_embeddings.get(idx)
+
+            if not embedding or len(embedding) != EMBEDDING_DIM or not all(math.isfinite(x) for x in embedding):
+                raise ValueError("Missing or invalid 384-dim embedding vector")
 
             raw_type = str(mem.get("memory_type", "general")).strip().lower()
             mem_type = (
@@ -222,22 +239,51 @@ def import_namespace(
                 else _normalize_memory_type(raw_type)
             )
             tags = _parse_tags(mem.get("tags", []))
-            created_at = mem.get("created_at") or now_iso
+
+            raw_conf = mem.get("confidence", 1.0)
+            try:
+                conf_val = float(raw_conf)
+                if not math.isfinite(conf_val):
+                    conf_val = 1.0
+            except (ValueError, TypeError):
+                conf_val = 1.0
+            confidence = max(0.0, min(1.0, conf_val))
+
+            raw_agent = str(mem.get("source_agent", "mesh-import") or "mesh-import")
+            clean_agent = re.sub(r"[\x00-\x1f\x7f]+", "", raw_agent).strip()[:64] or "mesh-import"
+
+            raw_created = mem.get("created_at")
+            parsed_created = _parse_iso_utc(raw_created) if raw_created else None
+            created_at = parsed_created.isoformat() if parsed_created else now_iso
+
             ttl_days = mem.get("ttl_days")
-            decay_start_at = mem.get("decay_start_at") or (
-                created_at if ttl_days is not None else None
+            if ttl_days is not None:
+                try:
+                    ttl_days = float(ttl_days)
+                    if not math.isfinite(ttl_days) or ttl_days <= 0:
+                        ttl_days = None
+                except (ValueError, TypeError):
+                    ttl_days = None
+
+            raw_decay = mem.get("decay_start_at")
+            parsed_decay = _parse_iso_utc(raw_decay) if raw_decay else None
+            decay_start_at = (
+                parsed_decay.isoformat()
+                if parsed_decay
+                else (created_at if ttl_days is not None else None)
             )
 
             metadata = {
                 "memory_type": mem_type,
-                "confidence": float(mem.get("confidence", 1.0)),
-                "source_agent": mem.get("source_agent", "mesh-import"),
+                "confidence": confidence,
+                "source_agent": clean_agent,
                 "tags": tags,
                 "created_at": created_at,
                 "accessed_at": now_iso,
                 "access_count": int(mem.get("access_count", 0)),
                 "ttl_days": ttl_days,
                 "decay_start_at": decay_start_at,
+                "embedding_model": mem.get("embedding_model", "onnx-minilm-l6-v2"),
             }
             batch_items.append(
                 (mem_id, content, embedding, metadata, bool(mem.get("local_only", False)))
@@ -246,27 +292,11 @@ def import_namespace(
             stats["errors"] += 1
             print(f"  Error importing memory '{str(mem.get('content', ''))[:50]}': {e}")
 
-    # Write all valid memories in a single SQLite WAL transaction
     if batch_items:
-        if hasattr(store, "upsert_batch"):
-            try:
-                store.upsert_batch(batch_items)
-                stats["imported"] += len(batch_items)
-            except Exception:
-                for mem_id, content, embedding, metadata, local_only in batch_items:
-                    try:
-                        store.upsert(
-                            memory_id=mem_id,
-                            content=content,
-                            embedding=embedding,
-                            metadata=metadata,
-                            local_only=local_only,
-                        )
-                        stats["imported"] += 1
-                    except Exception as e:
-                        stats["errors"] += 1
-                        print(f"  Error importing memory '{content[:50]}': {e}")
-        else:
+        try:
+            store.upsert_batch(batch_items)
+            stats["imported"] += len(batch_items)
+        except Exception:
             for mem_id, content, embedding, metadata, local_only in batch_items:
                 try:
                     store.upsert(
@@ -279,7 +309,7 @@ def import_namespace(
                     stats["imported"] += 1
                 except Exception as e:
                     stats["errors"] += 1
-                    print(f"  Error importing memory '{content[:50]}': {e}")
+                    print(f"  Error importing memory: {e}")
 
     print(
         f"[OK] Import complete: {stats['imported']} imported, "

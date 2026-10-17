@@ -2,16 +2,23 @@
 mesh/mcp_server.py — Production MCP Server for Mesh.
 
 Tools exposed:
-  mesh_learn                 — store a memory (with deduplication & contradiction detection)
-  mesh_recall                — hybrid search (dense cosine + FTS5 BM25 + exact token match)
-  mesh_update                — update an existing memory in-place by ID
-  mesh_forget                — delete a memory by ID
-  mesh_inspect               — list memories in the namespace with optional filters
-  mesh_context               — generate a formatted system prompt context block
-  mesh_patterns              — surface top topics, memory gaps, unused & stale memories
-  mesh_contradictions        — list unresolved (or resolved) memory contradictions
-  mesh_resolve_contradiction — mark a conflict as resolved
-  mesh_sync                  — capture memories from session summary and incremental agent logs
+  mesh_learn                   store a memory (with deduplication & contradiction detection)
+  mesh_recall                  5-stage hybrid search + peripheral `other_possible_memories` snippets
+  mesh_update                  update an existing memory in-place by ID (supports `clear_ttl`)
+  mesh_forget                  delete a memory by ID
+  mesh_inspect                 list memories in the namespace with optional filters
+  mesh_context                 generate a formatted system prompt context block (excludes private by default)
+  mesh_patterns                surface top topics, memory gaps, unused & stale memories
+  mesh_contradictions          list unresolved (or resolved) memory contradictions
+  mesh_resolve_contradiction   mark a conflict as resolved
+  mesh_sync                    capture memories from session summary and incremental agent logs
+
+Security & Privacy Hardening:
+  - Background passive log ingestion is strictly opt-in (`MESH_ENABLE_AUTO_SYNC=1`) and asks
+    for `y/n` user permission when started interactively
+  - `mesh_recall` and `mesh_inspect` exclude `local_only=True` memories by default (`include_private=False`)
+    unless explicitly requested or `MESH_MCP_INCLUDE_PRIVATE=1` is set
+  - Daemon proxy detects stale keep-alive sockets before sending and uses fresh connections for mutating calls
 """
 from __future__ import annotations
 
@@ -21,6 +28,7 @@ import glob
 import http.client
 import json
 import os
+import select
 import sys
 import threading
 import time
@@ -31,12 +39,30 @@ from mcp import types
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 
-from .audit import log_forget, log_learn, log_recall, log_update
-from .context_builder import _format
-from .memory import VALID_MEMORY_TYPES, Mesh, ensure_model_downloaded, warmup_model
+from .audit import validate_namespace
+from .context_builder import build_context_bundle
+from .daemon import get_auth_headers, request_user_permission
+from .memory import VALID_MEMORY_TYPES, Mesh, warmup_model
 
-NAMESPACE = os.environ.get("MESH_NAMESPACE", "shared")
-AGENT_ID = os.environ.get("MESH_AGENT_ID", "mcp-agent")
+def _get_default_namespace() -> str:
+    return (os.environ.get("MESH_NAMESPACE") or "shared").strip() or "shared"
+
+
+def _get_default_agent_id() -> str:
+    return (os.environ.get("MESH_AGENT_ID") or "mcp-agent").strip() or "mcp-agent"
+
+
+def _get_default_include_private() -> bool:
+    return os.environ.get("MESH_MCP_INCLUDE_PRIVATE", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+NAMESPACE = _get_default_namespace()
+AGENT_ID = _get_default_agent_id()
+_DEFAULT_INCLUDE_PRIVATE = _get_default_include_private()
 
 app = Server("mesh")
 
@@ -58,6 +84,7 @@ _STDIO_SERVER_ACTIVE = False
 # Daemon proxy state & persistent HTTP keep-alive connection
 _DAEMON_LOCK = threading.Lock()
 _DAEMON_CHECK_TS = 0.0
+_DAEMON_LAST_USE_TS = 0.0
 _DAEMON_AVAILABLE = False
 _DAEMON_CONN: Optional[http.client.HTTPConnection] = None
 
@@ -66,6 +93,29 @@ _LOG_WATERMARKS: dict[str, tuple[int, int]] = {}
 _ALLOWED_LOG_EXTENSIONS = {".log", ".txt", ".jsonl", ".md"}
 
 _SORTED_MEMORY_TYPES = sorted(VALID_MEMORY_TYPES)
+
+_MUTATING_TOOLS = {
+    "mesh_learn",
+    "mesh_update",
+    "mesh_forget",
+    "mesh_resolve_contradiction",
+    "mesh_sync",
+}
+
+
+def evict_mcp_mesh_cache(namespace: Optional[str] = None) -> None:
+    """Evict cached `Mesh` instances for `namespace` (or all namespaces if None)."""
+    global _mesh
+    with _MESH_LOCK:
+        if namespace is None:
+            _MESH_INSTANCES.clear()
+            _mesh = None
+            return
+        stale_keys = [k for k in _MESH_INSTANCES if k[0] == namespace]
+        for k in stale_keys:
+            _MESH_INSTANCES.pop(k, None)
+        if _mesh is not None and _mesh.namespace == namespace:
+            _mesh = None
 
 
 @contextlib.contextmanager
@@ -116,15 +166,44 @@ def _is_foreground_busy(cooldown_seconds: float = 10.0) -> bool:
     return False
 
 
+def _is_http_conn_stale(conn: Optional[http.client.HTTPConnection], idle_seconds: float) -> bool:
+    """
+    Detect whether a pooled keep-alive `HTTPConnection` has been closed by Uvicorn
+    (which drops idle connections after ~5s) before attempting to write a request to it.
+    """
+    if conn is None or getattr(conn, "sock", None) is None:
+        return True
+    if idle_seconds >= 3.5:
+        return True
+    try:
+        readable, _, exceptional = select.select([conn.sock], [], [conn.sock], 0.0)
+        if readable or exceptional:
+            return True
+    except Exception:
+        return True
+    return False
+
+
+def _close_daemon_conn_locked() -> None:
+    global _DAEMON_CONN
+    if _DAEMON_CONN is not None:
+        try:
+            _DAEMON_CONN.close()
+        except Exception:
+            pass
+        _DAEMON_CONN = None
+
+
 def _try_proxy_via_daemon(name: str, arguments: dict[str, Any]) -> Optional[dict[str, Any]]:
     """
     If running as a stdio MCP process and a local Mesh HTTP daemon is active on
-    127.0.0.1:7701 (or MESH_HTTP_PORT), proxy the tool execution over a persistent
-    keep-alive connection so multiple IDE windows share one warm cache and model.
-    If the daemon is not running yet, triggers an immediate non-blocking background
-    daemon start so subsequent tool calls hit the warm daemon.
+    127.0.0.1:7701 (or MESH_HTTP_PORT), proxy the tool execution over an authenticated
+    connection.
+    - Always uses a fresh connection for mutating tools (`_MUTATING_TOOLS`) or after >3.5s idle
+      so Uvicorn's keep-alive timeout never drops the first write after idle.
+    - Surfaces 4xx/5xx daemon errors directly instead of re-executing locally.
     """
-    global _DAEMON_CHECK_TS, _DAEMON_AVAILABLE, _DAEMON_CONN
+    global _DAEMON_CHECK_TS, _DAEMON_LAST_USE_TS, _DAEMON_AVAILABLE, _DAEMON_CONN
     if not _STDIO_SERVER_ACTIVE:
         return None
     if os.environ.get("MESH_NO_DAEMON_PROXY", "").strip().lower() in ("1", "true", "yes"):
@@ -137,79 +216,109 @@ def _try_proxy_via_daemon(name: str, arguments: dict[str, Any]) -> Optional[dict
 
     host = os.environ.get("MESH_HTTP_HOST", "127.0.0.1")
     port = int(os.environ.get("MESH_HTTP_PORT", 7701))
+    is_mutating = name in _MUTATING_TOOLS
+
     payload_bytes = json.dumps(
         {
             "name": name,
             "arguments": arguments,
-            "default_namespace": NAMESPACE,
-            "agent_id": AGENT_ID,
+            "default_namespace": _get_default_namespace(),
+            "agent_id": _get_default_agent_id(),
         }
     ).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "Connection": "close" if is_mutating else "keep-alive",
+        **get_auth_headers(),
+    }
 
     with _DAEMON_LOCK:
         for attempt in range(2):
+            request_sent = False
+            reused_conn = False
             try:
-                if _DAEMON_CONN is None:
-                    _DAEMON_CONN = http.client.HTTPConnection(host, port, timeout=15.0)
+                idle_secs = (time.monotonic() - _DAEMON_LAST_USE_TS) if _DAEMON_LAST_USE_TS > 0 else 999.0
+                if is_mutating or _is_http_conn_stale(_DAEMON_CONN, idle_secs):
+                    _close_daemon_conn_locked()
+                    conn = http.client.HTTPConnection(host, port, timeout=10.0)
+                    conn.connect()
+                    _DAEMON_CONN = conn
+                else:
+                    reused_conn = True
+
+                assert _DAEMON_CONN is not None
                 _DAEMON_CONN.request(
                     "POST",
                     "/mcp",
                     body=payload_bytes,
-                    headers={
-                        "Content-Type": "application/json",
-                        "Connection": "keep-alive",
-                    },
+                    headers=headers,
                 )
+                request_sent = True
                 resp = _DAEMON_CONN.getresponse()
                 raw_body = resp.read()
+                _DAEMON_LAST_USE_TS = time.monotonic()
+                _DAEMON_AVAILABLE = True
+
+                if is_mutating:
+                    _close_daemon_conn_locked()
+
                 if resp.status == 200:
-                    _DAEMON_AVAILABLE = True
                     data = json.loads(raw_body.decode("utf-8"))
                     if isinstance(data, dict) and "payload" in data:
                         return data["payload"]
-                break
-            except Exception:
-                if _DAEMON_CONN is not None:
+                else:
                     try:
-                        _DAEMON_CONN.close()
+                        err_json = json.loads(raw_body.decode("utf-8"))
+                        detail = err_json.get("detail") if isinstance(err_json, dict) else str(err_json)
                     except Exception:
-                        pass
-                    _DAEMON_CONN = None
-                if attempt == 0 and _DAEMON_AVAILABLE:
+                        detail = f"Daemon HTTP error {resp.status}"
+                    return {"error": str(detail), "status": "error"}
+                break
+            except (http.client.RemoteDisconnected, ConnectionResetError, BrokenPipeError) as exc:
+                _close_daemon_conn_locked()
+                # If a reused keep-alive connection was closed by the server before reading,
+                # retry once on a fresh socket.
+                if attempt == 0 and reused_conn:
+                    continue
+                if request_sent and is_mutating:
+                    return {
+                        "error": f"Daemon connection interrupted during '{name}': {exc}",
+                        "status": "unknown",
+                    }
+                _DAEMON_AVAILABLE = False
+                break
+            except Exception as exc:
+                _close_daemon_conn_locked()
+                if request_sent and is_mutating:
+                    return {
+                        "error": f"Daemon connection interrupted during '{name}': {exc}",
+                        "status": "unknown",
+                    }
+                if attempt == 0 and _DAEMON_AVAILABLE and not request_sent:
                     continue
                 _DAEMON_AVAILABLE = False
                 break
-
-    # Daemon was unreachable — auto-start it in the background without blocking this tool call
-    try:
-        from .daemon import ensure_daemon_running
-
-        ensure_daemon_running(host=host, port=port, wait=False)
-    except Exception:
-        pass
     return None
 
 
 def get_mesh(namespace: Optional[str] = None, agent_id: Optional[str] = None) -> Mesh:
     """Return a cached Mesh instance for the requested namespace and agent_id."""
     global _mesh
-    ns = (namespace or NAMESPACE).strip() or "shared"
-    aid = (agent_id or AGENT_ID).strip() or "mcp-agent"
-    if ns == NAMESPACE and aid == AGENT_ID and _mesh is not None:
-        return _mesh
+    raw_ns = (namespace or _get_default_namespace()).strip() or "shared"
+    ns = validate_namespace(raw_ns)
+    aid = (agent_id or _get_default_agent_id()).strip() or "mcp-agent"
+
     key = (ns, aid)
     instance = _MESH_INSTANCES.get(key)
     if instance is not None:
         return instance
+
     with _MESH_LOCK:
-        if ns == NAMESPACE and aid == AGENT_ID and _mesh is not None:
-            return _mesh
         instance = _MESH_INSTANCES.get(key)
         if instance is None:
             instance = Mesh(namespace=ns, agent_id=aid)
             _MESH_INSTANCES[key] = instance
-            if ns == NAMESPACE and aid == AGENT_ID:
-                _mesh = instance
+        _mesh = instance
         return instance
 
 
@@ -218,20 +327,27 @@ def detect_agent_logs() -> list[str]:
     paths: list[str] = []
     home = str(Path.home())
 
-    # Antigravity logs
     antigravity_base = os.path.join(home, ".gemini", "antigravity", "brain")
     if os.path.exists(antigravity_base):
         paths.extend(
             glob.glob(os.path.join(antigravity_base, "*", ".system_generated", "logs"))
         )
 
-    # Claude Desktop logs (macOS / Windows)
     if os.name == "nt":
         claude_logs = os.path.join(os.environ.get("APPDATA", ""), "Claude", "logs")
-    else:
+        cursor_logs = os.path.join(os.environ.get("APPDATA", ""), "Cursor", "logs")
+    elif sys.platform == "darwin":
         claude_logs = os.path.join(home, "Library", "Application Support", "Claude", "logs")
+        cursor_logs = os.path.join(home, "Library", "Application Support", "Cursor", "logs")
+    else:
+        config_home = os.environ.get("XDG_CONFIG_HOME") or os.path.join(home, ".config")
+        claude_logs = os.path.join(config_home, "Claude", "logs")
+        cursor_logs = os.path.join(config_home, "Cursor", "logs")
+
     if os.path.exists(claude_logs):
         paths.append(claude_logs)
+    if os.path.exists(cursor_logs):
+        paths.append(cursor_logs)
 
     return [p for p in paths if os.path.isdir(p)]
 
@@ -239,8 +355,7 @@ def detect_agent_logs() -> list[str]:
 def _seed_log_watermarks(paths: list[str]) -> None:
     """
     Record current (mtime_ns, st_size) watermarks for existing log files on startup
-    so the background worker only ingests newly appended log lines rather than
-    re-embedding historical logs on every MCP process launch.
+    so the background worker only ingests newly appended log lines.
     """
     for raw_path in paths:
         p = Path(raw_path).expanduser()
@@ -271,8 +386,8 @@ def _collect_incremental_logs(
     max_bytes_per_file: int = 16384,
 ) -> str:
     """
-    Read newly appended content from log files inside `paths`.
-    Uses `_LOG_WATERMARKS` so already-processed log segments are not re-ingested.
+    Read newly appended content from log files inside `paths`, discarding any partial
+    leading line when seeking into a large file.
     """
     candidate_files: list[tuple[int, int, Path]] = []
     for raw_path in paths:
@@ -305,7 +420,6 @@ def _collect_incremental_logs(
     if not candidate_files:
         return ""
 
-    # Process most recently modified files first
     candidate_files.sort(key=lambda item: item[0], reverse=True)
     chunks: list[str] = []
 
@@ -316,15 +430,18 @@ def _collect_incremental_logs(
             if mtime_ns == prev_mtime and size == prev_offset:
                 continue
             start_offset = prev_offset if size >= prev_offset else 0
+            truncated_mid_file = False
             if size - start_offset > max_bytes_per_file:
                 start_offset = max(0, size - max_bytes_per_file)
-
+                truncated_mid_file = start_offset > 0
             with open(file_path, "rb") as f:
                 f.seek(start_offset)
                 raw_bytes = f.read(max_bytes_per_file)
-
             _LOG_WATERMARKS[key] = (mtime_ns, size)
-            text = raw_bytes.decode("utf-8", errors="ignore").strip()
+            text = raw_bytes.decode("utf-8", errors="ignore")
+            if truncated_mid_file and "\n" in text:
+                text = text.split("\n", 1)[1]
+            text = text.strip()
             if text:
                 chunks.append(text)
         except OSError:
@@ -335,9 +452,9 @@ def _collect_incremental_logs(
 
 def background_sync_worker() -> None:
     """
-    Ensures the background daemon and ONNX model are ready, then periodically runs
-    passive capture on newly appended agent logs when idle.
-    Never contends with foreground MCP tool calls.
+    Warms up the local namespace cache and (ONLY if explicitly opted in via
+    `MESH_ENABLE_AUTO_SYNC=1`) periodically runs local passive capture on newly
+    appended agent logs when idle.
     """
     from .passive import extract_memories_from_log
 
@@ -348,21 +465,27 @@ def background_sync_worker() -> None:
     except Exception:
         pass
 
-    # Brief pause so MCP stdio handshake completes with zero CPU/lock contention
     time.sleep(0.15)
     with _safe_redirect_stdout_to_stderr():
-        try:
-            ensure_model_downloaded(blocking=False)
-            from .daemon import ensure_daemon_running
-
-            ensure_daemon_running(wait=False)
-        except Exception:
-            pass
         if not _is_foreground_busy(cooldown_seconds=2.0):
-            get_mesh(NAMESPACE, AGENT_ID)
-            warmup_model(NAMESPACE)
+            try:
+                def_ns = _get_default_namespace()
+                def_aid = _get_default_agent_id()
+                get_mesh(def_ns, def_aid)
+                warmup_model(def_ns, assume_yes=False)
+            except Exception:
+                pass
 
-    if os.environ.get("MESH_DISABLE_AUTO_SYNC", "").strip().lower() in ("1", "true", "yes"):
+    auto_sync_enabled = os.environ.get("MESH_ENABLE_AUTO_SYNC", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    if not auto_sync_enabled or os.environ.get("MESH_DISABLE_AUTO_SYNC", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    ):
         return
 
     while True:
@@ -377,7 +500,7 @@ def background_sync_worker() -> None:
                     with _safe_redirect_stdout_to_stderr():
                         extract_memories_from_log(
                             log_text,
-                            namespace=NAMESPACE,
+                            namespace=_get_default_namespace(),
                             agent_id="auto-sync-worker",
                             force_local=True,
                         )
@@ -393,7 +516,9 @@ _MCP_TOOLS: list[types.Tool] = [
             "Automatically deduplicates identical facts and checks for contradictions "
             "with existing memories. If a conflicting memory is found, the new memory "
             "is still stored and a conflict warning is returned for review. "
-            "Use ttl_days for time-sensitive facts (e.g. staging IPs, sprint goals)."
+            "Use ttl_days for time-sensitive facts (e.g. staging IPs, sprint goals). "
+            "Set local_only=true for sensitive or private data so it is excluded from exports, "
+            "context blocks, and default agent recalls."
         ),
         inputSchema={
             "type": "object",
@@ -440,8 +565,8 @@ _MCP_TOOLS: list[types.Tool] = [
                     "type": "boolean",
                     "default": False,
                     "description": (
-                        "Set true to mark private and exclude from exports/sync. "
-                        "Use for credentials, secrets, or local paths."
+                        "Set true to mark private and exclude from exports, system prompt context blocks, "
+                        "and default agent recalls unless include_private=true is explicitly passed."
                     ),
                 },
                 "namespace": {
@@ -455,23 +580,25 @@ _MCP_TOOLS: list[types.Tool] = [
     types.Tool(
         name="mesh_recall",
         description=(
-            "Search shared agent memory using 3-stage hybrid search "
-            "(semantic meaning + BM25 keywords + exact identifiers). "
-            "Call this at the start of tasks to check what other agents have already discovered."
+            "Search shared agent memory using 5-stage hybrid search "
+            "(semantic meaning + Robertson-Sparck Jones BM25+ + domain synonyms + exact identifiers). "
+            "Excludes `local_only=true` private memories by default unless `include_private=true` is passed. "
+            "Also returns `other_possible_memories` snippets so you can see other related or "
+            "filter-excluded memories in the namespace. Call this at the start of tasks."
         ),
         inputSchema={
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "What you want to find (natural language or exact keywords).",
+                    "description": "What you want to find (natural language, synonyms, or exact keywords).",
                 },
                 "n": {
                     "type": "integer",
                     "default": 5,
                     "minimum": 1,
                     "maximum": 50,
-                    "description": "Maximum number of results to return.",
+                    "description": "Maximum number of primary results to return.",
                 },
                 "min_similarity": {
                     "type": "number",
@@ -492,10 +619,15 @@ _MCP_TOOLS: list[types.Tool] = [
                     "default": True,
                     "description": "Set false to exclude decayed/stale memories.",
                 },
+                "include_private": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Set true only if you explicitly need local_only private memories returned.",
+                },
                 "memory_type": {
                     "type": "string",
                     "enum": _SORTED_MEMORY_TYPES,
-                    "description": "Optional filter to restrict results to a single memory_type.",
+                    "description": "Optional filter to restrict primary results to a single memory_type.",
                 },
                 "tags": {
                     "type": "array",
@@ -505,6 +637,18 @@ _MCP_TOOLS: list[types.Tool] = [
                 "source_agent": {
                     "type": "string",
                     "description": "Optional filter by the agent ID that stored the memory.",
+                },
+                "include_other_possible": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Include peripheral snippets of other related or filter-excluded memories.",
+                },
+                "max_other_possible": {
+                    "type": "integer",
+                    "default": 5,
+                    "minimum": 0,
+                    "maximum": 20,
+                    "description": "Max peripheral memory snippets to include in `other_possible_memories`.",
                 },
                 "namespace": {
                     "type": "string",
@@ -518,14 +662,14 @@ _MCP_TOOLS: list[types.Tool] = [
         name="mesh_update",
         description=(
             "Update an existing memory in-place by its ID without losing its UUID, "
-            "creation timestamp, or access count. Only provide the fields you want to change."
+            "creation timestamp, original author, or access count. Only provide the fields you want to change."
         ),
         inputSchema={
             "type": "object",
             "properties": {
                 "memory_id": {
                     "type": "string",
-                    "description": "UUID of the memory to update.",
+                    "description": "UUID or 4+ character short ID prefix of the memory to update.",
                 },
                 "content": {
                     "type": "string",
@@ -549,7 +693,12 @@ _MCP_TOOLS: list[types.Tool] = [
                 },
                 "ttl_days": {
                     "type": "number",
-                    "description": "Updated TTL in days (resets decay timer).",
+                    "description": "Updated TTL in days (resets decay timer). Pass 0 or set clear_ttl=true to clear TTL.",
+                },
+                "clear_ttl": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Set true to remove an existing TTL and make the memory permanent.",
                 },
                 "local_only": {
                     "type": "boolean",
@@ -565,13 +714,13 @@ _MCP_TOOLS: list[types.Tool] = [
     ),
     types.Tool(
         name="mesh_forget",
-        description="Delete a specific memory permanently by its ID.",
+        description="Delete a specific memory permanently by its ID (scrubbing audit & conflict logs).",
         inputSchema={
             "type": "object",
             "properties": {
                 "memory_id": {
                     "type": "string",
-                    "description": "The UUID of the memory to delete.",
+                    "description": "The UUID or 4+ character short ID prefix of the memory to delete.",
                 },
                 "namespace": {
                     "type": "string",
@@ -583,7 +732,10 @@ _MCP_TOOLS: list[types.Tool] = [
     ),
     types.Tool(
         name="mesh_inspect",
-        description="List memories in the namespace sorted by most recently accessed.",
+        description=(
+            "List memories in the namespace sorted by most recently accessed. "
+            "Excludes `local_only=true` private memories by default unless `include_private=true` is passed."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
@@ -602,6 +754,11 @@ _MCP_TOOLS: list[types.Tool] = [
                     "type": "string",
                     "description": "Optional filter by a single tag.",
                 },
+                "include_private": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Set true only if you explicitly need local_only private memories returned.",
+                },
                 "namespace": {
                     "type": "string",
                     "description": "Optional namespace override.",
@@ -613,7 +770,7 @@ _MCP_TOOLS: list[types.Tool] = [
         name="mesh_context",
         description=(
             "Generate a formatted context block of top project memories ready to prime "
-            "an agent session. Optionally focus it on a topic query."
+            "an agent session. Excludes `local_only` private memories by default."
         ),
         inputSchema={
             "type": "object",
@@ -654,6 +811,11 @@ _MCP_TOOLS: list[types.Tool] = [
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "Optional filter by tags.",
+                },
+                "include_private": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Set true only if you explicitly want local_only memories included.",
                 },
                 "namespace": {
                     "type": "string",
@@ -705,7 +867,7 @@ _MCP_TOOLS: list[types.Tool] = [
             "properties": {
                 "contradiction_id": {
                     "type": "string",
-                    "description": "UUID of the contradiction record to mark resolved.",
+                    "description": "UUID or 4+ character short ID prefix of the contradiction record.",
                 },
                 "namespace": {
                     "type": "string",
@@ -718,7 +880,7 @@ _MCP_TOOLS: list[types.Tool] = [
     types.Tool(
         name="mesh_sync",
         description=(
-            "Store a session turn summary and automatically capture concrete facts "
+            "Store a session turn summary and capture concrete facts "
             "from recent agent session logs into the namespace."
         ),
         inputSchema={
@@ -748,12 +910,14 @@ def _execute_tool_sync(
     arguments: dict[str, Any],
     default_namespace: Optional[str] = None,
     agent_id: Optional[str] = None,
+    allow_daemon_proxy: bool = True,
 ) -> dict[str, Any]:
     """Execute a tool synchronously with thread-safe stdout redirection for MCP stdio safety."""
     with _track_foreground_tool_call():
-        proxied = _try_proxy_via_daemon(name, arguments)
-        if proxied is not None:
-            return proxied
+        if allow_daemon_proxy:
+            proxied = _try_proxy_via_daemon(name, arguments)
+            if proxied is not None:
+                return proxied
 
         ns_override = arguments.get("namespace") or default_namespace
         mesh = get_mesh(namespace=ns_override, agent_id=agent_id)
@@ -781,17 +945,18 @@ def _execute_tool_sync(
                         "Review and delete or update the old one if this new memory supersedes it."
                     )
                     response["conflict"] = result["conflict"]
-                log_learn(
-                    content=arguments["content"],
-                    namespace=mesh.namespace,
-                    agent_id=mesh.agent_id,
-                    result=result,
-                )
                 return response
 
             elif name == "mesh_recall":
                 limit_n = int(arguments.get("n") or arguments.get("count") or 5)
-                memories = mesh.recall(
+                include_other = bool(arguments.get("include_other_possible", True))
+                max_other = int(arguments.get("max_other_possible", 5)) if include_other else 0
+                inc_priv = (
+                    bool(arguments["include_private"])
+                    if "include_private" in arguments and arguments["include_private"] is not None
+                    else _get_default_include_private()
+                )
+                return mesh.recall_with_context(
                     query=arguments["query"],
                     n=limit_n,
                     min_similarity=float(arguments.get("min_similarity", 0.0)),
@@ -800,21 +965,9 @@ def _execute_tool_sync(
                     memory_type=arguments.get("memory_type"),
                     tags=arguments.get("tags"),
                     source_agent=arguments.get("source_agent"),
+                    max_other_possible=max_other,
+                    include_private=inc_priv,
                 )
-                log_recall(
-                    query=arguments["query"],
-                    namespace=mesh.namespace,
-                    agent_id=mesh.agent_id,
-                    results=memories,
-                )
-                stale_count = sum(1 for m in memories if m.get("is_stale"))
-                return {
-                    "query": arguments["query"],
-                    "namespace": mesh.namespace,
-                    "count": len(memories),
-                    "stale_count": stale_count,
-                    "results": memories,
-                }
 
             elif name == "mesh_update":
                 updated = mesh.update(
@@ -824,29 +977,18 @@ def _execute_tool_sync(
                     confidence=arguments.get("confidence"),
                     tags=arguments.get("tags"),
                     ttl_days=arguments.get("ttl_days"),
+                    clear_ttl=bool(arguments.get("clear_ttl", False)),
                     local_only=arguments.get("local_only"),
-                )
-                log_update(
-                    memory_id=arguments["memory_id"],
-                    content=arguments.get("content"),
-                    namespace=mesh.namespace,
-                    agent_id=mesh.agent_id,
                 )
                 return {
                     "status": "updated",
-                    "memory_id": arguments["memory_id"],
+                    "memory_id": updated["memory_id"],
                     "namespace": mesh.namespace,
                     "memory": updated["memory"],
                 }
 
             elif name == "mesh_forget":
                 deleted = mesh.forget(arguments["memory_id"])
-                if deleted:
-                    log_forget(
-                        memory_id=arguments["memory_id"],
-                        namespace=mesh.namespace,
-                        agent_id=mesh.agent_id,
-                    )
                 return {
                     "status": "deleted" if deleted else "not_found",
                     "memory_id": arguments["memory_id"],
@@ -854,10 +996,16 @@ def _execute_tool_sync(
                 }
 
             elif name == "mesh_inspect":
+                inc_priv = (
+                    bool(arguments["include_private"])
+                    if "include_private" in arguments and arguments["include_private"] is not None
+                    else _get_default_include_private()
+                )
                 memories = mesh.inspect(
                     limit=int(arguments.get("limit", 10)),
                     memory_type=arguments.get("memory_type"),
                     tag=arguments.get("tag"),
+                    include_private=inc_priv,
                 )
                 return {
                     "namespace": mesh.namespace,
@@ -866,55 +1014,23 @@ def _execute_tool_sync(
                 }
 
             elif name == "mesh_context":
-                query = arguments.get("query")
-                raw_limit = (
-                    arguments.get("max_memories")
-                    or arguments.get("n")
-                    or arguments.get("count")
-                    or 10
+                bundle = build_context_bundle(
+                    query=arguments.get("query"),
+                    namespace=mesh.namespace,
+                    count=int(arguments.get("count") or 10),
+                    max_memories=arguments.get("max_memories"),
+                    n=arguments.get("n"),
+                    format=arguments.get("format", "markdown"),
+                    min_confidence=float(arguments.get("min_confidence", 0.3)),
+                    memory_type=arguments.get("memory_type"),
+                    tags=arguments.get("tags"),
+                    include_private=bool(arguments.get("include_private", False)),
+                    mesh_instance=mesh,
                 )
-                count = max(1, int(raw_limit))
-                fmt = arguments.get("format", "markdown")
-                min_conf = float(arguments.get("min_confidence", 0.3))
-                mtype = arguments.get("memory_type")
-                tags = arguments.get("tags")
-
-                if query:
-                    memories = mesh.recall(
-                        query=query,
-                        n=count,
-                        min_confidence=min_conf,
-                        memory_type=mtype,
-                        tags=tags,
-                    )
-                else:
-                    raw_mems = mesh.inspect(limit=max(count * 3, 30), memory_type=mtype)
-                    filtered = [
-                        m
-                        for m in raw_mems
-                        if float(m.get("effective_confidence", m.get("confidence", 1.0))) >= min_conf
-                    ]
-                    if tags:
-                        tag_set = {str(t).lower() for t in tags}
-                        filtered = [
-                            m
-                            for m in filtered
-                            if tag_set.issubset({str(t).lower() for t in m.get("tags_list", [])})
-                        ]
-                    filtered.sort(
-                        key=lambda x: (
-                            int(x.get("access_count", 0)),
-                            float(x.get("effective_confidence", x.get("confidence", 1.0))),
-                        ),
-                        reverse=True,
-                    )
-                    memories = filtered[:count]
-
-                ctx = _format(memories, fmt, mesh.namespace) if memories else ""
                 return {
-                    "namespace": mesh.namespace,
-                    "format": fmt,
-                    "context": ctx,
+                    "namespace": bundle["namespace"],
+                    "format": bundle["format"],
+                    "context": bundle["context"],
                 }
 
             elif name == "mesh_patterns":
@@ -943,30 +1059,45 @@ def _execute_tool_sync(
                 }
 
             elif name == "mesh_sync":
-                from .passive import extract_memories_from_log
+                from .passive import (
+                    extract_memories_from_log,
+                    _is_poison_attempt,
+                    _is_credential,
+                    _redact_secrets_for_cloud,
+                )
 
                 summary_text = (arguments.get("summary") or "").strip()
                 if summary_text:
-                    res = mesh.learn(
-                        content=summary_text,
+                    if _is_poison_attempt(summary_text):
+                        return {
+                            "status": "rejected",
+                            "error": "Memory rejected: input contains prompt injection or adversarial patterns.",
+                            "namespace": mesh.namespace,
+                        }
+                    is_cred = _is_credential(summary_text)
+                    cleaned_summary = _redact_secrets_for_cloud(summary_text) if is_cred else summary_text
+                    mesh.learn(
+                        content=cleaned_summary,
                         memory_type="result",
                         tags=["session-sync"],
-                    )
-                    log_learn(
-                        content=summary_text,
-                        namespace=mesh.namespace,
-                        agent_id=mesh.agent_id,
-                        result=res,
+                        local_only=is_cred,
                     )
 
                 log_dirs = detect_agent_logs()
                 log_text = _collect_incremental_logs(log_dirs) if log_dirs else ""
                 captured_count = 0
                 if log_text:
+                    allow_cloud = os.environ.get("MESH_ALLOW_CLOUD_SYNC", "").strip().lower() in (
+                        "1",
+                        "true",
+                        "yes",
+                    )
                     capture_res = extract_memories_from_log(
                         log_text,
                         namespace=mesh.namespace,
                         agent_id=mesh.agent_id,
+                        force_local=not allow_cloud,
+                        assume_yes=allow_cloud,
                     )
                     captured_count = int(capture_res.get("stored_count", 0))
 
@@ -1013,7 +1144,11 @@ async def _run() -> None:
 
 def run() -> None:
     """Entry point for: mesh-server"""
-    threading.Thread(target=background_sync_worker, daemon=True).start()
+    auto_sync = os.environ.get("MESH_ENABLE_AUTO_SYNC", "").strip().lower() in ("1", "true", "yes")
+    if auto_sync:
+        threading.Thread(target=background_sync_worker, daemon=True).start()
+    elif request_user_permission("start the background MCP cache warmup worker"):
+        threading.Thread(target=background_sync_worker, daemon=True).start()
     asyncio.run(_run())
 
 

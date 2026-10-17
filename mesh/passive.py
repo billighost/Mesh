@@ -1,11 +1,15 @@
 """
 mesh/passive.py — Passive memory capture from agent session logs.
 
-Reads a conversation log (raw text, file path, directory path, or JSONL) and extracts
-facts worth storing in Mesh. Works with any AI provider, or falls back to local
-keyword extraction if no API key is configured.
-"""
+Reads a conversation log (raw text, file path, directory path, or JSONL)
+and extracts facts worth storing in Mesh.
 
+Security & Privacy Hardening:
+  - Automatically redacts API keys, bearer tokens, passwords, and secrets via
+    `_redact_secrets_for_cloud()` BEFORE sending any log text to external LLM providers.
+  - Asks the user for explicit `y/n` permission before uploading logs to cloud LLM APIs.
+  - Marks any locally extracted credential-bearing sentences as `local_only=True`.
+"""
 from __future__ import annotations
 
 import argparse
@@ -16,16 +20,13 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
-from .audit import log_learn
+from .audit import validate_namespace
+from .daemon import request_user_permission
 from .memory import VALID_MEMORY_TYPES, Mesh
 
-# ---------------------------------------------------------------------------
-# Extraction prompt (shared across AI providers)
-# ---------------------------------------------------------------------------
-
 EXTRACTION_PROMPT = """You are a memory extraction assistant for Mesh, a shared agent memory system.
-
-Given a conversation or session log between a human and an AI agent, extract facts, decisions, processes, instructions, preferences, and discoveries that would be valuable to remember for future sessions.
+Given a conversation or session log between a human and an AI agent, extract facts, decisions,
+processes, instructions, preferences, and discoveries that would be valuable to remember for future sessions.
 
 Rules:
 - Only extract concrete, specific, reusable facts
@@ -34,12 +35,11 @@ Rules:
 - Each memory should be a single, self-contained sentence
 - Prefer specifics over generalities: "the deploy script is at ./scripts/deploy.sh" not "there is a deploy script"
 
-Return ONLY a JSON array of objects. No preamble, no explanation, no markdown fences. Example:
-[
-  {"content": "the staging server URL is staging.example.com", "type": "fact", "tags": ["infrastructure"], "private": false},
-  {"content": "always run tests before merging to main", "type": "instruction", "tags": ["workflow"], "private": false},
-  {"content": "API key is sk-...", "type": "fact", "tags": ["credentials"], "private": true}
-]
+Return ONLY a JSON array of objects. No preamble, no explanation, no markdown fences.
+Example:
+  [{"content": "the staging server URL is staging.example.com", "type": "fact", "tags": ["infrastructure"], "private": false},
+   {"content": "always run tests before merging to main", "type": "instruction", "tags": ["workflow"], "private": false},
+   {"content": "API key is [REDACTED_SECRET]", "type": "fact", "tags": ["credentials"], "private": true}]
 
 Valid types: fact, preference, context, result, instruction, process, decision, error, general
 If nothing worth remembering was found, return an empty array: []
@@ -62,6 +62,55 @@ _TYPE_ALIASES = {
 
 _LOG_FILE_EXTENSIONS = {".log", ".txt", ".jsonl", ".md"}
 
+# Redaction patterns applied BEFORE sending any log text to external LLM providers
+_CLOUD_REDACTION_RULES: list[tuple[re.Pattern[str], str]] = [
+    (
+        re.compile(
+            r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----"
+        ),
+        "[REDACTED_PRIVATE_KEY]",
+    ),
+    (
+        re.compile(
+            r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"
+        ),
+        "[REDACTED_JWT]",
+    ),
+    (
+        re.compile(
+            r"\b(?:sk-ant-[a-zA-Z0-9_-]{8,}|sk-[a-zA-Z0-9_-]{6,}|gh[pousr]_[a-zA-Z0-9]{12,}|github_pat_[a-zA-Z0-9_]{16,}|glpat-[a-zA-Z0-9_-]{12,}|hf_[a-zA-Z0-9]{16,}|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|xox[baprs]-[a-zA-Z0-9-]{10,}|AIza[0-9A-Za-z_-]{20,}|rk_live_[0-9a-zA-Z]{16,}|sk_live_[0-9a-zA-Z]{16,})\b"
+        ),
+        "[REDACTED_API_KEY]",
+    ),
+    (re.compile(r"(?i)\b(Bearer\s+)[^\s\"'`]{8,}"), r"\1[REDACTED_TOKEN]"),
+    (
+        re.compile(r"([a-zA-Z0-9+.-]+://[^/\s:@]+:)([^@\s]+)(@)"),
+        r"\1[REDACTED_PASSWORD]\3",
+    ),
+    (
+        re.compile(
+            r"(?i)\b(password|passwd|pwd|secret|api[_\s-]?key|access[_\s-]?token|auth[_\s-]?token|private[_\s-]?key|client[_\s-]?secret|aws_secret_access_key|aws_session_token)"
+            r"(\s*(?:is|=|:)\s*['\"]?)([^\s,'\"`;\n]{3,})"
+        ),
+        r"\1\2[REDACTED_SECRET]",
+    ),
+    (
+        re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"),
+        "[REDACTED_EMAIL]",
+    ),
+]
+
+
+def _redact_secrets_for_cloud(text: str) -> str:
+    """
+    Scrub API keys, tokens, URI passwords, and secret assignments from `text`
+    before sending it to any external LLM API (OpenAI, Anthropic, Groq, etc.).
+    """
+    redacted = text
+    for pattern, replacement in _CLOUD_REDACTION_RULES:
+        redacted = pattern.sub(replacement, redacted)
+    return redacted
+
 
 def _normalize_memory_type(raw_type: Optional[str]) -> str:
     """Ensure any LLM- or heuristic-generated memory type maps cleanly to VALID_MEMORY_TYPES."""
@@ -81,7 +130,6 @@ def _resolve_log_input(log_input: str, max_chars: int = 16000) -> str:
     """
     if not log_input or not log_input.strip():
         return ""
-
     stripped = log_input.strip()
     if "\n" not in stripped and len(stripped) < 1024:
         try:
@@ -110,7 +158,6 @@ def _resolve_log_input(log_input: str, max_chars: int = 16000) -> str:
                     return "\n\n".join(chunks)
         except OSError:
             pass
-
     return stripped
 
 
@@ -122,7 +169,6 @@ def _read_log_file(path: Path, max_chars: int = 16000) -> str:
             if size > max_chars * 4:
                 f.seek(max(0, size - max_chars * 4))
             raw = f.read().decode("utf-8", errors="ignore")
-
         if path.suffix.lower() == ".jsonl":
             extracted_lines: list[str] = []
             for line in raw.splitlines():
@@ -143,15 +189,10 @@ def _read_log_file(path: Path, max_chars: int = 16000) -> str:
                 except Exception:
                     extracted_lines.append(line)
             return "\n".join(extracted_lines)[-max_chars:]
-
         return raw[-max_chars:]
     except OSError:
         return ""
 
-
-# ---------------------------------------------------------------------------
-# Provider detection
-# ---------------------------------------------------------------------------
 
 def detect_provider() -> dict[str, Any]:
     """
@@ -163,7 +204,16 @@ def detect_provider() -> dict[str, Any]:
     model_override = os.environ.get("MESH_AI_MODEL", "").strip()
     base_url_override = os.environ.get("MESH_AI_BASE_URL", "").strip()
 
-    # --- Explicit provider set ---
+    # 1. Custom endpoint / base_url override checked first so MESH_AI_API_KEY + MESH_AI_BASE_URL work properly
+    if api_key_override and base_url_override:
+        return {
+            "provider": "openai-compatible",
+            "api_key": api_key_override,
+            "model": model_override or "gpt-4o-mini",
+            "base_url": base_url_override,
+            "available": True,
+        }
+
     if explicit == "anthropic":
         key = api_key_override or os.environ.get("ANTHROPIC_API_KEY", "")
         return {
@@ -173,7 +223,6 @@ def detect_provider() -> dict[str, Any]:
             "base_url": None,
             "available": bool(key),
         }
-
     if explicit in ("openai",):
         key = api_key_override or os.environ.get("OPENAI_API_KEY", "")
         return {
@@ -183,7 +232,6 @@ def detect_provider() -> dict[str, Any]:
             "base_url": base_url_override or "https://api.openai.com/v1",
             "available": bool(key),
         }
-
     if explicit == "groq":
         key = api_key_override or os.environ.get("GROQ_API_KEY", "")
         return {
@@ -193,7 +241,6 @@ def detect_provider() -> dict[str, Any]:
             "base_url": base_url_override or "https://api.groq.com/openai/v1",
             "available": bool(key),
         }
-
     if explicit == "ollama":
         base = base_url_override or "http://localhost:11434/v1"
         return {
@@ -203,7 +250,6 @@ def detect_provider() -> dict[str, Any]:
             "base_url": base,
             "available": _ollama_is_running(base),
         }
-
     if explicit == "openai-compatible":
         key = api_key_override or ""
         base = base_url_override or ""
@@ -214,7 +260,6 @@ def detect_provider() -> dict[str, Any]:
             "base_url": base,
             "available": bool(key and base),
         }
-
     if explicit == "local":
         return {
             "provider": "local",
@@ -225,10 +270,8 @@ def detect_provider() -> dict[str, Any]:
         }
 
     # --- Auto-detect: try in priority order ---
-
-    # 1. Anthropic
-    anthropic_key = api_key_override or os.environ.get("ANTHROPIC_API_KEY", "")
-    if anthropic_key:
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if anthropic_key and not api_key_override:
         return {
             "provider": "anthropic",
             "api_key": anthropic_key,
@@ -237,9 +280,8 @@ def detect_provider() -> dict[str, Any]:
             "available": True,
         }
 
-    # 2. OpenAI
     openai_key = os.environ.get("OPENAI_API_KEY", "")
-    if openai_key:
+    if openai_key and not api_key_override:
         return {
             "provider": "openai-compatible",
             "api_key": openai_key,
@@ -248,9 +290,8 @@ def detect_provider() -> dict[str, Any]:
             "available": True,
         }
 
-    # 3. Groq
     groq_key = os.environ.get("GROQ_API_KEY", "")
-    if groq_key:
+    if groq_key and not api_key_override:
         return {
             "provider": "openai-compatible",
             "api_key": groq_key,
@@ -259,7 +300,6 @@ def detect_provider() -> dict[str, Any]:
             "available": True,
         }
 
-    # 4. Ollama (local, free)
     ollama_base = base_url_override or "http://localhost:11434/v1"
     if _ollama_is_running(ollama_base):
         return {
@@ -270,17 +310,15 @@ def detect_provider() -> dict[str, Any]:
             "available": True,
         }
 
-    # 5. Generic OpenAI-compatible endpoint
-    if api_key_override and base_url_override:
+    if api_key_override:
         return {
             "provider": "openai-compatible",
             "api_key": api_key_override,
             "model": model_override or "gpt-4o-mini",
-            "base_url": base_url_override,
+            "base_url": base_url_override or "https://api.openai.com/v1",
             "available": True,
         }
 
-    # 6. Local fallback
     return {
         "provider": "local",
         "api_key": None,
@@ -291,7 +329,6 @@ def detect_provider() -> dict[str, Any]:
 
 
 def _ollama_is_running(base_url: str) -> bool:
-    """Check if Ollama is running at the given base URL."""
     try:
         import httpx
 
@@ -302,7 +339,6 @@ def _ollama_is_running(base_url: str) -> bool:
 
 
 def _detect_ollama_model(base_url: str) -> str:
-    """Return the first available Ollama model, or 'llama3' as default."""
     try:
         import httpx
 
@@ -316,14 +352,10 @@ def _detect_ollama_model(base_url: str) -> str:
     return "llama3"
 
 
-# ---------------------------------------------------------------------------
-# AI extraction — Anthropic & OpenAI-compatible
-# ---------------------------------------------------------------------------
-
 def _extract_with_anthropic(log_text: str, config: dict[str, Any]) -> list[dict[str, Any]]:
-    """Call Anthropic API to extract memories."""
     import httpx
 
+    safe_log_text = _redact_secrets_for_cloud(log_text)
     response = httpx.post(
         "https://api.anthropic.com/v1/messages",
         headers={
@@ -334,32 +366,29 @@ def _extract_with_anthropic(log_text: str, config: dict[str, Any]) -> list[dict[
         json={
             "model": config["model"],
             "max_tokens": 1000,
-            "messages": [{"role": "user", "content": EXTRACTION_PROMPT + log_text}],
+            "messages": [{"role": "user", "content": EXTRACTION_PROMPT + safe_log_text}],
         },
         timeout=30,
     )
-
     if response.status_code == 401:
         raise ValueError("Invalid Anthropic API key. Check ANTHROPIC_API_KEY.")
     if response.status_code == 429:
         raise ValueError("Anthropic rate limit hit. Try again in a moment.")
     if response.status_code != 200:
         raise ValueError(f"Anthropic API error {response.status_code}: {response.text[:200]}")
-
     raw = response.json()["content"][0]["text"].strip()
     return _parse_json_response(raw)
 
 
 def _extract_with_openai_compatible(log_text: str, config: dict[str, Any]) -> list[dict[str, Any]]:
-    """Call any OpenAI-compatible API (OpenAI, Groq, Ollama, etc.) to extract memories."""
     import httpx
 
+    safe_log_text = _redact_secrets_for_cloud(log_text)
     base_url = (config.get("base_url") or "https://api.openai.com/v1").rstrip("/")
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {config['api_key']}",
     }
-
     response = httpx.post(
         f"{base_url}/chat/completions",
         headers=headers,
@@ -372,26 +401,20 @@ def _extract_with_openai_compatible(log_text: str, config: dict[str, Any]) -> li
                     "role": "system",
                     "content": "You are a memory extraction assistant. Always respond with valid JSON only.",
                 },
-                {"role": "user", "content": EXTRACTION_PROMPT + log_text},
+                {"role": "user", "content": EXTRACTION_PROMPT + safe_log_text},
             ],
         },
         timeout=30,
     )
-
     if response.status_code == 401:
         raise ValueError(f"Invalid API key for {base_url}. Check your MESH_AI_API_KEY.")
     if response.status_code == 429:
         raise ValueError("Rate limit hit. Try again in a moment.")
     if response.status_code != 200:
         raise ValueError(f"API error {response.status_code} from {base_url}: {response.text[:200]}")
-
     raw = response.json()["choices"][0]["message"]["content"].strip()
     return _parse_json_response(raw)
 
-
-# ---------------------------------------------------------------------------
-# Local fallback extractor — no AI required
-# ---------------------------------------------------------------------------
 
 _SIGNAL_PATTERNS = [
     r"\bis at\b",
@@ -423,18 +446,17 @@ _SIGNAL_PATTERNS = [
     r"\btoken\b",
     r"\bsecret\b",
 ]
-
 _CREDENTIAL_PATTERNS = [
     r"\bpassword\b",
-    r"\bapi[_\s]?key\b",
+    r"\bapi[_\s-]?key\b",
     r"\bsecret\b",
     r"\btoken\b",
     r"\bcredential\b",
-    r"\bprivate[_\s]key\b",
-    r"sk-[a-zA-Z0-9]{6,}",
-    r"Bearer\s+\S{10,}",
+    r"\bprivate[_\s-]?key\b",
+    r"sk-[a-zA-Z0-9_-]{6,}",
+    r"Bearer\s+\S{8,}",
+    r"\[REDACTED_(?:SECRET|API_KEY|TOKEN|PASSWORD|JWT|PRIVATE_KEY|EMAIL)\]",
 ]
-
 _NOISE_PATTERNS = [
     r"^\s*(yes|no|ok|okay|sure|thanks|thank you|great|got it|understood|sounds good)\s*[.!]?\s*$",
     r"^\s*okay\s+sounds\s+good\b",
@@ -446,9 +468,18 @@ _NOISE_PATTERNS = [
     r"^\s*i'll\b",
 ]
 
+_POISON_PATTERNS = [
+    r"(?i)\bignore\s+(?:all\s+)?(?:previous|prior|above)\s+(?:instructions|prompts|rules)\b",
+    r"(?i)\bdisregard\s+(?:all\s+)?(?:previous|prior|system)\b",
+    r"(?i)\byou\s+are\s+now\s+in\s+developer\s+mode\b",
+    r"(?i)</?\s*mesh_context\b",
+    r"(?i)\bsystem\s*prompt\s*:",
+]
+
 _compiled_signals = [re.compile(p, re.IGNORECASE) for p in _SIGNAL_PATTERNS]
 _compiled_credentials = [re.compile(p, re.IGNORECASE) for p in _CREDENTIAL_PATTERNS]
 _compiled_noise = [re.compile(p, re.IGNORECASE) for p in _NOISE_PATTERNS]
+_compiled_poison = [re.compile(p) for p in _POISON_PATTERNS]
 
 
 def _is_credential(sentence: str) -> bool:
@@ -457,6 +488,10 @@ def _is_credential(sentence: str) -> bool:
 
 def _is_noise(sentence: str) -> bool:
     return any(p.match(sentence) for p in _compiled_noise)
+
+
+def _is_poison_attempt(sentence: str) -> bool:
+    return any(p.search(sentence) for p in _compiled_poison)
 
 
 def _has_signal(sentence: str) -> bool:
@@ -477,27 +512,22 @@ def _infer_type(sentence: str) -> str:
 
 
 def _extract_local(log_text: str) -> list[dict[str, Any]]:
-    """
-    Extract memories locally using regex/keyword heuristics.
-    No AI, no API key, always free.
-    """
     sentences = re.split(r"(?<=[.!?])\s+|\n", log_text)
     results: list[dict[str, Any]] = []
     seen: set[str] = set()
-
     for raw in sentences:
         sentence = raw.strip()
         if len(sentence) < 20 or len(sentence) > 300:
             continue
-        if _is_noise(sentence):
+        if _is_noise(sentence) or _is_poison_attempt(sentence):
             continue
-
         key = sentence.lower()[:60]
         if key in seen:
             continue
-
         if _has_signal(sentence):
             is_private = _is_credential(sentence)
+            if is_private:
+                sentence = _redact_secrets_for_cloud(sentence)
             results.append(
                 {
                     "content": sentence,
@@ -507,19 +537,12 @@ def _extract_local(log_text: str) -> list[dict[str, Any]]:
                 }
             )
             seen.add(key)
-
         if len(results) >= 15:
             break
-
     return results
 
 
-# ---------------------------------------------------------------------------
-# JSON response parser
-# ---------------------------------------------------------------------------
-
 def _parse_json_response(raw: str) -> list[dict[str, Any]]:
-    """Parse JSON array from AI response, stripping any markdown fences."""
     if "```" in raw:
         parts = raw.split("```")
         for part in parts:
@@ -529,7 +552,6 @@ def _parse_json_response(raw: str) -> list[dict[str, Any]]:
             if part.startswith("["):
                 raw = part
                 break
-
     raw = raw.strip()
     if not raw.startswith("["):
         match = re.search(r"\[.*\]", raw, re.DOTALL)
@@ -537,14 +559,9 @@ def _parse_json_response(raw: str) -> list[dict[str, Any]]:
             raw = match.group(0)
         else:
             return []
-
     parsed = json.loads(raw)
     return parsed if isinstance(parsed, list) else []
 
-
-# ---------------------------------------------------------------------------
-# Main extraction entry point
-# ---------------------------------------------------------------------------
 
 def extract_memories_from_log(
     log_text: str,
@@ -553,13 +570,13 @@ def extract_memories_from_log(
     dry_run: bool = False,
     verbose: bool = False,
     force_local: bool = False,
+    assume_yes: bool = False,
 ) -> dict[str, Any]:
     """
     Extract and store memories from a session log (or file/directory path).
-
-    Auto-detects the best available AI provider. Falls back to local
-    keyword extraction if no provider is configured or if an API call fails.
+    Asks the user for `y/n` permission before uploading redacted logs to external LLM providers.
     """
+    clean_ns = validate_namespace(namespace)
     resolved_text = _resolve_log_input(log_text)
     if not resolved_text.strip():
         return {
@@ -577,10 +594,20 @@ def extract_memories_from_log(
     else:
         config = detect_provider()
 
+    # Prompt user for permission before sending log text to external LLM APIs
+    if config["provider"] != "local" and config.get("available"):
+        provider_name = config["provider"]
+        if not request_user_permission(
+            f"send redacted session log text to external cloud LLM provider '{provider_name}' for memory extraction",
+            assume_yes=assume_yes,
+        ):
+            if verbose:
+                print("  [INFO] Cloud log extraction declined by user — falling back to local extraction.")
+            config = {"provider": "local", "available": True}
+
     if verbose:
         if config["provider"] == "local":
-            print("  [INFO] No AI provider found — using local keyword extraction.")
-            print("         Set ANTHROPIC_API_KEY, OPENAI_API_KEY, GROQ_API_KEY, or start Ollama for better results.")
+            print("  [INFO] Using local keyword extraction (no cloud AI calls).")
         else:
             provider_label = config["provider"]
             model_label = config.get("model", "")
@@ -589,7 +616,6 @@ def extract_memories_from_log(
 
     extracted: list[dict[str, Any]] = []
     extraction_error: Optional[str] = None
-
     try:
         if config["provider"] == "anthropic":
             extracted = _extract_with_anthropic(resolved_text, config)
@@ -606,7 +632,6 @@ def extract_memories_from_log(
         if verbose:
             print(f"  [WARN] AI extraction failed: {e}", file=sys.stderr)
             print("  [INFO] Falling back to local keyword extraction.", file=sys.stderr)
-
         try:
             extracted = _extract_local(resolved_text)
             provider_used = "local-keyword-extractor (fallback)"
@@ -632,7 +657,7 @@ def extract_memories_from_log(
         }
 
     if dry_run:
-        print(f"\n[DRY RUN] Would store {len(extracted)} memories into namespace '{namespace}'")
+        print(f"\n[DRY RUN] Would store {len(extracted)} memories into namespace '{clean_ns}'")
         print(f"          Provider: {provider_used}\n")
         for mem in extracted:
             private = " [PRIVATE]" if mem.get("private") else ""
@@ -645,14 +670,18 @@ def extract_memories_from_log(
             "memories": extracted,
         }
 
-    mesh = Mesh(namespace=namespace, agent_id=agent_id)
+    mesh = Mesh(namespace=clean_ns, agent_id=agent_id)
     stored = 0
     skipped = 0
-
     for mem in extracted:
         content = str(mem.get("content") or "").strip()
         if not content:
             skipped += 1
+            continue
+        if _is_poison_attempt(content):
+            skipped += 1
+            if verbose:
+                print(f"  [WARN] Ignored poison/injection attempt: {content[:60]}", file=sys.stderr)
             continue
         try:
             mtype = _normalize_memory_type(mem.get("type", "general"))
@@ -661,19 +690,14 @@ def extract_memories_from_log(
                 raw_tags = [str(raw_tags)]
             tags = list(dict.fromkeys([*(str(t) for t in raw_tags), "auto-captured"]))
             is_private = bool(mem.get("private", False)) or _is_credential(content)
-
-            res = mesh.learn(
+            if is_private:
+                content = _redact_secrets_for_cloud(content)
+            mesh.learn(
                 content=content,
                 memory_type=mtype,
                 tags=tags,
                 local_only=is_private,
                 confidence=0.8,
-            )
-            log_learn(
-                content=content,
-                namespace=namespace,
-                agent_id=agent_id,
-                result=res,
             )
             stored += 1
             if verbose:
@@ -692,21 +716,11 @@ def extract_memories_from_log(
     }
 
 
-# ---------------------------------------------------------------------------
-# CLI entry point
-# ---------------------------------------------------------------------------
-
 def capture_cmd() -> None:
     """Entry point for: mesh-capture"""
     parser = argparse.ArgumentParser(
         description="Extract and store memories from a session log automatically.",
-        epilog="""
-Examples:
-  mesh-capture --file session.log
-  mesh-capture --file session.log --dry-run --verbose
-  cat output.txt | mesh-capture --stdin
-  mesh-capture --file session.log --local-only
-        """,
+        epilog=""" Examples:   mesh-capture --file session.log   mesh-capture --file session.log --dry-run --verbose   cat output.txt | mesh-capture --stdin   mesh-capture --file session.log --local-only        """,
     )
     parser.add_argument("--file", help="Path to session log file or directory")
     parser.add_argument("--stdin", action="store_true", help="Read log from stdin")
@@ -735,6 +749,7 @@ Examples:
         action="store_true",
         help="Print which provider would be used and exit",
     )
+    parser.add_argument("--yes", "-y", action="store_true", help="Skip interactive y/n permission prompts")
     args = parser.parse_args()
 
     if args.show_provider:
@@ -762,16 +777,15 @@ Examples:
             sys.exit(1)
         log_text = _resolve_log_input(str(path))
 
-    ns = args.namespace or os.environ.get("MESH_NAMESPACE", "shared")
-
+    ns = validate_namespace(args.namespace or os.environ.get("MESH_NAMESPACE", "shared"))
     result = extract_memories_from_log(
         log_text=log_text,
         namespace=ns,
         dry_run=args.dry_run,
         verbose=args.verbose,
         force_local=args.local_only,
+        assume_yes=args.yes,
     )
-
     if not args.dry_run:
         provider_label = result.get("provider_used", "unknown")
         print(
