@@ -31,6 +31,18 @@ from typing import Any, Callable, Optional
 from .audit import validate_namespace
 from .version import VERSION, check_for_updates
 
+# Ensure Windows cp1252 / legacy consoles never crash on Unicode output
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(errors="replace")
+    except Exception:
+        pass
+if hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(errors="replace")
+    except Exception:
+        pass
+
 # --- ANSI Truecolor UI Theme ---
 _C_RESET = "\033[0m"
 _C_BOLD = "\033[1m"
@@ -60,7 +72,11 @@ def _c(color_code: str, text: str) -> str:
 def _sim_bar(similarity: float) -> str:
     pct = round(max(0.0, min(1.0, similarity)) * 100)
     filled = round(pct / 10)
-    bar = "█" * filled + "░" * (10 - filled)
+    try:
+        "█░".encode(sys.stdout.encoding or "utf-8")
+        bar = "█" * filled + "░" * (10 - filled)
+    except (UnicodeEncodeError, LookupError):
+        bar = "#" * filled + "-" * (10 - filled)
     return f"{bar} {pct}%"
 
 
@@ -224,7 +240,7 @@ def setup_cmd() -> None:
         assume_yes=args.yes,
     ):
         if args.wait:
-            pair = ensure_model_downloaded(blocking=True, timeout=45.0, assume_yes=True)
+            pair = ensure_model_downloaded(blocking=True, timeout=120.0, assume_yes=True)
             if pair is not None:
                 print(_c(_C_ACCENT, f"    [OK] ONNX model downloaded: {pair[0].parent}"))
                 _daemon_request("/warmup", payload={"namespace": ns}, method="POST")
@@ -233,6 +249,81 @@ def setup_cmd() -> None:
         else:
             ensure_model_downloaded(blocking=False, assume_yes=True)
             print(_c(_C_DIM, f"    [..] Downloading ONNX weights into {_ONNX_MODEL_DIR} in background..."))
+
+    # Install the Mesh agent skill into all detected AI coding agent folders
+    print()
+    _run_install_skills(assume_yes=args.yes)
+
+
+
+def _run_install_skills(assume_yes: bool = False) -> None:
+    """Shared helper: install skill into all agent folders, print results."""
+    from .skill_installer import install_all
+
+    print(_c(_C_ACCENT, "    Installing Mesh agent skill..."))
+    results = install_all(
+        assume_yes=assume_yes,
+        permission_fn=None,  # uses daemon.request_user_permission when available
+    )
+    installed = 0
+    skipped = 0
+    errors = 0
+    for r in results:
+        agent = r["agent"]
+        status = r["status"]
+        if "ERROR" in status:
+            errors += 1
+            print(_c(_C_RED, f"    [ERROR] {agent}: {status}"))
+        elif r["changed"]:
+            installed += 1
+            print(_c(_C_ACCENT, f"    [OK]    {agent}: {status}"))
+        else:
+            skipped += 1
+            print(_c(_C_DIM, f"    [..]    {agent}: {status}"))
+    summary_parts = []
+    if installed:
+        summary_parts.append(f"{installed} installed")
+    if skipped:
+        summary_parts.append(f"{skipped} skipped")
+    if errors:
+        summary_parts.append(f"{errors} errors")
+    summary = ", ".join(summary_parts) or "nothing to do"
+    color = _C_RED if errors else (_C_ACCENT if installed else _C_DIM)
+    print(_c(color, f"    Skill install complete: {summary}."))
+
+
+def install_skills_cmd() -> None:
+    """Install the Mesh agent skill into all detected AI coding agent skill folders."""
+    parser = argparse.ArgumentParser(
+        description="Install the Mesh agent skill into all detected AI coding agent skill folders."
+    )
+    parser.add_argument(
+        "--yes", "-y",
+        action="store_true",
+        help="Skip interactive y/n permission prompts",
+    )
+    parser.add_argument(
+        "--list",
+        action="store_true",
+        help="List detected agent skill directories and current install status, then exit",
+    )
+    args = parser.parse_args()
+
+    if args.list:
+        from .skill_installer import _candidate_skill_roots, _SKILL_NAME
+        print(_c(_C_ACCENT, "\n    Detected agent skill directories:\n"))
+        candidates = _candidate_skill_roots()
+        if not candidates:
+            print(_c(_C_DIM, "    None detected."))
+        for label, skills_root in candidates:
+            dst = skills_root / _SKILL_NAME
+            installed_mark = _c(_C_ACCENT, "[installed]") if dst.is_dir() else _c(_C_DIM, "[not installed]")
+            print(f"    {installed_mark}  {label}")
+            print(_c(_C_DIM, f"              {skills_root}"))
+        print()
+        return
+
+    _run_install_skills(assume_yes=args.yes)
 
 
 def add_cmd() -> None:
@@ -883,7 +974,7 @@ _mesh_completion() {
     local cur prev words cword
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
-    local commands="add ask inspect update forget status why context setup daemon server dashboard http namespaces export import capture digest conflicts patterns doctor shell completion help version"
+    local commands="add ask inspect update forget status why context setup install-skills daemon server dashboard http namespaces export import capture digest conflicts patterns doctor shell completion help version"
     local types="fact preference context result instruction process decision error general"
     if [[ ${COMP_CWORD} -eq 1 ]]; then
         COMPREPLY=( $(compgen -W "${commands}" -- "${cur}") )
@@ -910,7 +1001,7 @@ _ZSH_COMPLETION_SCRIPT = """# Added by Mesh
 #compdef mesh
 _mesh_zsh_completion() {
     local -a commands types
-    commands=(add ask inspect update forget status why context setup daemon server dashboard http namespaces export import capture digest conflicts patterns doctor shell completion help version)
+    commands=(add ask inspect update forget status why context setup install-skills daemon server dashboard http namespaces export import capture digest conflicts patterns doctor shell completion help version)
     types=(fact preference context result instruction process decision error general)
     if (( CURRENT == 2 )); then
         _describe 'command' commands
@@ -929,14 +1020,14 @@ compdef _mesh_zsh_completion mesh
 
 _FISH_COMPLETION_SCRIPT = """# Added by Mesh
 complete -c mesh -f
-complete -c mesh -n "__fish_use_subcommand" -a "add ask inspect update forget status why context setup daemon server dashboard http namespaces export import capture digest conflicts patterns doctor shell completion help version"
+complete -c mesh -n "__fish_use_subcommand" -a "add ask inspect update forget status why context setup install-skills daemon server dashboard http namespaces export import capture digest conflicts patterns doctor shell completion help version"
 complete -c mesh -l type -a "fact preference context result instruction process decision error general"
 """
 
 _POWERSHELL_COMPLETION_SCRIPT = """# Added by Mesh
 Register-ArgumentCompleter -Native -CommandName mesh -ScriptBlock {
     param($wordToComplete, $commandAst, $cursorPosition)
-    $commands = @('add','ask','inspect','update','forget','status','why','context','setup','daemon','server','dashboard','http','namespaces','export','import','capture','digest','conflicts','patterns','doctor','shell','completion','help','version')
+    $commands = @('add','ask','inspect','update','forget','status','why','context','setup','install-skills','daemon','server','dashboard','http','namespaces','export','import','capture','digest','conflicts','patterns','doctor','shell','completion','help','version')
     $commands | Where-Object { $_ -like "$wordToComplete*" } | ForEach-Object {
         [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
     }
@@ -1218,6 +1309,7 @@ def help_cmd() -> None:
     print()
     print("  SYSTEM & SERVERS")
     print("    mesh setup              Interactive background ONNX download & daemon setup")
+    print("    mesh install-skills     Install Mesh agent skill to all AI coding agent folders")
     print("    mesh daemon <action>    start | stop | restart | status | warmup | unload")
     print("    mesh dashboard          Open web UI on http://localhost:7433")
     print("    mesh http               Start REST API server on http://localhost:7701")
@@ -1289,6 +1381,7 @@ def _get_command_mapping() -> dict[str, Callable[[], None]]:
         "doctor": doctor_cmd,
         "shell": shell_cmd,
         "completion": completion_cmd,
+        "install-skills": install_skills_cmd,
     }
 
 
