@@ -8,12 +8,6 @@ import {
 
 const VIEWBOX_WIDTH = 2554.46;
 
-function WordmarkPaths() {
-  return WORDMARK_LETTERS.map((letter) => (
-    <path d={letter.d} key={letter.ch} />
-  ));
-}
-
 /**
  * The footer wordmark: an outlined ghost of "mesh" that becomes a small
  * coordinate field under the cursor.
