@@ -4,6 +4,13 @@ All notable changes to `mesh-context-layer` are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (pre-1.0: minor versions may include behavior changes).
 
+## [0.6.4] - 2026-10-18
+
+### Fixed
+
+- **Fresh installs resolved an incompatible `mcp`.** The dependency is now `mcp>=1.0.0,<2`. mcp 2.0 replaced the `Server.list_tools()` / `Server.call_tool()` decorators with constructor callbacks, so an install that picked up `mcp 2.3.0` failed at import: `mesh.mcp_server`, and every CLI entry point that imports it, raised `AttributeError: 'Server' object has no attribute 'list_tools'`. mesh keeps the mcp 1.x handler API until the 2.x handler model is supported.
+- Package version bumped to `0.6.4`.
+
 ## [0.6.3] - 2026-10-18
 
 This release fixes a set of privacy, concurrency, search-quality, and documentation issues found in a full code review. It contains several **behavior changes** for security reasons; see "Changed (behavior changes)" below before upgrading.
