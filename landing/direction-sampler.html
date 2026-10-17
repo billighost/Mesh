@@ -1,0 +1,2737 @@
+<title>Mesh Visual Directions</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Anybody:wght@100..900&amp;family=Bricolage+Grotesque:wght@200..800&amp;family=DM+Mono:wght@400;500&amp;family=Fraunces:wght@300..900&amp;family=Handjet:wght@100..900&amp;family=IBM+Plex+Mono:wght@400;500&amp;family=Instrument+Sans:wght@400..700&amp;family=Instrument+Serif:ital@0;1&amp;family=Jacquard+24&amp;family=JetBrains+Mono:wght@400;500;700&amp;family=Major+Mono+Display&amp;family=Martian+Mono:wght@100..800&amp;family=Onest:wght@100..900&amp;family=Space+Grotesk:wght@300..700&amp;family=Syne:wght@400..800&amp;family=Unbounded:wght@200..900&amp;display=swap" rel="stylesheet">
+<style>
+/* ─────────────────────────────────────────────────────────────
+   MESH — visual direction sampler
+   Layout concept: a fixed product chrome, then four complete
+   design worlds swapped underneath it. Each world is a token set
+   (color, type, shape, motion) rendered on the same white-first page.
+   ───────────────────────────────────────────────────────────── */
+
+:root {
+  color-scheme: light;
+
+  /* Default world: KERNEL / light */
+  --bg: #F7F8F3;
+  --surface: #FFFFFF;
+  --surface-2: #EEF0E7;
+  --ink: #0B0D08;
+  --muted: #5D6455;
+  --line: #D7DBCD;
+  --accent: #B9F24A;
+  --accent-ink: #0B0D08;
+  --accent-text: #2F6B00;
+  --accent-soft: #E8F9C7;
+  --warn: #B45309;
+  --warn-soft: #FEF3C7;
+
+  --font-display: "Martian Mono", ui-monospace, "SFMono-Regular", monospace;
+  --font-body: "Instrument Sans", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  --radius: 2px;
+  --radius-lg: 6px;
+  --btn-radius: 2px;
+  --border-w: 1px;
+  --shadow: 4px 4px 0 var(--ink);
+  --shadow-soft: none;
+  --ease: cubic-bezier(.2,.8,.2,1);
+}
+
+:root[data-feel="kernel"][data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0B0D08;
+  --surface: #11140C;
+  --surface-2: #171B11;
+  --ink: #F4F7EC;
+  --muted: #A2AA96;
+  --line: #2A2F22;
+  --accent: #C8F04A;
+  --accent-ink: #0B0D08;
+  --accent-text: #C8F04A;
+  --accent-soft: #1E2A0E;
+  --warn: #FBBF24;
+  --warn-soft: #2A230B;
+}
+
+:root[data-feel="atlas"] {
+  --font-display: "Instrument Serif", "Iowan Old Style", Georgia, serif;
+  --font-body: "Instrument Sans", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  --radius: 0px;
+  --radius-lg: 0px;
+  --btn-radius: 999px;
+  --border-w: 1px;
+  --shadow: none;
+  --shadow-soft: 0 30px 70px -40px rgba(18,19,26,.45);
+}
+:root[data-feel="atlas"][data-theme="light"] {
+  color-scheme: light;
+  --bg: #FFFFFF;
+  --surface: #FAFAF7;
+  --surface-2: #F2F3EF;
+  --ink: #12131A;
+  --muted: #636773;
+  --line: #E1E2DE;
+  --accent: #1F3BFF;
+  --accent-ink: #FFFFFF;
+  --accent-text: #1F3BFF;
+  --accent-soft: #E9ECFF;
+  --warn: #B45309;
+  --warn-soft: #FEF3C7;
+}
+:root[data-feel="atlas"][data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0C0D12;
+  --surface: #13141B;
+  --surface-2: #191B24;
+  --ink: #F4F4F1;
+  --muted: #9A9DA8;
+  --line: #262833;
+  --accent: #7385FF;
+  --accent-ink: #0A0B10;
+  --accent-text: #93A0FF;
+  --accent-soft: #191E3B;
+  --warn: #FBBF24;
+  --warn-soft: #2A230B;
+}
+
+:root[data-feel="signal"] {
+  --font-display: "Syne", "Arial Black", sans-serif;
+  --font-body: "Space Grotesk", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --radius: 0px;
+  --radius-lg: 0px;
+  --btn-radius: 0px;
+  --border-w: 2px;
+  --shadow: none;
+  --shadow-soft: none;
+}
+:root[data-feel="signal"][data-theme="light"] {
+  color-scheme: light;
+  --bg: #FFFFFF;
+  --surface: #F5F5F2;
+  --surface-2: #EDEDE8;
+  --ink: #0A0A0A;
+  --muted: #636363;
+  --line: #D9D9D4;
+  --accent: #FF3B1F;
+  --accent-ink: #0A0A0A;
+  --accent-text: #C62B12;
+  --accent-soft: #FFE6E0;
+  --warn: #B45309;
+  --warn-soft: #FEF3C7;
+}
+:root[data-feel="signal"][data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0A0A0A;
+  --surface: #141414;
+  --surface-2: #1D1D1D;
+  --ink: #F5F5F0;
+  --muted: #A0A0A0;
+  --line: #2C2C2C;
+  --accent: #FF5A3D;
+  --accent-ink: #0A0A0A;
+  --accent-text: #FF8066;
+  --accent-soft: #33120C;
+  --warn: #FBBF24;
+  --warn-soft: #2A230B;
+}
+
+:root[data-feel="drift"] {
+  --font-display: "Fraunces", "Iowan Old Style", Georgia, serif;
+  --font-body: "Onest", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "DM Mono", ui-monospace, monospace;
+  --radius: 18px;
+  --radius-lg: 28px;
+  --btn-radius: 999px;
+  --border-w: 1px;
+  --shadow: 0 24px 60px -32px rgba(16,40,34,.30);
+  --shadow-soft: 0 12px 30px -20px rgba(16,40,34,.35);
+}
+:root[data-feel="drift"][data-theme="light"] {
+  color-scheme: light;
+  --bg: #FBFAF6;
+  --surface: #FFFFFF;
+  --surface-2: #F0EEE6;
+  --ink: #171A18;
+  --muted: #68706B;
+  --line: #E4E1D8;
+  --accent: #2F7A6B;
+  --accent-ink: #FFFFFF;
+  --accent-text: #26685B;
+  --accent-soft: #E4F0EC;
+  --warn: #B45309;
+  --warn-soft: #FEF3C7;
+}
+:root[data-feel="drift"][data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #101312;
+  --surface: #171B19;
+  --surface-2: #1E2421;
+  --ink: #EFF1ED;
+  --muted: #9AA29D;
+  --line: #272D29;
+  --accent: #6FC7B2;
+  --accent-ink: #0C1210;
+  --accent-text: #7FD4BF;
+  --accent-soft: #16302A;
+  --warn: #FBBF24;
+  --warn-soft: #2A230B;
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
+body {
+  margin: 0;
+  padding-left: max(20px, env(safe-area-inset-left, 0px));
+  padding-right: max(20px, env(safe-area-inset-right, 0px));
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-body);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow-x: hidden;
+  transition: background .35s var(--ease), color .35s var(--ease);
+}
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0 0 auto;
+  height: env(safe-area-inset-top, 0px);
+  z-index: 10;
+  background: var(--bg);
+}
+button, input { font: inherit; }
+button { color: inherit; }
+a { color: inherit; }
+::selection { background: var(--accent); color: var(--accent-ink); }
+:focus-visible { outline: 2px solid var(--accent-text); outline-offset: 3px; }
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0;
+}
+
+.wrap { max-width: 1180px; margin-inline: auto; }
+.app { padding-bottom: 122px; }
+
+/* ── type helpers ───────────────────────────────────────────── */
+h1, h2, h3, h4, p { text-wrap: pretty; }
+.hero h1, .section-title { text-wrap: balance; }
+
+.spin-slow { transform-box: fill-box; transform-origin: center; animation: spin 42s linear infinite; }
+
+/* ── chrome ─────────────────────────────────────────────────── */
+.topbar {
+  position: sticky;
+  top: env(safe-area-inset-top, 0px);
+  z-index: 40;
+  margin-top: 12px;
+  border: var(--border-w) solid var(--line);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  transition: background .35s var(--ease), border-color .35s var(--ease);
+}
+.topbar-inner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 18px;
+  padding: 8px 12px;
+}
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  text-decoration: none;
+  color: var(--ink);
+  min-width: 0;
+}
+.brand-mark {
+  width: 27px; height: 27px;
+  display: grid; place-items: center;
+  border: var(--border-w) solid var(--ink);
+  border-radius: 50%;
+  flex: none;
+}
+.brand-word {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -.045em;
+  line-height: 1;
+}
+.brand-sub {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--muted);
+  border-left: 1px solid var(--line);
+  padding-left: 8px;
+  white-space: nowrap;
+}
+.topbar-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+.segmented {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px;
+  background: var(--bg);
+}
+.seg {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+  padding: 6px 8px;
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background .18s, color .18s;
+}
+.seg:hover { color: var(--ink); }
+.seg.is-active { background: var(--accent); color: var(--accent-ink); }
+.seg-dot { width: 6px; height: 6px; border-radius: 50%; display: block; flex: none; }
+.theme button {
+  width: 28px; height: 28px;
+  padding: 0;
+  display: grid; place-items: center;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  border-radius: 999px;
+  cursor: pointer;
+}
+.theme button:hover { color: var(--ink); }
+.theme button.is-active { background: var(--ink); color: var(--bg); }
+.motion-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 4px 8px 4px 5px;
+  font-size: 10.5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.motion-toggle.is-on { color: var(--ink); }
+.motion-toggle .switch { width: 28px; height: 16px; padding: 2px; }
+.motion-toggle .switch i { width: 12px; height: 12px; }
+.motion-toggle.is-on .switch { background: var(--accent); border-color: var(--accent); }
+.motion-toggle.is-on .switch i { transform: translateX(12px); background: var(--accent-ink); }
+.tray-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--ink);
+  border-radius: 999px;
+  padding: 6px 9px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  cursor: pointer;
+}
+.tray-btn:hover { border-color: var(--ink); }
+
+/* ── hero shell ─────────────────────────────────────────────── */
+.hero {
+  position: relative;
+  padding-block: clamp(38px, 6vw, 76px) clamp(30px, 4vw, 52px);
+  animation: rise .55s var(--ease) both;
+}
+.hero-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, .95fr);
+  gap: clamp(28px, 5vw, 64px);
+  align-items: center;
+}
+.hero-copy {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 18px;
+  min-width: 0;
+}
+.kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.kicker-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 4px var(--accent-soft);
+  flex: none;
+}
+.hero h1 {
+  margin: 0;
+  max-width: 15ch;
+  font-size: clamp(2.4rem, 5.4vw, 4.8rem);
+  line-height: 1.02;
+  letter-spacing: -.035em;
+}
+.lede {
+  margin: 0;
+  max-width: 52ch;
+  font-size: clamp(1rem, 1.35vw, 1.14rem);
+  line-height: 1.62;
+  color: var(--muted);
+}
+.cta-row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.cta-row.center { justify-content: center; }
+.hero-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--muted);
+}
+.hero-meta .meta-sep { opacity: .5; }
+
+[data-feel="kernel"] .hero h1 { font-weight: 600; }
+[data-feel="atlas"] .hero h1 {
+  font-weight: 400;
+  font-size: clamp(2.7rem, 6.6vw, 6rem);
+  line-height: .98;
+  letter-spacing: -.03em;
+  max-width: 17ch;
+}
+[data-feel="signal"] .hero h1 {
+  font-weight: 800;
+  text-transform: uppercase;
+  font-size: clamp(2.7rem, 8.2vw, 7rem);
+  line-height: .88;
+  letter-spacing: -.04em;
+  max-width: 13ch;
+}
+[data-feel="drift"] .hero h1 {
+  font-weight: 500;
+  font-size: clamp(2.5rem, 5.6vw, 5.1rem);
+  line-height: 1;
+  letter-spacing: -.025em;
+  max-width: 16ch;
+}
+
+.hero-atlas { text-align: center; }
+.hero-atlas .hero-center {
+  max-width: 990px;
+  margin-inline: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+}
+.hero-atlas .lede { max-width: 58ch; }
+.hero-signal-top { display: flex; flex-direction: column; gap: 18px; }
+.hero-signal .kicker { text-transform: uppercase; letter-spacing: .08em; font-size: 10.5px; }
+.hero-signal-bottom {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 18px 40px;
+}
+.hero-signal-bottom .lede { max-width: 44ch; }
+
+/* ── buttons ────────────────────────────────────────────────── */
+.btn {
+  --btn-bg: transparent;
+  --btn-fg: var(--ink);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid transparent;
+  border-radius: var(--btn-radius);
+  background: var(--btn-bg);
+  color: var(--btn-fg);
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 12px 18px;
+  cursor: pointer;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: transform .16s var(--ease), background .18s, color .18s, border-color .18s, box-shadow .18s;
+}
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.btn-primary { --btn-bg: var(--accent); --btn-fg: var(--accent-ink); }
+.btn-secondary { --btn-bg: transparent; --btn-fg: var(--ink); border-color: var(--line); }
+.btn-quiet { --btn-bg: transparent; --btn-fg: var(--muted); padding-inline: 8px; }
+.btn-icon {
+  --btn-bg: var(--surface);
+  --btn-fg: var(--ink);
+  border-color: var(--line);
+  width: 42px; height: 42px;
+  padding: 0;
+}
+.btn-sm { font-size: 12.5px; padding: 9px 13px; }
+.btn-lg { font-size: 15px; padding: 15px 22px; }
+
+[data-feel="kernel"] .btn { border-color: var(--ink); box-shadow: var(--shadow); }
+[data-feel="kernel"] .btn-quiet { border-color: transparent; box-shadow: none; }
+[data-feel="kernel"] .btn:hover:not(:disabled) { transform: translate(-1px,-1px); box-shadow: 5px 5px 0 var(--ink); }
+[data-feel="kernel"] .btn:active:not(:disabled) { transform: translate(2px,2px); box-shadow: 1px 1px 0 var(--ink); }
+[data-feel="atlas"] .btn-primary { border-radius: 999px; }
+[data-feel="atlas"] .btn-secondary {
+  border-color: transparent;
+  text-decoration: underline;
+  text-underline-offset: 4px;
+  padding-inline: 4px;
+}
+[data-feel="atlas"] .btn:hover:not(:disabled) { opacity: .8; }
+[data-feel="signal"] .btn-primary { border-color: var(--ink); }
+[data-feel="signal"] .btn-primary:hover:not(:disabled) { background: var(--ink); color: var(--bg); transform: skewX(-3deg); }
+[data-feel="signal"] .btn-secondary { border-color: var(--ink); border-width: 2px; }
+[data-feel="signal"] .btn:hover:not(:disabled) { transform: skewX(-3deg); }
+[data-feel="drift"] .btn { box-shadow: var(--shadow-soft); }
+[data-feel="drift"] .btn-quiet { box-shadow: none; }
+[data-feel="drift"] .btn:hover:not(:disabled) { transform: translateY(-2px); }
+
+.code-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--ink);
+  border-radius: var(--radius);
+  padding: 7px 9px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  cursor: pointer;
+  min-width: 0;
+  transition: border-color .18s, background .18s;
+}
+.code-chip:hover { border-color: var(--ink); }
+.code-chip code {
+  font-family: inherit;
+  font-size: inherit;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.code-chip-icon { display: inline-flex; color: var(--muted); flex: none; }
+.code-chip:hover .code-chip-icon { color: var(--ink); }
+
+/* ── sections ───────────────────────────────────────────────── */
+.section {
+  border-top: var(--border-w) solid var(--line);
+  padding-block: clamp(52px, 7vw, 88px);
+}
+.section-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px 32px;
+  margin-bottom: clamp(24px, 4vw, 40px);
+}
+.section-head-copy { min-width: 0; }
+.section-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: clamp(1.7rem, 3.2vw, 2.6rem);
+  font-weight: 600;
+  line-height: 1.05;
+  letter-spacing: -.03em;
+}
+[data-feel="atlas"] .section-title { font-weight: 400; }
+[data-feel="signal"] .section-title { font-weight: 700; }
+[data-feel="drift"] .section-title { font-weight: 500; }
+.section-note {
+  margin: 10px 0 0;
+  max-width: 62ch;
+  color: var(--muted);
+  font-size: 13.5px;
+  line-height: 1.6;
+}
+.section-right { flex: none; }
+
+/* ── pick / shortlist ───────────────────────────────────────── */
+.pick {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 4px 7px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background .16s, color .16s, border-color .16s;
+}
+.pick:hover { border-color: var(--ink); color: var(--ink); }
+.pick.is-picked { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+[data-feel="signal"] .pick { border-radius: 0; }
+
+/* ── kernel visual ──────────────────────────────────────────── */
+.kernel-visual { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.term {
+  background: var(--surface);
+  border: var(--border-w) solid var(--ink);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.term-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--muted);
+}
+.term-dots { display: flex; gap: 4px; flex: none; }
+.term-dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--line); display: block; }
+.term-dots i:first-child { background: var(--accent); }
+.term-bar .live { margin-left: auto; color: var(--accent-text); }
+.term-body {
+  padding: 14px 14px 16px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.8;
+  color: var(--ink);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.term-line { margin: 0; }
+.term-line.dim { color: var(--muted); }
+.term-line .ok { color: var(--accent-text); }
+.cursor {
+  display: inline-block;
+  width: 7px; height: 13px;
+  background: var(--accent);
+  vertical-align: -2px;
+  animation: blink 1.1s steps(2, start) infinite;
+}
+.kernel-flow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--muted);
+}
+.flow-chip {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  padding: 6px 8px;
+  border-radius: var(--radius);
+}
+.flow-chip.hot { border-color: var(--accent); color: var(--accent-text); }
+.flow-arrow { color: var(--accent-text); }
+.kernel-caption { font-family: var(--font-mono); font-size: 9.5px; color: var(--muted); }
+
+/* ── atlas visual ───────────────────────────────────────────── */
+.atlas-visual { margin-top: clamp(22px, 4vw, 40px); }
+.atlas-visual svg { width: 100%; height: auto; display: block; }
+.atlas-line {
+  stroke: var(--line);
+  stroke-width: 1;
+  stroke-dasharray: 5 7;
+  animation: dash 18s linear infinite;
+}
+.atlas-line.accent { stroke: var(--accent); opacity: .5; }
+.atlas-node { fill: var(--surface); stroke: var(--ink); stroke-width: 1; }
+.atlas-node.main { fill: var(--accent); stroke: var(--accent); }
+.atlas-label {
+  fill: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: .02em;
+}
+.atlas-label-main {
+  fill: var(--accent-ink);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+}
+.atlas-ring {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1;
+  opacity: .35;
+  stroke-dasharray: 1 7;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: spin 38s linear infinite;
+}
+.atlas-pulse {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: atlasPulse 3.4s var(--ease) infinite;
+}
+@keyframes atlasPulse {
+  0% { transform: scale(.7); opacity: .5; }
+  70% { transform: scale(1.5); opacity: 0; }
+  100% { transform: scale(1.5); opacity: 0; }
+}
+
+/* ── signal visual ──────────────────────────────────────────── */
+.signal-visual { margin-top: clamp(22px, 4vw, 40px); display: flex; flex-direction: column; gap: 12px; }
+.marquee {
+  overflow: hidden;
+  white-space: nowrap;
+  border-top: var(--border-w) solid var(--ink);
+  border-bottom: var(--border-w) solid var(--ink);
+}
+.marquee-track { display: flex; width: max-content; animation: marquee 28s linear infinite; }
+.marquee-track > span { display: inline-flex; align-items: center; gap: 20px; padding-right: 20px; }
+.marquee.big .marquee-track > span {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: clamp(1.5rem, 3.8vw, 2.9rem);
+  letter-spacing: -.03em;
+  padding-block: 12px;
+  text-transform: uppercase;
+}
+.marquee.small .marquee-track > span {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: .09em;
+  padding-block: 8px;
+  text-transform: uppercase;
+}
+.marquee.accent { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.marquee.reverse .marquee-track { animation-direction: reverse; }
+.marquee .sep { color: var(--accent); }
+.marquee.accent .sep { color: var(--accent-ink); opacity: .55; }
+.signal-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border: var(--border-w) solid var(--ink);
+  background: var(--surface);
+}
+.signal-stat { padding: 14px 16px; border-right: 1px solid var(--line); min-width: 0; }
+.signal-stat:last-child { border-right: 0; }
+.signal-stat strong {
+  display: block;
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: clamp(1.7rem, 4vw, 3.1rem);
+  line-height: 1;
+  letter-spacing: -.045em;
+}
+.signal-stat span { font-family: var(--font-mono); font-size: 9.5px; color: var(--muted); }
+
+/* ── drift visual ───────────────────────────────────────────── */
+.drift-visual {
+  position: relative;
+  min-height: 380px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 24% 18%, var(--accent-soft), transparent 44%),
+    radial-gradient(circle at 82% 78%, var(--surface-2), transparent 50%),
+    var(--surface);
+}
+.drift-lines { position: absolute; inset: 0; width: 100%; height: 100%; }
+.drift-path {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.2;
+  stroke-dasharray: 4 7;
+  opacity: .45;
+  animation: dash 16s linear infinite;
+}
+.float-card {
+  position: absolute;
+  width: min(238px, 54%);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 14px;
+  box-shadow: var(--shadow-soft);
+}
+.float-inner { animation: floaty 6.4s var(--ease) infinite; }
+.float-card.mem { left: 7%; top: 13%; }
+.float-card.query { right: 6%; bottom: 11%; }
+.float-card.query .float-inner { animation-delay: -2.6s; }
+.float-card p { margin: 8px 0; font-size: 13px; line-height: 1.5; }
+.float-card .by, .float-card .score { font-family: var(--font-mono); font-size: 10px; color: var(--muted); }
+.float-card .score { color: var(--accent-text); font-weight: 600; }
+.float-card .chip {
+  display: inline-flex;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--accent-text);
+  background: var(--accent-soft);
+  border-radius: 999px;
+  padding: 3px 7px;
+}
+.float-orb {
+  position: absolute;
+  width: 44px; height: 44px;
+  border-radius: 50%;
+  display: grid; place-items: center;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--accent);
+  color: var(--accent-ink);
+  box-shadow: 0 0 0 8px var(--accent-soft);
+  animation: floaty 7.2s var(--ease) infinite;
+}
+.float-orb.a { left: 9%; bottom: 15%; }
+.float-orb.b { right: 9%; top: 11%; animation-delay: -3.2s; }
+
+/* ── palette ────────────────────────────────────────────────── */
+.palette-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; }
+.swatch {
+  display: flex;
+  flex-direction: column;
+  text-align: left;
+  padding: 0;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: var(--radius);
+  overflow: hidden;
+  cursor: pointer;
+  min-width: 0;
+  transition: border-color .16s, transform .16s var(--ease);
+}
+.swatch:hover { border-color: var(--ink); transform: translateY(-2px); }
+.swatch-split { display: flex; height: 78px; }
+.swatch-split i { flex: 1; display: block; }
+.swatch-meta { display: flex; flex-direction: column; gap: 2px; padding: 9px 11px; border-top: 1px solid var(--line); }
+.swatch-meta strong { font-size: 11.5px; font-weight: 600; }
+.swatch-meta span { font-family: var(--font-mono); font-size: 10px; color: var(--muted); }
+
+/* ── type ───────────────────────────────────────────────────── */
+.type-grid { display: grid; grid-template-columns: 1.15fr 1fr .85fr; gap: 14px; }
+.type-card {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: var(--radius);
+  padding: 20px;
+  min-width: 0;
+}
+.type-role { margin: 0 0 14px; font-family: var(--font-mono); font-size: 10px; color: var(--muted); }
+.spec-display { margin: 0; font-family: var(--font-display); font-size: clamp(1.9rem, 3.1vw, 2.8rem); line-height: 1.02; letter-spacing: -.03em; }
+[data-feel="kernel"] .spec-display { font-weight: 600; }
+[data-feel="atlas"] .spec-display { font-weight: 400; }
+[data-feel="signal"] .spec-display { font-weight: 800; text-transform: uppercase; }
+[data-feel="drift"] .spec-display { font-weight: 500; }
+.spec-body { margin: 0; font-family: var(--font-body); font-size: 14.5px; line-height: 1.65; }
+.spec-mono { margin: 0; font-family: var(--font-mono); font-size: 12px; line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere; }
+.face-name { margin: 16px 0 0; font-family: var(--font-mono); font-size: 10px; color: var(--muted); }
+.scale-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 10px 26px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+  font-variant-numeric: tabular-nums;
+}
+.scale-row span { font-family: var(--font-mono); font-size: 9.5px; color: var(--muted); display: inline-flex; align-items: baseline; gap: 6px; }
+.scale-row b { color: var(--ink); font-weight: 500; line-height: 1; }
+
+/* ── controls ───────────────────────────────────────────────── */
+.controls-grid { display: grid; grid-template-columns: 1.15fr .85fr; gap: 14px; }
+.panel {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: var(--radius);
+  padding: 20px;
+  min-width: 0;
+}
+.panel-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 18px; }
+.panel-head h3 { margin: 0; font-size: 13.5px; font-weight: 600; letter-spacing: -.01em; }
+.control-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.control-stack { display: flex; flex-direction: column; gap: 18px; }
+.field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.field-label { font-family: var(--font-mono); font-size: 9.5px; color: var(--muted); }
+.input-wrap {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  min-width: 0;
+}
+.input-wrap svg { color: var(--muted); flex: none; }
+.input-wrap input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--ink); font-size: 13px; }
+.input-wrap input::placeholder { color: var(--muted); opacity: .8; }
+.input-wrap kbd {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 2px 5px;
+  flex: none;
+}
+.toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.toggle-row span { font-size: 12.5px; }
+.switch {
+  width: 38px; height: 22px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  padding: 2px;
+  display: inline-flex;
+  transition: background .2s, border-color .2s;
+  cursor: pointer;
+  flex: none;
+}
+.switch i {
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  background: var(--surface);
+  box-shadow: 0 1px 2px rgba(0,0,0,.22);
+  transition: transform .2s var(--ease), background .2s;
+  display: block;
+}
+.switch.is-on { background: var(--accent); border-color: var(--accent); }
+.switch.is-on i { transform: translateX(16px); background: var(--accent-ink); }
+.chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  background: var(--bg);
+  white-space: nowrap;
+}
+.badge.accent { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-text); }
+.badge.solid { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+[data-feel="signal"] .badge { border-radius: 0; }
+
+/* ── motion + loader tiles ──────────────────────────────────── */
+.motion-grid, .loader-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
+.tile {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: var(--radius);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.tile-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 11px 13px;
+  border-bottom: 1px solid var(--line);
+}
+.tile-head h3 { margin: 0; font-size: 12px; font-weight: 600; }
+.tile-stage {
+  min-height: 152px;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  position: relative;
+  overflow: hidden;
+}
+.tile-hint { padding: 0 13px 13px; font-family: var(--font-mono); font-size: 9.5px; line-height: 1.5; color: var(--muted); }
+.magnetic { display: inline-block; transition: transform .18s var(--ease); will-change: transform; }
+.tilt-card {
+  width: 100%;
+  max-width: 176px;
+  aspect-ratio: 1.5;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: linear-gradient(135deg, var(--accent-soft), var(--surface));
+  display: grid;
+  place-items: center;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.6;
+  color: var(--muted);
+  transition: transform .15s var(--ease);
+  transform-style: preserve-3d;
+  will-change: transform;
+}
+.spotlight {
+  width: 100%;
+  min-height: 108px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  display: grid;
+  place-items: center;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.6;
+  color: var(--muted);
+  background:
+    radial-gradient(150px circle at var(--mx, 50%) var(--my, 50%), var(--accent-soft), transparent 72%),
+    var(--surface);
+  transition: background .12s;
+}
+.scramble-btn {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  padding: 6px;
+  width: 100%;
+}
+.scramble-text {
+  font-family: var(--font-display);
+  font-size: clamp(1.15rem, 2vw, 1.55rem);
+  line-height: 1.1;
+  letter-spacing: -.03em;
+  text-align: center;
+  min-height: 2.2em;
+  display: grid;
+  place-items: center;
+}
+[data-feel="signal"] .scramble-text { text-transform: uppercase; font-weight: 700; }
+.scramble-hint { font-family: var(--font-mono); font-size: 9px; color: var(--muted); }
+
+.loader-orbit { position: relative; width: 50px; height: 50px; border: 1px solid var(--line); border-radius: 50%; animation: spin 2.1s linear infinite; }
+.loader-orbit i { position: absolute; width: 9px; height: 9px; border-radius: 50%; background: var(--accent); top: -4px; left: 50%; margin-left: -4.5px; }
+.loader-orbit i:last-child { top: auto; bottom: -4px; background: var(--ink); }
+.loader-bars { display: flex; align-items: flex-end; gap: 4px; height: 38px; }
+.loader-bars i { width: 5px; height: 100%; background: var(--accent); transform-origin: bottom; animation: bar 1.15s var(--ease) infinite; }
+.loader-bars i:nth-child(2) { animation-delay: .08s; }
+.loader-bars i:nth-child(3) { animation-delay: .16s; }
+.loader-bars i:nth-child(4) { animation-delay: .24s; }
+.loader-bars i:nth-child(5) { animation-delay: .32s; }
+.loader-pulse { position: relative; width: 52px; height: 52px; }
+.loader-pulse i { position: absolute; inset: 0; border: 1px solid var(--accent); border-radius: 50%; animation: pulse 2s var(--ease) infinite; }
+.loader-pulse i:nth-child(2) { animation-delay: .55s; }
+.loader-pulse i:nth-child(3) { animation-delay: 1.1s; }
+.hybrid { width: 100%; display: flex; flex-direction: column; gap: 9px; }
+.hybrid-row { display: flex; gap: 4px; }
+.hybrid-seg { flex: 1; height: 8px; background: var(--surface-2); border-radius: 2px; overflow: hidden; }
+.hybrid-seg i { display: block; height: 100%; width: 0; background: var(--accent); animation: fill 1.2s var(--ease) forwards; }
+.hybrid-labels { display: flex; justify-content: space-between; gap: 2px; font-family: var(--font-mono); font-size: 8px; color: var(--muted); }
+.hybrid-replay {
+  margin-top: 2px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--muted);
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 8.5px;
+  padding: 3px 7px;
+  cursor: pointer;
+  align-self: flex-end;
+}
+.hybrid-replay:hover { color: var(--ink); border-color: var(--ink); }
+
+/* ── how it works demo ──────────────────────────────────────── */
+.demo {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.demo-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 20px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--line);
+}
+.demo-head-left { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.demo-head h3 { margin: 0; font-size: 13px; font-weight: 600; }
+.demo-steps { display: flex; flex-wrap: wrap; gap: 6px; }
+.step-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 4px 8px;
+  transition: background .2s, color .2s, border-color .2s;
+}
+[data-feel="signal"] .step-chip { border-radius: 0; }
+.step-chip b {
+  display: grid;
+  place-items: center;
+  width: 15px; height: 15px;
+  border-radius: 50%;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 8.5px;
+  font-weight: 500;
+}
+.step-chip.active { border-color: var(--accent); color: var(--accent-text); background: var(--accent-soft); }
+.step-chip.active b { background: var(--accent); color: var(--accent-ink); }
+.demo-stage {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(84px, .7fr) minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 30px 18px;
+  min-height: 230px;
+}
+.demo-lines { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; }
+.demo-line { stroke: var(--line); stroke-width: 1; stroke-dasharray: 5 6; }
+.demo-line.active { stroke: var(--accent); animation: dash 1.2s linear infinite; }
+.demo-node {
+  position: relative;
+  z-index: 2;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 14px 10px;
+  text-align: center;
+  min-width: 0;
+  transition: border-color .3s, background .3s;
+}
+.demo-node .node-label { display: block; font-family: var(--font-mono); font-size: 9px; color: var(--muted); }
+.demo-node .node-name { display: block; margin-top: 4px; font-size: 12.5px; font-weight: 600; overflow-wrap: anywhere; }
+.demo-node .node-verb { display: block; margin-top: 5px; font-family: var(--font-mono); font-size: 8.5px; color: var(--accent-text); }
+.demo-node.is-hot { border-color: var(--accent); }
+.demo-node.hub {
+  justify-self: center;
+  width: 100%;
+  max-width: 112px;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+  display: grid;
+  place-items: center;
+  padding: 10px;
+}
+.demo-node.hub .node-label { color: var(--accent-ink); opacity: .65; }
+.demo-node.hub .node-name { font-family: var(--font-display); font-size: 14px; font-weight: 700; margin: 0; }
+.demo-node.hub.is-active { animation: hubPulse 1.5s var(--ease) infinite; }
+.demo-particle {
+  position: absolute;
+  top: 50%;
+  z-index: 3;
+  width: 11px; height: 11px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 5px var(--accent-soft);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+.demo-particle.pin { left: 16%; animation: travelIn .95s var(--ease) forwards; }
+.demo-particle.pout { left: 50%; animation: travelOut .95s var(--ease) forwards; }
+.demo-readout { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; padding: 0 18px 16px; }
+.demo-card {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg);
+  padding: 14px;
+  min-height: 118px;
+  min-width: 0;
+}
+.demo-card h4 { margin: 0 0 8px; font-family: var(--font-mono); font-size: 9.5px; font-weight: 500; color: var(--muted); }
+.demo-card p { margin: 0; font-size: 12.5px; line-height: 1.55; }
+.demo-card .query { font-family: var(--font-mono); font-size: 11.5px; color: var(--muted); margin-bottom: 7px; }
+.demo-card .meta { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 10px; }
+.demo-empty { color: var(--muted); font-size: 12px; line-height: 1.55; }
+.demo-actions { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 18px 16px; }
+.demo-note {
+  padding: 0 18px 16px;
+  min-height: 2.4em;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+
+/* ── font experiments ───────────────────────────────────────── */
+.font-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.font-card {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: var(--radius);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+.font-sample { font-size: clamp(1.35rem, 2.5vw, 2rem); line-height: 1.05; letter-spacing: -.02em; overflow-wrap: anywhere; }
+.font-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: auto; }
+.font-name { font-family: var(--font-mono); font-size: 9.5px; color: var(--muted); overflow-wrap: anywhere; }
+
+/* ── footer ─────────────────────────────────────────────────── */
+.footer {
+  border-top: var(--border-w) solid var(--line);
+  padding-block: clamp(40px, 6vw, 64px) 24px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+}
+.footer-copy { max-width: 58ch; }
+.footer h2 {
+  margin: 0 0 10px;
+  font-family: var(--font-display);
+  font-size: clamp(1.6rem, 3vw, 2.3rem);
+  font-weight: 600;
+  letter-spacing: -.03em;
+  line-height: 1.05;
+}
+[data-feel="atlas"] .footer h2 { font-weight: 400; }
+[data-feel="signal"] .footer h2 { font-weight: 800; }
+[data-feel="drift"] .footer h2 { font-weight: 500; }
+.footer p { margin: 0; color: var(--muted); font-size: 13.5px; line-height: 1.65; }
+.footer-mark {
+  font-family: var(--font-display);
+  font-size: clamp(3.4rem, 9vw, 7rem);
+  line-height: 1;
+  letter-spacing: -.06em;
+  opacity: .09;
+  user-select: none;
+}
+
+/* ── shortlist tray ─────────────────────────────────────────── */
+.tray {
+  position: fixed;
+  left: 50%;
+  bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%);
+  z-index: 50;
+  width: min(680px, calc(100% - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.tray-panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-soft);
+  padding: 16px;
+  max-height: 50vh;
+  overflow: auto;
+}
+.tray-panel h3 { margin: 0 0 10px; font-size: 13px; }
+.tray-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 6px 0;
+  border-bottom: 1px dashed var(--line);
+  font-size: 12px;
+}
+.tray-row:last-of-type { border-bottom: 0; }
+.tray-row strong { font-weight: 600; }
+.tray-row span { color: var(--muted); text-align: right; overflow-wrap: anywhere; }
+.tray-empty { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.tray-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.tray-pre {
+  margin: 10px 0 0;
+  padding: 10px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-x: auto;
+}
+.tray-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--ink);
+  color: var(--bg);
+  border-radius: var(--radius-lg);
+  padding: 10px 12px;
+  box-shadow: 0 18px 40px -22px rgba(0,0,0,.6);
+}
+.tray-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 2px;
+}
+.tray-count {
+  display: inline-grid;
+  place-items: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+}
+.tray-note {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  opacity: .62;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tray-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--bg) 30%, transparent);
+  color: inherit;
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 10.5px;
+  cursor: pointer;
+  flex: none;
+}
+.tray-copy:hover { background: color-mix(in srgb, var(--bg) 14%, transparent); }
+[data-feel="signal"] .tray-bar, [data-feel="signal"] .tray-copy { border-radius: 0; }
+
+/* ── toast ──────────────────────────────────────────────────── */
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: calc(94px + env(safe-area-inset-bottom, 0px));
+  transform: translate(-50%, 8px);
+  z-index: 60;
+  background: var(--ink);
+  color: var(--bg);
+  border-radius: 999px;
+  padding: 10px 14px;
+  font-size: 12px;
+  box-shadow: 0 16px 36px -20px rgba(0,0,0,.65);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .2s, transform .2s var(--ease);
+  max-width: calc(100% - 32px);
+  text-align: center;
+}
+.toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+/* ── motion keyframes ───────────────────────────────────────── */
+@keyframes rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+@keyframes blink { 50% { opacity: 0; } }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes dash { to { stroke-dashoffset: -120; } }
+@keyframes marquee { to { transform: translateX(-50%); } }
+@keyframes floaty { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-10px); } }
+@keyframes bar { 0%, 100% { transform: scaleY(.32); } 50% { transform: scaleY(1); } }
+@keyframes pulse { 0% { transform: scale(.55); opacity: .7; } 100% { transform: scale(1.4); opacity: 0; } }
+@keyframes fill { to { width: 100%; } }
+@keyframes hubPulse {
+  0% { box-shadow: 0 0 0 0 var(--accent-soft); }
+  70% { box-shadow: 0 0 0 15px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+@keyframes travelIn { from { left: 16%; } to { left: 50%; } }
+@keyframes travelOut { from { left: 50%; } to { left: 84%; } }
+
+/* ── motion preference ──────────────────────────────────────── */
+[data-motion="off"] .marquee-track,
+[data-motion="off"] .float-inner,
+[data-motion="off"] .float-orb,
+[data-motion="off"] .loader-orbit,
+[data-motion="off"] .loader-bars i,
+[data-motion="off"] .loader-pulse i,
+[data-motion="off"] .atlas-ring,
+[data-motion="off"] .atlas-pulse,
+[data-motion="off"] .atlas-line,
+[data-motion="off"] .drift-path,
+[data-motion="off"] .demo-line.active,
+[data-motion="off"] .demo-node.hub.is-active,
+[data-motion="off"] .cursor {
+  animation: none !important;
+}
+[data-motion="off"] .demo-particle { display: none; }
+[data-motion="off"] .hybrid-seg i { animation: none !important; width: 100%; }
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  .hero { animation: none; }
+  *, *::before, *::after {
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important;
+  }
+  [data-motion="on"] .marquee-track,
+  [data-motion="on"] .float-inner,
+  [data-motion="on"] .float-orb,
+  [data-motion="on"] .loader-orbit,
+  [data-motion="on"] .loader-bars i,
+  [data-motion="on"] .loader-pulse i { animation: none !important; }
+}
+
+/* ── responsive ─────────────────────────────────────────────── */
+@media (max-width: 1000px) {
+  .motion-grid, .loader-grid, .font-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .palette-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .type-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 900px) {
+  .hero-grid { grid-template-columns: 1fr; }
+  .hero-copy { align-items: flex-start; }
+  .hero-atlas .hero-center { align-items: center; }
+  .controls-grid { grid-template-columns: 1fr; }
+  .drift-visual { min-height: 340px; }
+}
+@media (max-width: 760px) {
+  .brand-sub { display: none; }
+  .topbar-inner { gap: 8px; }
+  .topbar-controls { width: 100%; justify-content: space-between; }
+  .segmented.feels { flex: 1 1 100%; overflow-x: auto; }
+}
+@media (max-width: 620px) {
+  .palette-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .motion-grid, .loader-grid, .font-grid { grid-template-columns: 1fr; }
+  .signal-stats { grid-template-columns: 1fr; }
+  .signal-stat { border-right: 0; border-bottom: 1px solid var(--line); }
+  .signal-stat:last-child { border-bottom: 0; }
+  .demo-stage { grid-template-columns: minmax(0, 1fr) 66px minmax(0, 1fr); padding: 20px 10px; gap: 4px; }
+  .demo-node { padding: 10px 6px; }
+  .demo-node .node-name { font-size: 11px; }
+  .demo-node .node-label { font-size: 8px; }
+  .demo-node .node-verb { font-size: 7.5px; }
+  .demo-node.hub .node-name { font-size: 11px; }
+  .demo-readout { grid-template-columns: 1fr; padding-inline: 10px; }
+  .demo-actions, .demo-note, .demo-head { padding-inline: 12px; }
+  .tray-note { display: none; }
+  .tray-panel { padding: 13px; }
+  .hero-signal-bottom { align-items: flex-start; }
+}
+@media (max-width: 480px) {
+  .brand-word { font-size: 16px; }
+  .seg { font-size: 10px; padding: 5px 7px; }
+  .motion-toggle span:last-child { display: none; }
+  .float-card { width: 58%; }
+  .footer-mark { display: none; }
+}
+</style>
+
+<script>
+(function () {
+  var d = document.documentElement;
+  var feel = 'kernel';
+  try {
+    var storedFeel = localStorage.getItem('mesh_feel');
+    if (storedFeel === 'kernel' || storedFeel === 'atlas' || storedFeel === 'signal' || storedFeel === 'drift') feel = storedFeel;
+  } catch (e) {}
+  var mqDark = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+  var mqReduce = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
+  var pref = null;
+  try { pref = localStorage.getItem('mesh_theme'); } catch (e) {}
+  if (pref !== 'light' && pref !== 'dark' && pref !== 'system') {
+    var host = d.getAttribute('data-theme');
+    pref = (host === 'light' || host === 'dark') ? host : 'system';
+  }
+  var resolved = pref === 'system' ? ((mqDark && mqDark.matches) ? 'dark' : 'light') : pref;
+  var motion = null;
+  try { motion = localStorage.getItem('mesh_motion'); } catch (e) {}
+  if (motion !== 'on' && motion !== 'off') motion = (mqReduce && mqReduce.matches) ? 'off' : 'on';
+  d.setAttribute('data-feel', feel);
+  d.setAttribute('data-theme', resolved);
+  d.setAttribute('data-theme-pref', pref);
+  d.setAttribute('data-motion', motion);
+  d.style.colorScheme = resolved;
+})();
+</script>
+
+<div id="root"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.min.js"></script>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef, useMemo, useCallback, createContext, useContext } = React;
+
+/* ── data ───────────────────────────────────────────────────── */
+
+const FEELS = [
+  { id: 'kernel', name: 'Kernel', tag: 'The machine room', note: 'Terminal precision, hard edges, acid signal.', dot: '#A8D93A' },
+  { id: 'atlas', name: 'Atlas', tag: 'The living index', note: 'Editorial calm, serif scale, cobalt.', dot: '#1F3BFF' },
+  { id: 'signal', name: 'Signal', tag: 'Kinetic broadcast', note: 'Poster type, marquees, vermilion.', dot: '#FF3B1F' },
+  { id: 'drift', name: 'Drift', tag: 'Soft system', note: 'Warm paper, soft depth, sage.', dot: '#2F7A6B' }
+];
+
+const PALETTES = {
+  kernel: {
+    light: { bg: '#F7F8F3', surface: '#FFFFFF', ink: '#0B0D08', muted: '#5D6455', accent: '#B9F24A', accentText: '#2F6B00' },
+    dark: { bg: '#0B0D08', surface: '#11140C', ink: '#F4F7EC', muted: '#A2AA96', accent: '#C8F04A', accentText: '#C8F04A' }
+  },
+  atlas: {
+    light: { bg: '#FFFFFF', surface: '#FAFAF7', ink: '#12131A', muted: '#636773', accent: '#1F3BFF', accentText: '#1F3BFF' },
+    dark: { bg: '#0C0D12', surface: '#13141B', ink: '#F4F4F1', muted: '#9A9DA8', accent: '#7385FF', accentText: '#93A0FF' }
+  },
+  signal: {
+    light: { bg: '#FFFFFF', surface: '#F5F5F2', ink: '#0A0A0A', muted: '#636363', accent: '#FF3B1F', accentText: '#C62B12' },
+    dark: { bg: '#0A0A0A', surface: '#141414', ink: '#F5F5F0', muted: '#A0A0A0', accent: '#FF5A3D', accentText: '#FF8066' }
+  },
+  drift: {
+    light: { bg: '#FBFAF6', surface: '#FFFFFF', ink: '#171A18', muted: '#68706B', accent: '#2F7A6B', accentText: '#26685B' },
+    dark: { bg: '#101312', surface: '#171B19', ink: '#EFF1ED', muted: '#9AA29D', accent: '#6FC7B2', accentText: '#7FD4BF' }
+  }
+};
+
+const PALETTE_TOKENS = [
+  { key: 'bg', label: 'Ground' },
+  { key: 'surface', label: 'Surface' },
+  { key: 'ink', label: 'Ink' },
+  { key: 'muted', label: 'Muted' },
+  { key: 'accent', label: 'Accent' },
+  { key: 'accentText', label: 'Accent text' }
+];
+
+const TYPE_INFO = {
+  kernel: { display: 'Martian Mono', body: 'Instrument Sans', mono: 'JetBrains Mono' },
+  atlas: { display: 'Instrument Serif', body: 'Instrument Sans', mono: 'IBM Plex Mono' },
+  signal: { display: 'Syne', body: 'Space Grotesk', mono: 'JetBrains Mono' },
+  drift: { display: 'Fraunces', body: 'Onest', mono: 'DM Mono' }
+};
+
+const HERO = {
+  kernel: {
+    kicker: 'Shared memory for AI agents',
+    title: 'Your agents are brilliant. And they have amnesia.',
+    sub: 'Mesh gives every agent one shared memory. One learns a fact. Every other agent recalls it in under a tenth of a millisecond.',
+    primary: 'Install mesh',
+    secondary: 'See it work'
+  },
+  atlas: {
+    kicker: 'Mesh / local-first agent memory',
+    title: 'Nothing your agents learn should be learned twice.',
+    sub: 'A quiet, local memory layer that lets every agent in your stack recall what the others already know, by meaning, keyword, or exact identifier.',
+    primary: 'Install mesh',
+    secondary: 'Watch it work'
+  },
+  signal: {
+    kicker: 'One memory bus for every agent',
+    title: 'One agent learns. Every agent knows.',
+    sub: 'Shared semantic memory for AI agents. Local-first. Under 0.1 ms. No external database daemon.',
+    primary: 'Get mesh',
+    secondary: 'Run the demo'
+  },
+  drift: {
+    kicker: 'Memory that outlives the session',
+    title: 'Memory that outlives the session.',
+    sub: 'Mesh is the shared memory your agents have been missing. Facts persist, contradictions surface, and every session starts a little wiser.',
+    primary: 'Start remembering',
+    secondary: 'How it works'
+  }
+};
+
+const FONT_TESTS = [
+  { id: 'handjet', name: 'Handjet', family: '"Handjet", monospace', weight: 500, note: 'Parametric pixel display. Very loud.' },
+  { id: 'majormono', name: 'Major Mono Display', family: '"Major Mono Display", monospace', weight: 400, note: 'Monospaced display, one weight.' },
+  { id: 'unbounded', name: 'Unbounded', family: '"Unbounded", sans-serif', weight: 500, note: 'Wide, futuristic variable sans.' },
+  { id: 'anybody', name: 'Anybody', family: '"Anybody", sans-serif', weight: 800, note: 'Width-shifting variable grotesque.' },
+  { id: 'syne', name: 'Syne', family: '"Syne", sans-serif', weight: 700, note: 'Wide geometric display.' },
+  { id: 'instrument', name: 'Instrument Serif', family: '"Instrument Serif", serif', weight: 400, note: 'High-contrast editorial serif.' },
+  { id: 'jacquard', name: 'Jacquard 24', family: '"Jacquard 24", serif', weight: 400, note: 'Pixel blackletter. Maximum character.' },
+  { id: 'bricolage', name: 'Bricolage Grotesque', family: '"Bricolage Grotesque", sans-serif', weight: 600, note: 'Quirky editorial grotesque.' }
+];
+
+/* ── icons ──────────────────────────────────────────────────── */
+
+function Icon({ name, size = 16 }) {
+  const common = {
+    width: size, height: size, viewBox: '0 0 16 16', fill: 'none',
+    stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round',
+    strokeLinejoin: 'round', 'aria-hidden': 'true'
+  };
+  if (name === 'sun') return (
+    <svg {...common}>
+      <circle cx="8" cy="8" r="3" />
+      <path d="M8 1.5v1.6M8 12.9v1.6M1.5 8h1.6M12.9 8h1.6M3.4 3.4l1.1 1.1M11.5 11.5l1.1 1.1M12.6 3.4l-1.1 1.1M4.5 11.5l-1.1 1.1" />
+    </svg>
+  );
+  if (name === 'moon') return (
+    <svg {...common}>
+      <path d="M13.2 9.6A5.5 5.5 0 0 1 6.4 2.8a5.5 5.5 0 1 0 6.8 6.8Z" />
+    </svg>
+  );
+  if (name === 'auto') return (
+    <svg {...common}>
+      <circle cx="8" cy="8" r="6" />
+      <path d="M8 2a6 6 0 0 0 0 12Z" fill="currentColor" stroke="none" />
+    </svg>
+  );
+  if (name === 'plus') return <svg {...common}><path d="M8 3v10M3 8h10" /></svg>;
+  if (name === 'check') return <svg {...common}><path d="M3 8.5l3.1 3.1L13 4.6" /></svg>;
+  if (name === 'copy') return (
+    <svg {...common}>
+      <rect x="5.5" y="5.5" width="8" height="8" rx="1.2" />
+      <path d="M10.5 5.5v-2a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2" />
+    </svg>
+  );
+  if (name === 'bookmark') return (
+    <svg {...common}><path d="M4.5 2.5h7v11l-3.5-2.4-3.5 2.4Z" /></svg>
+  );
+  if (name === 'search') return (
+    <svg {...common}><circle cx="7" cy="7" r="4.2" /><path d="M10.2 10.2 14 14" /></svg>
+  );
+  if (name === 'chevron-up') return <svg {...common}><path d="M4 10l4-4 4 4" /></svg>;
+  if (name === 'chevron-down') return <svg {...common}><path d="M4 6l4 4 4-4" /></svg>;
+  return null;
+}
+
+/* ── copy helpers ───────────────────────────────────────────── */
+
+async function copyText(text) {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch (e) {}
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.top = '-1000px';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch (e) {
+    return false;
+  }
+}
+
+function scrollToId(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  el.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' });
+}
+
+/* ── contexts ───────────────────────────────────────────────── */
+
+const ShortlistCtx = createContext({ picks: [], togglePick: () => {} });
+const CopyCtx = createContext({ copy: async () => false, copied: null });
+const useShortlist = () => useContext(ShortlistCtx);
+const useCopy = () => useContext(CopyCtx);
+
+function PickButton({ id, label }) {
+  const { picks, togglePick } = useShortlist();
+  const picked = picks.some(p => p.id === id);
+  return (
+    <button
+      className={'pick ' + (picked ? 'is-picked' : '')}
+      aria-pressed={picked}
+      onClick={() => togglePick(id, label)}
+      title={picked ? 'Remove from shortlist' : 'Add to shortlist'}
+    >
+      <Icon name={picked ? 'check' : 'plus'} size={11} />
+      <span>{picked ? 'Picked' : 'Pick'}</span>
+    </button>
+  );
+}
+
+function CodeChip({ text, id }) {
+  const { copy, copied } = useCopy();
+  const done = copied === id;
+  return (
+    <button className="code-chip" onClick={() => copy(text, id)} title="Copy command">
+      <code>{text}</code>
+      <span className="code-chip-icon"><Icon name={done ? 'check' : 'copy'} size={12} /></span>
+      <span className="sr-only" aria-live="polite">{done ? 'Copied' : ''}</span>
+    </button>
+  );
+}
+
+/* ── shared bits ────────────────────────────────────────────── */
+
+function Button({ variant = 'primary', size = 'md', icon, children, className = '', ...props }) {
+  return (
+    <button className={'btn btn-' + variant + (size !== 'md' ? ' btn-' + size : '') + ' ' + className} {...props}>
+      {children}
+      {icon}
+    </button>
+  );
+}
+
+function HeroCtas({ feel, onPrimary, onSecondary }) {
+  const c = HERO[feel];
+  return (
+    <div className={'cta-row' + (feel === 'atlas' ? ' center' : '')}>
+      <Button size="lg" onClick={onPrimary}>{c.primary}</Button>
+      <Button size="lg" variant="secondary" onClick={onSecondary}>{c.secondary}</Button>
+    </div>
+  );
+}
+
+function InstallMeta() {
+  return (
+    <div className="hero-meta">
+      <CodeChip text="pip install mesh-context-layer" id="install" />
+      <span className="meta-sep">/</span>
+      <span>MIT</span>
+      <span className="meta-sep">/</span>
+      <span>local-first</span>
+    </div>
+  );
+}
+
+function Section({ id, title, note, right, children }) {
+  return (
+    <section className="section" id={id}>
+      <div className="section-head">
+        <div className="section-head-copy">
+          <h2 className="section-title">{title}</h2>
+          {note ? <p className="section-note">{note}</p> : null}
+        </div>
+        {right ? <div className="section-right">{right}</div> : null}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+/* ── hero visuals ───────────────────────────────────────────── */
+
+function KernelVisual() {
+  return (
+    <div className="kernel-visual">
+      <div className="term">
+        <div className="term-bar">
+          <span className="term-dots"><i /><i /><i /></span>
+          <span>mesh / checkout-service</span>
+          <span className="live">live</span>
+        </div>
+        <div className="term-body">
+          <p className="term-line dim">$ mesh status</p>
+          <p className="term-line"><span className="ok">ok</span> local / sqlite wal / 384d</p>
+          <p className="term-line dim">$ agent_a.learn("postgres runs on :5432")</p>
+          <p className="term-line"><span className="ok">ok</span> indexed / dedupe on / 0.08 ms</p>
+          <p className="term-line dim">$ agent_b.recall("postgres port")</p>
+          <p className="term-line"><span className="ok">ok</span> 1 hit / 0.93 sim / backend-agent</p>
+          <p className="term-line"><span className="ok">ok</span> shared with 3 agents</p>
+          <p className="term-line"><span className="ok">ok</span> <span className="cursor" /> </p>
+        </div>
+      </div>
+      <div className="kernel-flow">
+        <span className="flow-chip">backend-agent</span>
+        <span className="flow-arrow">to</span>
+        <span className="flow-chip hot">mesh</span>
+        <span className="flow-arrow">to</span>
+        <span className="flow-chip">frontend-agent</span>
+      </div>
+      <div className="kernel-caption">example session / local only</div>
+    </div>
+  );
+}
+
+function AtlasVisual() {
+  const outer = [
+    { x: 120, y: 70, label: 'claude' },
+    { x: 680, y: 62, label: 'cursor' },
+    { x: 96, y: 250, label: 'windsurf' },
+    { x: 704, y: 258, label: 'codex' },
+    { x: 400, y: 302, label: 'python' }
+  ];
+  return (
+    <div className="atlas-visual">
+      <svg viewBox="0 0 800 350" role="img" aria-label="Mesh connects several agents through one shared memory node.">
+        <circle className="atlas-ring" cx="400" cy="170" r="92" />
+        <circle className="atlas-pulse" cx="400" cy="170" r="44" />
+        {outer.map((n, i) => (
+          <line key={'line' + i} className={'atlas-line' + (i % 2 ? ' accent' : '')} x1="400" y1="170" x2={n.x} y2={n.y} />
+        ))}
+        {outer.map((n, i) => (
+          <g key={n.label}>
+            <circle className="atlas-node" cx={n.x} cy={n.y} r="7" />
+            <text className="atlas-label" x={n.x} y={n.y + 26} textAnchor="middle">{n.label}</text>
+          </g>
+        ))}
+        <circle className="atlas-node main" cx="400" cy="170" r="40" />
+        <text className="atlas-label-main" x="400" y="175" textAnchor="middle">mesh</text>
+      </svg>
+    </div>
+  );
+}
+
+function Marquee({ children, reverse, accent, size = 'big' }) {
+  return (
+    <div className={'marquee ' + size + (reverse ? ' reverse' : '') + (accent ? ' accent' : '')}>
+      <div className="marquee-track">
+        <span>{children}</span>
+        <span aria-hidden="true">{children}</span>
+      </div>
+    </div>
+  );
+}
+
+function SignalVisual() {
+  return (
+    <div className="signal-visual">
+      <Marquee accent size="big">
+        Learn once <span className="sep">*</span> Recall everywhere <span className="sep">*</span>
+      </Marquee>
+      <div className="signal-stats">
+        <div className="signal-stat"><strong>{'<0.1'}</strong><span>ms cosine</span></div>
+        <div className="signal-stat"><strong>384</strong><span>dimensions</span></div>
+        <div className="signal-stat"><strong>5</strong><span>search stages</span></div>
+      </div>
+      <Marquee small reverse>
+        Local-first <span className="sep">*</span> MIT <span className="sep">*</span> SQLite WAL <span className="sep">*</span> FTS5 <span className="sep">*</span>
+      </Marquee>
+    </div>
+  );
+}
+
+function DriftVisual() {
+  return (
+    <div className="drift-visual" aria-label="A fact moves from one agent to another through the mesh.">
+      <svg className="drift-lines" viewBox="0 0 500 380" preserveAspectRatio="none" aria-hidden="true">
+        <path className="drift-path" d="M70 300 C130 250 150 190 205 160" />
+        <path className="drift-path" d="M70 300 C180 330 300 330 420 285" />
+        <path className="drift-path" d="M420 80 C360 120 330 170 300 200" />
+      </svg>
+      <div className="float-card mem">
+        <div className="float-inner">
+          <span className="chip">fact / db</span>
+          <p>Production PostgreSQL 16 runs on port 5432 with pgBouncer pooling.</p>
+          <span className="by">from backend-agent</span>
+        </div>
+      </div>
+      <div className="float-card query">
+        <div className="float-inner">
+          <span className="chip">recall</span>
+          <p>what port does postgres use?</p>
+          <span className="score">0.93 similarity</span>
+        </div>
+      </div>
+      <div className="float-orb a">A</div>
+      <div className="float-orb b">B</div>
+    </div>
+  );
+}
+
+/* ── hero ───────────────────────────────────────────────────── */
+
+function Hero({ feel, onPrimary, onSecondary }) {
+  const c = HERO[feel];
+
+  if (feel === 'atlas') {
+    return (
+      <section className="hero hero-atlas">
+        <div className="hero-center">
+          <p className="kicker"><span className="kicker-dot" />{c.kicker}</p>
+          <h1>{c.title}</h1>
+          <p className="lede">{c.sub}</p>
+          <HeroCtas feel={feel} onPrimary={onPrimary} onSecondary={onSecondary} />
+          <InstallMeta />
+        </div>
+        <AtlasVisual />
+      </section>
+    );
+  }
+
+  if (feel === 'signal') {
+    return (
+      <section className="hero hero-signal">
+        <div className="hero-signal-top">
+          <p className="kicker"><span className="kicker-dot" />{c.kicker}</p>
+          <h1>{c.title}</h1>
+          <div className="hero-signal-bottom">
+            <p className="lede">{c.sub}</p>
+            <HeroCtas feel={feel} onPrimary={onPrimary} onSecondary={onSecondary} />
+          </div>
+          <InstallMeta />
+        </div>
+        <SignalVisual />
+      </section>
+    );
+  }
+
+  return (
+    <section className={'hero hero-' + feel}>
+      <div className="hero-grid">
+        <div className="hero-copy">
+          <p className="kicker"><span className="kicker-dot" />{c.kicker}</p>
+          <h1>{c.title}</h1>
+          <p className="lede">{c.sub}</p>
+          <HeroCtas feel={feel} onPrimary={onPrimary} onSecondary={onSecondary} />
+          <InstallMeta />
+        </div>
+        {feel === 'kernel' ? <KernelVisual /> : <DriftVisual />}
+      </div>
+    </section>
+  );
+}
+
+/* ── palette ────────────────────────────────────────────────── */
+
+function PaletteSection({ feel, theme }) {
+  const { copy, copied } = useCopy();
+  const pal = PALETTES[feel];
+  return (
+    <Section
+      id="palette"
+      title="Palette"
+      note="Every direction is white-first in light mode. Dark mode is its own palette, not an inversion. Each swatch shows light on the left and dark on the right. Click one to copy the active hex."
+    >
+      <div className="palette-grid">
+        {PALETTE_TOKENS.map(t => {
+          const light = pal.light[t.key];
+          const dark = pal.dark[t.key];
+          const hex = theme === 'dark' ? dark : light;
+          const id = 'swatch:' + t.key;
+          const done = copied === id;
+          return (
+            <button key={t.key} className="swatch" onClick={() => copy(hex, id)} title={'Copy ' + hex}>
+              <span className="swatch-split" aria-hidden="true">
+                <i style={{ background: light }} />
+                <i style={{ background: dark }} />
+              </span>
+              <span className="swatch-meta">
+                <strong>{t.label}</strong>
+                <span>{done ? 'Copied' : hex}</span>
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </Section>
+  );
+}
+
+/* ── type ───────────────────────────────────────────────────── */
+
+function TypeSection({ feel }) {
+  const info = TYPE_INFO[feel];
+  const feelName = FEELS.find(f => f.id === feel).name;
+  return (
+    <Section
+      id="type"
+      title="Type"
+      note="A display face with a point of view, a body face that stays out of the way, and a mono face for the machine details."
+      right={<PickButton id={'type:' + feel} label={'Type pairing / ' + feelName} />}
+    >
+      <div className="type-grid">
+        <div className="type-card">
+          <p className="type-role">Display</p>
+          <p className="spec-display">Shared memory, quietly.</p>
+          <p className="face-name">{info.display}</p>
+        </div>
+        <div className="type-card">
+          <p className="type-role">Body</p>
+          <p className="spec-body">When one agent learns something, every other agent can recall it by meaning, keyword, or exact identifier. The page should read like a person wrote it.</p>
+          <p className="face-name">{info.body}</p>
+        </div>
+        <div className="type-card">
+          <p className="type-role">Mono</p>
+          <p className="spec-mono">{'mesh recall "postgres port" --n 3'}<br />{'1 hit / 0.93 sim / backend-agent'}</p>
+          <p className="face-name">{info.mono}</p>
+        </div>
+      </div>
+      <div className="scale-row" aria-label="Type scale">
+        {[72, 48, 32, 20, 16, 13].map(n => (
+          <span key={n}><b style={{ fontSize: n + 'px' }}>Aa</b>{n}px</span>
+        ))}
+      </div>
+    </Section>
+  );
+}
+
+/* ── controls ───────────────────────────────────────────────── */
+
+function ControlsSection({ feel }) {
+  const [autoRedact, setAutoRedact] = useState(true);
+  const [query, setQuery] = useState('');
+  const feelName = FEELS.find(f => f.id === feel).name;
+  return (
+    <Section
+      id="controls"
+      title="Controls"
+      note="The pieces a real page needs, dressed in the current direction. Hover the buttons and flip the switch."
+    >
+      <div className="controls-grid">
+        <div className="panel">
+          <div className="panel-head">
+            <h3>Actions</h3>
+            <PickButton id={'control:actions-' + feel} label={'Actions / ' + feelName} />
+          </div>
+          <div className="control-row">
+            <Button>Add memory</Button>
+            <Button variant="secondary">Inspect</Button>
+            <Button variant="quiet">Docs</Button>
+            <button className="btn btn-icon" aria-label="Copy" title="Copy">
+              <Icon name="copy" size={15} />
+            </button>
+            <Button disabled>Disabled</Button>
+          </div>
+        </div>
+        <div className="panel">
+          <div className="panel-head">
+            <h3>Fields and labels</h3>
+            <PickButton id={'control:fields-' + feel} label={'Fields / ' + feelName} />
+          </div>
+          <div className="control-stack">
+            <div className="field">
+              <label className="field-label" htmlFor="mesh-query">Query</label>
+              <div className="input-wrap">
+                <Icon name="search" size={14} />
+                <input
+                  id="mesh-query"
+                  value={query}
+                  onChange={e => setQuery(e.target.value)}
+                  placeholder="Ask the mesh anything"
+                  autoComplete="off"
+                />
+                <kbd>/</kbd>
+              </div>
+            </div>
+            <div className="toggle-row">
+              <span>Redact secrets automatically</span>
+              <button
+                className={'switch ' + (autoRedact ? 'is-on' : '')}
+                role="switch"
+                aria-checked={autoRedact}
+                aria-label="Redact secrets automatically"
+                onClick={() => setAutoRedact(v => !v)}
+              >
+                <i />
+              </button>
+            </div>
+            <div className="chip-row">
+              <span className="badge accent">fact</span>
+              <span className="badge">instruction</span>
+              <span className="badge">preference</span>
+              <span className="badge solid">local_only</span>
+              <span className="badge">0.93 similarity</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Section>
+  );
+}
+
+/* ── motion demos ───────────────────────────────────────────── */
+
+function MotionTile({ id, label, hint, children }) {
+  return (
+    <div className="tile">
+      <div className="tile-head">
+        <h3>{label}</h3>
+        <PickButton id={id} label={label} />
+      </div>
+      <div className="tile-stage">{children}</div>
+      <div className="tile-hint">{hint}</div>
+    </div>
+  );
+}
+
+function Magnetic({ motion, children }) {
+  const ref = useRef(null);
+  const onMove = e => {
+    if (!motion || !ref.current) return;
+    const r = ref.current.getBoundingClientRect();
+    const x = (e.clientX - r.left - r.width / 2) * 0.22;
+    const y = (e.clientY - r.top - r.height / 2) * 0.22;
+    ref.current.style.transform = 'translate(' + x + 'px,' + y + 'px)';
+  };
+  const onLeave = () => {
+    if (ref.current) ref.current.style.transform = '';
+  };
+  return (
+    <span ref={ref} className="magnetic" onMouseMove={onMove} onMouseLeave={onLeave}>
+      {children}
+    </span>
+  );
+}
+
+function Scramble({ text, seed, motion }) {
+  const [out, setOut] = useState(text);
+  useEffect(() => {
+    if (!motion) { setOut(text); return; }
+    const chars = '!<>-_\\/[]{}=+*^?#01';
+    let i = 0;
+    const id = setInterval(() => {
+      const next = text.split('').map((c, idx) => {
+        if (c === ' ') return ' ';
+        return idx < i ? c : chars[Math.floor(Math.random() * chars.length)];
+      }).join('');
+      setOut(next);
+      i += 1;
+      if (i > text.length) clearInterval(id);
+    }, 26);
+    return () => clearInterval(id);
+  }, [text, seed, motion]);
+  return <span className="scramble-text">{out}</span>;
+}
+
+function ScrambleDemo({ motion }) {
+  const [seed, setSeed] = useState(0);
+  return (
+    <button className="scramble-btn" onClick={() => setSeed(s => s + 1)} aria-label="Replay text scramble">
+      <Scramble text="Every agent knows." seed={seed} motion={motion} />
+      <span className="scramble-hint">click to replay</span>
+    </button>
+  );
+}
+
+function TiltDemo({ motion }) {
+  const ref = useRef(null);
+  const onMove = e => {
+    if (!motion || !ref.current) return;
+    const r = ref.current.getBoundingClientRect();
+    const rx = ((e.clientY - r.top) / r.height - 0.5) * -10;
+    const ry = ((e.clientX - r.left) / r.width - 0.5) * 10;
+    ref.current.style.transform = 'perspective(600px) rotateX(' + rx + 'deg) rotateY(' + ry + 'deg)';
+  };
+  const onLeave = () => {
+    if (ref.current) ref.current.style.transform = '';
+  };
+  return (
+    <div ref={ref} className="tilt-card" onMouseMove={onMove} onMouseLeave={onLeave}>
+      <span>3D tilt<br />0.93 hybrid match</span>
+    </div>
+  );
+}
+
+function SpotlightDemo({ motion }) {
+  const ref = useRef(null);
+  const onMove = e => {
+    if (!motion || !ref.current) return;
+    const r = ref.current.getBoundingClientRect();
+    ref.current.style.setProperty('--mx', (e.clientX - r.left) + 'px');
+    ref.current.style.setProperty('--my', (e.clientY - r.top) + 'px');
+  };
+  const onLeave = () => {
+    if (!ref.current) return;
+    ref.current.style.setProperty('--mx', '50%');
+    ref.current.style.setProperty('--my', '50%');
+  };
+  return (
+    <div ref={ref} className="spotlight" onMouseMove={onMove} onMouseLeave={onLeave}>
+      <span>move the light<br />around the card</span>
+    </div>
+  );
+}
+
+function MotionSection({ motion }) {
+  return (
+    <Section
+      id="motion"
+      title="Motion"
+      note="Hover, click, replay. These are interaction ideas, not the final choreography. Pick the ones that fit the voice you choose."
+    >
+      <div className="motion-grid">
+        <MotionTile id="motion:magnetic" label="Magnetic pull" hint="The button leans toward the cursor, then springs back.">
+          <Magnetic motion={motion}><Button size="sm">Pull me</Button></Magnetic>
+        </MotionTile>
+        <MotionTile id="motion:scramble" label="Text scramble" hint="Letters resolve from noise. Good for a live recall moment.">
+          <ScrambleDemo motion={motion} />
+        </MotionTile>
+        <MotionTile id="motion:tilt" label="3D tilt" hint="The card reads the pointer and tilts in perspective.">
+          <TiltDemo motion={motion} />
+        </MotionTile>
+        <MotionTile id="motion:spotlight" label="Cursor spotlight" hint="A soft light follows the pointer across the surface.">
+          <SpotlightDemo motion={motion} />
+        </MotionTile>
+      </div>
+    </Section>
+  );
+}
+
+/* ── loaders ────────────────────────────────────────────────── */
+
+function LoaderTile({ id, label, hint, children }) {
+  return (
+    <div className="tile">
+      <div className="tile-head">
+        <h3>{label}</h3>
+        <PickButton id={id} label={label} />
+      </div>
+      <div className="tile-stage">{children}</div>
+      <div className="tile-hint">{hint}</div>
+    </div>
+  );
+}
+
+function HybridLoader({ motion }) {
+  const [seed, setSeed] = useState(0);
+  const labels = ['dense', 'bm25', 'idf', 'syn', 'exact'];
+  return (
+    <div className="hybrid">
+      <div className="hybrid-row" key={seed}>
+        {labels.map((l, i) => (
+          <span className="hybrid-seg" key={l}>
+            <i style={{ animationDelay: (i * 0.16) + 's' }} />
+          </span>
+        ))}
+      </div>
+      <div className="hybrid-labels">
+        {labels.map(l => <span key={l}>{l}</span>)}
+      </div>
+      <button className="hybrid-replay" onClick={() => setSeed(s => s + 1)}>replay</button>
+    </div>
+  );
+}
+
+function LoadersSection({ motion }) {
+  return (
+    <Section
+      id="loaders"
+      title="Loaders"
+      note="Four ways to say the mesh is thinking. The last one is the real five-stage search: dense vectors, BM25, IDF, domain synonyms, and exact tokens."
+    >
+      <div className="loader-grid">
+        <LoaderTile id="loader:orbit" label="Orbit" hint="Two agents around one shared core.">
+          <span className="loader-orbit"><i /><i /></span>
+        </LoaderTile>
+        <LoaderTile id="loader:bars" label="Signal bars" hint="Compact, rhythmic, easy to place inline.">
+          <span className="loader-bars"><i /><i /><i /><i /><i /></span>
+        </LoaderTile>
+        <LoaderTile id="loader:pulse" label="Pulse rings" hint="A quiet heartbeat for a local-first tool.">
+          <span className="loader-pulse"><i /><i /><i /></span>
+        </LoaderTile>
+        <LoaderTile id="loader:hybrid" label="Five-stage search" hint="Something only Mesh would ship.">
+          <HybridLoader motion={motion} />
+        </LoaderTile>
+      </div>
+    </Section>
+  );
+}
+
+/* ── how it works ───────────────────────────────────────────── */
+
+function MeshDemo({ feel, motion }) {
+  const [step, setStep] = useState(0);
+  const [runId, setRunId] = useState(0);
+  const timers = useRef([]);
+
+  const clearTimers = () => {
+    timers.current.forEach(clearTimeout);
+    timers.current = [];
+  };
+  useEffect(() => clearTimers, []);
+
+  const run = () => {
+    clearTimers();
+    setStep(0);
+    setRunId(x => x + 1);
+    timers.current.push(setTimeout(() => setStep(1), 80));
+    timers.current.push(setTimeout(() => setStep(2), 1450));
+  };
+  const learn = () => {
+    clearTimers();
+    setStep(0);
+    setRunId(x => x + 1);
+    timers.current.push(setTimeout(() => setStep(1), 60));
+  };
+  const recall = () => {
+    clearTimers();
+    setStep(1);
+    setRunId(x => x + 1);
+    timers.current.push(setTimeout(() => setStep(2), 650));
+  };
+  const reset = () => {
+    clearTimers();
+    setStep(0);
+    setRunId(x => x + 1);
+  };
+
+  return (
+    <div className="demo">
+      <div className="demo-head">
+        <div className="demo-head-left">
+          <h3>Live story</h3>
+          <span className="badge">example data</span>
+        </div>
+        <div className="demo-steps">
+          <span className={'step-chip ' + (step >= 1 ? 'active' : '')}><b>1</b> Learn</span>
+          <span className={'step-chip ' + (step >= 1 ? 'active' : '')}><b>2</b> Index</span>
+          <span className={'step-chip ' + (step >= 2 ? 'active' : '')}><b>3</b> Recall</span>
+        </div>
+      </div>
+
+      <div className="demo-stage">
+        <svg className="demo-lines" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+          <line className={'demo-line' + (step >= 1 ? ' active' : '')} x1="20" y1="50" x2="44" y2="50" vectorEffect="non-scaling-stroke" />
+          <line className={'demo-line' + (step >= 2 ? ' active' : '')} x1="56" y1="50" x2="80" y2="50" vectorEffect="non-scaling-stroke" />
+        </svg>
+
+        <div className={'demo-node' + (step >= 1 ? ' is-hot' : '')}>
+          <span className="node-label">agent a</span>
+          <span className="node-name">backend-agent</span>
+          <span className="node-verb">learns</span>
+        </div>
+
+        <div className={'demo-node hub' + (step >= 1 && step < 2 ? ' is-active' : '')}>
+          <span>
+            <span className="node-label">shared</span>
+            <span className="node-name">mesh</span>
+          </span>
+        </div>
+
+        <div className={'demo-node' + (step >= 2 ? ' is-hot' : '')}>
+          <span className="node-label">agent b</span>
+          <span className="node-name">frontend-agent</span>
+          <span className="node-verb">recalls</span>
+        </div>
+
+        {step >= 1 && motion ? <span key={'in' + runId} className="demo-particle pin" /> : null}
+        {step >= 2 && motion ? <span key={'out' + runId} className="demo-particle pout" /> : null}
+      </div>
+
+      <div className="demo-readout">
+        <div className="demo-card">
+          <h4>What Agent A learned</h4>
+          {step >= 1 ? (
+            <div>
+              <p>Production PostgreSQL 16 runs on port 5432 with pgBouncer pooling.</p>
+              <div className="meta">
+                <span className="badge accent">fact</span>
+                <span className="badge">db / prod</span>
+                <span className="badge">384d</span>
+              </div>
+            </div>
+          ) : (
+            <p className="demo-empty">Nothing learned yet. Run the story to teach Agent A a fact.</p>
+          )}
+        </div>
+        <div className="demo-card">
+          <h4>What Agent B recalled</h4>
+          {step >= 2 ? (
+            <div>
+              <p className="query">what port does postgres use?</p>
+              <p>Production PostgreSQL 16 runs on port 5432 with pgBouncer pooling.</p>
+              <div className="meta">
+                <span className="badge accent">0.93 similarity</span>
+                <span className="badge">from backend-agent</span>
+                <span className="badge">{'<0.1 ms'}</span>
+              </div>
+            </div>
+          ) : (
+            <p className="demo-empty">Agent B has not asked yet. It will recall the fact without ever talking to Agent A.</p>
+          )}
+        </div>
+      </div>
+
+      <div className="demo-actions">
+        <Button size="sm" onClick={run}>Run the story</Button>
+        <Button size="sm" variant="secondary" onClick={learn}>Agent A learns</Button>
+        <Button size="sm" variant="secondary" onClick={recall}>Agent B recalls</Button>
+        <Button size="sm" variant="quiet" onClick={reset}>Reset</Button>
+      </div>
+
+      <div className="demo-note" aria-live="polite">
+        {step === 0 ? 'One SQLite file per namespace. No external database daemon.' : null}
+        {step === 1 ? 'learn / embed 384d / dedupe / hybrid index: dense + BM25 + IDF + synonyms + exact.' : null}
+        {step === 2 ? 'recall / five-stage hybrid search / sanitized context for Agent B.' : null}
+      </div>
+    </div>
+  );
+}
+
+function HowSection({ feel, motion }) {
+  const feelName = FEELS.find(f => f.id === feel).name;
+  return (
+    <Section
+      id="how"
+      title="How mesh works"
+      note="Run the story: one agent learns a fact, the mesh indexes it, another agent recalls it. The second agent never talks to the first."
+      right={<PickButton id={'demo:' + feel} label={'How-it-works demo / ' + feelName} />}
+    >
+      <MeshDemo key={feel} feel={feel} motion={motion} />
+    </Section>
+  );
+}
+
+/* ── font experiments ───────────────────────────────────────── */
+
+function FontsSection() {
+  return (
+    <Section
+      id="fonts"
+      title="Type experiments"
+      note="The display face does a lot of the work. These are the loudest options on Google Fonts. Pick any as a wildcard for the final page."
+    >
+      <div className="font-grid">
+        {FONT_TESTS.map(f => (
+          <div className="font-card" key={f.id}>
+            <div
+              className="font-sample"
+              style={{ fontFamily: f.family, fontWeight: f.weight }}
+            >
+              Mesh remembers.
+            </div>
+            <div className="font-meta">
+              <span className="font-name">{f.name}</span>
+              <PickButton id={'font:' + f.id} label={'Font: ' + f.name} />
+            </div>
+          </div>
+        ))}
+      </div>
+    </Section>
+  );
+}
+
+/* ── chrome ─────────────────────────────────────────────────── */
+
+function Topbar({ feel, setFeel, themePref, setThemePref, motion, setMotion, picks, onOpenTray }) {
+  return (
+    <header className="topbar">
+      <div className="topbar-inner">
+        <a
+          className="brand"
+          href="#top"
+          onClick={e => { e.preventDefault(); window.scrollTo({ top: 0, behavior: 'smooth' }); }}
+        >
+          <span className="brand-mark">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" aria-hidden="true">
+              <circle cx="8" cy="3" r="1.8" />
+              <circle cx="3" cy="12" r="1.8" />
+              <circle cx="13" cy="12" r="1.8" />
+              <path d="M8 4.8 3.8 10.4M8 4.8l4.2 5.6M4.8 12h6.4" />
+            </svg>
+          </span>
+          <span className="brand-word">mesh</span>
+          <span className="brand-sub">visual directions</span>
+        </a>
+
+        <div className="topbar-controls">
+          <div className="segmented feels" role="group" aria-label="Visual direction">
+            {FEELS.map(f => (
+              <button
+                key={f.id}
+                className={'seg ' + (feel === f.id ? 'is-active' : '')}
+                aria-pressed={feel === f.id}
+                onClick={() => setFeel(f.id)}
+                title={f.tag + ': ' + f.note}
+              >
+                <span className="seg-dot" style={{ background: f.dot }} />
+                {f.name}
+              </button>
+            ))}
+          </div>
+
+          <div className="segmented theme" role="group" aria-label="Theme">
+            <button
+              className={themePref === 'system' ? 'is-active' : ''}
+              onClick={() => setThemePref('system')}
+              title="Follow system"
+              aria-label="Follow system theme"
+            ><Icon name="auto" size={14} /></button>
+            <button
+              className={themePref === 'light' ? 'is-active' : ''}
+              onClick={() => setThemePref('light')}
+              title="Light"
+              aria-label="Light theme"
+            ><Icon name="sun" size={14} /></button>
+            <button
+              className={themePref === 'dark' ? 'is-active' : ''}
+              onClick={() => setThemePref('dark')}
+              title="Dark"
+              aria-label="Dark theme"
+            ><Icon name="moon" size={14} /></button>
+          </div>
+
+          <button
+            className={'motion-toggle ' + (motion ? 'is-on' : '')}
+            aria-pressed={motion}
+            onClick={() => setMotion(v => !v)}
+          >
+            <span className="switch"><i /></span>
+            <span>{motion ? 'Motion on' : 'Motion off'}</span>
+          </button>
+
+          <button className="tray-btn" onClick={onOpenTray} aria-label="Open shortlist">
+            <Icon name="bookmark" size={13} />
+            <span>{picks.length}</span>
+          </button>
+        </div>
+      </div>
+    </header>
+  );
+}
+
+function Tray({ open, setOpen, picks, summary, onCopy, copied }) {
+  const [showFallback, setShowFallback] = useState(false);
+
+  const handleCopy = async () => {
+    const ok = await onCopy(summary, 'shortlist');
+    setShowFallback(!ok);
+  };
+
+  return (
+    <div className="tray">
+      {open ? (
+        <div className="tray-panel">
+          <h3>Shortlist</h3>
+          <div className="tray-row">
+            <strong>Direction</strong>
+            <span>{summary.split('\n')[1]}</span>
+          </div>
+          {picks.length ? picks.map(p => (
+            <div className="tray-row" key={p.id}>
+              <strong>{p.id.split(':')[0]}</strong>
+              <span>{p.label}</span>
+            </div>
+          )) : (
+            <p className="tray-empty">Nothing picked yet. Tap the Pick button on any component, loader, effect, or font.</p>
+          )}
+          <div className="tray-actions">
+            <Button size="sm" onClick={handleCopy}>{copied === 'shortlist' ? 'Copied' : 'Copy shortlist'}</Button>
+            <Button size="sm" variant="quiet" onClick={() => setOpen(false)}>Close</Button>
+          </div>
+          {showFallback ? <pre className="tray-pre">{summary}</pre> : null}
+        </div>
+      ) : null}
+
+      <div className="tray-bar">
+        <button className="tray-toggle" onClick={() => setOpen(v => !v)} aria-expanded={open}>
+          <Icon name="bookmark" size={14} />
+          <span>Shortlist</span>
+          <span className="tray-count">{picks.length}</span>
+        </button>
+        <span className="tray-note">{picks.length ? 'Send this list back to Claude' : 'Pick pieces you like'}</span>
+        <button className="tray-copy" onClick={handleCopy}>
+          <Icon name={copied === 'shortlist' ? 'check' : 'copy'} size={13} />
+          <span>{copied === 'shortlist' ? 'Copied' : 'Copy'}</span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ── app ────────────────────────────────────────────────────── */
+
+function App() {
+  const root = document.documentElement;
+
+  const [feel, setFeel] = useState(() => root.getAttribute('data-feel') || 'kernel');
+  const [themePref, setThemePref] = useState(() => root.getAttribute('data-theme-pref') || 'system');
+  const [motion, setMotion] = useState(() => root.getAttribute('data-motion') !== 'off');
+  const [systemDark, setSystemDark] = useState(() =>
+    window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)').matches : false
+  );
+  const [picks, setPicks] = useState(() => {
+    try {
+      const raw = JSON.parse(localStorage.getItem('mesh_picks') || '[]');
+      return Array.isArray(raw) ? raw : [];
+    } catch (e) { return []; }
+  });
+  const [trayOpen, setTrayOpen] = useState(false);
+  const [copied, setCopied] = useState(null);
+  const [toast, setToast] = useState('');
+  const copyTimer = useRef(null);
+  const toastTimer = useRef(null);
+
+  useEffect(() => {
+    const mq = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+    if (!mq) return;
+    const handler = e => setSystemDark(e.matches);
+    if (mq.addEventListener) mq.addEventListener('change', handler);
+    else mq.addListener(handler);
+    return () => {
+      if (mq.removeEventListener) mq.removeEventListener('change', handler);
+      else mq.removeListener(handler);
+    };
+  }, []);
+
+  const resolvedTheme = themePref === 'system' ? (systemDark ? 'dark' : 'light') : themePref;
+
+  useEffect(() => {
+    root.setAttribute('data-feel', feel);
+    try { localStorage.setItem('mesh_feel', feel); } catch (e) {}
+  }, [feel]);
+
+  useEffect(() => {
+    root.setAttribute('data-theme', resolvedTheme);
+    root.setAttribute('data-theme-pref', themePref);
+    root.style.colorScheme = resolvedTheme;
+    try { localStorage.setItem('mesh_theme', themePref); } catch (e) {}
+  }, [resolvedTheme, themePref]);
+
+  useEffect(() => {
+    root.setAttribute('data-motion', motion ? 'on' : 'off');
+    try { localStorage.setItem('mesh_motion', motion ? 'on' : 'off'); } catch (e) {}
+  }, [motion]);
+
+  useEffect(() => {
+    try { localStorage.setItem('mesh_picks', JSON.stringify(picks)); } catch (e) {}
+  }, [picks]);
+
+  useEffect(() => () => {
+    if (copyTimer.current) clearTimeout(copyTimer.current);
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+  }, []);
+
+  const togglePick = useCallback((id, label) => {
+    setPicks(prev => prev.some(p => p.id === id) ? prev.filter(p => p.id !== id) : [...prev, { id, label }]);
+  }, []);
+
+  const showToast = useCallback(msg => {
+    setToast(msg);
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(''), 2600);
+  }, []);
+
+  const copy = useCallback(async (text, key) => {
+    const ok = await copyText(text);
+    setCopied(ok ? key : null);
+    if (copyTimer.current) clearTimeout(copyTimer.current);
+    copyTimer.current = setTimeout(() => setCopied(null), 2200);
+    if (!ok) showToast(text);
+    return ok;
+  }, [showToast]);
+
+  const install = useCallback(async () => {
+    const ok = await copyText('pip install mesh-context-layer');
+    showToast(ok ? 'Install command copied' : 'pip install mesh-context-layer');
+  }, [showToast]);
+
+  const summary = useMemo(() => {
+    const active = FEELS.find(f => f.id === feel);
+    const groups = {};
+    picks.forEach(p => {
+      const key = p.id.split(':')[0];
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(p.label);
+    });
+    const groupLabels = {
+      motion: 'Motion effects',
+      loader: 'Loaders',
+      font: 'Fonts',
+      control: 'Controls',
+      type: 'Type',
+      demo: 'How-it-works demo'
+    };
+    const lines = [
+      'Mesh landing page: shortlist',
+      'Direction: ' + active.name + ' (' + active.tag + ')',
+      'Theme: ' + (themePref === 'system' ? 'system (' + resolvedTheme + ')' : themePref),
+      'Motion: ' + (motion ? 'on' : 'off')
+    ];
+    Object.keys(groups).forEach(k => {
+      lines.push((groupLabels[k] || k) + ': ' + groups[k].join(', '));
+    });
+    return lines.join('\n');
+  }, [picks, feel, themePref, resolvedTheme, motion]);
+
+  const feelName = FEELS.find(f => f.id === feel).name;
+
+  return (
+    <ShortlistCtx.Provider value={{ picks, togglePick }}>
+      <CopyCtx.Provider value={{ copy, copied }}>
+        <div className="app" id="top">
+          <Topbar
+            feel={feel}
+            setFeel={setFeel}
+            themePref={themePref}
+            setThemePref={setThemePref}
+            motion={motion}
+            setMotion={setMotion}
+            picks={picks}
+            onOpenTray={() => setTrayOpen(true)}
+          />
+
+          <main className="wrap">
+            <Hero
+              feel={feel}
+              onPrimary={install}
+              onSecondary={() => scrollToId('how')}
+            />
+
+            <HowSection feel={feel} motion={motion} />
+            <PaletteSection feel={feel} theme={resolvedTheme} />
+            <TypeSection feel={feel} />
+            <ControlsSection feel={feel} />
+            <MotionSection motion={motion} />
+            <LoadersSection motion={motion} />
+            <FontsSection />
+
+            <footer className="footer">
+              <div className="footer-copy">
+                <h2>Four directions. One story.</h2>
+                <p>Every direction says the same thing: agents forget, mesh remembers. Pick a feel in the bar above, shortlist the pieces you like, then send me the list. I will turn it into the real page, in React, with the light and dark systems intact.</p>
+              </div>
+              <div className="footer-mark" aria-hidden="true">mesh</div>
+            </footer>
+          </main>
+
+          <Tray
+            open={trayOpen}
+            setOpen={setTrayOpen}
+            picks={picks}
+            summary={summary}
+            onCopy={copy}
+            copied={copied}
+          />
+
+          <div className={'toast ' + (toast ? 'show' : '')} role="status" aria-live="polite">{toast}</div>
+        </div>
+      </CopyCtx.Provider>
+    </ShortlistCtx.Provider>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
