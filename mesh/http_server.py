@@ -12,6 +12,8 @@ Security hardening:
 from __future__ import annotations
 
 import argparse
+import hashlib
+import hmac
 import os
 import re
 import secrets
@@ -42,7 +44,7 @@ from .memory import (
 from .version import VERSION
 
 _LOCAL_ORIGIN_REGEX = r"^https?://(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$"
-_ALLOWED_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]", "testserver"}
+_ALLOWED_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]"}
 _ACTIVE_BIND_HOST = "127.0.0.1"
 
 
@@ -50,7 +52,7 @@ def _tokens_match(provided: str, expected: str) -> bool:
     if not provided or not expected:
         return False
     try:
-        return secrets.compare_digest(
+        return hmac.compare_digest(
             provided.encode("utf-8", errors="surrogatepass"),
             expected.encode("utf-8", errors="surrogatepass"),
         )
@@ -117,12 +119,19 @@ async def _security_middleware(request: Request, call_next: Any) -> Any:
        (unless overridden via `app.dependency_overrides[verify_request_auth]`).
     """
     configured_host = os.environ.get("MESH_HTTP_HOST", _ACTIVE_BIND_HOST).strip().lower()
-    allowed_hosts = _ALLOWED_HOSTS | {configured_host, _ACTIVE_BIND_HOST}
+    allowed_hosts = set(_ALLOWED_HOSTS) | {configured_host, _ACTIVE_BIND_HOST}
+    env_allowed = os.environ.get("MESH_ALLOWED_HOSTS", "").strip()
+    if env_allowed:
+        for item in env_allowed.split(","):
+            ci = item.strip().lower()
+            if ci:
+                allowed_hosts.add(ci)
+
     # If a unit test explicitly registered a dependency override on `verify_request_auth`,
     # allow FastAPI TestClient's default `testserver` Host header for the DNS-rebinding check.
     has_auth_override = verify_request_auth in app.dependency_overrides
     if has_auth_override:
-        allowed_hosts = allowed_hosts | {"testserver"}
+        allowed_hosts.add("testserver")
 
     req_host = _extract_hostname(request.headers.get("host", ""))
     if req_host and req_host not in allowed_hosts:
@@ -141,7 +150,7 @@ async def _security_middleware(request: Request, call_next: Any) -> Any:
                 content={"detail": "Forbidden cross-origin request."},
             )
 
-    if request.method == "OPTIONS" or request.url.path == "/health" or has_auth_override:
+    if request.method == "OPTIONS" or request.url.path in ("/health", "/identity") or has_auth_override:
         return await call_next(request)
 
     try:
@@ -266,9 +275,41 @@ def health() -> dict[str, Any]:
     return {
         "status": "ok",
         "version": VERSION,
+    }
+
+
+@app.api_route("/identity", methods=["GET", "POST"])
+async def identity(request: Request, nonce: Optional[str] = None) -> dict[str, Any]:
+    """
+    Challenge-response authentication verification for the local Mesh daemon.
+    Allows clients to cryptographically verify daemon identity before transmitting auth tokens.
+    """
+    clean_nonce = (nonce or "").strip()
+    if not clean_nonce and request.method == "POST":
+        try:
+            body = await request.json()
+            if isinstance(body, dict):
+                clean_nonce = str(body.get("nonce", "")).strip()
+        except Exception:
+            pass
+    if not clean_nonce:
+        clean_nonce = request.headers.get("x-mesh-nonce", "").strip()
+
+    if not clean_nonce:
+        raise HTTPException(status_code=400, detail="Missing challenge nonce.")
+
+    try:
+        nonce_bytes = bytes.fromhex(clean_nonce)
+    except ValueError:
+        nonce_bytes = clean_nonce.encode("utf-8")
+
+    token = get_or_create_auth_token()
+    proof = hmac.new(token.encode("utf-8"), nonce_bytes, hashlib.sha256).hexdigest()
+    return {
+        "status": "ok",
+        "proof": proof,
         "pid": os.getpid(),
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "engine": get_engine_status(),
+        "version": VERSION,
     }
 
 
@@ -291,6 +332,11 @@ def mcp_proxy(req: McpProxyRequest) -> dict[str, Any]:
     from .mcp_server import _execute_tool_sync
 
     try:
+        if req.arguments and "namespace" in req.arguments and req.arguments["namespace"]:
+            validate_namespace(str(req.arguments["namespace"]))
+        if req.default_namespace:
+            validate_namespace(str(req.default_namespace))
+
         payload = _execute_tool_sync(
             name=req.name,
             arguments=req.arguments,
@@ -309,13 +355,22 @@ def mcp_proxy(req: McpProxyRequest) -> dict[str, Any]:
 def learn(req: LearnRequest) -> dict[str, Any]:
     """Store a memory. Returns the memory ID and any contradiction warnings."""
     try:
+        from .guards import guard_ingest
+
+        guard = guard_ingest(req.content, local_only=bool(req.local_only))
+        if guard.rejected:
+            raise HTTPException(
+                status_code=400,
+                detail=guard.reason or "Memory content rejected by ingestion guard.",
+            )
+
         mesh = get_mesh(req.namespace, req.agent_id)
         result = mesh.learn(
-            content=req.content,
+            content=guard.content,
             memory_type=req.memory_type or "fact",
             confidence=req.confidence if req.confidence is not None else 1.0,
             tags=req.tags or [],
-            local_only=bool(req.local_only),
+            local_only=bool(guard.local_only),
             ttl_days=req.ttl_days,
         )
         return {"status": "ok", "result": result}
@@ -424,11 +479,14 @@ def inspect(
 
 
 @app.get("/patterns", dependencies=[Depends(verify_request_auth)])
-def patterns(namespace: Optional[str] = None) -> dict[str, Any]:
+def patterns(
+    namespace: Optional[str] = None,
+    include_private: bool = False,
+) -> dict[str, Any]:
     """Return pattern analysis: top queries, memory gaps, unused and stale memories."""
     try:
         mesh = get_mesh(namespace)
-        result = mesh.patterns()
+        result = mesh.patterns(include_private=include_private)
         return {"status": "ok", "patterns": result}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -514,7 +572,7 @@ def audit(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-def start() -> None:
+def start(host: Optional[str] = None, port: Optional[int] = None) -> None:
     """Entry point for: mesh-http"""
     global _ACTIVE_BIND_HOST
     parser = argparse.ArgumentParser(description="Start the Mesh HTTP API server.")
@@ -548,12 +606,25 @@ def start() -> None:
     )
     args, _ = parser.parse_known_args()
 
-    _ACTIVE_BIND_HOST = args.host.strip().lower()
-    os.environ["MESH_HTTP_HOST"] = args.host.strip()
-    if _ACTIVE_BIND_HOST in ("0.0.0.0", "::", "[::]"):
-        sys.stderr.write(
-            f"[WARNING] Binding Mesh HTTP server to '{args.host}' exposes the API to the local network.\n"
-        )
+    actual_host = (host or args.host).strip()
+    actual_port = int(port or args.port)
+
+    _ACTIVE_BIND_HOST = actual_host.lower()
+    os.environ["MESH_HTTP_HOST"] = actual_host
+    env_allowed = os.environ.get("MESH_ALLOWED_HOSTS", "").strip()
+    if _ACTIVE_BIND_HOST not in ("127.0.0.1", "localhost", "::1", "[::1]"):
+        if not env_allowed:
+            err_msg = (
+                f"Refusing to start on non-loopback bind '{actual_host}' without MESH_ALLOWED_HOSTS specified.\n"
+                f"Set MESH_ALLOWED_HOSTS to comma-separated allowed hostnames/IPs to confirm.\n"
+            )
+            sys.stderr.write(err_msg)
+            raise ValueError(err_msg)
+        else:
+            sys.stderr.write(
+                f"[WARNING] Binding Mesh HTTP server to '{actual_host}' with MESH_ALLOWED_HOSTS={env_allowed}. "
+                "Traffic is unencrypted plain HTTP protected only by bearer-token authentication.\n"
+            )
 
     get_or_create_auth_token()
     set_idle_unload_seconds(args.idle_timeout)

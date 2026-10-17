@@ -349,7 +349,7 @@ def test_auth_non_ascii_headers_no_500():
     assert _tokens_match("üñîçødé", "üñîçødé") is True
     assert _tokens_match("üñîçødé", "wrong") is False
 
-    client_http = TestClient(http_app)
+    client_http = TestClient(http_app, base_url="http://127.0.0.1:7701")
     # Byte-encoded header for non-ASCII bearer token
     res_http = client_http.post(
         "/recall",
@@ -358,7 +358,7 @@ def test_auth_non_ascii_headers_no_500():
     )
     assert res_http.status_code == 401
 
-    client_dash = TestClient(dashboard_api)
+    client_dash = TestClient(dashboard_api, base_url="http://127.0.0.1:7433")
     res_dash = client_dash.get(
         "/api/stats",
         headers={"X-Mesh-Token": b"\xc3\xbc\xc3\xb1\xc3\xae\xc3\xa7\xc3\xb8\xc3\xa9_token"},
@@ -368,7 +368,7 @@ def test_auth_non_ascii_headers_no_500():
 
 def test_auth_host_header_check_and_unauthenticated():
     """Host header outside allowed host returns 403; unauthenticated requests return 401."""
-    client_http = TestClient(http_app)
+    client_http = TestClient(http_app, base_url="http://127.0.0.1:7701")
     # Evil Host header
     res_host = client_http.get("/health", headers={"Host": "evil.example.com"})
     assert res_host.status_code == 403

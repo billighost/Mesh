@@ -2,7 +2,7 @@
 mesh/audit.py — High-speed, fault-isolated audit trail for all memory reads and writes.
 Logs recall(), learn(), update(), and forget() calls with timestamp, agent, query/content, and result.
 Protects `local_only` memories via automatic redaction, scrubs historical content on `update()`,
-purges deleted memories on `forget()`, and enforces bounded table retention.
+purges deleted memories on `forget()`, and enforces bounded table and connection retention.
 """
 from __future__ import annotations
 
@@ -12,9 +12,11 @@ import re
 import sqlite3
 import stat
 import threading
+from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
+
 
 def get_mesh_dir() -> Path:
     """Return the active Mesh data directory, respecting MESH_HOME / MESH_DIR env overrides dynamically."""
@@ -25,18 +27,17 @@ def get_mesh_dir() -> Path:
 
 
 MESH_DIR = get_mesh_dir()
-
 _AUDIT_LOCK = threading.RLock()
 _INITIALIZED_AUDIT_DBS: dict[Path, tuple[int, int, int, int]] = {}
-_AUDIT_CONNECTION_POOL: dict[Path, "_ManagedAuditConnection"] = {}
+_AUDIT_CONNECTION_POOL: OrderedDict[Path, "_ManagedAuditConnection"] = OrderedDict()
 _AUDIT_WRITE_COUNTS: dict[Path, int] = {}
+_MAX_AUDIT_POOL_SIZE = 64
 
 _VALID_NAMESPACE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 REDACTED_CONTENT_PLACEHOLDER = "[REDACTED local_only memory]"
 PURGED_CONTENT_PLACEHOLDER = "[PURGED]"
 UPDATED_CONTENT_PLACEHOLDER = "[PREVIOUS VERSION SCRUBBED]"
-
 DEFAULT_MAX_AUDIT_ROWS = 10000
 
 _AUDIT_SCHEMA_SQL = """
@@ -116,7 +117,6 @@ def validate_namespace(namespace: str) -> str:
             f"Invalid namespace '{namespace}'. Must match ^[A-Za-z0-9][A-Za-z0-9._-]{{0,63}}$ "
             "and must not contain path separators or '..'."
         )
-
     locked_raw = os.environ.get("MESH_LOCKED_NAMESPACE", "").strip()
     if locked_raw:
         if locked_raw.lower() in ("1", "true", "yes"):
@@ -199,14 +199,32 @@ def evict_audit_cache(namespace: str) -> None:
             conn.close_pooled()
 
 
+def _apply_audit_schema(conn: sqlite3.Connection) -> None:
+    """Create the audit_log table and indexes on an open connection."""
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute(_AUDIT_SCHEMA_SQL)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_timestamp ON audit_log(timestamp DESC)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_action ON audit_log(action)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_agent ON audit_log(agent_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_id ON audit_log(memory_id)")
+
+
 def _connect_audit(db_path: Path) -> _ManagedAuditConnection:
     with _AUDIT_LOCK:
         conn = _AUDIT_CONNECTION_POOL.get(db_path)
         if conn is not None and db_path.exists():
+            _AUDIT_CONNECTION_POOL.move_to_end(db_path)
+            stamp = _get_audit_db_stamp(db_path)
+            if stamp is None or _INITIALIZED_AUDIT_DBS.get(db_path) != stamp:
+                _apply_audit_schema(conn)
+                new_stamp = _get_audit_db_stamp(db_path)
+                if new_stamp is not None:
+                    _INITIALIZED_AUDIT_DBS[db_path] = new_stamp
             return conn
         if conn is not None:
             conn.close_pooled()
             _AUDIT_CONNECTION_POOL.pop(db_path, None)
+
         ensure_secure_mesh_dir(db_path.parent)
         conn = sqlite3.connect(
             db_path,
@@ -223,19 +241,19 @@ def _connect_audit(db_path: Path) -> _ManagedAuditConnection:
             conn.execute("PRAGMA cache_size=-8000")
         except sqlite3.OperationalError:
             pass
+        _apply_audit_schema(conn)
         secure_file_permissions(db_path)
         _AUDIT_CONNECTION_POOL[db_path] = conn
+        _AUDIT_CONNECTION_POOL.move_to_end(db_path)
+        while len(_AUDIT_CONNECTION_POOL) > _MAX_AUDIT_POOL_SIZE:
+            evicted_path, evicted_conn = _AUDIT_CONNECTION_POOL.popitem(last=False)
+            _INITIALIZED_AUDIT_DBS.pop(evicted_path, None)
+            _AUDIT_WRITE_COUNTS.pop(evicted_path, None)
+            evicted_conn.close_pooled()
+        new_stamp = _get_audit_db_stamp(db_path)
+        if new_stamp is not None:
+            _INITIALIZED_AUDIT_DBS[db_path] = new_stamp
         return conn
-
-
-def _apply_audit_schema(conn: sqlite3.Connection) -> None:
-    """Create the audit_log table and indexes on an open connection."""
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute(_AUDIT_SCHEMA_SQL)
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_timestamp ON audit_log(timestamp DESC)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_action ON audit_log(action)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_agent ON audit_log(agent_id)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_id ON audit_log(memory_id)")
 
 
 def _max_audit_rows() -> int:
@@ -307,7 +325,6 @@ def log_recall(
                 top_result = REDACTED_CONTENT_PLACEHOLDER
             else:
                 top_result = first.get("content")
-
         _write_audit_entry(
             namespace=namespace,
             sql="""
@@ -343,33 +360,29 @@ def log_learn(
         logged_content = REDACTED_CONTENT_PLACEHOLDER if is_private else content
         had_conflict = 1 if result.get("conflict") else 0
         now_ts = datetime.now(timezone.utc).isoformat()
-
         if mem_id and not result.get("deduplicated"):
             db_path = _get_audit_db_path(namespace)
             with _AUDIT_LOCK:
-                stamp = _get_audit_db_stamp(db_path)
-                needs_init = stamp is None or _INITIALIZED_AUDIT_DBS.get(db_path) != stamp
-                with _connect_audit(db_path) as conn:
-                    if needs_init:
-                        _apply_audit_schema(conn)
-                    row = conn.execute(
-                        "SELECT id, action, memory_id FROM audit_log ORDER BY id DESC LIMIT 1"
-                    ).fetchone()
-                    if row and row[1] == "learn" and row[2] == mem_id:
-                        conn.execute(
-                            """
-                            UPDATE audit_log
-                            SET timestamp = ?, agent_id = ?, content = ?, had_conflict = ?
-                            WHERE id = ?
-                            """,
-                            (now_ts, agent_id, logged_content, had_conflict, row[0]),
-                        )
-                        conn.commit()
-                        secure_file_permissions(db_path)
-                        new_stamp = _get_audit_db_stamp(db_path)
-                        if new_stamp is not None:
-                            _INITIALIZED_AUDIT_DBS[db_path] = new_stamp
-                        return
+                if db_path.exists() and _get_audit_db_stamp(db_path) is not None:
+                    with _connect_audit(db_path) as conn:
+                        row = conn.execute(
+                            "SELECT id, action, memory_id FROM audit_log ORDER BY id DESC LIMIT 1"
+                        ).fetchone()
+                        if row and row[1] == "learn" and row[2] == mem_id:
+                            conn.execute(
+                                """
+                                UPDATE audit_log
+                                SET timestamp = ?, agent_id = ?, content = ?, had_conflict = ?
+                                WHERE id = ?
+                                """,
+                                (now_ts, agent_id, logged_content, had_conflict, row[0]),
+                            )
+                            conn.commit()
+                            secure_file_permissions(db_path)
+                            new_stamp = _get_audit_db_stamp(db_path)
+                            if new_stamp is not None:
+                                _INITIALIZED_AUDIT_DBS[db_path] = new_stamp
+                            return
 
         _write_audit_entry(
             namespace=namespace,
@@ -403,7 +416,7 @@ def scrub_memory_update_from_audit(
     """
     try:
         db_path = _get_audit_db_path(namespace)
-        if not db_path.exists():
+        if not db_path.exists() or _get_audit_db_stamp(db_path) is None:
             return
         placeholder = REDACTED_CONTENT_PLACEHOLDER if local_only else UPDATED_CONTENT_PLACEHOLDER
         with _AUDIT_LOCK:
@@ -463,7 +476,6 @@ def log_update(
                 old_content=old_content,
                 local_only=local_only,
             )
-
         if local_only:
             logged_content = REDACTED_CONTENT_PLACEHOLDER
         else:
@@ -498,7 +510,7 @@ def purge_memory_from_audit(
     """
     try:
         db_path = _get_audit_db_path(namespace)
-        if not db_path.exists():
+        if not db_path.exists() or _get_audit_db_stamp(db_path) is None:
             return
         with _AUDIT_LOCK:
             with _connect_audit(db_path) as conn:
@@ -580,11 +592,16 @@ def get_audit_log(
                        ("recall", "learn", "update", "forget").
     """
     db_path = _get_audit_db_path(namespace)
-    if not db_path.exists():
+    clean_filter = (action_filter or "all").strip().lower()
+    if clean_filter != "all" and clean_filter not in _ACTION_FILTER_MAP:
+        valid_filters = sorted({"all", *_ACTION_FILTER_MAP.keys()})
+        raise ValueError(
+            f"Invalid action_filter '{action_filter}'. Must be one of {valid_filters}."
+        )
+    safe_limit = max(1, int(limit or 50))
+    if not db_path.exists() or _get_audit_db_stamp(db_path) is None:
         return []
-
-    action_sql = _ACTION_FILTER_MAP.get((action_filter or "all").strip().lower())
-
+    action_sql = _ACTION_FILTER_MAP.get(clean_filter) if clean_filter != "all" else None
     with _AUDIT_LOCK:
         with _connect_audit(db_path) as conn:
             conn.row_factory = sqlite3.Row
@@ -596,7 +613,7 @@ def get_audit_log(
                     ORDER BY timestamp DESC, id DESC
                     LIMIT ?
                     """,
-                    (action_sql, limit),
+                    (action_sql, safe_limit),
                 )
             else:
                 cur = conn.execute(
@@ -605,7 +622,7 @@ def get_audit_log(
                     ORDER BY timestamp DESC, id DESC
                     LIMIT ?
                     """,
-                    (limit,),
+                    (safe_limit,),
                 )
             rows = [dict(r) for r in cur.fetchall()]
             cur.close()
@@ -615,7 +632,7 @@ def get_audit_log(
 def get_audit_stats(namespace: str) -> dict[str, Any]:
     """Return aggregate stats from the audit log in a minimal query pass."""
     db_path = _get_audit_db_path(namespace)
-    if not db_path.exists():
+    if not db_path.exists() or _get_audit_db_stamp(db_path) is None:
         return {
             "total_recalls": 0,
             "total_learns": 0,
@@ -625,7 +642,6 @@ def get_audit_stats(namespace: str) -> dict[str, Any]:
             "conflicts_detected": 0,
             "last_activity": None,
         }
-
     with _AUDIT_LOCK:
         with _connect_audit(db_path) as conn:
             conn.row_factory = sqlite3.Row
@@ -643,13 +659,11 @@ def get_audit_stats(namespace: str) -> dict[str, Any]:
             )
             agg = cur_agg.fetchone()
             cur_agg.close()
-
             cur_agents = conn.execute(
                 "SELECT DISTINCT agent_id FROM audit_log WHERE agent_id IS NOT NULL"
             )
             agents = [r["agent_id"] for r in cur_agents.fetchall()]
             cur_agents.close()
-
             return {
                 "total_recalls": int(agg["recalls"]) if agg else 0,
                 "total_learns": int(agg["learns"]) if agg else 0,

@@ -42,6 +42,7 @@ from .audit import (
 EMBEDDING_DIM = 384
 STALE_THRESHOLD = 0.3
 DEFAULT_MAX_QUERY_ROWS = 10000
+GAP_MIN_QUERIES = 2
 
 _VALID_MEMORY_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
@@ -1103,10 +1104,20 @@ class MeshStore:
                         agent_id        TEXT NOT NULL DEFAULT 'unknown',
                         best_similarity REAL,
                         result_count    INTEGER NOT NULL DEFAULT 0,
-                        timestamp       TEXT NOT NULL
+                        timestamp       TEXT NOT NULL,
+                        private_query   INTEGER NOT NULL DEFAULT 0
                     )
                     """
                 )
+
+                existing_q_cols = {
+                    r[1] for r in conn.execute("PRAGMA table_info(queries)").fetchall()
+                }
+                if "private_query" not in existing_q_cols:
+                    try:
+                        conn.execute("ALTER TABLE queries ADD COLUMN private_query INTEGER NOT NULL DEFAULT 0")
+                    except sqlite3.OperationalError:
+                        pass
 
                 conn.execute(
                     """
@@ -1130,6 +1141,7 @@ class MeshStore:
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_created_at ON memories (namespace, created_at DESC)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_queries_namespace ON queries (namespace)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_queries_timestamp ON queries (timestamp)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_queries_private ON queries (namespace, private_query)")
                 conn.execute(
                     "CREATE INDEX IF NOT EXISTS idx_contradictions_ns_res ON contradictions (namespace, resolved)"
                 )
@@ -2668,6 +2680,7 @@ class MeshStore:
         agent_id: str,
         best_similarity: Optional[float],
         result_count: int,
+        private_query: bool = False,
     ) -> None:
         self.record_recall_telemetry(
             memory_ids=[],
@@ -2675,6 +2688,7 @@ class MeshStore:
             agent_id=agent_id,
             best_similarity=best_similarity,
             result_count=result_count,
+            private_query=private_query,
         )
 
     def record_recall_telemetry(
@@ -2684,6 +2698,7 @@ class MeshStore:
         agent_id: str,
         best_similarity: Optional[float],
         result_count: int,
+        private_query: bool = False,
     ) -> None:
         """
         Atomically increment `access_count` on recalled memories, log the query in `queries`,
@@ -2715,8 +2730,8 @@ class MeshStore:
                     conn.execute(
                         """
                         INSERT INTO queries
-                        (id, namespace, query_text, agent_id, best_similarity, result_count, timestamp)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        (id, namespace, query_text, agent_id, best_similarity, result_count, timestamp, private_query)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             qid,
@@ -2726,6 +2741,7 @@ class MeshStore:
                             float(best_similarity) if best_similarity is not None else None,
                             int(result_count),
                             now,
+                            1 if private_query else 0,
                         ),
                     )
                     if q_writes % 100 == 0:
@@ -2880,24 +2896,29 @@ class MeshStore:
                 self._refresh_stamps_after_write_locked(synced_cache)
             return updated
 
-    def get_patterns(self) -> dict[str, Any]:
+    def get_patterns(self, include_private: bool = False) -> dict[str, Any]:
         """
         Analyze query logs and cached memories to return:
           - top_topics: most frequently searched queries
           - memory_gaps: queries searched >= 2 times with avg_similarity < 0.45
           - unused_memories: memories created > 7 days ago with access_count == 0
           - stale_memories: memories where `_compute_row_effective_confidence` is stale
+
+        If `include_private=False` (default), private memories (local_only=1) and private queries
+        are strictly excluded from the returned patterns.
         """
+        priv_clause = "" if include_private else "AND (private_query = 0 OR private_query IS NULL)"
+
         with _CACHE_LOCK:
             with self._connect() as conn:
                 conn.row_factory = sqlite3.Row
                 top_rows = conn.execute(
-                    """
+                    f"""
                     SELECT LOWER(TRIM(query_text)) AS query_text,
                            COUNT(*) AS query_count,
                            COALESCE(AVG(best_similarity), 0.0) AS avg_similarity
                     FROM queries
-                    WHERE namespace = ? AND TRIM(query_text) != ''
+                    WHERE namespace = ? AND TRIM(query_text) != '' {priv_clause}
                     GROUP BY LOWER(TRIM(query_text))
                     ORDER BY query_count DESC, avg_similarity DESC
                     LIMIT 15
@@ -2906,18 +2927,18 @@ class MeshStore:
                 ).fetchall()
 
                 gap_rows = conn.execute(
-                    """
+                    f"""
                     SELECT LOWER(TRIM(query_text)) AS query_text,
                            COUNT(*) AS query_count,
                            COALESCE(AVG(best_similarity), 0.0) AS avg_similarity
                     FROM queries
-                    WHERE namespace = ? AND TRIM(query_text) != ''
+                    WHERE namespace = ? AND TRIM(query_text) != '' {priv_clause}
                     GROUP BY LOWER(TRIM(query_text))
-                    HAVING COUNT(*) >= 1 AND COALESCE(AVG(best_similarity), 0.0) < 0.45
+                    HAVING COUNT(*) >= ? AND COALESCE(AVG(best_similarity), 0.0) < 0.45
                     ORDER BY query_count DESC, avg_similarity ASC
                     LIMIT 15
                     """,
-                    (self.namespace,),
+                    (self.namespace, GAP_MIN_QUERIES),
                 ).fetchall()
 
         top_topics = [
@@ -2945,18 +2966,37 @@ class MeshStore:
         unused_memories: list[dict[str, Any]] = []
         stale_memories: list[dict[str, Any]] = []
 
+        allowed_fields = (
+            "id",
+            "content",
+            "memory_type",
+            "confidence",
+            "effective_confidence",
+            "is_stale",
+            "tags",
+            "source_agent",
+            "created_at",
+            "accessed_at",
+            "access_count",
+            "ttl_days",
+        )
+
         for row in rows_snap.values():
+            if not include_private and bool(row.get("local_only")):
+                continue
+
             eff_conf, is_stale = _compute_row_effective_confidence(row, now=now)
-            row_copy = dict(row)
-            row_copy["effective_confidence"] = eff_conf
-            row_copy["is_stale"] = is_stale
+            filtered_row = {k: row.get(k) for k in allowed_fields if k in row}
+            filtered_row["effective_confidence"] = eff_conf
+            filtered_row["is_stale"] = is_stale
+
             if is_stale:
-                stale_memories.append(row_copy)
+                stale_memories.append(filtered_row)
 
             if int(row.get("access_count") or 0) == 0:
                 created_dt = _parse_iso_utc(row.get("created_at"))
                 if created_dt is not None and created_dt <= seven_days_ago:
-                    unused_memories.append(row_copy)
+                    unused_memories.append(filtered_row)
 
         unused_memories.sort(key=lambda r: str(r.get("created_at") or ""))
         stale_memories.sort(key=lambda r: float(r.get("effective_confidence", 0.0)))

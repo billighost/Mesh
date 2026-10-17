@@ -14,3 +14,5 @@ env/
 .pytest_cache/
 .coverage
 htmlcov/
+*goal_prompt.txt
+*.zip

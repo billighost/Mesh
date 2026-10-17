@@ -445,11 +445,12 @@ def test_http_health_and_engine_endpoints():
         data = response.json()
         assert data["status"] == "ok"
         assert data["version"] == VERSION
-        assert "engine" in data
+        assert "engine" not in data
 
         eng_res = client.get("/engine")
         assert eng_res.status_code == 200
         assert eng_res.json()["status"] == "ok"
+        assert "engine" in eng_res.json()
 
         unload_res = client.post("/unload")
         assert unload_res.status_code == 200
