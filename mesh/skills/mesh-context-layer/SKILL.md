@@ -9,7 +9,7 @@ description: >-
   manage persistent agent memory across sessions.
 ---
 
-# Mesh Context Layer — Full Agent Skill (v0.6.3)
+# Mesh Context Layer — Full Agent Skill (v0.6.4)
 
 > **Mesh** gives every AI agent persistent, shared memory. When one agent learns
 > something, every other agent can recall it — by meaning, keyword, or exact

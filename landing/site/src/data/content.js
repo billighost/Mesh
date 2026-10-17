@@ -192,6 +192,6 @@ export const faq = [
   },
   {
     q: "Is it production-ready?",
-    a: "Mesh is MIT-licensed and at v0.6.3. It is a local-first library and local server, not a hosted service. Read the security and consent notes in the README before deploying it in a shared environment.",
+    a: "Mesh is MIT-licensed and at v0.6.4. It is a local-first library and local server, not a hosted service. Read the security and consent notes in the README before deploying it in a shared environment.",
   },
 ];

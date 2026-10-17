@@ -817,7 +817,7 @@ def _download_file_from_mirrors(
             pass
 
     ensure_secure_mesh_dir(_get_onnx_model_dir())
-    headers = {"User-Agent": "mesh-context-layer/0.6.3"}
+    headers = {"User-Agent": "mesh-context-layer/0.6.4"}
     hf_token = (
         os.environ.get("HF_TOKEN")
         or os.environ.get("HUGGING_FACE_HUB_TOKEN")
