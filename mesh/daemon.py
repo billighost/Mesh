@@ -1,10 +1,12 @@
 """
 mesh/daemon.py — Background daemon, authentication token manager, and OS login auto-start manager.
+
 Capabilities:
   - Interactive `y/n` user permission prompts before spawning background processes or modifying OS startup
   - Per-user 256-bit authentication token (`~/.mesh/auth_token`, created atomically with mode 0600)
-  - Cryptographic HMAC-SHA256 challenge-response daemon identity verification on `/health`
+  - Cryptographic HMAC-SHA256 challenge-response daemon identity verification on `/identity`
     so CLI and MCP clients never transmit bearer tokens to port-squatting processes
+  - Reduced `/health` endpoint (`{"status": "ok", "version": ...}` — no PID or engine details leaked)
   - Enforced 0700 `~/.mesh` directory and 0600 `daemon.log` permissions on POSIX
   - Strict process UID and command-line ownership verification before stopping PIDs
   - XML-escaped macOS LaunchAgent plist & Desktop Entry spec-compliant Linux `.desktop` entries
@@ -29,7 +31,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Union
 from xml.sax.saxutils import escape as xml_escape
 
 from .audit import MESH_DIR, ensure_secure_mesh_dir, get_mesh_dir, secure_file_permissions
@@ -59,7 +61,6 @@ AUTOSTART_MARKER_FILE = _autostart_marker_file()
 DEFAULT_PORT = int(os.environ.get("MESH_HTTP_PORT", 7701))
 DEFAULT_HOST = os.environ.get("MESH_HTTP_HOST", "127.0.0.1")
 DEFAULT_IDLE_TIMEOUT = float(os.environ.get("MESH_IDLE_UNLOAD_SECONDS", "180"))
-
 DAEMON_CHALLENGE_PREFIX = "mesh-daemon-v1"
 
 _WIN_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -67,7 +68,6 @@ _WIN_RUN_VALUE_NAME = "MeshContextDaemon"
 
 _SPAWN_LOCK = threading.Lock()
 _LAST_SPAWN_TS = 0.0
-
 _TOKEN_LOCK = threading.Lock()
 _CACHED_TOKEN: Optional[str] = None
 _CACHED_TOKEN_PATH: Optional[Path] = None
@@ -112,6 +112,7 @@ def _write_private_file(path: Path, content: str) -> None:
         tmp_path.write_text(content, encoding="utf-8")
         os.replace(tmp_path, path)
         return
+
     flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
     fd = os.open(str(tmp_path), flags, stat.S_IRUSR | stat.S_IWUSR)
     try:
@@ -142,15 +143,17 @@ def _open_private_log_append(path: Path) -> Any:
 def get_or_create_auth_token() -> str:
     """
     Return the local Mesh authentication token stored in `~/.mesh/auth_token` (mode 0600).
+    Supports `MESH_AUTH_TOKEN` (and `MESH_TOKEN` alias) environment variable override.
     Generates a new 256-bit token if none exists yet.
     """
     global _CACHED_TOKEN, _CACHED_TOKEN_PATH
-    env_tok = os.environ.get("MESH_AUTH_TOKEN", "").strip()
+    env_tok = (os.environ.get("MESH_AUTH_TOKEN") or os.environ.get("MESH_TOKEN") or "").strip()
     if env_tok:
         return env_tok
     token_file = _auth_token_file()
     if _CACHED_TOKEN and _CACHED_TOKEN_PATH == token_file and token_file.exists():
         return _CACHED_TOKEN
+
     with _TOKEN_LOCK:
         token_file = _auth_token_file()
         if _CACHED_TOKEN and _CACHED_TOKEN_PATH == token_file and token_file.exists():
@@ -166,6 +169,7 @@ def get_or_create_auth_token() -> str:
                     return existing
             except OSError:
                 pass
+
         token = secrets.token_urlsafe(32)
         if os.name != "nt":
             try:
@@ -210,6 +214,7 @@ def get_or_create_auth_token() -> str:
                         return existing
                 except OSError:
                     pass
+
         _CACHED_TOKEN = token
         _CACHED_TOKEN_PATH = token_file
         return token
@@ -222,8 +227,6 @@ def compute_daemon_challenge_signature(
 ) -> str:
     """
     Compute an HMAC-SHA256 proof (`mesh-daemon-v1:{nonce}:{pid}`) keyed by `~/.mesh/auth_token`.
-    Allows the daemon to prove ownership of the user's private token before a client ever sends
-    its bearer token over `127.0.0.1:7701`.
     """
     clean_nonce = (nonce or "").strip()
     if not clean_nonce:
@@ -239,7 +242,7 @@ def verify_daemon_challenge_signature(
     signature: Any,
     token: Optional[str] = None,
 ) -> bool:
-    """Verify the HMAC-SHA256 challenge signature returned by `/health`."""
+    """Verify the HMAC-SHA256 challenge signature."""
     if not nonce or not isinstance(signature, str) or not signature.strip():
         return False
     try:
@@ -250,7 +253,7 @@ def verify_daemon_challenge_signature(
     if not expected:
         return False
     try:
-        return secrets.compare_digest(
+        return hmac.compare_digest(
             signature.strip().lower().encode("ascii"),
             expected.lower().encode("ascii"),
         )
@@ -303,10 +306,15 @@ _VERIFIED_DAEMON_CACHE: dict[tuple[str, int], tuple[float, dict[str, Any]]] = {}
 _VERIFIED_DAEMON_LOCK = threading.Lock()
 
 
-def invalidate_daemon_identity_cache(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> None:
+def invalidate_daemon_identity_cache(
+    host: Optional[str] = DEFAULT_HOST,
+    port: Optional[int] = DEFAULT_PORT,
+) -> None:
     """Invalidate cached daemon verification result for (host, port)."""
+    h = host or DEFAULT_HOST
+    p = int(port or DEFAULT_PORT)
     with _VERIFIED_DAEMON_LOCK:
-        _VERIFIED_DAEMON_CACHE.pop((host, port), None)
+        _VERIFIED_DAEMON_CACHE.pop((h, p), None)
 
 
 def get_daemon_health(
@@ -316,7 +324,8 @@ def get_daemon_health(
 ) -> Optional[dict[str, Any]]:
     """
     Query the unauthenticated local daemon `/health` endpoint.
-    Returns {"status": "ok", "version": ...} if alive, else None.
+    Returns `{"status": "ok", "version": ...}` if alive, else None.
+    Never sends the bearer token.
     """
     url = f"http://{host}:{port}/health"
     try:
@@ -341,12 +350,12 @@ def verify_daemon_identity(
     timeout: float = 0.5,
 ) -> Optional[dict[str, Any]]:
     """
-    Verify that the process listening on host:port possesses ~/.mesh/auth_token
-    via the /identity HMAC-SHA256 challenge-response handshake without sending the bearer token.
-    Caches positive results for up to 30 seconds per (host, port).
-    Invalidates cache and returns None on verification failure or connection error.
+    Verify that the process listening on `host:port` possesses `~/.mesh/auth_token`
+    via the `/identity` HMAC-SHA256 challenge-response handshake without sending the bearer token.
+    Caches positive results for up to 30 seconds per `(host, port)`.
+    Invalidates cache, prints a clear stderr warning on proof mismatch, and returns None on failure.
     """
-    key = (host, port)
+    key = (host, int(port))
     now = time.monotonic()
     with _VERIFIED_DAEMON_LOCK:
         cached = _VERIFIED_DAEMON_CACHE.get(key)
@@ -386,8 +395,12 @@ def verify_daemon_identity(
                         return result
                     else:
                         sys.stderr.write(
-                            f"[WARNING] A process on port {port} failed Mesh identity verification.\n"
+                            f"[WARNING] a process on port {port} failed Mesh identity verification.\n"
                         )
+                else:
+                    sys.stderr.write(
+                        f"[WARNING] a process on port {port} failed Mesh identity verification.\n"
+                    )
     except (urllib.error.URLError, TimeoutError, OSError, ValueError):
         pass
 
@@ -477,6 +490,7 @@ def _matches_mesh_daemon_cmdline(cmdline: Union[str, list[str]]) -> bool:
         norm = (cmdline or "").strip()
     if not norm:
         return False
+
     normalized_slashes = norm.replace("\\", "/")
     try:
         tokens = [t.strip("\"'").lower() for t in shlex.split(normalized_slashes, posix=True) if t.strip()]
@@ -558,6 +572,7 @@ def _is_mesh_daemon_process(pid: int) -> bool:
             ).decode("utf-8", errors="ignore").strip()
             if uid_out and int(uid_out) != os.getuid():
                 return False
+
         out = subprocess.check_output(
             ["ps", "-p", str(pid), "-o", "command="],
             stderr=subprocess.DEVNULL,
@@ -586,7 +601,7 @@ def ensure_daemon_running(
     assume_yes: bool = False,
 ) -> dict[str, Any]:
     """
-    Ensure the Mesh background HTTP daemon is running.
+    Ensure the Mesh background HTTP daemon is running and verified via `/identity`.
     Asks the user for `y/n` permission before spawning a background process unless
     already running or `assume_yes=True` / `MESH_AUTO_APPROVE=1`.
     """
@@ -601,27 +616,31 @@ def ensure_daemon_running(
         }
     if os.environ.get("MESH_NO_AUTO_DAEMON", "").strip().lower() in ("1", "true", "yes"):
         return {"running": False, "declined": True, "host": host, "port": port}
-    health = get_daemon_health(host=host, port=port, timeout=0.18, verify_identity=True)
-    if health is not None:
+
+    ident = verify_daemon_identity(host=host, port=port, timeout=0.25)
+    if ident is not None:
         return {
             "running": True,
             "already_running": True,
-            "pid": health.get("pid"),
+            "pid": ident.get("pid"),
             "host": host,
             "port": port,
-            "health": health,
+            "health": ident,
         }
+
     with _SPAWN_LOCK:
         now = time.monotonic()
         if not wait and (now - _LAST_SPAWN_TS) < 4.0:
             pid = _read_pid_file()
             return {"running": False, "spawning": True, "pid": pid, "host": host, "port": port}
         _LAST_SPAWN_TS = now
+
     if interactive_prompt and not request_user_permission(
         f"start the background Mesh HTTP daemon on {host}:{port}",
         assume_yes=assume_yes,
     ):
         return {"running": False, "declined": True, "host": host, "port": port}
+
     return start_daemon(
         host=host,
         port=port,
@@ -642,15 +661,14 @@ def start_daemon(
     interactive_prompt: bool = False,
     assume_yes: bool = False,
 ) -> dict[str, Any]:
-    """Start the Mesh background HTTP daemon if not already running."""
-    existing_health = get_daemon_health(
+    """Start the Mesh background HTTP daemon if not already running and verified."""
+    existing_ident = verify_daemon_identity(
         host=host,
         port=port,
-        timeout=0.4 if wait else 0.15,
-        verify_identity=True,
+        timeout=0.4 if wait else 0.2,
     )
-    if existing_health is not None:
-        pid = existing_health.get("pid") or _read_pid_file()
+    if existing_ident is not None:
+        pid = existing_ident.get("pid") or _read_pid_file()
         if pid:
             _write_pid_file(int(pid))
         return {
@@ -659,8 +677,9 @@ def start_daemon(
             "pid": pid,
             "host": host,
             "port": port,
-            "health": existing_health,
+            "health": existing_ident,
         }
+
     if interactive_prompt and not request_user_permission(
         f"start the background Mesh HTTP daemon on {host}:{port}",
         assume_yes=assume_yes,
@@ -723,6 +742,7 @@ def start_daemon(
         log_handle.close()
 
     _write_pid_file(proc.pid)
+
     if not wait:
         time.sleep(0.05)
         alive = proc.poll() is None
@@ -736,24 +756,25 @@ def start_daemon(
             "health": None,
         }
 
-    health: Optional[dict[str, Any]] = None
+    verified: Optional[dict[str, Any]] = None
     for i in range(40):
         if proc.poll() is not None:
             break
         time.sleep(0.04 if i < 10 else 0.12)
-        health = get_daemon_health(host=host, port=port, timeout=0.35)
-        if health is not None:
+        verified = verify_daemon_identity(host=host, port=port, timeout=0.35)
+        if verified is not None:
             break
 
-    if health is None:
+    if verified is None:
         _remove_pid_file()
+
     return {
-        "running": health is not None,
+        "running": verified is not None,
         "already_running": False,
-        "pid": proc.pid if health is not None else None,
+        "pid": proc.pid if verified is not None else None,
         "host": host,
         "port": port,
-        "health": health,
+        "health": verified,
     }
 
 
@@ -810,6 +831,7 @@ def stop_daemon(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> dict[str,
             killed = False
 
     _remove_pid_file()
+    invalidate_daemon_identity_cache(host, port)
     return {"stopped": killed, "pid": candidate_pid}
 
 
@@ -841,6 +863,7 @@ def install_startup(
         str(idle_timeout),
         "--no-warmup",
     ]
+
     if os.name == "nt":
         import winreg
 
@@ -913,6 +936,7 @@ def install_startup(
     daemon_res = None
     if start_now:
         daemon_res = start_daemon(host=host, port=port, idle_timeout=idle_timeout, lazy=True)
+
     return {
         "installed": True,
         "platform": platform_name,
@@ -944,11 +968,13 @@ def remove_startup() -> dict[str, Any]:
         except FileNotFoundError:
             removed = False
         return {"removed": removed, "platform": "windows"}
+
     if sys.platform == "darwin":
         plist_path = Path.home() / "Library" / "LaunchAgents" / "com.mesh.daemon.plist"
         existed = plist_path.exists()
         plist_path.unlink(missing_ok=True)
         return {"removed": existed, "platform": "macos"}
+
     desktop_path = Path.home() / ".config" / "autostart" / "mesh-daemon.desktop"
     existed = desktop_path.exists()
     desktop_path.unlink(missing_ok=True)
@@ -1139,7 +1165,6 @@ def daemon_cmd() -> None:
                 print(f"\nMesh Daemon: STOPPED (http://{args.host}:{args.port})")
             print(f"  Login auto-start: {auto_start}\n")
             return
-
         eng: dict[str, Any] = {}
         try:
             req = urllib.request.Request(
@@ -1152,8 +1177,7 @@ def daemon_cmd() -> None:
                     data = json.loads(resp.read().decode("utf-8"))
                     eng = data.get("engine") or {}
         except Exception:
-            pass
-
+            invalidate_daemon_identity_cache(args.host, args.port)
         loaded_str = "LOADED (warm)" if eng.get("model_loaded") else "SLEEPING (~0 MB model RAM)"
         print(f"\nMesh Daemon: RUNNING on http://{args.host}:{args.port}")
         print(f"  PID:              {ident.get('pid')}")

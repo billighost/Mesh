@@ -45,7 +45,7 @@ if TYPE_CHECKING:
         rename_namespace,
     )
     from .passive import extract_memories_from_log
-    from .store import validate_memory_id
+    from .store import NamespaceNotFoundError, validate_memory_id
 
 _LAZY_EXPORTS: dict[str, tuple[str, str]] = {
     # .memory
@@ -76,6 +76,7 @@ _LAZY_EXPORTS: dict[str, tuple[str, str]] = {
     "get_audit_stats": (".audit", "get_audit_stats"),
     # .store
     "validate_memory_id": (".store", "validate_memory_id"),
+    "NamespaceNotFoundError": (".store", "NamespaceNotFoundError"),
     # .context_builder
     "build_context": (".context_builder", "build_context"),
     "build_context_bundle": (".context_builder", "build_context_bundle"),

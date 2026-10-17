@@ -5,13 +5,17 @@ Start: mesh-dashboard
 
 Security hardening:
   - Host & Origin header verification blocking DNS rebinding and cross-site attacks
+    (`testserver` is rejected by default and accepted only when a test auth override is active;
+    non-loopback binds require `MESH_ALLOWED_HOSTS` to be explicitly set)
   - Launch-token & HttpOnly SameSite=Strict session cookie protection on `GET /` and `/api/*`
-    (never hands out the auth token to unauthenticated requests and removes `testserver` bypass)
+    (never hands out the auth token to unauthenticated requests)
+  - Read-only endpoints open namespaces with `create=False` so browsing never creates empty `.db` files
   - Event-delegated `data-action` / `data-id` attributes eliminating inline `onclick` XSS vectors
   - Full support for clearing TTLs (`clear_ttl=True`) when editing memories
 """
 from __future__ import annotations
 
+import argparse
 import hmac
 import os
 import re
@@ -23,22 +27,28 @@ import webbrowser
 from typing import Any, List, Optional
 from urllib.parse import urlparse
 
-import click
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
-from .audit import get_audit_log, validate_namespace
+from .audit import _get_audit_db_path, ensure_secure_mesh_dir, get_audit_log, validate_namespace
 from .daemon import get_or_create_auth_token, request_user_permission
 from .digest import generate_digest
 from .io import export_namespace
-from .memory import Mesh, get_engine_status, warmup_model
+from .memory import (
+    Mesh,
+    get_engine_status,
+    suggest_did_you_mean_namespaces,
+    warmup_model,
+)
 from .namespaces import delete_namespace, list_namespaces, namespace_stats
+from .store import NamespaceNotFoundError
 from .version import VERSION
 
 _LOCAL_ORIGIN_REGEX = r"^https?://(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$"
 _ALLOWED_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]"}
+_ACTIVE_BIND_HOST = "127.0.0.1"
 _SESSION_COOKIE_NAME = "mesh_dash_session"
 
 _MESH_LOCK = threading.RLock()
@@ -128,12 +138,18 @@ async def _dashboard_security_middleware(request: Request, call_next: Any) -> An
     """
     has_auth_override = verify_dashboard_auth in api.dependency_overrides
     allowed_hosts = set(_ALLOWED_HOSTS)
+    if _ACTIVE_BIND_HOST not in ("0.0.0.0", "::", "[::]"):
+        allowed_hosts.add(_ACTIVE_BIND_HOST)
+
+    custom_hosts: set[str] = set()
     env_allowed = os.environ.get("MESH_ALLOWED_HOSTS", "").strip()
     if env_allowed:
         for item in env_allowed.split(","):
-            ci = item.strip().lower()
+            ci = _extract_hostname(item.strip().lower())
             if ci:
                 allowed_hosts.add(ci)
+                custom_hosts.add(ci)
+
     if has_auth_override:
         allowed_hosts.add("testserver")
 
@@ -148,7 +164,9 @@ async def _dashboard_security_middleware(request: Request, call_next: Any) -> An
     if origin:
         parsed_origin = urlparse(origin)
         origin_host = (parsed_origin.hostname or "").lower()
-        if origin_host not in allowed_hosts or not re.match(_LOCAL_ORIGIN_REGEX, origin):
+        is_valid_local = bool(re.match(_LOCAL_ORIGIN_REGEX, origin))
+        is_valid_custom = origin_host in custom_hosts and parsed_origin.scheme in ("http", "https")
+        if origin_host not in allowed_hosts or not (is_valid_local or is_valid_custom):
             return JSONResponse(
                 status_code=403,
                 content={"detail": "Forbidden cross-origin request."},
@@ -163,24 +181,38 @@ async def _dashboard_security_middleware(request: Request, call_next: Any) -> An
     return await call_next(request)
 
 
-def get_mesh(namespace: Optional[str] = None) -> Mesh:
-    """Return a cached Mesh instance for the requested (or default) namespace."""
+def get_mesh(namespace: Optional[str] = None, create: bool = True) -> Mesh:
+    """
+    Return a cached `Mesh` instance for the requested (or default) namespace.
+    When `create=False` and the namespace database does not exist, raises `NamespaceNotFoundError`
+    without creating any `.db` file on disk (Phase 3.4).
+    """
     global _mesh
     raw_ns = (namespace or (_mesh.namespace if _mesh is not None else _default_namespace)).strip() or "shared"
     ns = validate_namespace(raw_ns)
     with _MESH_LOCK:
         if _mesh is not None and _mesh.namespace == ns:
+            if not create and not _mesh.store.db_path.exists():
+                _MESH_CACHE.pop(ns, None)
+                _mesh = None
+                raise NamespaceNotFoundError(f"Namespace '{ns}' does not exist.")
             return _mesh
         inst = _MESH_CACHE.get(ns)
-        if inst is None:
-            inst = Mesh(namespace=ns, agent_id="dashboard")
+        if inst is not None:
+            if not create and not inst.store.db_path.exists():
+                _MESH_CACHE.pop(ns, None)
+                raise NamespaceNotFoundError(f"Namespace '{ns}' does not exist.")
+            return inst
+        inst = Mesh(namespace=ns, agent_id="dashboard", create=create)
+        if inst.store.db_path.exists() or create:
             _MESH_CACHE[ns] = inst
-        if _mesh is None:
-            _mesh = inst
+            if _mesh is None:
+                _mesh = inst
         return inst
 
 
 # --- Request models ---
+
 
 class CreateMemoryRequest(BaseModel):
     content: str
@@ -205,14 +237,31 @@ class UpdateMemoryRequest(BaseModel):
 
 # --- REST API endpoints (synchronous `def` so FastAPI runs them in threadpool) ---
 
+
 @api.get("/api/stats", dependencies=[Depends(verify_dashboard_auth)])
 def get_stats(namespace: Optional[str] = None) -> dict[str, Any]:
     try:
-        mesh = get_mesh(namespace)
-        patterns = mesh.patterns()
+        raw_ns = (namespace or (_mesh.namespace if _mesh is not None else _default_namespace)).strip() or "shared"
+        ns = validate_namespace(raw_ns)
+        try:
+            mesh = get_mesh(ns, create=False)
+        except NamespaceNotFoundError:
+            return {
+                "namespace": ns,
+                "namespace_exists": False,
+                "did_you_mean": suggest_did_you_mean_namespaces(ns),
+                "total_memories": 0,
+                "open_contradictions": 0,
+                "memory_gaps": 0,
+                "stale_memories": 0,
+                "unused_memories": 0,
+                "engine": get_engine_status(),
+            }
+        patterns = mesh.patterns(include_private=False)
         contradictions = mesh.contradictions()
         return {
             "namespace": mesh.namespace,
+            "namespace_exists": True,
             "total_memories": mesh.count(),
             "open_contradictions": len(contradictions),
             "memory_gaps": len(patterns["memory_gaps"]),
@@ -227,14 +276,18 @@ def get_stats(namespace: Optional[str] = None) -> dict[str, Any]:
 @api.get("/api/memories", dependencies=[Depends(verify_dashboard_auth)])
 def get_memories(limit: int = 200, namespace: Optional[str] = None) -> list[dict[str, Any]]:
     try:
-        return get_mesh(namespace).inspect(limit=limit)
+        try:
+            mesh = get_mesh(namespace, create=False)
+        except NamespaceNotFoundError:
+            return []
+        return mesh.inspect(limit=limit)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
 @api.post("/api/memories", dependencies=[Depends(verify_dashboard_auth)])
 def create_memory(req: CreateMemoryRequest) -> dict[str, Any]:
-    """Add a new memory from the dashboard."""
+    """Add a new memory from the dashboard (runs `guard_ingest` before storing)."""
     try:
         from .guards import guard_ingest
 
@@ -242,7 +295,7 @@ def create_memory(req: CreateMemoryRequest) -> dict[str, Any]:
         if guard.rejected:
             raise HTTPException(status_code=400, detail=guard.reason or "Memory rejected by ingestion guard.")
 
-        mesh = get_mesh(req.namespace)
+        mesh = get_mesh(req.namespace, create=True)
         result = mesh.learn(
             content=guard.content,
             memory_type=req.memory_type,
@@ -251,6 +304,8 @@ def create_memory(req: CreateMemoryRequest) -> dict[str, Any]:
             local_only=guard.local_only,
             ttl_days=req.ttl_days if req.ttl_days and req.ttl_days > 0 else None,
         )
+        if guard.warnings:
+            result["warnings"] = guard.warnings
         return {"status": "ok", "result": result}
     except HTTPException:
         raise
@@ -262,21 +317,35 @@ def create_memory(req: CreateMemoryRequest) -> dict[str, Any]:
 def update_memory(memory_id: str, req: UpdateMemoryRequest) -> dict[str, Any]:
     """Update a memory in-place, supporting clearing TTL when `clear_ttl=True` or `ttl_days` is omitted/0."""
     try:
-        mesh = get_mesh(req.namespace)
+        content_to_set = req.content
+        local_only_to_set = req.local_only
+        if content_to_set is not None:
+            from .guards import guard_ingest
+
+            guard = guard_ingest(content_to_set, local_only=bool(req.local_only))
+            if guard.rejected:
+                raise HTTPException(status_code=400, detail=guard.reason or "Memory rejected by ingestion guard.")
+            content_to_set = guard.content
+            if guard.local_only:
+                local_only_to_set = True
+
+        mesh = get_mesh(req.namespace, create=False)
         should_clear_ttl = bool(req.clear_ttl) or (req.ttl_days is not None and req.ttl_days <= 0)
         ttl_val = None if should_clear_ttl else req.ttl_days
         result = mesh.update(
             memory_id=memory_id,
-            content=req.content,
+            content=content_to_set,
             memory_type=req.memory_type,
             confidence=req.confidence,
             tags=req.tags,
-            local_only=req.local_only,
+            local_only=local_only_to_set,
             ttl_days=ttl_val,
             reset_ttl=ttl_val is not None,
             clear_ttl=should_clear_ttl,
         )
         return {"status": "ok", "result": result}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -284,7 +353,10 @@ def update_memory(memory_id: str, req: UpdateMemoryRequest) -> dict[str, Any]:
 @api.delete("/api/memories/{memory_id}", dependencies=[Depends(verify_dashboard_auth)])
 def delete_memory(memory_id: str, namespace: Optional[str] = None) -> dict[str, str]:
     try:
-        mesh = get_mesh(namespace)
+        try:
+            mesh = get_mesh(namespace, create=False)
+        except NamespaceNotFoundError:
+            return {"status": "not_found", "memory_id": memory_id}
         deleted = mesh.forget(memory_id)
         return {"status": "deleted" if deleted else "not_found", "memory_id": memory_id}
     except ValueError as e:
@@ -297,7 +369,16 @@ def get_patterns(
     include_private: bool = False,
 ) -> dict[str, Any]:
     try:
-        return get_mesh(namespace).patterns(include_private=include_private)
+        try:
+            mesh = get_mesh(namespace, create=False)
+        except NamespaceNotFoundError:
+            return {
+                "top_topics": [],
+                "memory_gaps": [],
+                "unused_memories": [],
+                "stale_memories": [],
+            }
+        return mesh.patterns(include_private=include_private)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -305,7 +386,11 @@ def get_patterns(
 @api.get("/api/contradictions", dependencies=[Depends(verify_dashboard_auth)])
 def get_contradictions(namespace: Optional[str] = None) -> list[dict[str, Any]]:
     try:
-        return get_mesh(namespace).contradictions()
+        try:
+            mesh = get_mesh(namespace, create=False)
+        except NamespaceNotFoundError:
+            return []
+        return mesh.contradictions()
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -313,7 +398,7 @@ def get_contradictions(namespace: Optional[str] = None) -> list[dict[str, Any]]:
 @api.post("/api/contradictions/{contradiction_id}/resolve", dependencies=[Depends(verify_dashboard_auth)])
 def resolve_contradiction(contradiction_id: str, namespace: Optional[str] = None) -> dict[str, str]:
     try:
-        get_mesh(namespace).resolve_contradiction(contradiction_id)
+        get_mesh(namespace, create=False).resolve_contradiction(contradiction_id)
         return {"status": "resolved"}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -330,7 +415,25 @@ def search(
     if not q.strip():
         raise HTTPException(status_code=400, detail="Query cannot be empty")
     try:
-        mesh = get_mesh(namespace)
+        raw_ns = (namespace or (_mesh.namespace if _mesh is not None else _default_namespace)).strip() or "shared"
+        ns = validate_namespace(raw_ns)
+        try:
+            mesh = get_mesh(ns, create=False)
+        except NamespaceNotFoundError:
+            if include_other:
+                return {
+                    "query": q.strip(),
+                    "namespace": ns,
+                    "namespace_exists": False,
+                    "did_you_mean": suggest_did_you_mean_namespaces(ns),
+                    "count": 0,
+                    "total_in_namespace": 0,
+                    "stale_count": 0,
+                    "results": [],
+                    "other_possible_memories": [],
+                    "filter_hint": None,
+                }
+            return []
         clean_type = (
             memory_type.strip().lower()
             if memory_type and memory_type.strip().lower() != "all"
@@ -368,14 +471,24 @@ def api_delete_namespace(namespace: str) -> dict[str, Any]:
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     evict_dashboard_mesh_cache(clean_ns)
-    count = delete_namespace(clean_ns)
-    return {"deleted": True, "memories_removed": count}
+    try:
+        count = delete_namespace(clean_ns)
+        return {"deleted": True, "memories_removed": count}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except (RuntimeError, OSError) as e:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Another process still holds the database open: {e}",
+        )
 
 
 @api.get("/api/export/{namespace}", dependencies=[Depends(verify_dashboard_auth)])
 def api_export_namespace(namespace: str, include_embeddings: bool = False) -> dict[str, Any]:
     try:
         return export_namespace(namespace=validate_namespace(namespace), include_embeddings=include_embeddings)
+    except NamespaceNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -387,8 +500,9 @@ def get_audit(
     action: str = "all",
 ) -> list[dict[str, Any]]:
     try:
-        mesh = get_mesh(namespace)
-        return get_audit_log(namespace=mesh.namespace, limit=limit, action_filter=action)
+        raw_ns = (namespace or (_mesh.namespace if _mesh is not None else _default_namespace)).strip() or "shared"
+        ns = validate_namespace(raw_ns)
+        return get_audit_log(namespace=ns, limit=limit, action_filter=action)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -396,8 +510,9 @@ def get_audit(
 @api.get("/api/digest", dependencies=[Depends(verify_dashboard_auth)])
 def get_digest(namespace: Optional[str] = None, hours: int = 24) -> dict[str, Any]:
     try:
-        mesh = get_mesh(namespace)
-        return generate_digest(namespace=mesh.namespace, hours=hours)
+        raw_ns = (namespace or (_mesh.namespace if _mesh is not None else _default_namespace)).strip() or "shared"
+        ns = validate_namespace(raw_ns)
+        return generate_digest(namespace=ns, hours=hours)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -442,11 +557,13 @@ html, body {
 ::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--surface2); border-radius: 3px; }
+
 .app {
   max-width: 1120px;
   margin: 0 auto;
   padding: 0 16px 40px;
 }
+
 header {
   display: flex;
   align-items: center;
@@ -487,6 +604,7 @@ header {
   cursor: pointer;
 }
 .ns-select:hover, .ns-select:focus { border-color: var(--border2); color: var(--text); }
+
 .search-wrap {
   flex: 1;
   min-width: 180px;
@@ -519,6 +637,7 @@ header {
   padding: 0 4px;
   pointer-events: none;
 }
+
 .metrics-inline {
   display: flex;
   align-items: center;
@@ -539,6 +658,7 @@ header {
 }
 .metric-val.warn { color: var(--amber); }
 .metric-val.danger { color: var(--red); }
+
 .btn {
   display: inline-flex;
   align-items: center;
@@ -565,6 +685,7 @@ header {
 .btn-primary:hover { background: #0ea572; border-color: transparent; }
 .btn-danger { color: var(--red); border-color: rgba(239, 68, 68, 0.25); }
 .btn-danger:hover { background: rgba(239, 68, 68, 0.1); }
+
 .subnav {
   display: flex;
   align-items: center;
@@ -602,6 +723,7 @@ header {
   color: var(--subtle);
 }
 .tab.active .tab-count { color: var(--accent); }
+
 .toolbar {
   display: flex;
   align-items: center;
@@ -634,8 +756,10 @@ header {
   font-size: 11.5px;
   outline: none;
 }
+
 .panel { display: none; }
 .panel.active { display: block; }
+
 .list {
   display: flex;
   flex-direction: column;
@@ -655,6 +779,7 @@ header {
 }
 .row:last-child { border-bottom: none; }
 .row:hover { background: rgba(255, 255, 255, 0.018); }
+
 .row-main { flex: 1; min-width: 0; }
 .row-top {
   display: flex;
@@ -677,6 +802,7 @@ header {
   font-size: 11px;
   color: var(--subtle);
 }
+
 .type-pill {
   display: inline-block;
   padding: 1px 6px;
@@ -698,6 +824,7 @@ header {
 .type-pill.decision    { color: #f472b6; background: rgba(244,114,182,0.12); }
 .type-pill.error       { color: #f87171; background: rgba(248,113,113,0.12); }
 .type-pill.general     { color: #94a3b8; background: rgba(148,163,184,0.12); }
+
 .tag {
   font-family: var(--mono);
   font-size: 10.5px;
@@ -719,6 +846,7 @@ header {
 .flag.reason { color: var(--blue); background: rgba(59, 130, 246, 0.12); font-family: var(--mono); }
 .flag.synonym { color: var(--purple); background: rgba(139, 92, 246, 0.14); font-family: var(--mono); }
 .flag.rescue { color: var(--amber); background: rgba(245, 158, 11, 0.14); font-family: var(--mono); }
+
 .filter-rescue-banner {
   display: flex;
   align-items: center;
@@ -766,6 +894,7 @@ header {
   line-height: 1.45;
   word-break: break-word;
 }
+
 .row-actions {
   display: flex;
   gap: 4px;
@@ -789,6 +918,7 @@ header {
 }
 .icon-btn:hover { background: var(--surface2); border-color: var(--border2); color: var(--text); }
 .icon-btn.del:hover { color: var(--red); border-color: rgba(239,68,68,0.3); }
+
 .section-label {
   font-size: 11px;
   font-weight: 600;
@@ -800,6 +930,7 @@ header {
   align-items: center;
   gap: 6px;
 }
+
 .conflict-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -816,6 +947,7 @@ header {
 }
 .conflict-box.old { border-left: 2px solid var(--red); }
 .conflict-box.new { border-left: 2px solid var(--accent); }
+
 .empty {
   padding: 36px 16px;
   text-align: center;
@@ -825,6 +957,7 @@ header {
   border-radius: 8px;
   background: var(--surface);
 }
+
 .backdrop {
   position: fixed;
   inset: 0;
@@ -873,6 +1006,7 @@ header {
 .field textarea:focus, .field input:focus, .field select:focus { border-color: var(--accent); }
 .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .modal-foot { display: flex; justify-content: flex-end; gap: 6px; margin-top: 12px; }
+
 #toast {
   position: fixed;
   bottom: 16px;
@@ -886,6 +1020,7 @@ header {
   display: none;
   z-index: 200;
 }
+
 @media (max-width: 720px) {
   header { height: auto; padding: 8px 0; }
   .search-wrap { order: 3; max-width: 100%; flex-basis: 100%; }
@@ -1050,6 +1185,7 @@ if (_urlParams.has('token')) {
   const cleanSearch = _urlParams.toString();
   history.replaceState(null, '', location.pathname + (cleanSearch ? '?' + cleanSearch : ''));
 }
+
 let ns = _urlParams.get('ns') || '';
 let memories = [];
 let searchResults = null;
@@ -1170,11 +1306,13 @@ function renderMemories() {
       list.sort((a, b) => (b.effective_confidence ?? b.confidence ?? 1) - (a.effective_confidence ?? a.confidence ?? 1));
     }
   }
+
   document.getElementById('shown-count').textContent =
     searchResults !== null ? `${list.length} matches` : `${list.length} items`;
 
   const root = document.getElementById('memory-list');
   let html = '';
+
   const rescuedCount = otherPossibleResults.filter(x => String(x.reason || '').startsWith('matched_in_other_type_or_tag')).length;
   if (searchResults !== null && activeType !== 'all' && rescuedCount > 0) {
     html += `<div class="filter-rescue-banner">
@@ -1256,6 +1394,7 @@ function renderMemories() {
       }).join('') +
       `</div></div>`;
   }
+
   root.innerHTML = html;
 }
 
@@ -1297,6 +1436,7 @@ function onSearch(val) {
     renderMemories();
     return;
   }
+
   const ql = q.toLowerCase();
   const matchedAll = memories.filter(m =>
     (m.content || '').toLowerCase().includes(ql) ||
@@ -1305,6 +1445,7 @@ function onSearch(val) {
   searchResults = activeType === 'all'
     ? matchedAll
     : matchedAll.filter(m => (m.memory_type || 'fact') === activeType);
+
   const primaryIds = new Set(searchResults.map(m => m.id));
   otherPossibleResults = [
     ...matchedAll.filter(m => !primaryIds.has(m.id)).map(m => ({
@@ -1318,6 +1459,7 @@ function onSearch(val) {
       reason: 'namespace_context'
     }))
   ].slice(0, 6);
+
   renderMemories();
 
   if (q.length >= 2) {
@@ -1386,6 +1528,7 @@ async function saveMemory() {
   const ttlRaw = document.getElementById('f-ttl').value.trim();
   const parsedTtl = ttlRaw ? parseFloat(ttlRaw) : null;
   const ttlChanged = parsedTtl !== editOrigTtl;
+
   const payload = {
     content,
     memory_type: document.getElementById('f-type').value,
@@ -1394,6 +1537,7 @@ async function saveMemory() {
     local_only: document.getElementById('f-private').checked,
     namespace: ns
   };
+
   if (editId) {
     if (ttlChanged) {
       if (parsedTtl && parsedTtl > 0) {
@@ -1407,14 +1551,17 @@ async function saveMemory() {
       payload.ttl_days = parsedTtl;
     }
   }
+
   const url = editId ? `/api/memories/${encodeURIComponent(editId)}` : '/api/memories';
   const method = editId ? 'PUT' : 'POST';
+
   const res = await fetch(url, {
     method,
     credentials: 'same-origin',
     headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(payload)
   });
+
   if (res.ok) {
     const wasEdit = Boolean(editId);
     closeModal();
@@ -1479,6 +1626,7 @@ async function resolveConflict(id) {
 async function loadPatterns() {
   const data = await apiFetch(`/api/patterns?namespace=${encodeURIComponent(ns)}`);
   if (!data) return;
+
   const tEl = document.getElementById('patterns-topics');
   tEl.innerHTML = (data.top_topics || []).length
     ? `<div class="list">` + data.top_topics.map(t => `<div class="row">
@@ -1699,50 +1847,84 @@ def dashboard(request: Request) -> HTMLResponse:
     return response
 
 
-# --- CLI entry point ---
+# --- CLI entry point (standard library argparse, no click runtime dependency) ---
 
-@click.command()
-@click.option(
-    "--namespace",
-    default="shared",
-    envvar="MESH_NAMESPACE",
-    help="Mesh namespace to inspect (default: shared)",
-)
-@click.option("--host", default="127.0.0.1", help="Host interface to bind (default: 127.0.0.1)")
-@click.option("--port", default=7433, help="Port to run on (default: 7433)")
-@click.option("--no-browser", is_flag=True, help="Don't auto-open the browser")
-@click.option("--yes", "-y", is_flag=True, help="Skip interactive y/n permission prompts")
-def run(namespace: str, host: str, port: int, no_browser: bool, yes: bool = False) -> None:
+
+def run(
+    namespace: Optional[str] = None,
+    host: Optional[str] = None,
+    port: Optional[int] = None,
+    no_browser: Optional[bool] = None,
+    yes: Optional[bool] = None,
+) -> None:
     """Start the Mesh dashboard at http://localhost:<port>"""
-    global _mesh, _default_namespace
+    global _mesh, _default_namespace, _ACTIVE_BIND_HOST
+    parser = argparse.ArgumentParser(description="Start the Mesh web dashboard.")
+    parser.add_argument(
+        "--namespace",
+        default=os.environ.get("MESH_NAMESPACE", "shared"),
+        help="Mesh namespace to inspect (default: shared)",
+    )
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Host interface to bind (default: 127.0.0.1)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=7433,
+        help="Port to run on (default: 7433)",
+    )
+    parser.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="Don't auto-open the browser",
+    )
+    parser.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        help="Skip interactive y/n permission prompts",
+    )
+    args, _ = parser.parse_known_args()
 
-    clean_ns = validate_namespace(namespace)
+    resolved_ns = namespace if namespace is not None else args.namespace
+    resolved_host = (host if host is not None else args.host).strip()
+    resolved_port = int(port if port is not None else args.port)
+    resolved_no_browser = bool(no_browser if no_browser is not None else args.no_browser)
+    resolved_yes = bool(yes if yes is not None else args.yes)
+
+    clean_ns = validate_namespace(resolved_ns)
     _default_namespace = clean_ns
+    _ACTIVE_BIND_HOST = resolved_host.lower()
 
-    active_bind_host = host.strip().lower()
     env_allowed = os.environ.get("MESH_ALLOWED_HOSTS", "").strip()
-    if active_bind_host not in ("127.0.0.1", "localhost", "::1", "[::1]"):
+    if _ACTIVE_BIND_HOST not in ("127.0.0.1", "localhost", "::1", "[::1]"):
         if not env_allowed:
-            sys.stderr.write(
-                f"Refusing to start dashboard on non-loopback bind '{host}' without MESH_ALLOWED_HOSTS specified.\n"
+            err_msg = (
+                f"Refusing to start dashboard on non-loopback bind '{resolved_host}' without MESH_ALLOWED_HOSTS specified.\n"
                 f"Set MESH_ALLOWED_HOSTS to comma-separated allowed hostnames/IPs to confirm.\n"
             )
-            sys.exit(1)
+            sys.stderr.write(err_msg)
+            raise ValueError(err_msg)
         else:
             sys.stderr.write(
-                f"[WARNING] Binding Mesh dashboard to '{host}' with MESH_ALLOWED_HOSTS={env_allowed}. "
+                f"[WARNING] Binding Mesh dashboard to '{resolved_host}' with MESH_ALLOWED_HOSTS={env_allowed}. "
                 "Traffic is unencrypted plain HTTP protected only by bearer-token authentication.\n"
             )
 
     get_or_create_auth_token()
-    _mesh = Mesh(namespace=clean_ns, agent_id="dashboard")
+    db_file = ensure_secure_mesh_dir().resolve() / f"mesh_{clean_ns}.db"
+    if db_file.exists():
+        _mesh = Mesh(namespace=clean_ns, agent_id="dashboard", create=False)
 
     from .memory import _has_local_onnx_pair
 
     if _has_local_onnx_pair() is None:
         if request_user_permission(
             "download the ~90MB ONNX embedding model and start the background warmup worker for the Dashboard",
-            assume_yes=yes,
+            assume_yes=resolved_yes,
         ):
             threading.Thread(target=warmup_model, args=(clean_ns, False, True), daemon=True).start()
     else:
@@ -1750,21 +1932,21 @@ def run(namespace: str, host: str, port: int, no_browser: bool, yes: bool = Fals
 
     nonce = secrets.token_urlsafe(16)
     _LAUNCH_NONCES[nonce] = time.time()
-    launch_url = f"http://localhost:{port}/?ns={clean_ns}&code={nonce}"
+    launch_url = f"http://localhost:{resolved_port}/?ns={clean_ns}&code={nonce}"
 
     print("\n  Mesh Dashboard")
     print(f"  {launch_url}")
     print(f"  namespace: {clean_ns}")
     print("  Press Ctrl+C to stop.\n")
 
-    if not no_browser:
+    if not resolved_no_browser:
         def open_browser() -> None:
             time.sleep(1.0)
             webbrowser.open(launch_url)
 
         threading.Thread(target=open_browser, daemon=True).start()
 
-    uvicorn.run(api, host=host, port=port, log_level="error")
+    uvicorn.run(api, host=resolved_host, port=resolved_port, log_level="error")
 
 
 if __name__ == "__main__":

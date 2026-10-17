@@ -4,26 +4,34 @@ mesh/store.py — High-performance unified persistence & hybrid search engine fo
 Storage architecture:
   - SQLite (WAL mode) single-source-of-truth per namespace (`~/.mesh/mesh_<namespace>.db`)
   - Strict namespace (`validate_namespace`) and memory ID (`validate_memory_id`) validation
+  - Cross-process + in-process re-entrant `namespace_write_lock` (`~/.mesh/.mesh_<ns>.lock`, mode 0600)
   - Enforced 0700 directory & 0600 database file permissions on POSIX
   - Persistent connection pooling with automatic teardown on namespace eviction/deletion
   - Normalized 384-dim float32 vector embeddings stored as compact binary BLOBs in `memories`
     alongside `embedding_model` provenance and O(1) `needs_healing_ids` tracking
-  - Process-local in-memory capacity-doubling NumPy matrix cache + pre-tokenized lexical/IDF
-    metadata cache with copy-on-write row updates & composite (.db + .db-wal + data_version) sync
+  - Content-versioned (`mesh_meta.content_version`) in-memory capacity-doubling NumPy matrix cache
+    + pre-tokenized lexical/IDF metadata cache so recall telemetry writes never trigger
+    cross-process full-matrix cache rebuilds (note: `access_count` in cached rows may be slightly
+    stale across processes; `list_all`/`inspect`, `get_patterns`, and `namespace_stats` read
+    fresh counts directly from SQLite after flushing telemetry)
+  - Batched recall telemetry (`MESH_TELEMETRY_BATCH=50`, `MESH_TELEMETRY_FLUSH_SECONDS=5.0`)
   - SQLite FTS5 virtual table (`memories_fts`) indexed by integer `rowid` for O(log N) updates/deletes
 """
 from __future__ import annotations
 
 import atexit
+import contextlib
 import json
 import os
 import re
 import sqlite3
+import stat
 import threading
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 import numpy as np
 
@@ -41,8 +49,12 @@ from .audit import (
 
 EMBEDDING_DIM = 384
 STALE_THRESHOLD = 0.3
-DEFAULT_MAX_QUERY_ROWS = 10000
 GAP_MIN_QUERIES = 2
+DEFAULT_MAX_QUERY_ROWS = 10000
+
+# Pre-mask candidate cut threshold (Phase 2.4)
+PREMASK_SKIP_CUT_THRESHOLD = 400
+PREMASK_TOP_K_MULTIPLIER = 25
 
 _VALID_MEMORY_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
@@ -50,7 +62,23 @@ _VALID_MEMORY_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 # so row dictionaries remain 100% JSON-serializable across MCP, HTTP, CLI, and Dashboard).
 _MEMORY_COLUMNS = (
     "id, namespace, content, confidence, memory_type, source_agent, "
-    "tags, created_at, accessed_at, access_count, ttl_days, decay_start_at, local_only, embedding_model"
+    "tags, created_at, updated_at, accessed_at, access_count, ttl_days, decay_start_at, local_only, embedding_model"
+)
+
+# Whitelisted fields returned in `get_patterns()` for `unused_memories` and `stale_memories` (Phase 1.1)
+_PATTERNS_MEMORY_WHITELIST: tuple[str, ...] = (
+    "id",
+    "content",
+    "memory_type",
+    "confidence",
+    "effective_confidence",
+    "is_stale",
+    "tags",
+    "source_agent",
+    "created_at",
+    "accessed_at",
+    "access_count",
+    "ttl_days",
 )
 
 _TOKEN_RE = re.compile(r"[a-zA-Z0-9_./:-]{2,}")
@@ -78,6 +106,14 @@ _FRAMING_TOKENS = {"user", "users", "agent", "agents", "assistant", "human", "pe
 DbStamp = tuple[int, int, int, int]
 
 
+class NamespaceNotFoundError(ValueError):
+    """
+    Raised when `MeshStore(namespace, create=False)` or `Mesh(namespace, create=False)`
+    is instantiated for a namespace whose SQLite database file does not exist on disk.
+    Inherits from `ValueError` for backwards compatibility with existing callers.
+    """
+
+
 def validate_memory_id(memory_id: str) -> str:
     """
     Validate a memory or contradiction identifier to prevent stored XSS, SQL/HTML injection,
@@ -92,6 +128,190 @@ def validate_memory_id(memory_id: str) -> str:
             f"Invalid memory ID '{memory_id}'. Must match ^[A-Za-z0-9][A-Za-z0-9._:-]{{0,127}}$."
         )
     return clean
+
+
+# --- Mixed Embedding-Space Guards (Phase 2.1) ---
+
+def _is_mixed_space(row_model: Optional[str], query_model: Optional[str]) -> bool:
+    """
+    Return True if `row_model` and `query_model` are both known, non-empty model tags
+    from different embedding spaces (not only the `hash-384` vs `onnx-minilm-l6-v2` pair).
+    An empty/unknown/`needs-reembed` tag on either side is treated as "unknown":
+    returns False here (does not zero similarity in recall), while `_is_same_known_space`
+    returns False so unknown tags are never used for deduplication or contradiction checks.
+    """
+    rm = (row_model or "").strip().lower()
+    qm = (query_model or "").strip().lower()
+    if not rm or not qm:
+        return False
+    if rm in ("unknown", "needs-reembed") or qm in ("unknown", "needs-reembed"):
+        return False
+    return rm != qm
+
+
+def _is_same_known_space(row_model: Optional[str], query_model: Optional[str]) -> bool:
+    """
+    Return True only when both `row_model` and `query_model` are non-empty, known model tags
+    and belong to the exact same embedding space. Required for deduplication and contradiction checks.
+    """
+    rm = (row_model or "").strip().lower()
+    qm = (query_model or "").strip().lower()
+    if not rm or not qm:
+        return False
+    if rm in ("unknown", "needs-reembed") or qm in ("unknown", "needs-reembed"):
+        return False
+    return rm == qm
+
+
+# --- Cross-Process + In-Process Re-Entrant Namespace Write Lock (Phase 2.2) ---
+# Locking order: namespace_write_lock -> _CACHE_LOCK -> SQLite connection
+
+class _NamespaceLockState:
+    def __init__(self, namespace: str) -> None:
+        self.namespace = namespace
+        self.rlock = threading.RLock()
+        self.depth = 0
+        self.fd: Optional[int] = None
+        self.lock_path: Optional[Path] = None
+
+
+_NS_LOCK_REGISTRY_MUTEX = threading.Lock()
+_NS_LOCK_REGISTRY: dict[tuple[Path, str], _NamespaceLockState] = {}
+
+
+def _get_ns_lock_path(namespace: str) -> Path:
+    clean_ns = validate_namespace(namespace)
+    base_dir = ensure_secure_mesh_dir().resolve()
+    return base_dir / f".mesh_{clean_ns}.lock"
+
+
+def _acquire_os_file_lock(lock_path: Path, timeout: float) -> int:
+    ensure_secure_mesh_dir(lock_path.parent)
+    flags = os.O_RDWR | os.O_CREAT
+    mode = stat.S_IRUSR | stat.S_IWUSR if os.name != "nt" else 0o600
+    fd = os.open(str(lock_path), flags, mode)
+    if os.name != "nt":
+        try:
+            os.fchmod(fd, stat.S_IRUSR | stat.S_IWUSR)
+        except (AttributeError, OSError):
+            pass
+    else:
+        try:
+            if os.fstat(fd).st_size == 0:
+                os.write(fd, b"\x00")
+        except OSError:
+            pass
+
+    deadline = time.monotonic() + max(0.05, float(timeout))
+    sleep_s = 0.002
+    while True:
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except OSError:
+            if time.monotonic() >= deadline:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+                raise TimeoutError(
+                    f"Timed out after {timeout:.1f}s waiting for namespace write lock '{lock_path.name}'."
+                )
+            time.sleep(sleep_s)
+            sleep_s = min(0.05, sleep_s * 1.4)
+
+
+def _release_os_file_lock(fd: int) -> None:
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            try:
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+            except OSError:
+                pass
+        else:
+            import fcntl
+
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
+@contextlib.contextmanager
+def namespace_write_lock(namespace: str, timeout: float = 15.0) -> Iterator[None]:
+    """
+    Combined per-namespace in-process `threading.RLock` + cross-process advisory file lock
+    on `~/.mesh/.mesh_<ns>.lock` (mode 0600 on POSIX).
+    Re-entrant within the same thread so nested `learn() -> upsert()/update()` calls never deadlock.
+    """
+    clean_ns = validate_namespace(namespace)
+    mesh_dir = get_mesh_dir().resolve()
+    key = (mesh_dir, clean_ns)
+    with _NS_LOCK_REGISTRY_MUTEX:
+        state = _NS_LOCK_REGISTRY.get(key)
+        if state is None:
+            state = _NamespaceLockState(clean_ns)
+            _NS_LOCK_REGISTRY[key] = state
+
+    wait_timeout = max(0.05, float(timeout))
+    deadline = time.monotonic() + wait_timeout
+    if not state.rlock.acquire(timeout=wait_timeout):
+        raise TimeoutError(
+            f"Timed out after {timeout:.1f}s waiting for in-process namespace write lock '{clean_ns}'."
+        )
+    try:
+        if state.depth == 0:
+            remaining = max(0.05, deadline - time.monotonic())
+            lock_path = _get_ns_lock_path(clean_ns)
+            state.fd = _acquire_os_file_lock(lock_path, timeout=remaining)
+            state.lock_path = lock_path
+        state.depth += 1
+        try:
+            yield
+        finally:
+            state.depth -= 1
+            if state.depth == 0 and state.fd is not None:
+                fd_to_close = state.fd
+                state.fd = None
+                _release_os_file_lock(fd_to_close)
+    finally:
+        state.rlock.release()
+
+
+def evict_namespace_write_lock(namespace: str) -> None:
+    """Evict lock registry entry and delete `~/.mesh/.mesh_<ns>.lock` on namespace delete/rename."""
+    try:
+        clean_ns = validate_namespace(namespace)
+    except ValueError:
+        return
+    mesh_dir = get_mesh_dir().resolve()
+    key = (mesh_dir, clean_ns)
+    with _NS_LOCK_REGISTRY_MUTEX:
+        state = _NS_LOCK_REGISTRY.pop(key, None)
+        if state is not None and state.fd is not None:
+            _release_os_file_lock(state.fd)
+            state.fd = None
+    lock_file = mesh_dir / f".mesh_{clean_ns}.lock"
+    try:
+        lock_file.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _clean_possessives(text: str) -> str:
@@ -118,7 +338,8 @@ def _fast_stem(w: str) -> str:
     return w
 
 
-# --- Bidirectional Domain Synonym & Compound Expansion Engine ---
+# --- Bidirectional Tight Domain Synonym & Compound Expansion Engine (Phase 2.5) ---
+# Over-broad groups (port/url/host/ip/endpoint and main/production) are split into tight groups.
 _SYNONYM_GROUPS: list[set[str]] = [
     # Colors & Visual Themes
     {"color", "colour", "hue", "shade", "tint"},
@@ -131,34 +352,36 @@ _SYNONYM_GROUPS: list[set[str]] = [
     {"light", "bright", "day", "white", "ivory", "pale"},
     # Everyday & Personal Objects / Preferences
     {"pen", "pens", "biro", "ballpoint", "marker", "stylus", "highlighter", "stationery", "pencil"},
-    {"anime", "manga", "animation", "otaku", "cartoon", "series", "show"},
-    {"favorite", "favourite", "preferred", "best", "top", "beloved", "choice", "likes", "loves"},
+    {"anime", "manga", "animation", "otaku", "cartoon"},
+    {"favorite", "favourite", "preferred", "beloved", "likes", "loves"},
     {"laptop", "notebook", "macbook", "computer", "pc", "workstation", "machine"},
     {"phone", "smartphone", "mobile", "cellphone", "iphone", "android", "handset"},
     # Databases & Persistence
-    {"db", "database", "databases", "datastore", "storage", "persistence"},
+    {"db", "database", "databases", "datastore"},
     {"postgres", "postgresql", "psql", "pg", "pgbouncer"},
-    {"redis", "valkey", "memcached", "cache", "caching", "inmemory"},
-    {"sqlite", "sqlite3", "wal", "fts", "fts5"},
-    {"mongo", "mongodb", "nosql", "documentdb", "dynamodb"},
+    {"redis", "valkey", "memcached", "inmemory"},
+    {"sqlite", "sqlite3"},
+    {"mongo", "mongodb", "documentdb"},
     # Auth & Security
     {"auth", "authentication", "authorization", "login", "signin", "sso", "oauth", "oidc", "rbac"},
     {"jwt", "token", "tokens", "bearer", "session", "cookie", "cookies"},
-    {"password", "passphrase", "secret", "secrets", "credential", "credentials", "apikey", "key", "vault"},
-    # Infrastructure, Networking & Environments
-    {"prod", "production", "live", "main", "release"},
-    {"stage", "staging", "preprod", "qa", "uat", "canary"},
-    {"dev", "development", "local", "localhost", "sandbox", "loopback"},
-    {"deploy", "deployment", "release", "rollout", "ship", "ci", "cd", "pipeline"},
-    {"port", "socket", "listen", "endpoint", "url", "uri", "host", "hostname", "ip", "address"},
-    {"k8s", "kubernetes", "cluster", "pod", "pods", "container", "docker", "helm"},
+    {"password", "passphrase", "secret", "secrets", "credential", "credentials", "apikey", "vault"},
+    # Infrastructure, Networking & Environments (tight groups: main != production, port != url != host != ip != endpoint)
+    {"prod", "production"},
+    {"stage", "staging", "preprod", "uat"},
+    {"dev", "development", "localhost", "loopback"},
+    {"deploy", "deployment", "rollout"},
+    {"url", "uri", "link", "hyperlink"},
+    {"ip", "address", "ipv4", "ipv6"},
+    {"host", "hostname"},
+    {"k8s", "kubernetes", "kubectl"},
     # Engineering, Errors & Performance
-    {"bug", "bugs", "error", "errors", "exception", "crash", "failure", "fault", "issue", "defect", "incident"},
-    {"fix", "fixed", "patch", "resolve", "resolved", "workaround", "solution", "remedy", "repair"},
-    {"config", "configuration", "settings", "env", "environment", "options", "parameters", "flags"},
-    {"limit", "limits", "rate", "ratelimit", "quota", "throttle", "throttling", "cap", "timeout"},
-    {"fast", "latency", "performance", "speed", "throughput", "slow", "bottleneck", "benchmark"},
-    {"test", "tests", "testing", "pytest", "unittest", "spec", "suite", "verification"},
+    {"bug", "bugs", "error", "errors", "exception", "crash", "failure", "fault", "defect", "incident"},
+    {"fix", "fixed", "patch", "resolve", "resolved", "workaround", "remedy", "repair"},
+    {"config", "configuration", "settings", "env", "environment"},
+    {"limit", "limits", "ratelimit", "quota", "throttle", "throttling"},
+    {"fast", "latency", "performance", "throughput", "bottleneck", "benchmark"},
+    {"test", "tests", "testing", "pytest", "unittest"},
 ]
 
 # Compound token splits: maps joined token -> tuple of split tokens (and vice versa)
@@ -219,7 +442,7 @@ def expand_query_tokens(content_tokens: list[str]) -> dict[str, set[str]]:
     """
     Given a list of cleaned query `content_tokens`, return a mapping:
         { original_token: {synonym_or_compound_1, synonym_or_compound_2, ...} }
-    Includes domain synonyms, stemmed equivalents, punctuated identifier forms, and compound variants.
+    Includes tight domain synonyms, stemmed equivalents, punctuated identifier forms, and compound variants.
     """
     expansions: dict[str, set[str]] = {}
     lower_tokens = [t.lower() for t in content_tokens]
@@ -284,7 +507,7 @@ def _build_row_lexical_entry(content: str, tags_list: list[str]) -> dict[str, An
     doc_compacts = {re.sub(r"[^a-z0-9]", "", t) for t in doc_tokens if len(t) >= 2}
 
     all_doc_tokens = set(doc_tokens) | tag_tokens | doc_compacts | tag_compacts
-    all_doc_stems = doc_stems | tag_stems
+    all_doc_stems = doc_stems | tag_stems | {_fast_stem(t) for t in doc_compacts}
     combined_df_stems = all_doc_stems | set(doc_tokens)
     return {
         "doc_norm": doc_norm,
@@ -345,11 +568,13 @@ def _parse_iso_utc(ts: Optional[str]) -> Optional[datetime]:
     Parse an ISO-8601 timestamp string into a timezone-aware UTC datetime.
     Safely handles both naive UTC strings (legacy v0.1-v0.4) and offset-aware strings.
     """
-    if not ts:
+    if not ts or not isinstance(ts, str):
         return None
     try:
         cleaned = ts.strip()
-        if cleaned.endswith("Z"):
+        if not cleaned:
+            return None
+        if cleaned.endswith(("Z", "z")):
             cleaned = cleaned[:-1] + "+00:00"
         dt = datetime.fromisoformat(cleaned)
         if dt.tzinfo is None:
@@ -363,7 +588,13 @@ def _compute_row_effective_confidence(
     row: dict[str, Any],
     now: Optional[datetime] = None,
 ) -> tuple[float, bool]:
-    """Compute (effective_confidence, is_stale) for a row dictionary (unified staleness definition)."""
+    """
+    Compute (effective_confidence, is_stale) for a row dictionary (unified staleness definition).
+    Linear decay model:
+      `decay_factor = max(0.0, min(1.0, 1.0 - (days_elapsed / ttl_days)))`
+      `effective_confidence = round(stored_conf * decay_factor, 4)`
+      `is_stale = effective_confidence < STALE_THRESHOLD` (0.3, i.e. 70% of TTL elapsed when conf=1.0).
+    """
     stored_conf = float(row.get("confidence", 1.0))
     ttl_raw = row.get("ttl_days")
     if ttl_raw is None:
@@ -388,8 +619,6 @@ def _compute_row_effective_confidence(
 def _get_db_stamp(db_path: Path) -> Optional[DbStamp]:
     """
     Return a composite `(db_mtime_ns, db_size, wal_mtime_ns, wal_size)` stamp.
-    Tracking the `-wal` file alongside the main `.db` file guarantees that writes
-    from other processes are detected immediately in O(1) time.
     """
     if not db_path.exists():
         return None
@@ -448,16 +677,36 @@ def _parse_tags_json(raw_tags: Any) -> list[str]:
     return []
 
 
+_CACHE_REBUILD_COUNT: int = 0
+
+
+def get_cache_rebuild_count() -> int:
+    """Return total number of full `_VectorCacheEntry` builds in this process (for testing)."""
+    with _CACHE_LOCK:
+        return _CACHE_REBUILD_COUNT
+
+
+def reset_cache_rebuild_count() -> None:
+    """Reset the `_VectorCacheEntry` build counter to 0 (for testing)."""
+    global _CACHE_REBUILD_COUNT
+    with _CACHE_LOCK:
+        _CACHE_REBUILD_COUNT = 0
+        _VectorCacheEntry.build_count = 0
+
+
 class _VectorCacheEntry:
     """
     Holds the in-memory normalized embedding matrix (with capacity-doubling buffer),
     ID index, full row metadata dictionary, pre-tokenized lexical cache, incremental
-    document-frequency (`stem_df`) counter, and `needs_healing_ids` set for a namespace.
+    document-frequency (`stem_df`) counter, `content_version` stamp, and `needs_healing_ids` set.
     """
+
+    build_count: int = 0
 
     __slots__ = (
         "stamp",
         "data_version",
+        "content_version",
         "mtime_ns",
         "file_size",
         "ids",
@@ -480,11 +729,14 @@ class _VectorCacheEntry:
         all_ids: Optional[set[str]] = None,
         rows_by_id: Optional[dict[str, dict[str, Any]]] = None,
         data_version: int = 0,
+        content_version: Optional[int] = None,
         needs_healing_ids: Optional[set[str]] = None,
         reused_lexical: Optional[dict[str, dict[str, Any]]] = None,
     ):
+        global _CACHE_REBUILD_COUNT
         self.stamp: DbStamp = stamp
         self.data_version: int = data_version
+        self.content_version: Optional[int] = content_version
         self.mtime_ns: int = stamp[0]
         self.file_size: int = stamp[1]
         self.ids: list[str] = ids
@@ -524,6 +776,9 @@ class _VectorCacheEntry:
                 vec = self._matrix_buf[idx] if (idx is not None and self._matrix_buf is not None) else None
                 if _row_needs_healing(row_meta, vec):
                     self.needs_healing_ids.add(mid)
+
+        _VectorCacheEntry.build_count += 1
+        _CACHE_REBUILD_COUNT += 1
 
     def _index_row_lexical(self, memory_id: str, row_meta: dict[str, Any]) -> None:
         old_lex = self.lexical_by_id.pop(memory_id, None)
@@ -585,12 +840,19 @@ class _VectorCacheEntry:
             rows_copy = dict(self.rows_by_id)
             return ids_copy, mat_view, rows_copy
 
-    def update_stamp(self, stamp: DbStamp, data_version: Optional[int] = None) -> None:
+    def update_stamp(
+        self,
+        stamp: DbStamp,
+        data_version: Optional[int] = None,
+        content_version: Optional[int] = None,
+    ) -> None:
         self.stamp = stamp
         self.mtime_ns = stamp[0]
         self.file_size = stamp[1]
         if data_version is not None:
             self.data_version = data_version
+        if content_version is not None:
+            self.content_version = content_version
 
     def upsert_vector(
         self,
@@ -682,8 +944,115 @@ _QUERY_WRITE_COUNTS: dict[Path, int] = {}
 _TRANSIENT_EMBEDDINGS: dict[tuple[str, str], np.ndarray] = {}
 
 
+# --- Batched Telemetry Buffer (Phase 2.3B) ---
+
+class _TelemetryBuffer:
+    def __init__(self, db_path: Path, namespace: str) -> None:
+        self.db_path = db_path
+        self.namespace = namespace
+        self.access_increments: dict[str, tuple[int, str]] = {}
+        self.query_rows: list[tuple[str, str, str, str, Optional[float], int, str, int]] = []
+        self.event_count: int = 0
+        self.first_event_ts: float = 0.0
+
+
+_TELEMETRY_LOCK = threading.RLock()
+_TELEMETRY_BUFFERS: dict[Path, _TelemetryBuffer] = {}
+
+
+def _get_telemetry_batch_limit() -> int:
+    raw = os.environ.get("MESH_TELEMETRY_BATCH", "").strip()
+    if not raw:
+        return 50
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 50
+
+
+def _get_telemetry_flush_seconds() -> float:
+    raw = os.environ.get("MESH_TELEMETRY_FLUSH_SECONDS", "").strip()
+    if not raw:
+        return 5.0
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return 5.0
+
+
+def flush_all_telemetry() -> None:
+    """Flush all pending buffered recall telemetry across all namespaces."""
+    with _TELEMETRY_LOCK:
+        paths = list(_TELEMETRY_BUFFERS.keys())
+    for p in paths:
+        _flush_telemetry_for_db_path(p)
+
+
+def _flush_telemetry_for_db_path(db_path: Path) -> None:
+    resolved = db_path.resolve()
+    with _TELEMETRY_LOCK:
+        buf = _TELEMETRY_BUFFERS.pop(resolved, None)
+        if buf is None or (not buf.access_increments and not buf.query_rows):
+            return
+        inc_items = list(buf.access_increments.items())
+        q_rows = list(buf.query_rows)
+        ns = buf.namespace
+
+    if not resolved.exists():
+        return
+
+    try:
+        with _CACHE_LOCK:
+            store = MeshStore(namespace=ns, create=False)
+            q_writes = _QUERY_WRITE_COUNTS.get(resolved, 0) + len(q_rows)
+            _QUERY_WRITE_COUNTS[resolved] = q_writes
+            with store._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    for mid, (delta, accessed_at) in inc_items:
+                        conn.execute(
+                            """
+                            UPDATE memories
+                            SET access_count = access_count + ?,
+                                accessed_at = ?
+                            WHERE namespace = ? AND id = ?
+                            """,
+                            (delta, accessed_at, ns, mid),
+                        )
+                    if q_rows:
+                        conn.executemany(
+                            """
+                            INSERT INTO queries
+                            (id, namespace, query_text, agent_id, best_similarity, result_count, timestamp, private_query)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            q_rows,
+                        )
+                        if q_writes >= 100:
+                            _QUERY_WRITE_COUNTS[resolved] = 0
+                            _prune_queries_table_locked(conn, ns, _max_query_rows())
+                    conn.commit()
+                except Exception:
+                    if conn.in_transaction:
+                        conn.rollback()
+                    raise
+            # Refresh local stamps WITHOUT bumping content_version
+            cached = _VECTOR_CACHE.get(resolved)
+            if cached is not None:
+                stamp = _get_db_stamp(resolved)
+                if stamp is not None:
+                    _INITIALIZED_DBS[resolved] = stamp
+                    cached.update_stamp(stamp, data_version=store._get_data_version_locked())
+    except Exception:
+        pass
+
+
 def close_store_connection(db_path: Path) -> None:
-    """Close and remove any pooled SQLite connection for `db_path`."""
+    """Flush telemetry, close, and remove any pooled SQLite connection for `db_path`."""
+    try:
+        _flush_telemetry_for_db_path(db_path)
+    except Exception:
+        pass
     with _CACHE_LOCK:
         _QUERY_WRITE_COUNTS.pop(db_path, None)
         conn = _CONNECTION_POOL.pop(db_path, None)
@@ -712,6 +1081,10 @@ _INITIALIZED_DBS: dict[Path, DbStamp] = _InitializedDbRegistry()
 
 @atexit.register
 def _close_all_pooled_connections() -> None:
+    try:
+        flush_all_telemetry()
+    except Exception:
+        pass
     with _CACHE_LOCK:
         for conn in list(_CONNECTION_POOL.values()):
             conn.close_pooled()
@@ -774,6 +1147,7 @@ class _CollectionCompatShim:
         want_documents = "documents" in include
         want_metadatas = "metadatas" in include
 
+        self._store.flush_telemetry()
         with _CACHE_LOCK:
             with self._store._connect() as conn:
                 conn.row_factory = sqlite3.Row
@@ -838,98 +1212,110 @@ class _CollectionCompatShim:
         metadatas: Optional[list[dict[str, Any]]] = None,
     ) -> None:
         now = _utc_now_iso()
-        with _CACHE_LOCK:
-            synced_cache = self._store._is_cache_synced_locked()
-            in_place_ok = synced_cache is not None
-            with self._store._connect() as conn:
-                for i, raw_mid in enumerate(ids):
-                    mid = validate_memory_id(raw_mid)
-                    doc = documents[i] if documents and i < len(documents) else ""
-                    meta = metadatas[i] if metadatas and i < len(metadatas) else {}
-                    emb = embeddings[i] if embeddings and i < len(embeddings) else None
-                    norm_vec = _normalize_vector(emb) if emb is not None else None
-                    blob = norm_vec.tobytes() if norm_vec is not None else None
+        with namespace_write_lock(self._store.namespace):
+            with _CACHE_LOCK:
+                synced_cache = self._store._is_cache_synced_locked()
+                in_place_ok = synced_cache is not None
+                new_cv: Optional[int] = None
+                with self._store._connect() as conn:
+                    conn.execute("BEGIN IMMEDIATE")
+                    try:
+                        for i, raw_mid in enumerate(ids):
+                            mid = validate_memory_id(raw_mid)
+                            doc = documents[i] if documents and i < len(documents) else ""
+                            meta = metadatas[i] if metadatas and i < len(metadatas) else {}
+                            emb = embeddings[i] if embeddings and i < len(embeddings) else None
+                            norm_vec = _normalize_vector(emb) if emb is not None else None
+                            blob = norm_vec.tobytes() if norm_vec is not None else None
 
-                    tags_raw = meta.get("tags", "[]")
-                    tags_str = tags_raw if isinstance(tags_raw, str) else json.dumps(tags_raw)
-                    tags_list = _parse_tags_json(tags_raw)
-                    mem_type = str(meta.get("memory_type", "fact"))
-                    source_agent = str(meta.get("source_agent", "unknown"))
-                    conf = float(meta.get("confidence", 1.0))
-                    created_at = meta.get("created_at", now)
-                    accessed_at = meta.get("accessed_at", now)
-                    access_count = int(meta.get("access_count", 0))
-                    ttl_days = meta.get("ttl_days")
-                    decay_start_at = meta.get("decay_start_at")
-                    local_flag = int(meta.get("local_only", 0))
-                    emb_model = str(
-                        meta.get("embedding_model")
-                        or ("onnx-minilm-l6-v2" if blob else "needs-reembed")
-                    )
+                            tags_raw = meta.get("tags", "[]")
+                            tags_str = tags_raw if isinstance(tags_raw, str) else json.dumps(tags_raw)
+                            tags_list = _parse_tags_json(tags_raw)
+                            mem_type = str(meta.get("memory_type", "fact"))
+                            source_agent = str(meta.get("source_agent", "unknown"))
+                            conf = float(meta.get("confidence", 1.0))
+                            created_at = meta.get("created_at", now)
+                            updated_at = meta.get("updated_at", now)
+                            accessed_at = meta.get("accessed_at", now)
+                            access_count = int(meta.get("access_count", 0))
+                            ttl_days = meta.get("ttl_days")
+                            decay_start_at = meta.get("decay_start_at")
+                            local_flag = int(meta.get("local_only", 0))
+                            emb_model = str(
+                                meta.get("embedding_model")
+                                or ("onnx-minilm-l6-v2" if blob else "needs-reembed")
+                            )
 
-                    old_rowid = self._store._get_memory_rowid(conn, mid)
-                    conn.execute(
-                        """
-                        INSERT OR REPLACE INTO memories
-                        (id, namespace, content, confidence, memory_type,
-                         source_agent, tags, created_at, accessed_at, access_count,
-                         ttl_days, decay_start_at, local_only, embedding, embedding_model)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            mid,
-                            self._store.namespace,
-                            doc,
-                            conf,
-                            mem_type,
-                            source_agent,
-                            tags_str,
-                            created_at,
-                            accessed_at,
-                            access_count,
-                            ttl_days,
-                            decay_start_at,
-                            local_flag,
-                            blob,
-                            emb_model,
-                        ),
-                    )
-                    new_rowid = self._store._get_memory_rowid(conn, mid)
-                    self._store._sync_fts_row(
-                        conn,
-                        memory_id=mid,
-                        content=doc,
-                        tags=tags_str,
-                        memory_type=mem_type,
-                        source_agent=source_agent,
-                        old_rowid=old_rowid,
-                        new_rowid=new_rowid,
-                    )
-                    if in_place_ok and synced_cache is not None:
-                        row_meta = {
-                            "id": mid,
-                            "namespace": self._store.namespace,
-                            "content": doc,
-                            "confidence": conf,
-                            "memory_type": mem_type,
-                            "source_agent": source_agent,
-                            "tags": tags_str,
-                            "tags_list": tags_list,
-                            "created_at": created_at,
-                            "accessed_at": accessed_at,
-                            "access_count": access_count,
-                            "ttl_days": ttl_days,
-                            "decay_start_at": decay_start_at,
-                            "local_only": bool(local_flag),
-                            "embedding_model": emb_model,
-                        }
-                        if not synced_cache.upsert_vector(mid, norm_vec, row_meta=row_meta):
-                            in_place_ok = False
-                conn.commit()
-            if in_place_ok and synced_cache is not None:
-                self._store._refresh_stamps_after_write_locked(synced_cache)
-            else:
-                self._store._invalidate_cache()
+                            old_rowid = self._store._get_memory_rowid(conn, mid)
+                            conn.execute(
+                                """
+                                INSERT OR REPLACE INTO memories
+                                (id, namespace, content, confidence, memory_type,
+                                 source_agent, tags, created_at, updated_at, accessed_at, access_count,
+                                 ttl_days, decay_start_at, local_only, embedding, embedding_model)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                """,
+                                (
+                                    mid,
+                                    self._store.namespace,
+                                    doc,
+                                    conf,
+                                    mem_type,
+                                    source_agent,
+                                    tags_str,
+                                    created_at,
+                                    updated_at,
+                                    accessed_at,
+                                    access_count,
+                                    ttl_days,
+                                    decay_start_at,
+                                    local_flag,
+                                    blob,
+                                    emb_model,
+                                ),
+                            )
+                            new_rowid = self._store._get_memory_rowid(conn, mid)
+                            self._store._sync_fts_row(
+                                conn,
+                                memory_id=mid,
+                                content=doc,
+                                tags=tags_str,
+                                memory_type=mem_type,
+                                source_agent=source_agent,
+                                old_rowid=old_rowid,
+                                new_rowid=new_rowid,
+                            )
+                            if in_place_ok and synced_cache is not None:
+                                row_meta = {
+                                    "id": mid,
+                                    "namespace": self._store.namespace,
+                                    "content": doc,
+                                    "confidence": conf,
+                                    "memory_type": mem_type,
+                                    "source_agent": source_agent,
+                                    "tags": tags_str,
+                                    "tags_list": tags_list,
+                                    "created_at": created_at,
+                                    "updated_at": updated_at,
+                                    "accessed_at": accessed_at,
+                                    "access_count": access_count,
+                                    "ttl_days": ttl_days,
+                                    "decay_start_at": decay_start_at,
+                                    "local_only": bool(local_flag),
+                                    "embedding_model": emb_model,
+                                }
+                                if not synced_cache.upsert_vector(mid, norm_vec, row_meta=row_meta):
+                                    in_place_ok = False
+                        new_cv = self._store._bump_content_version_in_tx(conn)
+                        conn.commit()
+                    except Exception:
+                        if conn.in_transaction:
+                            conn.rollback()
+                        raise
+                if in_place_ok and synced_cache is not None:
+                    self._store._refresh_stamps_after_write_locked(synced_cache, content_version=new_cv)
+                else:
+                    self._store._invalidate_cache()
 
     def query(
         self,
@@ -953,22 +1339,28 @@ class MeshStore:
     in a single atomic database file.
     """
 
-    def __init__(self, namespace: str = "default"):
+    def __init__(self, namespace: str = "default", create: bool = True):
         self.namespace = validate_namespace(namespace)
+        self.create = bool(create)
         base_dir = ensure_secure_mesh_dir().resolve()
         resolved_db = (base_dir / f"mesh_{self.namespace}.db").resolve()
         if resolved_db.parent != base_dir:
             raise ValueError(f"Invalid namespace path resolution for '{namespace}'.")
         self.db_path = resolved_db
         self._fts_enabled = True
-        self._ensure_initialized()
+        if not self.create and not self.db_path.exists():
+            raise NamespaceNotFoundError(f"Namespace '{self.namespace}' does not exist.")
+        if self.db_path.exists() or self.create:
+            self._ensure_initialized()
         self.collection = _CollectionCompatShim(self)
 
-    # --- Connection & Schema Management ---
+    # --- Connection, Content Version & Schema Management ---
 
     def _connect(self) -> _PooledConnection:
         """Return a persistent, concurrency-safe SQLite WAL connection for `self.db_path`."""
         with _CACHE_LOCK:
+            if not self.create and not self.db_path.exists():
+                raise NamespaceNotFoundError(f"Namespace '{self.namespace}' does not exist.")
             conn = _CONNECTION_POOL.get(self.db_path)
             if conn is not None and self.db_path.exists():
                 return conn
@@ -980,6 +1372,7 @@ class MeshStore:
                 self.db_path,
                 timeout=10.0,
                 check_same_thread=False,
+                isolation_level=None,
                 factory=_PooledConnection,
             )
             conn.execute("PRAGMA journal_mode=WAL")
@@ -1007,25 +1400,71 @@ class MeshStore:
         except Exception:
             return 0
 
+    def _read_content_version_locked(self, conn: Optional[sqlite3.Connection] = None) -> Optional[int]:
+        c = conn or _CONNECTION_POOL.get(self.db_path)
+        if c is None:
+            return None
+        try:
+            row = c.execute(
+                "SELECT value FROM mesh_meta WHERE key = 'content_version'"
+            ).fetchone()
+            if row and row[0] is not None:
+                return int(row[0])
+        except Exception:
+            pass
+        return None
+
+    def _bump_content_version_in_tx(self, conn: sqlite3.Connection) -> int:
+        cur_val = self._read_content_version_locked(conn) or 0
+        new_val = cur_val + 1
+        conn.execute(
+            "INSERT OR REPLACE INTO mesh_meta (key, value) VALUES ('content_version', ?)",
+            (str(new_val),),
+        )
+        return new_val
+
     def _is_cache_synced_locked(self) -> Optional[_VectorCacheEntry]:
         """
-        Return the active `_VectorCacheEntry` if both its composite DB+WAL stamp
-        AND SQLite `PRAGMA data_version` match disk.
+        Return the active `_VectorCacheEntry` if valid (Phase 2.3A).
+        - Fast path: if composite `stamp` and `PRAGMA data_version` are unchanged, return `cached` in O(1).
+        - Cross-process path: if `stamp` or `data_version` changed on disk (e.g. another process
+          flushed recall telemetry), compare `mesh_meta.content_version` and `COUNT(*)` in `memories`.
+          If both match, no searchable content changed, so update the cached stamps and return `cached`
+          without rebuilding the matrix!
+        - Fallback: if `mesh_meta` is unreadable, falls back to `stamp` and `data_version`.
         """
         cached = _VECTOR_CACHE.get(self.db_path)
         if cached is None:
             return None
         stamp = _get_db_stamp(self.db_path)
-        if stamp is None or cached.stamp != stamp:
+        if stamp is None:
             return None
         dv = self._get_data_version_locked()
-        if dv != 0 and cached.data_version != 0 and dv != cached.data_version:
-            return None
-        return cached
+        if cached.stamp == stamp and (dv == 0 or cached.data_version == 0 or dv == cached.data_version):
+            return cached
+
+        # Stamp or data_version changed — check content_version in mesh_meta
+        try:
+            conn = self._connect()
+            cv = self._read_content_version_locked(conn)
+            if cv is not None and cached.content_version is not None and cv == cached.content_version:
+                cnt_row = conn.execute(
+                    "SELECT COUNT(*) FROM memories WHERE namespace = ?",
+                    (self.namespace,),
+                ).fetchone()
+                db_count = int(cnt_row[0]) if cnt_row and cnt_row[0] is not None else 0
+                if db_count == len(cached.all_ids):
+                    cached.update_stamp(stamp, data_version=dv, content_version=cv)
+                    _INITIALIZED_DBS[self.db_path] = stamp
+                    return cached
+        except Exception:
+            pass
+        return None
 
     def _refresh_stamps_after_write_locked(
         self,
         synced_cache: Optional[_VectorCacheEntry],
+        content_version: Optional[int] = None,
     ) -> None:
         """
         Update `_INITIALIZED_DBS` and `synced_cache` composite file stamps after an in-process write.
@@ -1039,10 +1478,13 @@ class MeshStore:
         _INITIALIZED_DBS[self.db_path] = stamp
         if synced_cache is not None:
             dv = self._get_data_version_locked()
-            synced_cache.update_stamp(stamp, data_version=dv)
+            cv = content_version if content_version is not None else self._read_content_version_locked()
+            synced_cache.update_stamp(stamp, data_version=dv, content_version=cv)
 
     def _ensure_initialized(self) -> None:
         """Initialize schema once per DB file lifecycle."""
+        if not self.create and not self.db_path.exists():
+            raise NamespaceNotFoundError(f"Namespace '{self.namespace}' does not exist.")
         with _CACHE_LOCK:
             stamp = _get_db_stamp(self.db_path)
             if stamp is not None and stamp[1] > 0 and _INITIALIZED_DBS.get(self.db_path) == stamp:
@@ -1059,6 +1501,17 @@ class MeshStore:
                 conn.execute("PRAGMA journal_mode=WAL")
                 conn.execute(
                     """
+                    CREATE TABLE IF NOT EXISTS mesh_meta (
+                        key   TEXT PRIMARY KEY,
+                        value TEXT NOT NULL
+                    )
+                    """
+                )
+                conn.execute(
+                    "INSERT OR IGNORE INTO mesh_meta (key, value) VALUES ('content_version', '1')"
+                )
+                conn.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS memories (
                         id              TEXT PRIMARY KEY,
                         namespace       TEXT NOT NULL,
@@ -1068,6 +1521,7 @@ class MeshStore:
                         source_agent    TEXT NOT NULL DEFAULT 'unknown',
                         tags            TEXT NOT NULL DEFAULT '[]',
                         created_at      TEXT NOT NULL,
+                        updated_at      TEXT,
                         accessed_at     TEXT NOT NULL,
                         access_count    INTEGER NOT NULL DEFAULT 0,
                         ttl_days        REAL,
@@ -1083,6 +1537,7 @@ class MeshStore:
                     r[1] for r in conn.execute("PRAGMA table_info(memories)").fetchall()
                 }
                 for col_name, col_sql in (
+                    ("updated_at", "ALTER TABLE memories ADD COLUMN updated_at TEXT"),
                     ("ttl_days", "ALTER TABLE memories ADD COLUMN ttl_days REAL"),
                     ("decay_start_at", "ALTER TABLE memories ADD COLUMN decay_start_at TEXT"),
                     ("local_only", "ALTER TABLE memories ADD COLUMN local_only INTEGER DEFAULT 0"),
@@ -1109,13 +1564,14 @@ class MeshStore:
                     )
                     """
                 )
-
                 existing_q_cols = {
                     r[1] for r in conn.execute("PRAGMA table_info(queries)").fetchall()
                 }
                 if "private_query" not in existing_q_cols:
                     try:
-                        conn.execute("ALTER TABLE queries ADD COLUMN private_query INTEGER NOT NULL DEFAULT 0")
+                        conn.execute(
+                            "ALTER TABLE queries ADD COLUMN private_query INTEGER NOT NULL DEFAULT 0"
+                        )
                     except sqlite3.OperationalError:
                         pass
 
@@ -1141,7 +1597,6 @@ class MeshStore:
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_created_at ON memories (namespace, created_at DESC)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_queries_namespace ON queries (namespace)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_queries_timestamp ON queries (timestamp)")
-                conn.execute("CREATE INDEX IF NOT EXISTS idx_queries_private ON queries (namespace, private_query)")
                 conn.execute(
                     "CREATE INDEX IF NOT EXISTS idx_contradictions_ns_res ON contradictions (namespace, resolved)"
                 )
@@ -1187,10 +1642,11 @@ class MeshStore:
                 except sqlite3.OperationalError:
                     self._fts_enabled = False
 
-                conn.commit()
+                if conn.in_transaction:
+                    conn.commit()
             secure_file_permissions(self.db_path)
 
-            if mem_count == 0:
+            if mem_count == 0 and self.db_path not in _VECTOR_CACHE:
                 stamp = _get_db_stamp(self.db_path)
                 if stamp is not None:
                     _VECTOR_CACHE[self.db_path] = _VectorCacheEntry(
@@ -1200,8 +1656,13 @@ class MeshStore:
                         all_ids=set(),
                         rows_by_id={},
                         data_version=self._get_data_version_locked(),
+                        content_version=self._read_content_version_locked() or 1,
                         needs_healing_ids=set(),
                     )
+                    # Do not count initial empty schema creation as a matrix rebuild
+                    global _CACHE_REBUILD_COUNT
+                    _CACHE_REBUILD_COUNT = max(0, _CACHE_REBUILD_COUNT - 1)
+                    _VectorCacheEntry.build_count = max(0, _VectorCacheEntry.build_count - 1)
 
             if mem_count > 0:
                 self._migrate_from_chroma_if_needed()
@@ -1233,12 +1694,14 @@ class MeshStore:
                 got_embs = data.get("embeddings") or []
                 if got_ids and got_embs:
                     with self._connect() as conn:
+                        conn.execute("BEGIN IMMEDIATE")
                         for mid, emb in zip(got_ids, got_embs):
                             if emb is not None and len(emb) == EMBEDDING_DIM:
                                 conn.execute(
                                     "UPDATE memories SET embedding = ?, embedding_model = 'onnx-minilm-l6-v2' WHERE id = ?",
                                     (_vector_to_blob(emb), mid),
                                 )
+                        self._bump_content_version_in_tx(conn)
                         conn.commit()
                     self._invalidate_cache()
             except Exception:
@@ -1313,27 +1776,38 @@ class MeshStore:
             else:
                 _INITIALIZED_DBS.pop(self.db_path, None)
 
-    def _get_vector_cache(self) -> _VectorCacheEntry:
+    def _get_vector_cache(self, force_refresh: bool = False) -> _VectorCacheEntry:
         """
         Return the normalized 384-dim float32 embedding matrix, row metadata cache,
         and pre-computed lexical IDF cache for this namespace.
         """
         with _CACHE_LOCK:
             if not self.db_path.exists():
+                if not self.create:
+                    raise NamespaceNotFoundError(f"Namespace '{self.namespace}' does not exist.")
                 self._ensure_initialized()
-            synced = self._is_cache_synced_locked()
-            if synced is not None:
-                _INITIALIZED_DBS[self.db_path] = synced.stamp
-                return synced
+            if not force_refresh:
+                synced = self._is_cache_synced_locked()
+                if synced is not None:
+                    _INITIALIZED_DBS[self.db_path] = synced.stamp
+                    return synced
 
             prev_cache = _VECTOR_CACHE.get(self.db_path)
 
             with self._connect() as conn:
                 conn.row_factory = sqlite3.Row
-                rows = conn.execute(
-                    f"SELECT {_MEMORY_COLUMNS}, embedding FROM memories WHERE namespace = ?",
-                    (self.namespace,),
-                ).fetchall()
+                try:
+                    rows = conn.execute(
+                        f"SELECT {_MEMORY_COLUMNS}, embedding FROM memories WHERE namespace = ?",
+                        (self.namespace,),
+                    ).fetchall()
+                except sqlite3.OperationalError:
+                    self._init_db()
+                    rows = conn.execute(
+                        f"SELECT {_MEMORY_COLUMNS}, embedding FROM memories WHERE namespace = ?",
+                        (self.namespace,),
+                    ).fetchall()
+                cv = self._read_content_version_locked(conn)
 
             ids: list[str] = []
             all_ids: set[str] = set()
@@ -1388,6 +1862,7 @@ class MeshStore:
                     "tags": tags_str,
                     "tags_list": _parse_tags_json(tags_str),
                     "created_at": r["created_at"],
+                    "updated_at": r["updated_at"] if "updated_at" in r.keys() else r["created_at"],
                     "accessed_at": r["accessed_at"],
                     "access_count": int(r["access_count"] or 0),
                     "ttl_days": r["ttl_days"],
@@ -1413,6 +1888,7 @@ class MeshStore:
                 all_ids=all_ids,
                 rows_by_id=rows_by_id,
                 data_version=dv,
+                content_version=cv,
                 needs_healing_ids=needs_healing_ids,
                 reused_lexical=reused_lexical,
             )
@@ -1433,7 +1909,7 @@ class MeshStore:
     ) -> None:
         """
         Store or overwrite a memory and its normalized 384-dim vector in a single atomic transaction,
-        updating the in-memory vector matrix and lexical metadata cache in-place in O(1) time.
+        updating the in-memory vector matrix, `mesh_meta.content_version`, and lexical cache in-place.
         """
         memory_id = validate_memory_id(memory_id)
         self._ensure_initialized()
@@ -1453,8 +1929,9 @@ class MeshStore:
         source_agent = str(metadata.get("source_agent", "unknown"))
         confidence = float(metadata.get("confidence", 1.0))
         created_at = metadata.get("created_at") or now
+        updated_at = metadata.get("updated_at") or created_at
         accessed_at = metadata.get("accessed_at") or now
-        access_count = int(metadata.get("access_count", 0))
+        access_count = max(0, int(metadata.get("access_count", 0)))
         ttl_days = metadata.get("ttl_days")
         decay_start_at = metadata.get("decay_start_at")
         local_flag = 1 if (local_only or metadata.get("local_only")) else 0
@@ -1474,6 +1951,7 @@ class MeshStore:
             "tags": tags_str,
             "tags_list": tags_list,
             "created_at": created_at,
+            "updated_at": updated_at,
             "accessed_at": accessed_at,
             "access_count": access_count,
             "ttl_days": ttl_days,
@@ -1482,55 +1960,65 @@ class MeshStore:
             "embedding_model": emb_model,
         }
 
-        with _CACHE_LOCK:
-            synced_cache = self._is_cache_synced_locked()
-            with self._connect() as conn:
-                old_rowid = self._get_memory_rowid(conn, memory_id)
-                conn.execute(
-                    """
-                    INSERT OR REPLACE INTO memories
-                    (id, namespace, content, confidence, memory_type,
-                     source_agent, tags, created_at, accessed_at, access_count,
-                     ttl_days, decay_start_at, local_only, embedding, embedding_model)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        memory_id,
-                        self.namespace,
-                        content,
-                        confidence,
-                        mem_type,
-                        source_agent,
-                        tags_str,
-                        created_at,
-                        accessed_at,
-                        access_count,
-                        ttl_days,
-                        decay_start_at,
-                        local_flag,
-                        blob,
-                        emb_model,
-                    ),
-                )
-                new_rowid = self._get_memory_rowid(conn, memory_id)
-                self._sync_fts_row(
-                    conn,
-                    memory_id=memory_id,
-                    content=content,
-                    tags=tags_str,
-                    memory_type=mem_type,
-                    source_agent=source_agent,
-                    old_rowid=old_rowid,
-                    new_rowid=new_rowid,
-                )
-                conn.commit()
+        with namespace_write_lock(self.namespace):
+            with _CACHE_LOCK:
+                synced_cache = self._is_cache_synced_locked()
+                new_cv: Optional[int] = None
+                with self._connect() as conn:
+                    conn.execute("BEGIN IMMEDIATE")
+                    try:
+                        old_rowid = self._get_memory_rowid(conn, memory_id)
+                        conn.execute(
+                            """
+                            INSERT OR REPLACE INTO memories
+                            (id, namespace, content, confidence, memory_type,
+                             source_agent, tags, created_at, updated_at, accessed_at, access_count,
+                             ttl_days, decay_start_at, local_only, embedding, embedding_model)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                memory_id,
+                                self.namespace,
+                                content,
+                                confidence,
+                                mem_type,
+                                source_agent,
+                                tags_str,
+                                created_at,
+                                updated_at,
+                                accessed_at,
+                                access_count,
+                                ttl_days,
+                                decay_start_at,
+                                local_flag,
+                                blob,
+                                emb_model,
+                            ),
+                        )
+                        new_rowid = self._get_memory_rowid(conn, memory_id)
+                        self._sync_fts_row(
+                            conn,
+                            memory_id=memory_id,
+                            content=content,
+                            tags=tags_str,
+                            memory_type=mem_type,
+                            source_agent=source_agent,
+                            old_rowid=old_rowid,
+                            new_rowid=new_rowid,
+                        )
+                        new_cv = self._bump_content_version_in_tx(conn)
+                        conn.commit()
+                    except Exception:
+                        if conn.in_transaction:
+                            conn.rollback()
+                        raise
 
-            if synced_cache is not None and synced_cache.upsert_vector(
-                memory_id, norm_vec, row_meta=row_meta
-            ):
-                self._refresh_stamps_after_write_locked(synced_cache)
-            else:
-                self._invalidate_cache()
+                if synced_cache is not None and synced_cache.upsert_vector(
+                    memory_id, norm_vec, row_meta=row_meta
+                ):
+                    self._refresh_stamps_after_write_locked(synced_cache, content_version=new_cv)
+                else:
+                    self._invalidate_cache()
 
     def upsert_batch(
         self,
@@ -1545,101 +2033,113 @@ class MeshStore:
         self._ensure_initialized()
         now = _utc_now_iso()
 
-        with _CACHE_LOCK:
-            synced_cache = self._is_cache_synced_locked()
-            in_place_ok = synced_cache is not None
-            with self._connect() as conn:
-                for raw_memory_id, content, embedding, metadata, local_only in items:
-                    memory_id = validate_memory_id(raw_memory_id)
-                    norm_vec = _normalize_vector(embedding, enforce_dim=True)
-                    blob = norm_vec.tobytes()
+        with namespace_write_lock(self.namespace):
+            with _CACHE_LOCK:
+                synced_cache = self._is_cache_synced_locked()
+                in_place_ok = synced_cache is not None
+                new_cv: Optional[int] = None
+                with self._connect() as conn:
+                    conn.execute("BEGIN IMMEDIATE")
+                    try:
+                        for raw_memory_id, content, embedding, metadata, local_only in items:
+                            memory_id = validate_memory_id(raw_memory_id)
+                            norm_vec = _normalize_vector(embedding, enforce_dim=True)
+                            blob = norm_vec.tobytes()
 
-                    tags_raw = metadata.get("tags", [])
-                    if isinstance(tags_raw, str):
-                        tags_str = tags_raw
-                        tags_list = _parse_tags_json(tags_raw)
-                    else:
-                        tags_list = [str(t).strip() for t in (tags_raw or []) if str(t).strip()]
-                        tags_str = json.dumps(tags_list)
+                            tags_raw = metadata.get("tags", [])
+                            if isinstance(tags_raw, str):
+                                tags_str = tags_raw
+                                tags_list = _parse_tags_json(tags_raw)
+                            else:
+                                tags_list = [str(t).strip() for t in (tags_raw or []) if str(t).strip()]
+                                tags_str = json.dumps(tags_list)
 
-                    mem_type = str(metadata.get("memory_type", "fact"))
-                    source_agent = str(metadata.get("source_agent", "unknown"))
-                    confidence = float(metadata.get("confidence", 1.0))
-                    created_at = metadata.get("created_at") or now
-                    accessed_at = metadata.get("accessed_at") or now
-                    access_count = int(metadata.get("access_count", 0))
-                    ttl_days = metadata.get("ttl_days")
-                    decay_start_at = metadata.get("decay_start_at")
-                    local_flag = 1 if (local_only or metadata.get("local_only")) else 0
-                    emb_model = str(
-                        metadata.get("embedding_model")
-                        or ("hash-384" if np.all(norm_vec[368:] == 0.0) else "onnx-minilm-l6-v2")
-                    )
+                            mem_type = str(metadata.get("memory_type", "fact"))
+                            source_agent = str(metadata.get("source_agent", "unknown"))
+                            confidence = float(metadata.get("confidence", 1.0))
+                            created_at = metadata.get("created_at") or now
+                            updated_at = metadata.get("updated_at") or created_at
+                            accessed_at = metadata.get("accessed_at") or now
+                            access_count = max(0, int(metadata.get("access_count", 0)))
+                            ttl_days = metadata.get("ttl_days")
+                            decay_start_at = metadata.get("decay_start_at")
+                            local_flag = 1 if (local_only or metadata.get("local_only")) else 0
+                            emb_model = str(
+                                metadata.get("embedding_model")
+                                or ("hash-384" if np.all(norm_vec[368:] == 0.0) else "onnx-minilm-l6-v2")
+                            )
 
-                    old_rowid = self._get_memory_rowid(conn, memory_id)
-                    conn.execute(
-                        """
-                        INSERT OR REPLACE INTO memories
-                        (id, namespace, content, confidence, memory_type,
-                         source_agent, tags, created_at, accessed_at, access_count,
-                         ttl_days, decay_start_at, local_only, embedding, embedding_model)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            memory_id,
-                            self.namespace,
-                            content,
-                            confidence,
-                            mem_type,
-                            source_agent,
-                            tags_str,
-                            created_at,
-                            accessed_at,
-                            access_count,
-                            ttl_days,
-                            decay_start_at,
-                            local_flag,
-                            blob,
-                            emb_model,
-                        ),
-                    )
-                    new_rowid = self._get_memory_rowid(conn, memory_id)
-                    self._sync_fts_row(
-                        conn,
-                        memory_id=memory_id,
-                        content=content,
-                        tags=tags_str,
-                        memory_type=mem_type,
-                        source_agent=source_agent,
-                        old_rowid=old_rowid,
-                        new_rowid=new_rowid,
-                    )
-                    if in_place_ok and synced_cache is not None:
-                        row_meta = {
-                            "id": memory_id,
-                            "namespace": self.namespace,
-                            "content": content,
-                            "confidence": confidence,
-                            "memory_type": mem_type,
-                            "source_agent": source_agent,
-                            "tags": tags_str,
-                            "tags_list": tags_list,
-                            "created_at": created_at,
-                            "accessed_at": accessed_at,
-                            "access_count": access_count,
-                            "ttl_days": ttl_days,
-                            "decay_start_at": decay_start_at,
-                            "local_only": bool(local_flag),
-                            "embedding_model": emb_model,
-                        }
-                        if not synced_cache.upsert_vector(memory_id, norm_vec, row_meta=row_meta):
-                            in_place_ok = False
-                conn.commit()
+                            old_rowid = self._get_memory_rowid(conn, memory_id)
+                            conn.execute(
+                                """
+                                INSERT OR REPLACE INTO memories
+                                (id, namespace, content, confidence, memory_type,
+                                 source_agent, tags, created_at, updated_at, accessed_at, access_count,
+                                 ttl_days, decay_start_at, local_only, embedding, embedding_model)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                """,
+                                (
+                                    memory_id,
+                                    self.namespace,
+                                    content,
+                                    confidence,
+                                    mem_type,
+                                    source_agent,
+                                    tags_str,
+                                    created_at,
+                                    updated_at,
+                                    accessed_at,
+                                    access_count,
+                                    ttl_days,
+                                    decay_start_at,
+                                    local_flag,
+                                    blob,
+                                    emb_model,
+                                ),
+                            )
+                            new_rowid = self._get_memory_rowid(conn, memory_id)
+                            self._sync_fts_row(
+                                conn,
+                                memory_id=memory_id,
+                                content=content,
+                                tags=tags_str,
+                                memory_type=mem_type,
+                                source_agent=source_agent,
+                                old_rowid=old_rowid,
+                                new_rowid=new_rowid,
+                            )
+                            if in_place_ok and synced_cache is not None:
+                                row_meta = {
+                                    "id": memory_id,
+                                    "namespace": self.namespace,
+                                    "content": content,
+                                    "confidence": confidence,
+                                    "memory_type": mem_type,
+                                    "source_agent": source_agent,
+                                    "tags": tags_str,
+                                    "tags_list": tags_list,
+                                    "created_at": created_at,
+                                    "updated_at": updated_at,
+                                    "accessed_at": accessed_at,
+                                    "access_count": access_count,
+                                    "ttl_days": ttl_days,
+                                    "decay_start_at": decay_start_at,
+                                    "local_only": bool(local_flag),
+                                    "embedding_model": emb_model,
+                                }
+                                if not synced_cache.upsert_vector(memory_id, norm_vec, row_meta=row_meta):
+                                    in_place_ok = False
+                        new_cv = self._bump_content_version_in_tx(conn)
+                        conn.commit()
+                    except Exception:
+                        if conn.in_transaction:
+                            conn.rollback()
+                        raise
 
-            if in_place_ok and synced_cache is not None:
-                self._refresh_stamps_after_write_locked(synced_cache)
-            else:
-                self._invalidate_cache()
+                if in_place_ok and synced_cache is not None:
+                    self._refresh_stamps_after_write_locked(synced_cache, content_version=new_cv)
+                else:
+                    self._invalidate_cache()
 
     def resolve_id_prefix(self, prefix: str) -> Optional[str]:
         """
@@ -1647,8 +2147,10 @@ class MeshStore:
         via the in-memory vector cache. Raises ValueError if ambiguous.
         Never uses arbitrary substring matching.
         """
-        clean_pref = prefix.strip().lower()
+        clean_pref = (prefix or "").strip().lower()
         if not clean_pref:
+            return None
+        if not self.db_path.exists():
             return None
         with _CACHE_LOCK:
             cache = self._get_vector_cache()
@@ -1670,12 +2172,27 @@ class MeshStore:
         return None
 
     def get(self, memory_id: str) -> Optional[dict[str, Any]]:
-        """Retrieve a single memory by ID in O(1) from the synced RAM metadata cache."""
+        """Retrieve a single memory by ID, flushing buffered telemetry so access_count is exact."""
+        if not self.db_path.exists():
+            return None
+        self.flush_telemetry()
         with _CACHE_LOCK:
             cache = self._get_vector_cache()
             row = cache.rows_by_id.get(memory_id)
             if row is not None:
-                return dict(row)
+                out = dict(row)
+                try:
+                    with self._connect() as conn:
+                        r = conn.execute(
+                            "SELECT access_count, accessed_at FROM memories WHERE id = ? AND namespace = ?",
+                            (memory_id, self.namespace),
+                        ).fetchone()
+                        if r is not None:
+                            out["access_count"] = int(r[0] or 0)
+                            out["accessed_at"] = r[1]
+                except Exception:
+                    pass
+                return out
         return None
 
     def update(
@@ -1701,6 +2218,7 @@ class MeshStore:
         or `local_only=True` is set.
         """
         self._ensure_initialized()
+        self.flush_telemetry()
         now = _utc_now_iso()
         norm_vec: Optional[np.ndarray] = (
             _normalize_vector(embedding, enforce_dim=True) if embedding is not None else None
@@ -1710,198 +2228,217 @@ class MeshStore:
         should_scrub_audit = False
         new_local_bool = False
 
-        with _CACHE_LOCK:
-            cache = self._get_vector_cache()
-            existing_meta = cache.rows_by_id.get(memory_id)
-            if existing_meta is None:
-                return None
+        with namespace_write_lock(self.namespace):
+            with _CACHE_LOCK:
+                cache = self._get_vector_cache()
+                existing_meta = cache.rows_by_id.get(memory_id)
+                if existing_meta is None:
+                    return None
 
-            old_content = str(existing_meta.get("content", ""))
-            new_content = content if content is not None else old_content
-            new_type = memory_type if memory_type is not None else existing_meta["memory_type"]
-            new_conf = (
-                float(confidence)
-                if confidence is not None
-                else float(existing_meta["confidence"])
-            )
-            new_agent = source_agent if source_agent is not None else existing_meta["source_agent"]
-            if tags is not None:
-                new_tags_list = [str(t).strip() for t in tags if str(t).strip()]
-                new_tags_str = json.dumps(new_tags_list)
-            else:
-                new_tags_str = existing_meta["tags"]
-                new_tags_list = existing_meta.get("tags_list") or _parse_tags_json(new_tags_str)
-
-            new_local = (
-                (1 if local_only else 0)
-                if local_only is not None
-                else (1 if existing_meta.get("local_only") else 0)
-            )
-            new_local_bool = bool(new_local)
-
-            if clear_ttl:
-                new_ttl = None
-                new_decay_start = None
-            elif reset_ttl or ttl_days is not None:
-                new_ttl = ttl_days
-                new_decay_start = now if ttl_days is not None else None
-            else:
-                new_ttl = existing_meta["ttl_days"]
-                new_decay_start = existing_meta["decay_start_at"]
-
-            if norm_vec is not None:
-                new_emb_model = str(
-                    embedding_model
-                    or ("hash-384" if np.all(norm_vec[368:] == 0.0) else "onnx-minilm-l6-v2")
+                old_content = str(existing_meta.get("content", ""))
+                new_content = content if content is not None else old_content
+                new_type = memory_type if memory_type is not None else existing_meta["memory_type"]
+                new_conf = (
+                    float(confidence)
+                    if confidence is not None
+                    else float(existing_meta["confidence"])
                 )
-            else:
-                new_emb_model = str(
-                    embedding_model or existing_meta.get("embedding_model", "onnx-minilm-l6-v2")
+                new_agent = source_agent if source_agent is not None else existing_meta["source_agent"]
+                if tags is not None:
+                    new_tags_list = [str(t).strip() for t in tags if str(t).strip()]
+                    new_tags_str = json.dumps(new_tags_list)
+                else:
+                    new_tags_str = existing_meta["tags"]
+                    new_tags_list = existing_meta.get("tags_list") or _parse_tags_json(new_tags_str)
+
+                new_local = (
+                    (1 if local_only else 0)
+                    if local_only is not None
+                    else (1 if existing_meta.get("local_only") else 0)
                 )
+                new_local_bool = bool(new_local)
 
-            new_accessed_at = existing_meta["accessed_at"] if preserve_accessed_at else now
-            content_changed = new_content != old_content
-            became_private = new_local_bool and not bool(existing_meta.get("local_only"))
+                if clear_ttl:
+                    new_ttl = None
+                    new_decay_start = None
+                elif reset_ttl or ttl_days is not None:
+                    new_ttl = ttl_days
+                    new_decay_start = now if ttl_days is not None else None
+                else:
+                    new_ttl = existing_meta["ttl_days"]
+                    new_decay_start = existing_meta["decay_start_at"]
 
-            if content_changed or new_local_bool:
-                old_content_for_scrub = old_content
-                should_scrub_audit = True
-
-            with self._connect() as conn:
-                rowid = self._get_memory_rowid(conn, memory_id)
                 if norm_vec is not None:
-                    new_blob = norm_vec.tobytes()
-                    conn.execute(
-                        """
-                        UPDATE memories
-                        SET content = ?,
-                            confidence = ?,
-                            memory_type = ?,
-                            source_agent = ?,
-                            tags = ?,
-                            accessed_at = ?,
-                            ttl_days = ?,
-                            decay_start_at = ?,
-                            local_only = ?,
-                            embedding = ?,
-                            embedding_model = ?
-                        WHERE id = ? AND namespace = ?
-                        """,
-                        (
-                            new_content,
-                            new_conf,
-                            new_type,
-                            new_agent,
-                            new_tags_str,
-                            new_accessed_at,
-                            new_ttl,
-                            new_decay_start,
-                            new_local,
-                            new_blob,
-                            new_emb_model,
-                            memory_id,
-                            self.namespace,
-                        ),
+                    new_emb_model = str(
+                        embedding_model
+                        or ("hash-384" if np.all(norm_vec[368:] == 0.0) else "onnx-minilm-l6-v2")
                     )
                 else:
-                    conn.execute(
-                        """
-                        UPDATE memories
-                        SET content = ?,
-                            confidence = ?,
-                            memory_type = ?,
-                            source_agent = ?,
-                            tags = ?,
-                            accessed_at = ?,
-                            ttl_days = ?,
-                            decay_start_at = ?,
-                            local_only = ?,
-                            embedding_model = ?
-                        WHERE id = ? AND namespace = ?
-                        """,
-                        (
-                            new_content,
-                            new_conf,
-                            new_type,
-                            new_agent,
-                            new_tags_str,
-                            new_accessed_at,
-                            new_ttl,
-                            new_decay_start,
-                            new_local,
-                            new_emb_model,
-                            memory_id,
-                            self.namespace,
-                        ),
+                    new_emb_model = str(
+                        embedding_model or existing_meta.get("embedding_model", "onnx-minilm-l6-v2")
                     )
-                self._sync_fts_row(
-                    conn,
-                    memory_id=memory_id,
-                    content=new_content,
-                    tags=new_tags_str,
-                    memory_type=new_type,
-                    source_agent=new_agent,
-                    old_rowid=rowid,
-                    new_rowid=rowid,
-                )
-                if content_changed or became_private:
-                    replacement_text = (
-                        REDACTED_CONTENT_PLACEHOLDER if new_local_bool else new_content
-                    )
-                    conn.execute(
-                        """
-                        UPDATE contradictions
-                        SET new_content = ?
-                        WHERE namespace = ? AND new_memory_id = ?
-                        """,
-                        (replacement_text, self.namespace, memory_id),
-                    )
-                    conn.execute(
-                        """
-                        UPDATE contradictions
-                        SET existing_content = ?
-                        WHERE namespace = ? AND existing_memory_id = ?
-                        """,
-                        (replacement_text, self.namespace, memory_id),
-                    )
-                conn.commit()
 
-            updated_row = {
-                "id": memory_id,
-                "namespace": self.namespace,
-                "content": new_content,
-                "confidence": new_conf,
-                "memory_type": new_type,
-                "source_agent": new_agent,
-                "tags": new_tags_str,
-                "tags_list": new_tags_list,
-                "created_at": existing_meta["created_at"],
-                "accessed_at": new_accessed_at,
-                "access_count": int(existing_meta["access_count"] or 0),
-                "ttl_days": new_ttl,
-                "decay_start_at": new_decay_start,
-                "local_only": new_local_bool,
-                "embedding_model": new_emb_model,
-            }
-            if norm_vec is not None:
-                if cache.upsert_vector(memory_id, norm_vec, row_meta=updated_row):
-                    self._refresh_stamps_after_write_locked(cache)
-                else:
-                    self._invalidate_cache()
-            else:
-                cache.rows_by_id[memory_id] = dict(updated_row)
-                cache._index_row_lexical(memory_id, updated_row)
-                idx = cache.id_to_idx.get(memory_id)
-                existing_vec = (
-                    cache._matrix_buf[idx]
-                    if (idx is not None and cache._matrix_buf is not None)
-                    else None
+                new_accessed_at = existing_meta["accessed_at"] if preserve_accessed_at else now
+                new_updated_at = (
+                    existing_meta.get("updated_at") or existing_meta["created_at"]
+                    if preserve_accessed_at
+                    else now
                 )
-                if _row_needs_healing(updated_row, existing_vec):
-                    cache.needs_healing_ids.add(memory_id)
+                content_changed = new_content != old_content
+                became_private = new_local_bool and not bool(existing_meta.get("local_only"))
+
+                if content_changed or new_local_bool:
+                    old_content_for_scrub = old_content
+                    should_scrub_audit = True
+
+                new_cv: Optional[int] = None
+                with self._connect() as conn:
+                    conn.execute("BEGIN IMMEDIATE")
+                    try:
+                        rowid = self._get_memory_rowid(conn, memory_id)
+                        if norm_vec is not None:
+                            new_blob = norm_vec.tobytes()
+                            conn.execute(
+                                """
+                                UPDATE memories
+                                SET content = ?,
+                                    confidence = ?,
+                                    memory_type = ?,
+                                    source_agent = ?,
+                                    tags = ?,
+                                    updated_at = ?,
+                                    accessed_at = ?,
+                                    ttl_days = ?,
+                                    decay_start_at = ?,
+                                    local_only = ?,
+                                    embedding = ?,
+                                    embedding_model = ?
+                                WHERE id = ? AND namespace = ?
+                                """,
+                                (
+                                    new_content,
+                                    new_conf,
+                                    new_type,
+                                    new_agent,
+                                    new_tags_str,
+                                    new_updated_at,
+                                    new_accessed_at,
+                                    new_ttl,
+                                    new_decay_start,
+                                    new_local,
+                                    new_blob,
+                                    new_emb_model,
+                                    memory_id,
+                                    self.namespace,
+                                ),
+                            )
+                        else:
+                            conn.execute(
+                                """
+                                UPDATE memories
+                                SET content = ?,
+                                    confidence = ?,
+                                    memory_type = ?,
+                                    source_agent = ?,
+                                    tags = ?,
+                                    updated_at = ?,
+                                    accessed_at = ?,
+                                    ttl_days = ?,
+                                    decay_start_at = ?,
+                                    local_only = ?,
+                                    embedding_model = ?
+                                WHERE id = ? AND namespace = ?
+                                """,
+                                (
+                                    new_content,
+                                    new_conf,
+                                    new_type,
+                                    new_agent,
+                                    new_tags_str,
+                                    new_updated_at,
+                                    new_accessed_at,
+                                    new_ttl,
+                                    new_decay_start,
+                                    new_local,
+                                    new_emb_model,
+                                    memory_id,
+                                    self.namespace,
+                                ),
+                            )
+                        self._sync_fts_row(
+                            conn,
+                            memory_id=memory_id,
+                            content=new_content,
+                            tags=new_tags_str,
+                            memory_type=new_type,
+                            source_agent=new_agent,
+                            old_rowid=rowid,
+                            new_rowid=rowid,
+                        )
+                        if content_changed or became_private:
+                            replacement_text = (
+                                REDACTED_CONTENT_PLACEHOLDER if new_local_bool else new_content
+                            )
+                            conn.execute(
+                                """
+                                UPDATE contradictions
+                                SET new_content = ?
+                                WHERE namespace = ? AND new_memory_id = ?
+                                """,
+                                (replacement_text, self.namespace, memory_id),
+                            )
+                            conn.execute(
+                                """
+                                UPDATE contradictions
+                                SET existing_content = ?
+                                WHERE namespace = ? AND existing_memory_id = ?
+                                """,
+                                (replacement_text, self.namespace, memory_id),
+                            )
+                        new_cv = self._bump_content_version_in_tx(conn)
+                        conn.commit()
+                    except Exception:
+                        if conn.in_transaction:
+                            conn.rollback()
+                        raise
+
+                updated_row = {
+                    "id": memory_id,
+                    "namespace": self.namespace,
+                    "content": new_content,
+                    "confidence": new_conf,
+                    "memory_type": new_type,
+                    "source_agent": new_agent,
+                    "tags": new_tags_str,
+                    "tags_list": new_tags_list,
+                    "created_at": existing_meta["created_at"],
+                    "updated_at": new_updated_at,
+                    "accessed_at": new_accessed_at,
+                    "access_count": int(existing_meta["access_count"] or 0),
+                    "ttl_days": new_ttl,
+                    "decay_start_at": new_decay_start,
+                    "local_only": new_local_bool,
+                    "embedding_model": new_emb_model,
+                }
+                if norm_vec is not None:
+                    if cache.upsert_vector(memory_id, norm_vec, row_meta=updated_row):
+                        self._refresh_stamps_after_write_locked(cache, content_version=new_cv)
+                    else:
+                        self._invalidate_cache()
                 else:
-                    cache.needs_healing_ids.discard(memory_id)
-                self._refresh_stamps_after_write_locked(cache)
+                    cache.rows_by_id[memory_id] = dict(updated_row)
+                    cache._index_row_lexical(memory_id, updated_row)
+                    idx = cache.id_to_idx.get(memory_id)
+                    existing_vec = (
+                        cache._matrix_buf[idx]
+                        if (idx is not None and cache._matrix_buf is not None)
+                        else None
+                    )
+                    if _row_needs_healing(updated_row, existing_vec):
+                        cache.needs_healing_ids.add(memory_id)
+                    else:
+                        cache.needs_healing_ids.discard(memory_id)
+                    self._refresh_stamps_after_write_locked(cache, content_version=new_cv)
 
         if should_scrub_audit and not preserve_accessed_at:
             scrub_memory_update_from_audit(
@@ -1914,11 +2451,19 @@ class MeshStore:
 
     # --- Vector & Hybrid Search Operations ---
 
-    def query(self, embedding: list[float], n: int = 5) -> dict[str, list[list[Any]]]:
+    def query(
+        self,
+        embedding: list[float],
+        n: int = 5,
+        query_embedding_model: Optional[str] = None,
+    ) -> dict[str, list[list[Any]]]:
         """
         100% in-memory dense cosine similarity search returning a ChromaDB-compatible dict:
         {"ids": [[...]], "documents": [[...]], "distances": [[...]], "metadatas": [[...]]}
+        When `query_embedding_model` is provided, skips rows in a mixed embedding space.
         """
+        if not self.db_path.exists():
+            return {"documents": [[]], "distances": [[]], "metadatas": [[]], "ids": [[]]}
         cache = self._get_vector_cache()
         ids_snap, mat, rows_snap = cache.snapshot(copy_matrix=False)
         if mat is None or len(ids_snap) == 0 or n <= 0:
@@ -1929,12 +2474,31 @@ class MeshStore:
             return {"documents": [[]], "distances": [[]], "metadatas": [[]], "ids": [[]]}
 
         sims = mat @ q_vec
-        k = min(n, len(ids_snap))
-        if k < len(ids_snap):
-            top_indices = np.argpartition(-sims, k - 1)[:k]
-            top_indices = top_indices[np.argsort(-sims[top_indices])]
+        if query_embedding_model is not None:
+            valid_indices = [
+                idx
+                for idx, mid in enumerate(ids_snap)
+                if mid in rows_snap
+                and not _is_mixed_space(rows_snap[mid].get("embedding_model"), query_embedding_model)
+            ]
+            if not valid_indices:
+                return {"documents": [[]], "distances": [[]], "metadatas": [[]], "ids": [[]]}
+            valid_arr = np.asarray(valid_indices, dtype=np.int64)
+            valid_sims = sims[valid_arr]
+            k = min(n, len(valid_arr))
+            if k < len(valid_arr):
+                part = np.argpartition(-valid_sims, k - 1)[:k]
+                part = part[np.argsort(-valid_sims[part])]
+                top_indices = valid_arr[part]
+            else:
+                top_indices = valid_arr[np.argsort(-valid_sims)]
         else:
-            top_indices = np.argsort(-sims)
+            k = min(n, len(ids_snap))
+            if k < len(ids_snap):
+                top_indices = np.argpartition(-sims, k - 1)[:k]
+                top_indices = top_indices[np.argsort(-sims[top_indices])]
+            else:
+                top_indices = np.argsort(-sims)
 
         out_ids: list[str] = []
         out_docs: list[str] = []
@@ -1985,7 +2549,7 @@ class MeshStore:
         Run a sanitized FTS5 search over `memories_fts` with automatic synonym and
         punctuated-identifier expansion (`pg-bouncer` -> `"pg" "bouncer"` OR `"pgbouncer"*`).
         """
-        if not self._fts_enabled or not query_text:
+        if not self._fts_enabled or not query_text or not self.db_path.exists():
             return {}
 
         _, content_tokens, _ = _extract_search_tokens(query_text)
@@ -2073,13 +2637,19 @@ class MeshStore:
         fts_score: float,
         q_synonyms: Optional[dict[str, set[str]]] = None,
         cached_lex: Optional[dict[str, Any]] = None,
-    ) -> tuple[float, float, str]:
+    ) -> tuple[float, float, float, str]:
         """
-        Compute (lexical_score, specific_content_coverage, match_reason) for a single memory row
-        using pre-tokenized `cached_lex` metadata when available.
+        Compute `(lexical_score, specific_content_coverage, exact_or_stem_specific_coverage, match_reason)`
+        for a single memory row using pre-tokenized `cached_lex` metadata (Phase 2.5):
+          - Uses whole-token (`tok in all_doc_tokens`) or same-stem (`stem in all_doc_stems`) matching
+            instead of substring `tok in doc_norm`, preventing `port` from matching `report`/`import`/`support`.
+          - Prefix fallback applies ONLY when both stems are >= 5 chars and the shorter stem is a prefix
+            covering >= 70% of the longer stem (`pass` vs `password` does not match).
+          - Synonym-only matches receive a reduced weight (`0.5`) and are not eligible for the
+            `0.78 * exact_or_stem_cov` lexical grounding floor.
         """
         if not q_content_tokens:
-            return fts_score, 0.0, "semantic"
+            return fts_score, 0.0, 0.0, "semantic"
 
         lex = cached_lex if cached_lex is not None else _build_row_lexical_entry(doc_content, doc_tags)
         doc_norm = lex["doc_norm"]
@@ -2096,6 +2666,7 @@ class MeshStore:
         matched_idf = 0.0
         specific_total_idf = 0.0
         specific_matched_idf = 0.0
+        exact_stem_specific_idf = 0.0
         exact_hits = 0
         synonym_hits = 0
         tag_hits = 0
@@ -2109,60 +2680,73 @@ class MeshStore:
             tok_compact = re.sub(r"[^a-z0-9]", "", tok)
             tok_syns = syn_lookup.get(tok, set())
 
+            # 1. Whole-token exact or compact identifier match
             if tok in all_doc_tokens or (len(tok_compact) >= 3 and tok_compact in all_doc_tokens):
                 matched_idf += w_idf
                 if is_specific:
                     specific_matched_idf += w_idf
+                    exact_stem_specific_idf += w_idf
                     exact_hits += 1
                 if tok in tag_tokens or stem in tag_stems or (tok_compact and tok_compact in tag_compacts):
                     tag_hits += 1
+            # 2. Whole-token stem equality match
             elif stem in all_doc_stems:
                 matched_idf += w_idf * 0.92
                 if is_specific:
                     specific_matched_idf += w_idf * 0.92
+                    exact_stem_specific_idf += w_idf * 0.92
                     exact_hits += 1
-            elif len(tok_compact) >= 4 and (tok in doc_norm or tok_compact in doc_compact):
-                matched_idf += w_idf * 0.90
-                if is_specific:
-                    specific_matched_idf += w_idf * 0.90
-                    exact_hits += 1
-            elif tok_syns and (tok_syns & all_doc_tokens or tok_syns & all_doc_stems):
-                matched_idf += w_idf * 0.72
-                if is_specific:
-                    specific_matched_idf += w_idf * 0.72
-                    synonym_hits += 1
-                if tok_syns & tag_tokens or tok_syns & tag_stems:
-                    tag_hits += 1
-            elif is_specific and len(tok_compact) >= 4:
-                for dt in all_doc_tokens:
-                    if len(dt) >= 4 and (dt.startswith(tok_compact[:4]) or tok_compact.startswith(dt[:4])):
-                        matched_idf += w_idf * 0.55
-                        specific_matched_idf += w_idf * 0.55
-                        break
+            else:
+                # 3. Strict prefix fallback: both stems >= 5 chars AND shorter covers >= 70% of longer
+                prefix_matched = False
+                if is_specific and len(stem) >= 5:
+                    for ds in all_doc_stems:
+                        if len(ds) >= 5:
+                            shorter, longer = (stem, ds) if len(stem) <= len(ds) else (ds, stem)
+                            if longer.startswith(shorter) and (len(shorter) / len(longer)) >= 0.70:
+                                matched_idf += w_idf * 0.80
+                                specific_matched_idf += w_idf * 0.80
+                                exact_stem_specific_idf += w_idf * 0.80
+                                exact_hits += 1
+                                prefix_matched = True
+                                break
+                # 4. Tight synonym match (reduced 0.5 weight, ineligible for lexical grounding floor)
+                if not prefix_matched and tok_syns and (tok_syns & all_doc_tokens or tok_syns & all_doc_stems):
+                    matched_idf += w_idf * 0.50
+                    if is_specific:
+                        specific_matched_idf += w_idf * 0.50
+                        synonym_hits += 1
+                    if tok_syns & tag_tokens or tok_syns & tag_stems:
+                        tag_hits += 1
 
         idf_coverage = matched_idf / max(1e-9, total_query_idf)
         if specific_total_idf > 0:
             specific_coverage = specific_matched_idf / specific_total_idf
+            exact_stem_coverage = exact_stem_specific_idf / specific_total_idf
         else:
             specific_coverage = idf_coverage
+            exact_stem_coverage = idf_coverage if exact_hits > 0 else 0.0
 
         phrase_bonus = 0.0
-        if len(q_norm_phrase) >= 4 and q_norm_phrase in doc_norm:
-            phrase_bonus = 0.25
-        elif len(q_compact) >= 4 and q_compact in doc_compact:
-            phrase_bonus = 0.22
+        if len(q_content_tokens) >= 2 and exact_stem_coverage > 0.0:
+            if len(q_norm_phrase) >= 4 and re.search(r"\b" + re.escape(q_norm_phrase) + r"\b", doc_norm):
+                phrase_bonus = 0.25
+            elif len(q_compact) >= 6 and q_compact in all_doc_tokens:
+                phrase_bonus = 0.22
 
-        bm25_tf_norm = min(1.0, 6.0 / (doc_len + 4.0)) * 0.12 if specific_coverage > 0 else 0.0
+        bm25_tf_norm = min(1.0, 6.0 / (doc_len + 4.0)) * 0.12 if exact_stem_coverage > 0 else 0.0
         computed_lex = min(
             1.0,
             0.65 * specific_coverage + 0.35 * idf_coverage + phrase_bonus + bm25_tf_norm,
         )
-        if specific_coverage > 0:
-            final_lex = max(computed_lex, fts_score * specific_coverage)
+        if exact_stem_coverage > 0:
+            final_lex = max(computed_lex, fts_score * exact_stem_coverage)
+        elif specific_coverage > 0:
+            final_lex = max(computed_lex, fts_score * specific_coverage * 0.5)
         else:
             final_lex = computed_lex * 0.25
 
-        if exact_hits > 0 and specific_coverage >= 0.5:
+        if exact_hits > 0 and exact_stem_coverage >= 0.5:
             reason = "exact+semantic"
         elif synonym_hits > 0 and exact_hits == 0:
             reason = "synonym+semantic"
@@ -2173,7 +2757,12 @@ class MeshStore:
         else:
             reason = "semantic"
 
-        return round(min(1.0, final_lex), 4), round(min(1.0, specific_coverage), 4), reason
+        return (
+            round(min(1.0, final_lex), 4),
+            round(min(1.0, specific_coverage), 4),
+            round(min(1.0, exact_stem_coverage), 4),
+            reason,
+        )
 
     def hybrid_query(
         self,
@@ -2191,12 +2780,18 @@ class MeshStore:
     ) -> list[dict[str, Any]]:
         """
         Execute a 5-stage calibrated hybrid retrieval with pre-cached lexical IDF:
-          1. Pre-mask candidates by memory_type, tags, source_agent, local_only, stale, and min_confidence
-          2. Dense SIMD Cosine similarity across all matching candidates in RAM
-          3. O(|Q|) Robertson-Sparck Jones Smoothed IDF lookup from `cache.stem_df` + Exact/Synonym matching
-          4. Lexical Grounding Floor + Zero-Overlap Noise Suppression Gate
-          5. Match-reason tagging & snippet generation
+          1. Pre-mask candidates over `ids_snap` by `memory_type`, `tags`, `source_agent`,
+             `local_only`, `include_stale`, and `min_confidence` BEFORE any top-k cut (Phase 2.4).
+          2. Dense SIMD Cosine similarity across masked candidates (applying `_is_mixed_space` guard).
+             If masked count >= 400 (`PREMASK_SKIP_CUT_THRESHOLD`), apply `argpartition` over masked
+             indices only and union FTS/stem hits after intersecting them with the mask.
+          3. O(|Q|) Robertson-Sparck Jones Smoothed IDF lookup from `cache.stem_df` + whole-token/stem/synonym scoring.
+          4. Lexical Grounding Floor (`0.78 * exact_stem_cov`, exact/stem only) + Zero-Overlap Noise Suppression Gate.
+          5. Match-reason tagging & snippet generation.
         """
+        if not self.db_path.exists():
+            return []
+        self._maybe_lazy_flush_telemetry()
         cache = self._get_vector_cache()
         with _CACHE_LOCK:
             ids_snap = list(cache.ids)
@@ -2212,8 +2807,42 @@ class MeshStore:
         if q_vec.shape[0] != mat.shape[1]:
             return []
 
+        type_filter = memory_type.strip().lower() if memory_type else None
+        filter_tags = {t.strip().lower() for t in (tags or []) if t.strip()}
+        ref_now = now if now is not None else _utc_now()
+
+        # Stage 1: Build boolean pre-mask over ids_snap BEFORE any top-k cut (Phase 2.4)
+        masked_indices: list[int] = []
+        masked_mid_set: set[str] = set()
+        for idx, mid in enumerate(ids_snap):
+            cached_row = rows_snap.get(mid)
+            if cached_row is None:
+                continue
+            if type_filter and cached_row["memory_type"].lower() != type_filter:
+                continue
+            if source_agent and cached_row["source_agent"] != source_agent:
+                continue
+            if not include_private and cached_row.get("local_only"):
+                continue
+            if filter_tags:
+                parsed_tags = cached_row.get("tags_list") or []
+                mem_tags_lower = {str(t).lower() for t in parsed_tags}
+                if not filter_tags.issubset(mem_tags_lower):
+                    continue
+            if not include_stale or min_confidence > 0.0:
+                eff_conf, is_stale = _compute_row_effective_confidence(cached_row, now=ref_now)
+                if not include_stale and is_stale:
+                    continue
+                if eff_conf < min_confidence:
+                    continue
+            masked_indices.append(idx)
+            masked_mid_set.add(mid)
+
+        if not masked_indices:
+            return []
+
         sims = mat @ q_vec
-        lexical_map = self._fts_lexical_scores(query_text, limit=max(len(ids_snap), 50))
+        lexical_map = self._fts_lexical_scores(query_text, limit=max(len(masked_indices), 50))
 
         norm_q = _clean_possessives(query_text)
         raw_q_tokens = [t.strip("._:-/") for t in _TOKEN_RE.findall(norm_q)]
@@ -2226,18 +2855,27 @@ class MeshStore:
         q_norm_phrase = " ".join(_WORD_RE.findall(norm_q))
         q_compact = re.sub(r"[^a-z0-9]", "", q_norm_phrase)
 
-        total_candidates = len(ids_snap)
-        prefiltered_mid_set: Optional[set[str]] = None
-        if total_candidates > 400:
-            k = min(total_candidates, max(n * 25, 250))
-            top_dense_indices = np.argpartition(-sims, k - 1)[:k]
-            prefiltered_mid_set = {ids_snap[i] for i in top_dense_indices}
-            prefiltered_mid_set.update(lexical_map.keys())
+        # Stage 2: Apply top-k cut ONLY over masked indices when masked count >= 400
+        masked_count = len(masked_indices)
+        if masked_count >= PREMASK_SKIP_CUT_THRESHOLD:
+            k = min(masked_count, max(n * PREMASK_TOP_K_MULTIPLIER, 250))
+            masked_arr = np.asarray(masked_indices, dtype=np.int64)
+            masked_sims = sims[masked_arr]
+            if k < masked_count:
+                top_local = np.argpartition(-masked_sims, k - 1)[:k]
+                candidate_mid_set = {ids_snap[int(masked_arr[i])] for i in top_local}
+            else:
+                candidate_mid_set = set(masked_mid_set)
+            # Union FTS and stem hits after intersecting them with the pre-mask
+            candidate_mid_set.update(mid for mid in lexical_map if mid in masked_mid_set)
             with _CACHE_LOCK:
                 for s in q_stems:
                     s_hits = cache.stem_to_ids.get(s)
                     if s_hits:
-                        prefiltered_mid_set.update(s_hits)
+                        candidate_mid_set.update(s_hits & masked_mid_set)
+            eval_indices = [idx for idx in masked_indices if ids_snap[idx] in candidate_mid_set]
+        else:
+            eval_indices = masked_indices
 
         total_docs = max(1, len(rows_snap))
         has_specific_tokens = any(s not in _FRAMING_TOKENS for s in q_stems)
@@ -2252,50 +2890,20 @@ class MeshStore:
 
         total_query_idf = sum(idf_map.get(s, 1.0) for s in q_stems) or 1.0
 
-        type_filter = memory_type.strip().lower() if memory_type else None
-        filter_tags = {t.strip().lower() for t in (tags or []) if t.strip()}
-        ref_now = now if now is not None else _utc_now()
-
         scored_candidates: list[dict[str, Any]] = []
         max_specific_cov_in_pool = 0.0
 
-        for idx, mid in enumerate(ids_snap):
-            if prefiltered_mid_set is not None and mid not in prefiltered_mid_set:
-                continue
+        for idx in eval_indices:
+            mid = ids_snap[idx]
             cached_row = rows_snap.get(mid)
             if cached_row is None:
                 continue
-            if type_filter and cached_row["memory_type"].lower() != type_filter:
-                continue
-            if source_agent and cached_row["source_agent"] != source_agent:
-                continue
-            if not include_private and cached_row.get("local_only"):
-                continue
-
             parsed_tags = cached_row.get("tags_list") or []
-            if filter_tags:
-                mem_tags_lower = {str(t).lower() for t in parsed_tags}
-                if not filter_tags.issubset(mem_tags_lower):
-                    continue
 
-            eff_conf, is_stale = _compute_row_effective_confidence(cached_row, now=ref_now)
-            if not include_stale and is_stale:
-                continue
-            if eff_conf < min_confidence:
-                continue
-
-            is_mixed_space = False
-            if query_embedding_model and cached_row.get("embedding_model"):
-                row_model = str(cached_row["embedding_model"]).strip().lower()
-                q_model = str(query_embedding_model).strip().lower()
-                if (row_model == "hash-384" and q_model == "onnx-minilm-l6-v2") or (
-                    row_model == "onnx-minilm-l6-v2" and q_model == "hash-384"
-                ):
-                    is_mixed_space = True
-
-            sem_sim = 0.0 if is_mixed_space else max(0.0, min(1.0, float(sims[idx])))
+            mixed_space = _is_mixed_space(cached_row.get("embedding_model"), query_embedding_model)
+            sem_sim = 0.0 if mixed_space else max(0.0, min(1.0, float(sims[idx])))
             fts_score = lexical_map.get(mid, 0.0)
-            lex_score, specific_cov, match_reason = self._score_candidate_lexical(
+            lex_score, specific_cov, exact_stem_cov, match_reason = self._score_candidate_lexical(
                 q_content_tokens=q_content_tokens,
                 q_stems=q_stems,
                 q_norm_phrase=q_norm_phrase,
@@ -2317,6 +2925,7 @@ class MeshStore:
             row_dict["semantic_similarity"] = round(sem_sim, 4)
             row_dict["lexical_score"] = lex_score
             row_dict["_specific_cov"] = specific_cov
+            row_dict["_exact_stem_cov"] = exact_stem_cov
             row_dict["match_reason"] = match_reason
             row_dict["snippet"] = _make_snippet(cached_row["content"])
             scored_candidates.append(row_dict)
@@ -2328,10 +2937,15 @@ class MeshStore:
             sem_sim = item["semantic_similarity"]
             lex_score = item["lexical_score"]
             specific_cov = item.pop("_specific_cov", 0.0)
-            if specific_cov > 0.0:
-                lexical_floor = 0.78 * specific_cov + 0.14 * lex_score + 0.08 * sem_sim
-                boosted_sem = sem_sim + (1.0 - sem_sim) * (0.58 * lex_score + 0.25 * specific_cov)
+            exact_stem_cov = item.pop("_exact_stem_cov", 0.0)
+            if exact_stem_cov > 0.0:
+                # Only exact/stem matches are eligible for the 0.78 lexical grounding floor (Phase 2.5)
+                lexical_floor = 0.78 * exact_stem_cov + 0.14 * lex_score + 0.08 * sem_sim
+                boosted_sem = sem_sim + (1.0 - sem_sim) * (0.58 * lex_score + 0.25 * exact_stem_cov)
                 hybrid_sim = min(1.0, max(lexical_floor, boosted_sem))
+            elif specific_cov > 0.0:
+                # Synonym-only match: receives soft boost without the 0.78 grounding floor
+                hybrid_sim = min(1.0, sem_sim + (1.0 - sem_sim) * (0.42 * lex_score + 0.18 * specific_cov))
             else:
                 if max_specific_cov_in_pool >= 0.5 and sem_sim < 0.55:
                     hybrid_sim = sem_sim * 0.38
@@ -2354,13 +2968,17 @@ class MeshStore:
         active_memory_type: Optional[str] = None,
         active_tags: Optional[list[str]] = None,
         include_private: bool = True,
+        query_embedding_model: Optional[str] = None,
     ) -> list[dict[str, Any]]:
         """
-        Return compact snippets of other possible memories in the namespace.
+        Return compact snippets of other possible memories in the namespace,
+        enforcing the mixed embedding-space guard (`query_embedding_model`).
         """
+        if not self.db_path.exists() or limit <= 0:
+            return []
         cache = self._get_vector_cache()
         _, _, rows_snap = cache.snapshot(copy_matrix=False)
-        if len(rows_snap) == 0 or limit <= 0:
+        if len(rows_snap) == 0:
             return []
 
         suggestions: list[dict[str, Any]] = []
@@ -2374,6 +2992,7 @@ class MeshStore:
             tags=None,
             source_agent=None,
             include_private=include_private,
+            query_embedding_model=query_embedding_model,
         )
 
         had_filters = bool(active_memory_type or active_tags)
@@ -2382,6 +3001,7 @@ class MeshStore:
             if not mid or mid in seen_ids:
                 continue
             sim = float(cand.get("similarity", 0.0))
+            sem_sim = float(cand.get("semantic_similarity", 0.0))
             lex = float(cand.get("lexical_score", 0.0))
             mtype = cand.get("memory_type", "fact")
             mtags = cand.get("tags_list") or []
@@ -2414,6 +3034,7 @@ class MeshStore:
                     "ttl_days": cand.get("ttl_days"),
                     "local_only": bool(cand.get("local_only", False)),
                     "similarity": round(sim, 4),
+                    "semantic_similarity": round(sem_sim, 4),
                     "lexical_score": round(lex, 4),
                     "reason": reason,
                 }
@@ -2449,6 +3070,7 @@ class MeshStore:
                     "ttl_days": r.get("ttl_days"),
                     "local_only": bool(r.get("local_only", False)),
                     "similarity": 0.0,
+                    "semantic_similarity": 0.0,
                     "lexical_score": 0.0,
                     "reason": "namespace_context",
                 }
@@ -2466,13 +3088,28 @@ class MeshStore:
         min_confidence: float = 0.0,
     ) -> list[dict[str, Any]]:
         """
-        Return memories in the namespace sorted by `accessed_at DESC` directly from
-        the in-memory metadata cache in O(N log N) time with zero SQLite reads.
+        Return memories in the namespace sorted by `accessed_at DESC`.
+        Flushes buffered telemetry and reads exact `access_count`/`accessed_at` from SQLite (Phase 2.3A).
         """
+        if not self.db_path.exists() or limit <= 0:
+            return []
+        self.flush_telemetry()
         cache = self._get_vector_cache()
         _, _, rows_snap = cache.snapshot(copy_matrix=False)
-        if not rows_snap or limit <= 0:
+        if not rows_snap:
             return []
+
+        fresh_counts: dict[str, tuple[int, str]] = {}
+        try:
+            with _CACHE_LOCK:
+                with self._connect() as conn:
+                    for mid, ac, at in conn.execute(
+                        "SELECT id, access_count, accessed_at FROM memories WHERE namespace = ?",
+                        (self.namespace,),
+                    ).fetchall():
+                        fresh_counts[str(mid)] = (int(ac or 0), str(at or ""))
+        except Exception:
+            pass
 
         type_filter = memory_type.strip().lower() if memory_type else None
         req_tags: set[str] = set()
@@ -2485,7 +3122,7 @@ class MeshStore:
 
         now = _utc_now()
         filtered: list[dict[str, Any]] = []
-        for row in rows_snap.values():
+        for mid, row in rows_snap.items():
             if not include_private and row.get("local_only"):
                 continue
             if type_filter and str(row.get("memory_type", "")).lower() != type_filter:
@@ -2503,7 +3140,10 @@ class MeshStore:
                     continue
                 if eff_conf < min_confidence:
                     continue
-            filtered.append(dict(row))
+            row_copy = dict(row)
+            if mid in fresh_counts:
+                row_copy["access_count"], row_copy["accessed_at"] = fresh_counts[mid]
+            filtered.append(row_copy)
 
         filtered.sort(
             key=lambda r: (str(r.get("accessed_at") or ""), str(r.get("created_at") or "")),
@@ -2515,6 +3155,9 @@ class MeshStore:
         """
         Return all non-private (`local_only = 0`) memories in the namespace for `io.export_namespace()`.
         """
+        if not self.db_path.exists():
+            return []
+        self.flush_telemetry()
         with _CACHE_LOCK:
             with self._connect() as conn:
                 conn.row_factory = sqlite3.Row
@@ -2554,53 +3197,64 @@ class MeshStore:
         time, scrubbing any contradiction records referencing it, and updating the RAM cache in-place.
         """
         clean_id = (memory_id or "").strip()
-        if not clean_id:
+        if not clean_id or not self.db_path.exists():
             return False
 
+        self.flush_telemetry()
         purged_content: Optional[str] = None
         deleted = False
 
-        with _CACHE_LOCK:
-            synced_cache = self._is_cache_synced_locked()
-            if synced_cache is not None and clean_id in synced_cache.rows_by_id:
-                purged_content = synced_cache.rows_by_id[clean_id].get("content")
+        with namespace_write_lock(self.namespace):
+            with _CACHE_LOCK:
+                synced_cache = self._is_cache_synced_locked()
+                if synced_cache is not None and clean_id in synced_cache.rows_by_id:
+                    purged_content = synced_cache.rows_by_id[clean_id].get("content")
 
-            with self._connect() as conn:
-                row = conn.execute(
-                    "SELECT rowid, content FROM memories WHERE id = ? AND namespace = ?",
-                    (clean_id, self.namespace),
-                ).fetchone()
-                if row is not None:
-                    rowid = int(row[0])
-                    if purged_content is None:
-                        purged_content = str(row[1] or "")
-                    cur = conn.execute(
-                        "DELETE FROM memories WHERE rowid = ? AND namespace = ?",
-                        (rowid, self.namespace),
-                    )
-                    deleted = cur.rowcount > 0
-                    self._delete_fts_row(conn, clean_id, rowid=rowid)
-                    conn.execute(
-                        "DELETE FROM contradictions WHERE namespace = ? AND (new_memory_id = ? OR existing_memory_id = ?)",
-                        (self.namespace, clean_id, clean_id),
-                    )
-                    if purged_content and purged_content.strip():
-                        conn.execute(
-                            "DELETE FROM queries WHERE namespace = ? AND query_text = ?",
-                            (self.namespace, purged_content.strip()),
-                        )
-                    conn.commit()
+                new_cv: Optional[int] = None
+                with self._connect() as conn:
+                    conn.execute("BEGIN IMMEDIATE")
                     try:
-                        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                    except sqlite3.OperationalError:
-                        pass
+                        row = conn.execute(
+                            "SELECT rowid, content FROM memories WHERE id = ? AND namespace = ?",
+                            (clean_id, self.namespace),
+                        ).fetchone()
+                        if row is not None:
+                            rowid = int(row[0])
+                            if purged_content is None:
+                                purged_content = str(row[1] or "")
+                            cur = conn.execute(
+                                "DELETE FROM memories WHERE rowid = ? AND namespace = ?",
+                                (rowid, self.namespace),
+                            )
+                            deleted = cur.rowcount > 0
+                            self._delete_fts_row(conn, clean_id, rowid=rowid)
+                            conn.execute(
+                                "DELETE FROM contradictions WHERE namespace = ? AND (new_memory_id = ? OR existing_memory_id = ?)",
+                                (self.namespace, clean_id, clean_id),
+                            )
+                            if purged_content and purged_content.strip():
+                                conn.execute(
+                                    "DELETE FROM queries WHERE namespace = ? AND LOWER(query_text) = LOWER(?)",
+                                    (self.namespace, purged_content.strip()),
+                                )
+                            new_cv = self._bump_content_version_in_tx(conn)
+                        conn.commit()
+                    except Exception:
+                        if conn.in_transaction:
+                            conn.rollback()
+                        raise
+                    if deleted:
+                        try:
+                            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                        except sqlite3.OperationalError:
+                            pass
 
-            if deleted:
-                if synced_cache is not None:
-                    synced_cache.delete_vector(clean_id)
-                    self._refresh_stamps_after_write_locked(synced_cache)
-                else:
-                    self._invalidate_cache()
+                if deleted:
+                    if synced_cache is not None:
+                        synced_cache.delete_vector(clean_id)
+                        self._refresh_stamps_after_write_locked(synced_cache, content_version=new_cv)
+                    else:
+                        self._invalidate_cache()
 
         if deleted:
             purge_memory_from_audit(
@@ -2612,31 +3266,66 @@ class MeshStore:
 
     def count(self) -> int:
         """Return the total number of memories in this namespace in O(1) time from the vector cache."""
+        if not self.db_path.exists():
+            return 0
+        self._maybe_lazy_flush_telemetry()
         cache = self._get_vector_cache()
         with _CACHE_LOCK:
             return len(cache.all_ids)
 
     def clear_namespace(self) -> None:
         """Delete all memories, FTS entries, queries, and contradictions in this namespace."""
-        with _CACHE_LOCK:
-            with self._connect() as conn:
-                conn.execute("DELETE FROM memories WHERE namespace = ?", (self.namespace,))
-                if self._fts_enabled:
+        if not self.db_path.exists():
+            return
+        self.flush_telemetry()
+        with namespace_write_lock(self.namespace):
+            with _CACHE_LOCK:
+                with self._connect() as conn:
+                    conn.execute("BEGIN IMMEDIATE")
                     try:
-                        conn.execute("DELETE FROM memories_fts")
+                        conn.execute("DELETE FROM memories WHERE namespace = ?", (self.namespace,))
+                        if self._fts_enabled:
+                            try:
+                                conn.execute("DELETE FROM memories_fts")
+                            except sqlite3.OperationalError:
+                                pass
+                        conn.execute("DELETE FROM queries WHERE namespace = ?", (self.namespace,))
+                        conn.execute("DELETE FROM contradictions WHERE namespace = ?", (self.namespace,))
+                        self._bump_content_version_in_tx(conn)
+                        conn.commit()
+                    except Exception:
+                        if conn.in_transaction:
+                            conn.rollback()
+                        raise
+                    try:
+                        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                        conn.execute("VACUUM")
                     except sqlite3.OperationalError:
                         pass
-                conn.execute("DELETE FROM queries WHERE namespace = ?", (self.namespace,))
-                conn.execute("DELETE FROM contradictions WHERE namespace = ?", (self.namespace,))
-                conn.commit()
-                try:
-                    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                    conn.execute("VACUUM")
-                except sqlite3.OperationalError:
-                    pass
-            self._invalidate_cache()
+                self._invalidate_cache()
 
     # --- Telemetry, Query Logging & Contradiction Management ---
+
+    def flush_telemetry(self) -> None:
+        """Flush buffered recall telemetry for this namespace to SQLite immediately."""
+        _flush_telemetry_for_db_path(self.db_path)
+
+    def _maybe_lazy_flush_telemetry(self) -> None:
+        resolved = self.db_path.resolve()
+        batch_limit = _get_telemetry_batch_limit()
+        flush_secs = _get_telemetry_flush_seconds()
+        should_flush = False
+        with _TELEMETRY_LOCK:
+            buf = _TELEMETRY_BUFFERS.get(resolved)
+            if buf is not None and buf.event_count > 0:
+                if batch_limit <= 0 or flush_secs <= 0.0:
+                    should_flush = True
+                elif buf.event_count >= batch_limit:
+                    should_flush = True
+                elif (time.monotonic() - buf.first_event_ts) >= flush_secs:
+                    should_flush = True
+        if should_flush:
+            _flush_telemetry_for_db_path(resolved)
 
     def increment_access(self, memory_id: str) -> None:
         self.increment_access_batch([memory_id])
@@ -2646,40 +3335,22 @@ class MeshStore:
         valid_ids = [mid for mid in dict.fromkeys(memory_ids) if mid]
         if not valid_ids:
             return
-        now = _utc_now_iso()
-        with _CACHE_LOCK:
-            synced_cache = self._is_cache_synced_locked()
-            placeholders = ",".join("?" for _ in valid_ids)
-            with self._connect() as conn:
-                conn.execute(
-                    f"""
-                    UPDATE memories
-                    SET access_count = access_count + 1,
-                        accessed_at = ?
-                    WHERE namespace = ? AND id IN ({placeholders})
-                    """,
-                    [now, self.namespace, *valid_ids],
-                )
-                conn.commit()
-            if synced_cache is not None:
-                for mid in valid_ids:
-                    rm = synced_cache.rows_by_id.get(mid)
-                    if rm is not None:
-                        synced_cache.rows_by_id[mid] = {
-                            **rm,
-                            "access_count": int(rm.get("access_count") or 0) + 1,
-                            "accessed_at": now,
-                        }
-                self._refresh_stamps_after_write_locked(synced_cache)
-            else:
-                self._invalidate_cache()
+        self.record_recall_telemetry(
+            memory_ids=valid_ids,
+            query_text="",
+            agent_id="unknown",
+            best_similarity=None,
+            result_count=len(valid_ids),
+            private_query=False,
+        )
+        self.flush_telemetry()
 
     def log_query(
         self,
         query_text: str,
-        agent_id: str,
-        best_similarity: Optional[float],
-        result_count: int,
+        agent_id: str = "unknown",
+        best_similarity: Optional[float] = None,
+        result_count: int = 0,
         private_query: bool = False,
     ) -> None:
         self.record_recall_telemetry(
@@ -2690,6 +3361,7 @@ class MeshStore:
             result_count=result_count,
             private_query=private_query,
         )
+        self.flush_telemetry()
 
     def record_recall_telemetry(
         self,
@@ -2701,65 +3373,60 @@ class MeshStore:
         private_query: bool = False,
     ) -> None:
         """
-        Atomically increment `access_count` on recalled memories, log the query in `queries`,
-        and enforce bounded `queries` table retention without invalidating the in-memory vector cache.
+        Update in-memory `access_count`/`accessed_at` via copy-on-write immediately and
+        buffer SQLite telemetry writes according to `MESH_TELEMETRY_BATCH` (default 50)
+        and `MESH_TELEMETRY_FLUSH_SECONDS` (default 5.0).
+        Never bumps `mesh_meta.content_version`, eliminating cross-process cache thrashing.
         """
+        if not self.db_path.exists():
+            if not self.create:
+                return
+            self._ensure_initialized()
+
         valid_ids = [mid for mid in dict.fromkeys(memory_ids) if mid]
         now = _utc_now_iso()
         qid = str(uuid.uuid4())
         clean_query = (query_text or "").strip()[:512]
+        resolved = self.db_path.resolve()
 
         with _CACHE_LOCK:
-            synced_cache = self._is_cache_synced_locked()
-            q_writes = _QUERY_WRITE_COUNTS.get(self.db_path, 0) + 1
-            _QUERY_WRITE_COUNTS[self.db_path] = q_writes
-
-            with self._connect() as conn:
-                if valid_ids:
-                    placeholders = ",".join("?" for _ in valid_ids)
-                    conn.execute(
-                        f"""
-                        UPDATE memories
-                        SET access_count = access_count + 1,
-                            accessed_at = ?
-                        WHERE namespace = ? AND id IN ({placeholders})
-                        """,
-                        [now, self.namespace, *valid_ids],
-                    )
-                if clean_query:
-                    conn.execute(
-                        """
-                        INSERT INTO queries
-                        (id, namespace, query_text, agent_id, best_similarity, result_count, timestamp, private_query)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            qid,
-                            self.namespace,
-                            clean_query,
-                            agent_id or "unknown",
-                            float(best_similarity) if best_similarity is not None else None,
-                            int(result_count),
-                            now,
-                            1 if private_query else 0,
-                        ),
-                    )
-                    if q_writes % 100 == 0:
-                        _prune_queries_table_locked(conn, self.namespace, _max_query_rows())
-                conn.commit()
-
-            if synced_cache is not None:
+            cached = _VECTOR_CACHE.get(self.db_path)
+            if cached is not None:
                 for mid in valid_ids:
-                    rm = synced_cache.rows_by_id.get(mid)
+                    rm = cached.rows_by_id.get(mid)
                     if rm is not None:
-                        synced_cache.rows_by_id[mid] = {
+                        cached.rows_by_id[mid] = {
                             **rm,
                             "access_count": int(rm.get("access_count") or 0) + 1,
                             "accessed_at": now,
                         }
-                self._refresh_stamps_after_write_locked(synced_cache)
-            else:
-                self._invalidate_cache()
+
+        with _TELEMETRY_LOCK:
+            buf = _TELEMETRY_BUFFERS.get(resolved)
+            if buf is None:
+                buf = _TelemetryBuffer(resolved, self.namespace)
+                _TELEMETRY_BUFFERS[resolved] = buf
+            if buf.event_count == 0:
+                buf.first_event_ts = time.monotonic()
+            buf.event_count += 1
+            for mid in valid_ids:
+                prev_cnt, _ = buf.access_increments.get(mid, (0, now))
+                buf.access_increments[mid] = (prev_cnt + 1, now)
+            if clean_query:
+                buf.query_rows.append(
+                    (
+                        qid,
+                        self.namespace,
+                        clean_query,
+                        agent_id or "unknown",
+                        float(best_similarity) if best_similarity is not None else None,
+                        int(result_count),
+                        now,
+                        1 if private_query else 0,
+                    )
+                )
+
+        self._maybe_lazy_flush_telemetry()
 
     def log_contradiction(
         self,
@@ -2779,54 +3446,65 @@ class MeshStore:
         cid = str(uuid.uuid4())
         now = _utc_now_iso()
 
-        with _CACHE_LOCK:
-            synced_cache = self._is_cache_synced_locked()
-            existing_is_private = bool(existing_local_only)
-            if existing_local_only is None and existing_memory_id:
-                if synced_cache is not None and existing_memory_id in synced_cache.rows_by_id:
-                    existing_is_private = bool(
-                        synced_cache.rows_by_id[existing_memory_id].get("local_only")
-                    )
-                else:
-                    with self._connect() as conn:
-                        row = conn.execute(
-                            "SELECT local_only FROM memories WHERE id = ? AND namespace = ?",
-                            (existing_memory_id, self.namespace),
-                        ).fetchone()
-                        if row is not None:
-                            existing_is_private = bool(row[0])
+        with namespace_write_lock(self.namespace):
+            with _CACHE_LOCK:
+                synced_cache = self._is_cache_synced_locked()
+                existing_is_private = bool(existing_local_only)
+                if existing_local_only is None and existing_memory_id:
+                    if synced_cache is not None and existing_memory_id in synced_cache.rows_by_id:
+                        existing_is_private = bool(
+                            synced_cache.rows_by_id[existing_memory_id].get("local_only")
+                        )
+                    else:
+                        with self._connect() as conn:
+                            row = conn.execute(
+                                "SELECT local_only FROM memories WHERE id = ? AND namespace = ?",
+                                (existing_memory_id, self.namespace),
+                            ).fetchone()
+                            if row is not None:
+                                existing_is_private = bool(row[0])
 
-            safe_new = REDACTED_CONTENT_PLACEHOLDER if local_only else new_content
-            safe_existing = (
-                REDACTED_CONTENT_PLACEHOLDER if existing_is_private else existing_content
-            )
-
-            with self._connect() as conn:
-                conn.execute(
-                    """
-                    INSERT INTO contradictions
-                    (id, namespace, new_memory_id, new_content, existing_memory_id,
-                     existing_content, similarity, detected_at, resolved)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
-                    """,
-                    (
-                        cid,
-                        self.namespace,
-                        validate_memory_id(new_memory_id),
-                        safe_new,
-                        validate_memory_id(existing_memory_id) if existing_memory_id else "",
-                        safe_existing,
-                        float(similarity),
-                        now,
-                    ),
+                safe_new = REDACTED_CONTENT_PLACEHOLDER if local_only else new_content
+                safe_existing = (
+                    REDACTED_CONTENT_PLACEHOLDER if existing_is_private else existing_content
                 )
-                conn.commit()
-            if synced_cache is not None:
-                self._refresh_stamps_after_write_locked(synced_cache)
+
+                new_cv: Optional[int] = None
+                with self._connect() as conn:
+                    conn.execute("BEGIN IMMEDIATE")
+                    try:
+                        conn.execute(
+                            """
+                            INSERT INTO contradictions
+                            (id, namespace, new_memory_id, new_content, existing_memory_id,
+                             existing_content, similarity, detected_at, resolved)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
+                            """,
+                            (
+                                cid,
+                                self.namespace,
+                                validate_memory_id(new_memory_id),
+                                safe_new,
+                                validate_memory_id(existing_memory_id) if existing_memory_id else "",
+                                safe_existing,
+                                float(similarity),
+                                now,
+                            ),
+                        )
+                        new_cv = self._bump_content_version_in_tx(conn)
+                        conn.commit()
+                    except Exception:
+                        if conn.in_transaction:
+                            conn.rollback()
+                        raise
+                if synced_cache is not None:
+                    self._refresh_stamps_after_write_locked(synced_cache, content_version=new_cv)
         return cid
 
     def get_contradictions(self, resolved: bool = False) -> list[dict[str, Any]]:
         """Return unresolved (or resolved) contradictions for this namespace."""
+        if not self.db_path.exists():
+            return []
         res_flag = 1 if resolved else 0
         with _CACHE_LOCK:
             with self._connect() as conn:
@@ -2852,62 +3530,89 @@ class MeshStore:
         clean_pref = (contradiction_id or "").strip().lower()
         if not clean_pref:
             raise ValueError("contradiction_id cannot be empty")
+        if not self.db_path.exists():
+            raise ValueError(
+                f"Contradiction ID '{contradiction_id}' not found in namespace '{self.namespace}'."
+            )
 
-        with _CACHE_LOCK:
-            synced_cache = self._is_cache_synced_locked()
-            with self._connect() as conn:
-                rows = conn.execute(
-                    "SELECT id FROM contradictions WHERE namespace = ?",
-                    (self.namespace,),
-                ).fetchall()
-                all_cids = [str(r[0]) for r in rows]
+        with namespace_write_lock(self.namespace):
+            with _CACHE_LOCK:
+                synced_cache = self._is_cache_synced_locked()
+                new_cv: Optional[int] = None
+                with self._connect() as conn:
+                    conn.execute("BEGIN IMMEDIATE")
+                    try:
+                        rows = conn.execute(
+                            "SELECT id FROM contradictions WHERE namespace = ?",
+                            (self.namespace,),
+                        ).fetchall()
+                        all_cids = [str(r[0]) for r in rows]
 
-                target_id: Optional[str] = None
-                for cid in all_cids:
-                    if cid.lower() == clean_pref:
-                        target_id = cid
-                        break
+                        target_id: Optional[str] = None
+                        for cid in all_cids:
+                            if cid.lower() == clean_pref:
+                                target_id = cid
+                                break
 
-                if target_id is None:
-                    if len(clean_pref) < 4:
-                        raise ValueError(
-                            f"Contradiction ID '{contradiction_id}' not found in namespace '{self.namespace}'."
+                        if target_id is None:
+                            if len(clean_pref) < 4:
+                                raise ValueError(
+                                    f"Contradiction ID '{contradiction_id}' not found in namespace '{self.namespace}'."
+                                )
+                            matches = [cid for cid in all_cids if cid.lower().startswith(clean_pref)]
+                            if len(matches) == 1:
+                                target_id = matches[0]
+                            elif len(matches) > 1:
+                                raise ValueError(
+                                    f"Ambiguous contradiction ID prefix '{contradiction_id}' matches {matches[:3]}."
+                                )
+                            else:
+                                raise ValueError(
+                                    f"Contradiction ID '{contradiction_id}' not found in namespace '{self.namespace}'."
+                                )
+
+                        cur = conn.execute(
+                            "UPDATE contradictions SET resolved = 1 WHERE id = ? AND namespace = ?",
+                            (target_id, self.namespace),
                         )
-                    matches = [cid for cid in all_cids if cid.lower().startswith(clean_pref)]
-                    if len(matches) == 1:
-                        target_id = matches[0]
-                    elif len(matches) > 1:
-                        raise ValueError(
-                            f"Ambiguous contradiction ID prefix '{contradiction_id}' matches {matches[:3]}."
-                        )
-                    else:
-                        raise ValueError(
-                            f"Contradiction ID '{contradiction_id}' not found in namespace '{self.namespace}'."
-                        )
+                        new_cv = self._bump_content_version_in_tx(conn)
+                        conn.commit()
+                        updated = cur.rowcount > 0
+                    except Exception:
+                        if conn.in_transaction:
+                            conn.rollback()
+                        raise
 
-                cur = conn.execute(
-                    "UPDATE contradictions SET resolved = 1 WHERE id = ? AND namespace = ?",
-                    (target_id, self.namespace),
-                )
-                conn.commit()
-                updated = cur.rowcount > 0
-
-            if synced_cache is not None:
-                self._refresh_stamps_after_write_locked(synced_cache)
-            return updated
+                if synced_cache is not None:
+                    self._refresh_stamps_after_write_locked(synced_cache, content_version=new_cv)
+                return updated
 
     def get_patterns(self, include_private: bool = False) -> dict[str, Any]:
         """
-        Analyze query logs and cached memories to return:
+        Analyze query logs and memories to return:
           - top_topics: most frequently searched queries
-          - memory_gaps: queries searched >= 2 times with avg_similarity < 0.45
+          - memory_gaps: queries searched >= `GAP_MIN_QUERIES` (2) times with avg_similarity < 0.45
           - unused_memories: memories created > 7 days ago with access_count == 0
           - stale_memories: memories where `_compute_row_effective_confidence` is stale
 
-        If `include_private=False` (default), private memories (local_only=1) and private queries
-        are strictly excluded from the returned patterns.
+        Privacy & Field Whitelist Guarantees (Phase 1.1 & Phase 4.9):
+          - Excludes `local_only=True` memories from `unused_memories` and `stale_memories` unless `include_private=True`.
+          - Excludes `private_query=1` queries from `top_topics` and `memory_gaps` unless `include_private=True`.
+          - Returns only `_PATTERNS_MEMORY_WHITELIST` fields (`id`, `content`, `memory_type`, `confidence`,
+            `effective_confidence`, `is_stale`, `tags`, `source_agent`, `created_at`, `accessed_at`,
+            `access_count`, `ttl_days`), never exposing `embedding` or internal cache keys.
+          - Reads `access_count` directly from SQLite after flushing telemetry.
         """
-        priv_clause = "" if include_private else "AND (private_query = 0 OR private_query IS NULL)"
+        if not self.db_path.exists():
+            return {
+                "top_topics": [],
+                "memory_gaps": [],
+                "unused_memories": [],
+                "stale_memories": [],
+            }
+        self.flush_telemetry()
+        priv_q_filter = "" if include_private else "AND COALESCE(private_query, 0) = 0"
+        priv_mem_filter = "" if include_private else "AND COALESCE(local_only, 0) = 0"
 
         with _CACHE_LOCK:
             with self._connect() as conn:
@@ -2918,7 +3623,7 @@ class MeshStore:
                            COUNT(*) AS query_count,
                            COALESCE(AVG(best_similarity), 0.0) AS avg_similarity
                     FROM queries
-                    WHERE namespace = ? AND TRIM(query_text) != '' {priv_clause}
+                    WHERE namespace = ? AND TRIM(query_text) != '' {priv_q_filter}
                     GROUP BY LOWER(TRIM(query_text))
                     ORDER BY query_count DESC, avg_similarity DESC
                     LIMIT 15
@@ -2932,13 +3637,23 @@ class MeshStore:
                            COUNT(*) AS query_count,
                            COALESCE(AVG(best_similarity), 0.0) AS avg_similarity
                     FROM queries
-                    WHERE namespace = ? AND TRIM(query_text) != '' {priv_clause}
+                    WHERE namespace = ? AND TRIM(query_text) != '' {priv_q_filter}
                     GROUP BY LOWER(TRIM(query_text))
                     HAVING COUNT(*) >= ? AND COALESCE(AVG(best_similarity), 0.0) < 0.45
                     ORDER BY query_count DESC, avg_similarity ASC
                     LIMIT 15
                     """,
                     (self.namespace, GAP_MIN_QUERIES),
+                ).fetchall()
+
+                mem_rows = conn.execute(
+                    f"""
+                    SELECT id, content, memory_type, confidence, tags, source_agent,
+                           created_at, accessed_at, access_count, ttl_days, decay_start_at, local_only
+                    FROM memories
+                    WHERE namespace = ? {priv_mem_filter}
+                    """,
+                    (self.namespace,),
                 ).fetchall()
 
         top_topics = [
@@ -2958,45 +3673,40 @@ class MeshStore:
             for r in gap_rows
         ]
 
-        cache = self._get_vector_cache()
-        _, _, rows_snap = cache.snapshot(copy_matrix=False)
         now = _utc_now()
         seven_days_ago = now - timedelta(days=7)
 
         unused_memories: list[dict[str, Any]] = []
         stale_memories: list[dict[str, Any]] = []
 
-        allowed_fields = (
-            "id",
-            "content",
-            "memory_type",
-            "confidence",
-            "effective_confidence",
-            "is_stale",
-            "tags",
-            "source_agent",
-            "created_at",
-            "accessed_at",
-            "access_count",
-            "ttl_days",
-        )
-
-        for row in rows_snap.values():
+        for r in mem_rows:
+            row = dict(r)
             if not include_private and bool(row.get("local_only")):
                 continue
-
             eff_conf, is_stale = _compute_row_effective_confidence(row, now=now)
-            filtered_row = {k: row.get(k) for k in allowed_fields if k in row}
-            filtered_row["effective_confidence"] = eff_conf
-            filtered_row["is_stale"] = is_stale
+            candidate = {
+                "id": row.get("id"),
+                "content": row.get("content", ""),
+                "memory_type": row.get("memory_type", "fact"),
+                "confidence": float(row.get("confidence", 1.0)),
+                "effective_confidence": eff_conf,
+                "is_stale": is_stale,
+                "tags": _parse_tags_json(row.get("tags")),
+                "source_agent": row.get("source_agent", "unknown"),
+                "created_at": row.get("created_at", ""),
+                "accessed_at": row.get("accessed_at", ""),
+                "access_count": int(row.get("access_count") or 0),
+                "ttl_days": row.get("ttl_days"),
+            }
+            whitelisted = {k: candidate[k] for k in _PATTERNS_MEMORY_WHITELIST}
 
             if is_stale:
-                stale_memories.append(filtered_row)
+                stale_memories.append(whitelisted)
 
-            if int(row.get("access_count") or 0) == 0:
-                created_dt = _parse_iso_utc(row.get("created_at"))
+            if whitelisted["access_count"] == 0:
+                created_dt = _parse_iso_utc(whitelisted["created_at"])
                 if created_dt is not None and created_dt <= seven_days_ago:
-                    unused_memories.append(filtered_row)
+                    unused_memories.append(whitelisted)
 
         unused_memories.sort(key=lambda r: str(r.get("created_at") or ""))
         stale_memories.sort(key=lambda r: float(r.get("effective_confidence", 0.0)))

@@ -4,6 +4,8 @@ import json
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from mesh import Mesh
 from mesh.io import export_namespace, import_namespace
 from mesh.namespaces import (
@@ -12,7 +14,16 @@ from mesh.namespaces import (
     namespace_stats,
     rename_namespace,
 )
+from mesh.store import NamespaceNotFoundError
 from mesh.version import VERSION
+
+
+def _cleanup_ns(namespace: str) -> None:
+    """Cleanup is best-effort: 0.6.3 made deleting a missing namespace an error."""
+    try:
+        delete_namespace(namespace)
+    except NamespaceNotFoundError:
+        pass
 
 
 # --- Privacy Flag Tests ---
@@ -174,9 +185,10 @@ def test_dry_run_doesnt_write():
 
         namespaces = [n["namespace"] for n in list_namespaces()]
         assert "test_dry_run_dest" not in namespaces
+        with pytest.raises(NamespaceNotFoundError):
+            delete_namespace("test_dry_run_dest")
     finally:
-        delete_namespace("test_dry_run_src")
-        delete_namespace("test_dry_run_dest")
+        _cleanup_ns("test_dry_run_src")
         Path(path).unlink(missing_ok=True)
 
 
@@ -221,8 +233,8 @@ def test_rename_namespace():
         results = mesh2.recall("memory in old namespace")
         assert len(results) > 0
     finally:
-        delete_namespace("test_ns_rename_old")
-        delete_namespace("test_ns_rename_new")
+        _cleanup_ns("test_ns_rename_old")
+        _cleanup_ns("test_ns_rename_new")
 
 
 def test_namespace_stats_accuracy():
