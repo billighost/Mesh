@@ -12,9 +12,11 @@ Security hardening:
 """
 from __future__ import annotations
 
+import hmac
 import os
 import re
 import secrets
+import sys
 import threading
 import time
 import webbrowser
@@ -36,7 +38,7 @@ from .namespaces import delete_namespace, list_namespaces, namespace_stats
 from .version import VERSION
 
 _LOCAL_ORIGIN_REGEX = r"^https?://(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$"
-_ALLOWED_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]", "testserver"}
+_ALLOWED_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]"}
 _SESSION_COOKIE_NAME = "mesh_dash_session"
 
 _MESH_LOCK = threading.RLock()
@@ -65,7 +67,7 @@ def _tokens_match(provided: str, expected: str) -> bool:
     if not provided or not expected:
         return False
     try:
-        return secrets.compare_digest(
+        return hmac.compare_digest(
             provided.encode("utf-8", errors="surrogatepass"),
             expected.encode("utf-8", errors="surrogatepass"),
         )
@@ -125,7 +127,15 @@ async def _dashboard_security_middleware(request: Request, call_next: Any) -> An
     3. Require valid token or session cookie on all `/api/*` endpoints.
     """
     has_auth_override = verify_dashboard_auth in api.dependency_overrides
-    allowed_hosts = _ALLOWED_HOSTS | ({"testserver"} if has_auth_override else set())
+    allowed_hosts = set(_ALLOWED_HOSTS)
+    env_allowed = os.environ.get("MESH_ALLOWED_HOSTS", "").strip()
+    if env_allowed:
+        for item in env_allowed.split(","):
+            ci = item.strip().lower()
+            if ci:
+                allowed_hosts.add(ci)
+    if has_auth_override:
+        allowed_hosts.add("testserver")
 
     req_host = _extract_hostname(request.headers.get("host", ""))
     if req_host and req_host not in allowed_hosts:
@@ -226,16 +236,24 @@ def get_memories(limit: int = 200, namespace: Optional[str] = None) -> list[dict
 def create_memory(req: CreateMemoryRequest) -> dict[str, Any]:
     """Add a new memory from the dashboard."""
     try:
+        from .guards import guard_ingest
+
+        guard = guard_ingest(req.content, local_only=bool(req.local_only))
+        if guard.rejected:
+            raise HTTPException(status_code=400, detail=guard.reason or "Memory rejected by ingestion guard.")
+
         mesh = get_mesh(req.namespace)
         result = mesh.learn(
-            content=req.content,
+            content=guard.content,
             memory_type=req.memory_type,
             confidence=req.confidence,
             tags=req.tags,
-            local_only=req.local_only,
+            local_only=guard.local_only,
             ttl_days=req.ttl_days if req.ttl_days and req.ttl_days > 0 else None,
         )
         return {"status": "ok", "result": result}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -274,9 +292,12 @@ def delete_memory(memory_id: str, namespace: Optional[str] = None) -> dict[str, 
 
 
 @api.get("/api/patterns", dependencies=[Depends(verify_dashboard_auth)])
-def get_patterns(namespace: Optional[str] = None) -> dict[str, Any]:
+def get_patterns(
+    namespace: Optional[str] = None,
+    include_private: bool = False,
+) -> dict[str, Any]:
     try:
-        return get_mesh(namespace).patterns()
+        return get_mesh(namespace).patterns(include_private=include_private)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -1687,15 +1708,32 @@ def dashboard(request: Request) -> HTMLResponse:
     envvar="MESH_NAMESPACE",
     help="Mesh namespace to inspect (default: shared)",
 )
+@click.option("--host", default="127.0.0.1", help="Host interface to bind (default: 127.0.0.1)")
 @click.option("--port", default=7433, help="Port to run on (default: 7433)")
 @click.option("--no-browser", is_flag=True, help="Don't auto-open the browser")
 @click.option("--yes", "-y", is_flag=True, help="Skip interactive y/n permission prompts")
-def run(namespace: str, port: int, no_browser: bool, yes: bool = False) -> None:
+def run(namespace: str, host: str, port: int, no_browser: bool, yes: bool = False) -> None:
     """Start the Mesh dashboard at http://localhost:<port>"""
     global _mesh, _default_namespace
 
     clean_ns = validate_namespace(namespace)
     _default_namespace = clean_ns
+
+    active_bind_host = host.strip().lower()
+    env_allowed = os.environ.get("MESH_ALLOWED_HOSTS", "").strip()
+    if active_bind_host not in ("127.0.0.1", "localhost", "::1", "[::1]"):
+        if not env_allowed:
+            sys.stderr.write(
+                f"Refusing to start dashboard on non-loopback bind '{host}' without MESH_ALLOWED_HOSTS specified.\n"
+                f"Set MESH_ALLOWED_HOSTS to comma-separated allowed hostnames/IPs to confirm.\n"
+            )
+            sys.exit(1)
+        else:
+            sys.stderr.write(
+                f"[WARNING] Binding Mesh dashboard to '{host}' with MESH_ALLOWED_HOSTS={env_allowed}. "
+                "Traffic is unencrypted plain HTTP protected only by bearer-token authentication.\n"
+            )
+
     get_or_create_auth_token()
     _mesh = Mesh(namespace=clean_ns, agent_id="dashboard")
 
@@ -1726,7 +1764,7 @@ def run(namespace: str, port: int, no_browser: bool, yes: bool = False) -> None:
 
         threading.Thread(target=open_browser, daemon=True).start()
 
-    uvicorn.run(api, host="127.0.0.1", port=port, log_level="error")
+    uvicorn.run(api, host=host, port=port, log_level="error")
 
 
 if __name__ == "__main__":

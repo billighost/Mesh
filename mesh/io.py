@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .audit import secure_file_permissions, validate_namespace
+from .guards import guard_ingest
 from .memory import MAX_CONTENT_LENGTH, VALID_MEMORY_TYPES, _embed_batch, _parse_tags
 from .passive import _normalize_memory_type
 from .store import EMBEDDING_DIM, MeshStore, _parse_iso_utc, validate_memory_id
@@ -138,6 +139,7 @@ def import_namespace(
         "imported": 0,
         "skipped": 0,
         "errors": 0,
+        "flagged": 0,
         "namespace": namespace,
     }
 
@@ -167,10 +169,22 @@ def import_namespace(
 
     for mem in memories:
         try:
-            content = str(mem.get("content") or "").strip()
-            if not content or len(content) > MAX_CONTENT_LENGTH:
+            raw_content = str(mem.get("content") or "").strip()
+            if not raw_content or len(raw_content) > MAX_CONTENT_LENGTH:
                 stats["errors"] += 1
                 continue
+
+            orig_local_only = bool(mem.get("local_only", False))
+            guard_res = guard_ingest(raw_content, local_only=orig_local_only)
+            if guard_res.rejected:
+                stats["errors"] += 1
+                continue
+            if guard_res.local_only and not orig_local_only:
+                stats["flagged"] += 1
+
+            content = guard_res.content
+            mem["local_only"] = guard_res.local_only
+            mem["content"] = content
 
             raw_id = str(mem.get("id") or uuid.uuid4())
             try:

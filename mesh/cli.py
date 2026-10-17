@@ -94,6 +94,8 @@ def _daemon_request(
     payload: Optional[dict[str, Any]] = None,
     method: str = "POST",
     timeout: float = 4.0,
+    host: Optional[str] = None,
+    port: Optional[int] = None,
 ) -> Optional[dict[str, Any]]:
     """
     Send an authenticated request to the running local daemon if reachable.
@@ -103,18 +105,22 @@ def _daemon_request(
     """
     if os.environ.get("MESH_NO_DAEMON_PROXY", "").strip().lower() in ("1", "true", "yes"):
         return None
-    host = os.environ.get("MESH_HTTP_HOST", "127.0.0.1")
-    port = int(os.environ.get("MESH_HTTP_PORT", 7701))
+    req_host = host or os.environ.get("MESH_HTTP_HOST", "127.0.0.1")
+    req_port = int(port or os.environ.get("MESH_HTTP_PORT", 7701))
 
     try:
-        with socket.create_connection((host, port), timeout=0.08):
+        with socket.create_connection((req_host, req_port), timeout=0.08):
             pass
     except OSError:
         return None
 
-    from .daemon import get_auth_headers
+    from .daemon import get_auth_headers, invalidate_daemon_identity_cache, verify_daemon_identity
 
-    url = f"http://{host}:{port}{path}"
+    # Rule: the bearer token is never sent until verify_daemon_identity succeeds.
+    if not verify_daemon_identity(host=req_host, port=req_port, timeout=0.5):
+        return None
+
+    url = f"http://{req_host}:{req_port}{path}"
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
     headers = get_auth_headers()
     if data is not None:
@@ -133,11 +139,13 @@ def _daemon_request(
             detail = str(e)
         return {"_http_error": e.code, "detail": detail}
     except (TimeoutError, socket.timeout) as e:
+        invalidate_daemon_identity_cache(host, port)
         return {
             "_http_error": 504,
             "detail": f"Daemon timed out after {timeout}s while processing {path}: {e}",
         }
     except (urllib.error.URLError, OSError, ValueError):
+        invalidate_daemon_identity_cache(host, port)
         return None
     return None
 
@@ -334,6 +342,7 @@ def add_cmd() -> None:
     parser.add_argument("--type", dest="memory_type", default="fact", choices=sorted(VALID_MEMORY_TYPES))
     parser.add_argument("--tags", default="")
     parser.add_argument("--private", action="store_true")
+    parser.add_argument("--force-public", action="store_true", default=False, help="Force memory to be public even if credentials detected")
     parser.add_argument("--namespace", default=None)
     parser.add_argument("--confidence", type=float, default=1.0)
     parser.add_argument("--ttl", type=float, default=None)
@@ -350,17 +359,34 @@ def add_cmd() -> None:
             print(_c(_C_RED, "    Error: content cannot be empty."))
             sys.exit(1)
 
+    from .guards import guard_ingest
+
+    guard = guard_ingest(content, local_only=args.private)
+    if guard.rejected:
+        print(_c(_C_RED, f"    Error: {guard.reason or 'Rejected by ingestion guard.'}"), file=sys.stderr)
+        sys.exit(1)
+
+    final_content = guard.content
+    final_private = guard.local_only
+    if guard.local_only and not args.private:
+        if args.force_public and sys.stdin.isatty():
+            final_private = False
+            print(_c(_C_YELLOW, "    [WARNING] Credential pattern detected, but --force-public specified on terminal: saving as public memory."), file=sys.stderr)
+        else:
+            final_private = True
+            print(_c(_C_YELLOW, "    [WARNING] Credential pattern detected: content was redacted and saved as private (local_only). Use --force-public on a terminal to override."), file=sys.stderr)
+
     ns = _resolve_namespace(args.namespace)
     tags = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else []
 
     proxied = _daemon_request(
         "/learn",
         payload={
-            "content": content,
+            "content": final_content,
             "memory_type": args.memory_type,
             "confidence": args.confidence,
             "tags": tags,
-            "local_only": args.private,
+            "local_only": final_private,
             "ttl_days": args.ttl,
             "namespace": ns,
             "agent_id": "human-cli",
@@ -381,11 +407,11 @@ def add_cmd() -> None:
         mesh = Mesh(namespace=ns, agent_id="human-cli")
         try:
             result = mesh.learn(
-                content=content,
+                content=final_content,
                 memory_type=args.memory_type,
                 confidence=args.confidence,
                 tags=tags,
-                local_only=args.private,
+                local_only=final_private,
                 ttl_days=args.ttl,
             )
         except ValueError as e:
@@ -740,11 +766,21 @@ def conflicts_cmd() -> None:
 def patterns_cmd() -> None:
     parser = argparse.ArgumentParser(description="Surface query patterns, memory gaps & stale items.")
     parser.add_argument("--namespace", default=None)
+    parser.add_argument(
+        "--include-private",
+        action="store_true",
+        default=False,
+        help="Include private (local_only) memories and queries in pattern analysis",
+    )
     args = parser.parse_args()
 
     ns = _resolve_namespace(args.namespace)
+    query_params = {"namespace": ns}
+    if args.include_private:
+        query_params["include_private"] = "1"
+
     proxied = _daemon_request(
-        f"/patterns?{urllib.parse.urlencode({'namespace': ns})}",
+        f"/patterns?{urllib.parse.urlencode(query_params)}",
         payload=None,
         method="GET",
     )
@@ -754,7 +790,7 @@ def patterns_cmd() -> None:
         from .memory import Mesh
 
         mesh = Mesh(namespace=ns, agent_id="cli")
-        p = mesh.patterns()
+        p = mesh.patterns(include_private=args.include_private)
 
     print(_c(_C_ACCENT, f"\n    Memory Patterns & Gaps for '{ns}':\n"))
     print("  Top Topics:")

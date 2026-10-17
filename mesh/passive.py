@@ -469,7 +469,7 @@ _NOISE_PATTERNS = [
 ]
 
 _POISON_PATTERNS = [
-    r"(?i)\bignore\s+(?:all\s+)?(?:previous|prior|above)\s+(?:instructions|prompts|rules)\b",
+    r"(?i)\bignore\s+(?:all\s+)?(?:(?:previous|prior|above)\s+)?(?:instructions|prompts|rules)\b",
     r"(?i)\bdisregard\s+(?:all\s+)?(?:previous|prior|system)\b",
     r"(?i)\byou\s+are\s+now\s+in\s+developer\s+mode\b",
     r"(?i)</?\s*mesh_context\b",

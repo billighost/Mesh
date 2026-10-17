@@ -1912,6 +1912,7 @@ class Mesh:
                     agent_id=self.agent_id,
                     best_similarity=best_similarity,
                     result_count=len(memories),
+                    private_query=include_private,
                 )
             except Exception:
                 pass
@@ -2146,8 +2147,8 @@ class Mesh:
             )
         return deleted
 
-    def patterns(self) -> dict[str, Any]:
-        return self.store.get_patterns()
+    def patterns(self, include_private: bool = False) -> dict[str, Any]:
+        return self.store.get_patterns(include_private=include_private)
 
     def contradictions(self, resolved: bool = False) -> list[dict[str, Any]]:
         return self.store.get_contradictions(resolved=resolved)
