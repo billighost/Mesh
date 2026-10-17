@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.6.2] - 2026-10-17
+
+### Added
+
+- **Bundled Agent Skill (`mesh/skills/mesh-context-layer/SKILL.md`)**:
+  - Ships a comprehensive `SKILL.md` inside the wheel so every AI coding agent
+    that supports the open skill standard can automatically pick up Mesh usage
+    instructions — all 10 MCP tools, CLI, Python SDK, memory lifecycle,
+    contradiction management, privacy controls, best practices, anti-patterns,
+    and troubleshooting.
+- **`mesh install-skills` CLI Command (`mesh/cli.py`, `mesh/skill_installer.py`)**:
+  - New `mesh install-skills` (also `mesh-install-skills`) command that detects
+    and copies the bundled skill into every AI coding agent's global skill folder
+    found on the machine. Supported agents:
+    - **Antigravity / Gemini CLI IDE** (`~/.gemini/config/skills/` / `~/.agents/skills/`)
+    - **Gemini CLI** (`~/.gemini/skills/`)
+    - **Claude Code** (`~/.claude/skills/`)
+    - **Cursor** (`%APPDATA%/Roaming/Cursor/User/skills/` on Windows,
+      `~/Library/Application Support/Cursor/User/skills/` on macOS,
+      `~/.config/cursor/User/skills/` on Linux)
+    - **OpenAI Codex CLI** (`~/.codex/skills/`)
+    - **OpenCode** (`~/.config/opencode/skills/`)
+    - **Windsurf / Cascade** (`~/.codeium/windsurf/skills/`)
+    - **Generic `.agents` standard** (`~/.agents/skills/`)
+  - Each target requires interactive `y/n` consent (bypassable with `--yes`).
+  - `--list` flag shows detected skill directories and install status without
+    writing anything.
+  - Idempotent: re-running overwrites with the latest skill version.
+- **Automatic Skill Install during `mesh setup`**:
+  - `mesh setup` now calls `install-skills` as its final step, so a fresh
+    `pip install mesh-context-layer && mesh setup` gives the user working MCP
+    tools *and* the agent skill in one go.
+- **`mesh-install-skills` console script entry point** (`pyproject.toml`).
+- **Skill files in wheel and sdist** (`pyproject.toml`, `MANIFEST.in`):
+  - `mesh/skills/**/*.md` (and `.txt`, `.json`) are now included in the built
+    wheel via `[tool.hatch.build.targets.wheel] include = [...]` and in the
+    sdist via `MANIFEST.in`.
+
+---
+
 ## [0.6.1] - 2026-10-17
 
 ### Security & Privacy Hardening
