@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mesh-context-layer"
-version = "0.6.3"
+version = "0.6.4"
 description = "High-speed shared semantic & hybrid memory layer for AI agents — MCP server, CLI, and Python library"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -24,7 +24,9 @@ dependencies = [
     "numpy>=1.24.0",
     "onnxruntime>=1.17.0",
     "tokenizers>=0.15.0",
-    "mcp>=1.0.0",
+    # mcp 2.0 replaced Server.list_tools()/call_tool() decorators with
+    # constructor callbacks; mesh still targets the 1.x handler API.
+    "mcp>=1.0.0,<2",
     "fastapi>=0.110.0",
     "pydantic>=2.0.0",
     "uvicorn>=0.29.0",

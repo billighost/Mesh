@@ -24,7 +24,7 @@ export default function TrustStrip() {
             <Badge>27 agents</Badge>
             <Badge>MIT</Badge>
           </div>
-          <span className="trust__meta">v0.6.3 / Python 3.10+</span>
+          <span className="trust__meta">v0.6.4 / Python 3.10+</span>
         </div>
         <div className="trust__bottom">
           <Marquee items={agents} label="Works with Claude Code, Cursor, Codex CLI, Muse, Dots, OpenClaw, Manus, Grok, Grok Bot, and 18 more agents via Agensi" />
