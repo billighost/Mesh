@@ -1,0 +1,2781 @@
+<title>Mesh Motion Lab</title>
+<meta charset="utf-8">
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<script>
+(function () {
+  try {
+    var theme = localStorage.getItem("mesh-motion-lab-theme");
+    if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
+    var motion = localStorage.getItem("mesh-motion-lab-motion");
+    if (motion === "off") document.documentElement.dataset.motion = "off";
+  } catch (error) {}
+})();
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&amp;family=JetBrains+Mono:wght@400;500&amp;family=Martian+Mono:wght@400;500;600;700&amp;display=swap">
+<style>
+  /* ---------------------------------------------------------------------
+     Mesh Motion Lab — a specimen sheet for two motion decisions.
+     Light values on :root; dark redefines only tokens (system + explicit).
+     --------------------------------------------------------------------- */
+  :root {
+    color-scheme: light;
+
+    --bg: #F7F8F3;
+    --surface: #FFFFFF;
+    --surface-2: #EEF0E7;
+    --ink: #0B0D08;
+    --muted: #5D6455;
+    --line: #D7DBCD;
+    --line-strong: #B4BAA8;
+    --accent: #B9F24A;
+    --accent-ink: #0B0D08;
+    --accent-text: #2F6B00;
+    --accent-soft: #E8F9C7;
+    --grid: color-mix(in srgb, var(--line) 46%, transparent);
+
+    --font-display: "Martian Mono", ui-monospace, "SFMono-Regular", monospace;
+    --font-body: "Instrument Sans", "Segoe UI", system-ui, sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+    --gutter: clamp(16px, 4vw, 40px);
+    --max: 1240px;
+    --radius: 2px;
+    --radius-lg: 6px;
+    --ease: cubic-bezier(.2, .8, .2, 1);
+    --ease-out: cubic-bezier(.16, 1, .3, 1);
+    --spring: cubic-bezier(.34, 1.56, .64, 1);
+    --shadow: 4px 4px 0 var(--ink);
+    --scroll-thumb: color-mix(in srgb, var(--ink) 24%, transparent);
+    --scroll-thumb-hover: var(--accent-text);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --bg: #0B0D08;
+      --surface: #11140C;
+      --surface-2: #171B11;
+      --ink: #F4F7EC;
+      --muted: #A2AA96;
+      --line: #2A2F22;
+      --line-strong: #40483A;
+      --accent: #C8F04A;
+      --accent-ink: #0B0D08;
+      --accent-text: #C8F04A;
+      --accent-soft: #1E2A0E;
+      --shadow: 4px 4px 0 #000;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #0B0D08;
+    --surface: #11140C;
+    --surface-2: #171B11;
+    --ink: #F4F7EC;
+    --muted: #A2AA96;
+    --line: #2A2F22;
+    --line-strong: #40483A;
+    --accent: #C8F04A;
+    --accent-ink: #0B0D08;
+    --accent-text: #C8F04A;
+    --accent-soft: #1E2A0E;
+    --shadow: 4px 4px 0 #000;
+  }
+
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
+
+  html {
+    scroll-behavior: smooth;
+    scrollbar-width: thin;
+    scrollbar-color: var(--scroll-thumb) transparent;
+  }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font-body);
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0 0 auto;
+    height: env(safe-area-inset-top, 0px);
+    z-index: 40;
+    background: var(--bg);
+  }
+
+  ::selection {
+    background: var(--accent);
+    color: var(--accent-ink);
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background-color: var(--scroll-thumb);
+    background-clip: padding-box;
+    border: 2px solid transparent;
+    border-radius: 999px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: var(--scroll-thumb-hover);
+    background-clip: padding-box;
+  }
+
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
+  a {
+    color: inherit;
+  }
+
+  button {
+    font: inherit;
+    color: inherit;
+    cursor: pointer;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--accent-text);
+    outline-offset: 3px;
+  }
+
+  .gutter {
+    padding-left: max(var(--gutter), env(safe-area-inset-left, 0px));
+    padding-right: max(var(--gutter), env(safe-area-inset-right, 0px));
+  }
+
+  .page {
+    min-height: 100%;
+  }
+
+  .wrap {
+    width: 100%;
+    max-width: var(--max);
+    margin-inline: auto;
+  }
+
+  /* ---------------------------------------------------------------- top bar */
+  .topbar {
+    position: sticky;
+    top: env(safe-area-inset-top, 0px);
+    z-index: 30;
+    background: var(--bg);
+    border-bottom: 1px solid var(--line);
+  }
+
+  .topbar__inner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    min-height: 62px;
+    padding-block: 10px;
+  }
+
+  .brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 9px;
+    min-width: 0;
+    text-decoration: none;
+  }
+
+  .brand__mark {
+    display: inline-grid;
+    place-items: center;
+    width: 22px;
+    height: 22px;
+    flex: 0 0 auto;
+    color: var(--ink);
+  }
+
+  .brand__mark .mark {
+    width: 100%;
+    height: 100%;
+  }
+
+  .brand__word {
+    font-family: var(--font-display);
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: -.045em;
+  }
+
+  .brand__tag {
+    padding-left: 9px;
+    margin-left: 2px;
+    border-left: 1px solid var(--line);
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  .topbar__controls {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+
+  .segmented {
+    display: inline-flex;
+    gap: 2px;
+    padding: 2px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--surface);
+  }
+
+  .segmented__item {
+    min-height: 30px;
+    padding: 6px 10px;
+    border: 1px solid transparent;
+    border-radius: 1px;
+    background: transparent;
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 9px;
+    font-weight: 500;
+    letter-spacing: .07em;
+    line-height: 1.2;
+    text-transform: uppercase;
+    transition: background-color .16s var(--ease), color .16s var(--ease), border-color .16s var(--ease);
+  }
+
+  .segmented__item:hover {
+    color: var(--ink);
+  }
+
+  .segmented__item[aria-checked="true"] {
+    background: var(--surface-2);
+    border-color: var(--line);
+    color: var(--ink);
+  }
+
+  .switch {
+    display: inline-flex;
+    align-items: center;
+    gap: 9px;
+    min-height: 34px;
+    padding: 2px 0;
+    border: 0;
+    background: none;
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    font-weight: 500;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  .switch:hover {
+    color: var(--ink);
+  }
+
+  .switch__track {
+    display: inline-flex;
+    align-items: center;
+    width: 30px;
+    height: 17px;
+    padding: 2px;
+    border-radius: 999px;
+    background: var(--line);
+    transition: background-color .18s var(--ease);
+  }
+
+  .switch__thumb {
+    width: 13px;
+    height: 13px;
+    border-radius: 50%;
+    background: var(--surface);
+    transition: transform .18s var(--ease), background-color .18s var(--ease);
+  }
+
+  .switch[aria-checked="true"] .switch__track {
+    background: var(--accent);
+  }
+
+  .switch[aria-checked="true"] .switch__thumb {
+    background: var(--accent-ink);
+    transform: translateX(13px);
+  }
+
+  /* ---------------------------------------------------------------- intro */
+  main {
+    display: block;
+  }
+
+  .intro {
+    padding-block: clamp(48px, 8vw, 92px) clamp(36px, 5vw, 64px);
+  }
+
+  .eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 9px;
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    font-weight: 500;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+  }
+
+  .eyebrow__square {
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    background: var(--accent);
+    border: 1px solid var(--ink);
+  }
+
+  .intro__grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(260px, 340px);
+    gap: clamp(24px, 5vw, 72px);
+    align-items: end;
+    margin-top: 22px;
+  }
+
+  .intro h1 {
+    margin: 0;
+    max-width: 17ch;
+    font-family: var(--font-display);
+    font-size: clamp(2rem, 4.9vw, 3.65rem);
+    font-weight: 600;
+    line-height: 1.03;
+    letter-spacing: -.055em;
+    text-wrap: balance;
+  }
+
+  .intro h1 em {
+    font-style: normal;
+    color: var(--accent-text);
+  }
+
+  .intro__side {
+    padding-bottom: 4px;
+  }
+
+  .intro__side p {
+    margin: 0 0 18px;
+    max-width: 46ch;
+    color: var(--muted);
+    font-size: 15px;
+    line-height: 1.65;
+  }
+
+  .brief {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 16px;
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+  }
+
+  .brief span {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+  }
+
+  .brief span + span::before {
+    content: "";
+    width: 3px;
+    height: 3px;
+    background: var(--line-strong);
+    border-radius: 50%;
+  }
+
+  .intro__side .live {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    margin-top: 18px;
+    color: var(--accent-text);
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+  }
+
+  .live-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
+    animation: livePulse 2.6s var(--ease) infinite;
+  }
+
+  @keyframes livePulse {
+    0%, 100% { opacity: .5; transform: scale(.9); }
+    50% { opacity: 1; transform: scale(1.1); }
+  }
+
+  /* ---------------------------------------------------------------- sections */
+  .section {
+    padding-block: clamp(40px, 6vw, 76px);
+    border-top: 1px solid var(--line);
+  }
+
+  .section-head {
+    display: grid;
+    grid-template-columns: 88px minmax(0, 1fr) 250px;
+    gap: clamp(16px, 3vw, 36px);
+    align-items: start;
+    margin-bottom: clamp(24px, 3.5vw, 40px);
+  }
+
+  .section-head__index {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding-top: 7px;
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    letter-spacing: .12em;
+    white-space: nowrap;
+  }
+
+  .section-head__index::after {
+    content: "";
+    width: 28px;
+    height: 1px;
+    background: var(--line-strong);
+  }
+
+  .section-head h2 {
+    margin: 0 0 10px;
+    font-family: var(--font-display);
+    font-size: clamp(1.25rem, 2.2vw, 1.7rem);
+    font-weight: 600;
+    letter-spacing: -.045em;
+    line-height: 1.15;
+    text-wrap: balance;
+  }
+
+  .section-head p {
+    margin: 0;
+    max-width: 62ch;
+    color: var(--muted);
+    font-size: 14.5px;
+    line-height: 1.65;
+  }
+
+  .section-head__note {
+    justify-self: end;
+    padding-top: 6px;
+    text-align: right;
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 9px;
+    line-height: 1.8;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+  }
+
+  .section-head__note b {
+    display: block;
+    color: var(--accent-text);
+    font-weight: 500;
+  }
+
+  /* ---------------------------------------------------------------- lab */
+  .lab {
+    display: grid;
+    grid-template-columns: minmax(0, 1.62fr) minmax(300px, .9fr);
+    gap: clamp(16px, 2.4vw, 28px);
+    align-items: start;
+  }
+
+  .lab__main {
+    min-width: 0;
+  }
+
+  .stage {
+    position: relative;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    min-height: 300px;
+    padding: 14px 16px 13px;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius-lg);
+    background-color: var(--surface);
+    background-image: radial-gradient(var(--grid) 1px, transparent 1px);
+    background-size: 24px 24px;
+    overflow: hidden;
+  }
+
+  .stage--word {
+    min-height: clamp(270px, 34vw, 430px);
+  }
+
+  .stage::after {
+    content: "";
+    position: absolute;
+    right: 12px;
+    bottom: 12px;
+    width: 9px;
+    height: 9px;
+    border-right: 1px solid var(--line-strong);
+    border-bottom: 1px solid var(--line-strong);
+    pointer-events: none;
+  }
+
+  .stage__bar {
+    position: relative;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 8.5px;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    pointer-events: none;
+  }
+
+  .stage__bar b {
+    color: var(--accent-text);
+    font-weight: 500;
+  }
+
+  .stage__canvas {
+    position: relative;
+    z-index: 1;
+    display: grid;
+    place-items: center;
+    min-width: 0;
+    min-height: 0;
+    padding: 10px 0;
+  }
+
+  .stage__hint {
+    position: relative;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 8.5px;
+    letter-spacing: .07em;
+    text-transform: uppercase;
+    pointer-events: none;
+  }
+
+  .stage__hint::before {
+    content: "";
+    width: 14px;
+    height: 1px;
+    background: var(--accent-text);
+  }
+
+  .stage__hint em {
+    font-style: normal;
+    color: var(--ink);
+  }
+
+  .stage__word {
+    width: 100%;
+    display: grid;
+    place-items: center;
+    font-size: clamp(3.6rem, 15.2vw, 12.5rem);
+  }
+
+  /* The specimen outline is a touch stronger than the production footer so
+     the motion is legible while you compare it. */
+  .stage__word .wm-letter {
+    -webkit-text-stroke: 1.25px color-mix(in srgb, var(--line) 30%, var(--muted));
+  }
+
+  .stage__mark {
+    position: relative;
+    display: grid;
+    place-items: center;
+    color: var(--ink);
+  }
+
+  .stage__mark::before,
+  .stage__mark::after {
+    content: "";
+    position: absolute;
+    background: var(--grid);
+    pointer-events: none;
+  }
+
+  .stage__mark::before {
+    width: 1px;
+    height: 150px;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+  }
+
+  .stage__mark::after {
+    height: 1px;
+    width: 150px;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+  }
+
+  .mark-stage-hit {
+    position: relative;
+    z-index: 1;
+    display: grid;
+    place-items: center;
+    width: 136px;
+    height: 136px;
+    padding: 12px;
+    cursor: crosshair;
+    touch-action: none;
+  }
+
+  .mark-stage-hit .mark {
+    width: 112px;
+    height: 112px;
+  }
+
+  /* ---------------------------------------------------------------- sizes */
+  .sizes {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    margin-top: 14px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    background: var(--surface);
+    overflow: hidden;
+  }
+
+  .size {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    min-width: 0;
+    padding: 16px 10px 12px;
+    border-left: 1px solid var(--line);
+  }
+
+  .size:first-child {
+    border-left: 0;
+  }
+
+  .size__hit {
+    display: grid;
+    place-items: center;
+    width: 78px;
+    height: 58px;
+    cursor: crosshair;
+    touch-action: none;
+    color: var(--ink);
+  }
+
+  .size__hit .mark {
+    display: block;
+    width: var(--s);
+    height: var(--s);
+    overflow: visible;
+  }
+
+  .size__label {
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 8px;
+    line-height: 1.4;
+    letter-spacing: .07em;
+    text-align: center;
+    text-transform: uppercase;
+  }
+
+  .size__label b {
+    display: block;
+    color: var(--ink);
+    font-weight: 500;
+    font-size: 9.5px;
+  }
+
+  /* ---------------------------------------------------------------- options */
+  .options {
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+    background: var(--surface);
+    overflow: hidden;
+  }
+
+  .options__head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 11px 14px;
+    border-bottom: 1px solid var(--line);
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 8.5px;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+  }
+
+  .options__head span:last-child {
+    color: var(--accent-text);
+  }
+
+  .option {
+    display: grid;
+    grid-template-columns: 16px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    padding: 13px 14px;
+    border: 0;
+    border-bottom: 1px solid var(--line);
+    border-radius: 0;
+    background: transparent;
+    text-align: left;
+    transition: background-color .16s var(--ease);
+  }
+
+  .option:last-child {
+    border-bottom: 0;
+  }
+
+  .option:hover {
+    background: var(--surface-2);
+  }
+
+  .option.is-selected {
+    background: var(--accent-soft);
+    box-shadow: inset 3px 0 0 var(--accent);
+  }
+
+  .option__radio {
+    position: relative;
+    width: 14px;
+    height: 14px;
+    border: 1px solid var(--line-strong);
+    border-radius: 2px;
+    background: var(--surface);
+    transition: background-color .16s var(--ease), border-color .16s var(--ease);
+  }
+
+  .option.is-selected .option__radio {
+    background: var(--accent);
+    border-color: var(--ink);
+  }
+
+  .option.is-selected .option__radio::after {
+    content: "";
+    position: absolute;
+    inset: 3px;
+    background: var(--accent-ink);
+  }
+
+  .option__body {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .option__name {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    font-size: 14.5px;
+    font-weight: 600;
+    line-height: 1.25;
+  }
+
+  .option__name code {
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 8px;
+    font-weight: 400;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+  }
+
+  .option__desc {
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.45;
+  }
+
+  .option__preview {
+    display: grid;
+    place-items: center;
+    width: 104px;
+    min-width: 0;
+    color: var(--ink);
+  }
+
+  .option__preview .wordmark {
+    font-size: 2.15rem;
+  }
+
+  /* At chip size the footer's 1px outline needs a little more presence. */
+  .option__preview .wm-letter {
+    -webkit-text-stroke-color: color-mix(in srgb, var(--line-strong) 60%, var(--muted));
+  }
+
+  .option__preview .mark {
+    width: 34px;
+    height: 34px;
+    overflow: visible;
+  }
+
+  .option__preview .mark-hit {
+    pointer-events: none;
+  }
+
+  .option__preview--mark {
+    width: 48px;
+  }
+
+  /* ---------------------------------------------------------------- wordmark */
+  .wordmark {
+    --mx: -999px;
+    --my: -999px;
+    position: relative;
+    display: grid;
+    width: max-content;
+    max-width: 100%;
+    line-height: .8;
+    user-select: none;
+    touch-action: pan-y;
+    cursor: default;
+  }
+
+  .wm-layer {
+    grid-area: 1 / 1;
+    font-family: var(--font-display);
+    font-size: inherit;
+    font-weight: 600;
+    line-height: .8;
+    letter-spacing: -.075em;
+    white-space: nowrap;
+  }
+
+  .wm-letter {
+    display: inline-block;
+    color: transparent;
+    -webkit-text-stroke: 1px var(--line);
+    transform-origin: 50% 70%;
+    will-change: transform;
+  }
+
+  .wm-caret {
+    display: inline-block;
+    width: .045em;
+    height: .16em;
+    margin-left: .035em;
+    background: var(--accent);
+    vertical-align: -.012em;
+  }
+
+  .wm-ink {
+    opacity: 0;
+    transition: opacity .3s var(--ease);
+    -webkit-mask-image: radial-gradient(circle .95em at var(--mx) var(--my), #000 0%, #000 52%, transparent 100%);
+    mask-image: radial-gradient(circle .95em at var(--mx) var(--my), #000 0%, #000 52%, transparent 100%);
+    -webkit-mask-repeat: no-repeat;
+    mask-repeat: no-repeat;
+  }
+
+  .wm-ink .wm-letter {
+    -webkit-text-stroke: 1px var(--ink);
+    background: var(--accent);
+    -webkit-background-clip: text;
+    background-clip: text;
+  }
+
+  .wm-ghost {
+    opacity: 0;
+    transition: opacity .25s var(--ease);
+  }
+
+  .wm-ghost .wm-letter {
+    -webkit-text-stroke: 1px var(--accent-text);
+  }
+
+  .wm-ink .wm-caret,
+  .wm-ghost .wm-caret {
+    visibility: hidden;
+  }
+
+  .wordmark[data-variant="ink"].is-live .wm-ink {
+    opacity: 1;
+  }
+
+  .wordmark[data-variant="misprint"].is-live .wm-ghost {
+    opacity: .7;
+  }
+
+  .wordmark[data-variant="misprint"] .wm-layer {
+    transition: transform .16s var(--ease-out);
+  }
+
+  .wordmark[data-variant="lattice"] .wm-letter {
+    transition: transform .22s var(--ease-out);
+  }
+
+  .wm-lines {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    overflow: visible;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity .22s var(--ease);
+  }
+
+  .wordmark[data-variant="lattice"].is-live .wm-lines {
+    opacity: 1;
+  }
+
+  .lattice-line {
+    stroke: var(--accent-text);
+    stroke-width: 1;
+    opacity: .5;
+  }
+
+  .lattice-anchor {
+    fill: var(--accent-text);
+    opacity: .26;
+    transition: opacity .16s var(--ease), r .16s var(--ease);
+  }
+
+  .lattice-anchor.is-near {
+    opacity: 1;
+    r: 2.8;
+  }
+
+  .lattice-cursor {
+    fill: var(--accent);
+    stroke: var(--ink);
+    stroke-width: 1;
+  }
+
+  /* ---------------------------------------------------------------- mark */
+  .mark {
+    display: block;
+    color: var(--ink);
+    overflow: visible;
+  }
+
+  .mark-hit {
+    pointer-events: all;
+  }
+
+  .mark .edge {
+    transition: stroke .25s var(--ease);
+  }
+
+  .mark .sig-line {
+    stroke: var(--accent);
+    stroke-width: 4.5;
+    stroke-dasharray: .16 1;
+    stroke-dashoffset: .25;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .mark .node-halo {
+    fill: none;
+    stroke: var(--accent);
+    stroke-width: 1.6;
+    opacity: 0;
+    transform-box: fill-box;
+    transform-origin: center;
+    pointer-events: none;
+  }
+
+  .mark .node {
+    transform-box: fill-box;
+    transform-origin: center;
+  }
+
+  .mark[data-variant="signal"] .sig-line {
+    animation: signalRun 3.4s linear infinite;
+  }
+
+  .mark[data-variant="signal"] .sig-line--left,
+  .mark[data-variant="signal"] .sig-line--right {
+    animation-delay: .08s;
+  }
+
+  .mark[data-variant="signal"] .sig-line--base {
+    animation-delay: .5s;
+  }
+
+  .mark[data-variant="signal"] .node-halo {
+    animation: nodeFlash 3.4s var(--ease) infinite;
+  }
+
+  .mark[data-variant="signal"] .node-halo--top {
+    animation-delay: 0s;
+  }
+
+  .mark[data-variant="signal"] .node-halo--left,
+  .mark[data-variant="signal"] .node-halo--right {
+    animation-delay: .62s;
+  }
+
+  @keyframes signalRun {
+    0% {
+      stroke-dashoffset: .25;
+      opacity: 1;
+    }
+    42% {
+      stroke-dashoffset: -1.2;
+      opacity: 1;
+    }
+    44%, 100% {
+      stroke-dashoffset: .25;
+      opacity: 0;
+    }
+  }
+
+  @keyframes nodeFlash {
+    0%, 62%, 100% {
+      opacity: 0;
+      transform: scale(1);
+    }
+    67% {
+      opacity: .9;
+      transform: scale(1.35);
+    }
+    82% {
+      opacity: 0;
+      transform: scale(2.15);
+    }
+  }
+
+  .mark[data-variant="trace"].is-tracing .edge {
+    stroke-dasharray: 1;
+    stroke-dashoffset: 1;
+    animation: edgeDraw .72s var(--ease-out) forwards;
+  }
+
+  .mark[data-variant="trace"].is-tracing .edge--left,
+  .mark[data-variant="trace"].is-tracing .edge--right {
+    animation-delay: .08s;
+  }
+
+  .mark[data-variant="trace"].is-tracing .edge--base {
+    animation-delay: .46s;
+  }
+
+  .mark[data-variant="trace"].is-tracing .node {
+    opacity: 0;
+    animation: nodeIn .28s var(--spring) forwards;
+  }
+
+  .mark[data-variant="trace"].is-tracing .node--top {
+    animation-delay: .02s;
+  }
+
+  .mark[data-variant="trace"].is-tracing .node--left {
+    animation-delay: .54s;
+  }
+
+  .mark[data-variant="trace"].is-tracing .node--right {
+    animation-delay: .62s;
+  }
+
+  @keyframes edgeDraw {
+    to {
+      stroke-dashoffset: 0;
+    }
+  }
+
+  @keyframes nodeIn {
+    from {
+      opacity: 0;
+      transform: scale(.55);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+
+  /* ---------------------------------------------------------------- picks */
+  .choice {
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: clamp(18px, 4vw, 48px);
+    align-items: center;
+    margin-top: clamp(40px, 6vw, 76px);
+    padding: clamp(22px, 3.5vw, 34px);
+    border: 1px solid var(--ink);
+    border-radius: var(--radius-lg);
+    background: var(--surface);
+    box-shadow: var(--shadow);
+  }
+
+  .choice::before {
+    content: "";
+    position: absolute;
+    inset: 0 0 auto;
+    height: 5px;
+    background: var(--accent);
+    border-radius: 5px 5px 0 0;
+  }
+
+  .choice__eyebrow {
+    display: block;
+    margin-bottom: 12px;
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+  }
+
+  .choice h2 {
+    margin: 0 0 14px;
+    font-family: var(--font-display);
+    font-size: clamp(1.2rem, 2.1vw, 1.55rem);
+    font-weight: 600;
+    letter-spacing: -.045em;
+    line-height: 1.2;
+  }
+
+  .picks {
+    display: grid;
+    grid-template-columns: auto auto;
+    justify-content: start;
+    gap: 4px 14px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.6;
+  }
+
+  .picks__key {
+    color: var(--muted);
+    letter-spacing: .06em;
+    text-transform: uppercase;
+  }
+
+  .picks strong {
+    font-weight: 500;
+    color: var(--ink);
+  }
+
+  .choice__side {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+    min-width: 0;
+  }
+
+  .copy-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 42px;
+    padding: 10px 16px;
+    border: 1px solid var(--ink);
+    border-radius: var(--radius);
+    background: var(--accent);
+    color: var(--accent-ink);
+    font-family: var(--font-body);
+    font-size: 13px;
+    font-weight: 600;
+    box-shadow: 3px 3px 0 var(--ink);
+    transition: transform .15s var(--ease), box-shadow .15s var(--ease);
+  }
+
+  .copy-btn:hover {
+    transform: translate(-1px, -1px);
+    box-shadow: 4px 4px 0 var(--ink);
+  }
+
+  .copy-btn:active {
+    transform: translate(1px, 1px);
+    box-shadow: 1px 1px 0 var(--ink);
+  }
+
+  .copy-btn svg {
+    flex: 0 0 auto;
+  }
+
+  .copy-status {
+    min-height: 16px;
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+  }
+
+  /* ---------------------------------------------------------------- scope */
+  .scope {
+    display: grid;
+    grid-template-columns: 88px minmax(0, 1fr);
+    gap: clamp(16px, 3vw, 36px);
+    padding-block: clamp(30px, 4vw, 44px) clamp(48px, 7vw, 84px);
+    border-top: 1px solid var(--line);
+  }
+
+  .scope__label {
+    padding-top: 3px;
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+  }
+
+  .scope__body {
+    display: grid;
+    grid-template-columns: minmax(0, 1.4fr) minmax(240px, 1fr);
+    gap: clamp(18px, 4vw, 48px);
+  }
+
+  .scope p {
+    margin: 0;
+    max-width: 60ch;
+    color: var(--muted);
+    font-size: 13.5px;
+    line-height: 1.65;
+  }
+
+  .scope p strong {
+    color: var(--ink);
+    font-weight: 600;
+  }
+
+  .scope__list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 5px 18px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 9px;
+    line-height: 1.7;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+  }
+
+  .scope__list li {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    border-bottom: 1px solid var(--line);
+    padding-bottom: 4px;
+  }
+
+  .scope__list b {
+    color: var(--ink);
+    font-weight: 500;
+  }
+
+  .foot {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding-block: 18px 24px;
+    border-top: 1px solid var(--line);
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 8.5px;
+    letter-spacing: .07em;
+    text-transform: uppercase;
+  }
+
+  .foot span:last-child {
+    color: var(--accent-text);
+  }
+
+  /* ---------------------------------------------------------------- motion off */
+  [data-motion="off"] .live-dot {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+
+  [data-motion="off"] .wordmark .wm-letter,
+  [data-motion="off"] .wordmark .wm-layer {
+    transform: none !important;
+    transition: none !important;
+  }
+
+  [data-motion="off"] .wordmark .wm-ink,
+  [data-motion="off"] .wordmark .wm-ghost,
+  [data-motion="off"] .wordmark .wm-lines {
+    opacity: 0 !important;
+  }
+
+  [data-motion="off"] .mark * {
+    animation: none !important;
+    transition: none !important;
+  }
+
+  [data-motion="off"] .mark .sig-line,
+  [data-motion="off"] .mark .node-halo {
+    opacity: 0 !important;
+  }
+
+  [data-motion="off"] .mark .node {
+    opacity: 1 !important;
+    transform: none !important;
+  }
+
+  /* ---------------------------------------------------------------- responsive */
+  @media (max-width: 1020px) {
+    .lab {
+      grid-template-columns: 1fr;
+    }
+
+    .options {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .options__head {
+      grid-column: 1 / -1;
+    }
+
+    .option {
+      border-right: 1px solid var(--line);
+    }
+
+    .option:nth-child(odd) {
+      border-right: 0;
+    }
+
+    .option:last-child {
+      border-bottom: 1px solid var(--line);
+    }
+  }
+
+  @media (max-width: 900px) {
+    .intro__grid {
+      grid-template-columns: 1fr;
+      align-items: start;
+    }
+
+    .intro__side {
+      padding-bottom: 0;
+    }
+
+    .section-head {
+      grid-template-columns: 54px minmax(0, 1fr);
+    }
+
+    .section-head__note {
+      grid-column: 2;
+      justify-self: start;
+      padding-top: 2px;
+      text-align: left;
+    }
+
+    .scope {
+      grid-template-columns: 54px minmax(0, 1fr);
+    }
+
+    .scope__body {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  @media (max-width: 620px) {
+    .topbar__inner {
+      flex-wrap: wrap;
+      gap: 8px;
+      padding-block: 9px;
+    }
+
+    .topbar__controls {
+      width: 100%;
+      justify-content: space-between;
+    }
+
+    .brand__tag {
+      display: none;
+    }
+
+    .segmented__item {
+      padding-inline: 8px;
+    }
+
+    .choice {
+      grid-template-columns: 1fr;
+    }
+
+    .options {
+      display: block;
+    }
+
+    .option {
+      grid-template-columns: 16px minmax(0, 1fr) 74px;
+      border-right: 0;
+    }
+
+    .option__preview {
+      width: 74px;
+    }
+
+    .option__preview .wordmark {
+      font-size: 1.7rem;
+    }
+
+    .option__preview--mark {
+      width: 40px;
+    }
+
+    .sizes {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .size:nth-child(3) {
+      border-left: 0;
+      border-top: 1px solid var(--line);
+    }
+
+    .size:nth-child(4) {
+      border-top: 1px solid var(--line);
+    }
+  }
+
+  @media (max-width: 430px) {
+    .section-head {
+      grid-template-columns: 1fr;
+      gap: 10px;
+    }
+
+    .section-head__index {
+      padding-top: 0;
+    }
+
+    .section-head__note {
+      grid-column: 1;
+    }
+
+    .scope {
+      grid-template-columns: 1fr;
+      gap: 10px;
+    }
+
+    .scope__list {
+      grid-template-columns: 1fr;
+    }
+
+    .stage {
+      padding-inline: 12px;
+    }
+
+    .stage__word {
+      font-size: clamp(3.1rem, 15vw, 5rem);
+    }
+
+    .option {
+      grid-template-columns: 16px minmax(0, 1fr) 64px;
+      gap: 10px;
+      padding-inline: 12px;
+    }
+
+    .option__desc {
+      font-size: 11.5px;
+    }
+
+    .option__preview .wordmark {
+      font-size: 1.55rem;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+  }
+</style>
+
+<div class="page" id="top">
+  <header class="topbar">
+    <div class="wrap gutter topbar__inner">
+      <a class="brand" href="#top" aria-label="Mesh Motion Lab home">
+        <span class="brand__mark" id="top-mark" aria-hidden="true"></span>
+        <span class="brand__word">mesh</span>
+        <span class="brand__tag">motion lab</span>
+      </a>
+
+      <div class="topbar__controls">
+        <div class="segmented" role="radiogroup" aria-label="Color theme">
+          <button class="segmented__item" type="button" role="radio" aria-checked="true" data-theme-pref="system">System</button>
+          <button class="segmented__item" type="button" role="radio" aria-checked="false" data-theme-pref="light">Light</button>
+          <button class="segmented__item" type="button" role="radio" aria-checked="false" data-theme-pref="dark">Dark</button>
+        </div>
+
+        <button class="switch" id="motion-toggle" type="button" role="switch" aria-checked="true">
+          <span>Motion</span>
+          <span class="switch__track" aria-hidden="true"><span class="switch__thumb"></span></span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main class="wrap gutter" id="main">
+    <section class="intro" aria-labelledby="intro-title">
+      <span class="eyebrow"><span class="eyebrow__square" aria-hidden="true"></span>Mesh / motion lab</span>
+      <div class="intro__grid">
+        <h1 id="intro-title">Choose how the parts move.</h1>
+        <div class="intro__side">
+          <p>Two decisions. The giant wordmark at the bottom of the page, and the three-node mark that appears everywhere else. Every specimen below is live — move your cursor over it, then pick the one that feels right.</p>
+          <div class="brief">
+            <span>02 decisions</span>
+            <span>10 specimens</span>
+            <span>light / dark</span>
+          </div>
+          <span class="live"><span class="live-dot" aria-hidden="true"></span>Preview runs in your browser</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="wordmark-section" aria-labelledby="word-title">
+      <div class="section-head">
+        <span class="section-head__index">01</span>
+        <div>
+          <h2 id="word-title">Footer wordmark</h2>
+          <p>One instance, at the very bottom of the page: outlined Martian Mono, roughly 200 pixels tall. The motion should be felt before it is noticed, and it must never compete with the links above it.</p>
+        </div>
+        <div class="section-head__note">
+          <b>Hover the large specimen</b>
+          Click a row to lock it in
+        </div>
+      </div>
+
+      <div class="lab">
+        <div class="lab__main">
+          <div class="stage stage--word">
+            <div class="stage__bar">
+              <span>footer / wordmark</span>
+              <b id="word-stage-name">Lens</b>
+            </div>
+            <div class="stage__canvas">
+              <div class="stage__word" id="word-stage" aria-hidden="true"></div>
+            </div>
+            <div class="stage__hint"><em>Move across the letters</em> — the effect follows the cursor</div>
+          </div>
+        </div>
+
+        <div class="options" id="word-options" role="radiogroup" aria-label="Footer wordmark motion">
+          <div class="options__head" aria-hidden="true"><span>Pick one</span><span>5 options</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="mark-section" aria-labelledby="mark-title">
+      <div class="section-head">
+        <span class="section-head__index">02</span>
+        <div>
+          <h2 id="mark-title">The mark</h2>
+          <p>The three-node mark is the recurring signature: top bar, footer, hero flow, problem map, how-it-works hub, and the boot loader. It has to stay legible from 11 pixels up, so the behavior needs to read at the smallest size too.</p>
+        </div>
+        <div class="section-head__note">
+          <b>Hover the mark</b>
+          The size row uses your pick
+        </div>
+      </div>
+
+      <div class="lab">
+        <div class="lab__main">
+          <div class="stage stage--mark">
+            <div class="stage__bar">
+              <span>mark / 112 px specimen</span>
+              <b id="mark-stage-name">Nodal</b>
+            </div>
+            <div class="stage__canvas">
+              <div class="stage__mark">
+                <div class="mark-stage-hit" id="mark-stage" aria-hidden="true"></div>
+              </div>
+            </div>
+            <div class="stage__hint"><em>Hover or move inside the field</em> — the mark responds</div>
+          </div>
+
+          <div class="sizes" id="sizes" aria-label="The selected mark at production sizes"></div>
+        </div>
+
+        <div class="options" id="mark-options" role="radiogroup" aria-label="Mesh mark motion">
+          <div class="options__head" aria-hidden="true"><span>Pick one</span><span>5 options</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="choice" aria-labelledby="choice-title">
+      <div>
+        <span class="choice__eyebrow">Your picks</span>
+        <h2 id="choice-title">Two names, and the page has its movement.</h2>
+        <div class="picks" id="picks">
+          <span class="picks__key">wordmark</span><strong id="pick-word">Lens</strong>
+          <span class="picks__key">mark</span><strong id="pick-mark">Nodal</strong>
+        </div>
+      </div>
+      <div class="choice__side">
+        <button class="copy-btn" id="copy-picks" type="button">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="5.5" y="5.5" width="7.5" height="7.5" rx="1"></rect>
+            <path d="M10.5 5.5V4a1.5 1.5 0 0 0-1.5-1.5H4A1.5 1.5 0 0 0 2.5 4v5A1.5 1.5 0 0 0 4 10.5h1.5"></path>
+          </svg>
+          Copy picks
+        </button>
+        <span class="copy-status" id="copy-status" role="status" aria-live="polite"></span>
+      </div>
+    </section>
+
+    <section class="scope" aria-labelledby="scope-title">
+      <span class="scope__label" id="scope-title">Scope</span>
+      <div class="scope__body">
+        <p><strong>The wordmark is a single location.</strong> It only appears in the footer, so its animation carries the end of the story. <strong>The mark is a system.</strong> The choice below will be applied at every production size, including the 11 px hero chip and the 34 px boot loader, where a large gesture would read as noise.</p>
+        <ul class="scope__list">
+          <li><span>Top bar</span><b>22 px</b></li>
+          <li><span>Footer</span><b>24 px</b></li>
+          <li><span>Hero flow</span><b>11 px</b></li>
+          <li><span>Problem map</span><b>13 px</b></li>
+          <li><span>How it works</span><b>19 px</b></li>
+          <li><span>Boot loader</span><b>34 px</b></li>
+        </ul>
+      </div>
+    </section>
+
+    <footer class="foot">
+      <span>Mesh / motion specimen sheet</span>
+      <span>nothing in the site is changed yet</span>
+    </footer>
+  </main>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  /* -------------------------------------------------------------- constants */
+  var LETTERS = ["m", "e", "s", "h"];
+
+  var WORD_VARIANTS = [
+    { id: "lens", name: "Lens", desc: "Letters lean and swell toward the cursor, then settle." },
+    { id: "ink", name: "Ink", desc: "Acid ink pools inside the outline near the cursor." },
+    { id: "wave", name: "Wave", desc: "Cursor movement sends a damped wave through each letter." },
+    { id: "misprint", name: "Misprint", desc: "Outline and lime ghost separate like a two-pass print." },
+    { id: "lattice", name: "Lattice", desc: "Nodes at each letter link to the cursor, forming a small network." }
+  ];
+
+  var MARK_VARIANTS = [
+    { id: "signal", name: "Signal", desc: "A lime pulse runs the edges; each node lights on arrival." },
+    { id: "nodal", name: "Nodal", desc: "The three nodes lean toward the cursor and the edges follow." },
+    { id: "orbit", name: "Orbit", desc: "Nodes drift in a slow orbit; the web breathes without breaking." },
+    { id: "trace", name: "Trace", desc: "Edges draw themselves, then the nodes snap into place." },
+    { id: "flex", name: "Flex", desc: "The web pulls taut on hover, then springs back into shape." }
+  ];
+
+  var REST = {
+    top: { x: 32, y: 13 },
+    left: { x: 12, y: 50 },
+    right: { x: 52, y: 50 }
+  };
+
+  var EDGE_INSET = { diag: 9.2, base: 7 };
+
+  var state = {
+    word: "lens",
+    mark: "nodal",
+    theme: "system",
+    motion: true
+  };
+
+  var wordInstances = [];
+  var markInstances = [];
+  var dynamicMarks = [];
+  var stageWord = null;
+  var stageWordEl = null;
+
+  var reduceQuery = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
+
+  /* -------------------------------------------------------------- storage */
+  function read(key, fallback) {
+    try {
+      var value = localStorage.getItem(key);
+      return value === null ? fallback : value;
+    } catch (error) {
+      return fallback;
+    }
+  }
+
+  function write(key, value) {
+    try {
+      localStorage.setItem(key, value);
+    } catch (error) {}
+  }
+
+  function loadState() {
+    var theme = read("mesh-motion-lab-theme", "system");
+    if (theme === "light" || theme === "dark" || theme === "system") state.theme = theme;
+
+    var motion = read("mesh-motion-lab-motion", null);
+    if (motion === "on" || motion === "off") {
+      state.motion = motion === "on";
+    } else {
+      state.motion = !(reduceQuery && reduceQuery.matches);
+    }
+
+    try {
+      var picks = JSON.parse(read("mesh-motion-lab-picks", "null"));
+      if (picks && WORD_VARIANTS.some(function (v) { return v.id === picks.word; })) state.word = picks.word;
+      if (picks && MARK_VARIANTS.some(function (v) { return v.id === picks.mark; })) state.mark = picks.mark;
+    } catch (error) {}
+  }
+
+  function persistPicks() {
+    write("mesh-motion-lab-picks", JSON.stringify({ word: state.word, mark: state.mark }));
+  }
+
+  /* -------------------------------------------------------------- theme */
+  function applyTheme(pref) {
+    state.theme = pref;
+    if (pref === "system") {
+      document.documentElement.removeAttribute("data-theme");
+    } else {
+      document.documentElement.dataset.theme = pref;
+    }
+    write("mesh-motion-lab-theme", pref);
+    document.querySelectorAll("[data-theme-pref]").forEach(function (button) {
+      button.setAttribute("aria-checked", button.dataset.themePref === pref ? "true" : "false");
+    });
+  }
+
+  function initThemeControls() {
+    var buttons = Array.prototype.slice.call(document.querySelectorAll("[data-theme-pref]"));
+    buttons.forEach(function (button) {
+      button.addEventListener("click", function () {
+        applyTheme(button.dataset.themePref);
+      });
+    });
+    applyTheme(state.theme);
+  }
+
+  /* -------------------------------------------------------------- motion */
+  function applyMotion(on, persist) {
+    state.motion = on;
+    document.documentElement.dataset.motion = on ? "on" : "off";
+    document.getElementById("motion-toggle").setAttribute("aria-checked", on ? "true" : "false");
+    if (persist) write("mesh-motion-lab-motion", on ? "on" : "off");
+
+    if (!on) {
+      wordInstances.forEach(function (inst) { wordReset(inst); });
+      markInstances.forEach(function (inst) { markReset(inst); });
+      stopOrbitLoop();
+    } else {
+      markInstances.forEach(function (inst) { markAmbient(inst); });
+    }
+  }
+
+  function initMotionControl() {
+    var button = document.getElementById("motion-toggle");
+    button.setAttribute("aria-checked", state.motion ? "true" : "false");
+    document.documentElement.dataset.motion = state.motion ? "on" : "off";
+    button.addEventListener("click", function () {
+      applyMotion(!state.motion, true);
+    });
+  }
+
+  /* ============================================================== wordmark */
+  function wordmarkMarkup() {
+    function layer(cls) {
+      return (
+        '<div class="wm-layer ' + cls + '" aria-hidden="true">' +
+        LETTERS.map(function (letter) { return '<span class="wm-letter">' + letter + "</span>"; }).join("") +
+        '<span class="wm-caret"></span>' +
+        "</div>"
+      );
+    }
+    return (
+      '<div class="wordmark" data-variant="lens">' +
+      layer("wm-base") +
+      layer("wm-ink") +
+      layer("wm-ghost") +
+      '<svg class="wm-lines" aria-hidden="true"></svg>' +
+      "</div>"
+    );
+  }
+
+  function createWordmark(container, variant) {
+    container.innerHTML = wordmarkMarkup();
+    var el = container.querySelector(".wordmark");
+    el.dataset.variant = variant;
+
+    var baseLetters = Array.prototype.slice.call(el.querySelectorAll(".wm-base .wm-letter"));
+    var allLetters = Array.prototype.slice.call(el.querySelectorAll(".wm-letter"));
+    var layers = Array.prototype.slice.call(el.querySelectorAll(".wm-layer"));
+    var svg = el.querySelector(".wm-lines");
+    var count = baseLetters.length;
+
+    var inst = {
+      el: el,
+      baseLetters: baseLetters,
+      allLetters: allLetters,
+      layers: layers,
+      svg: svg,
+      count: count,
+      rest: null,
+      rect: null,
+      font: 32,
+      active: false,
+      raf: 0,
+      dirty: true,
+      lens: null,
+      wave: null,
+      lattice: null,
+      lastPointer: null,
+      lastMove: 0
+    };
+
+    initWordInteraction(inst);
+    wordInstances.push(inst);
+    container._wordmark = inst;
+    return inst;
+  }
+
+  function wordMeasure(inst) {
+    // Measure at rest so pointer transforms never feed back into layout.
+    inst.allLetters.forEach(function (letter) { letter.style.transform = ""; });
+    inst.layers.forEach(function (layer) { layer.style.transform = ""; });
+
+    var rect = inst.el.getBoundingClientRect();
+    inst.rect = { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+    inst.font = parseFloat(window.getComputedStyle(inst.el).fontSize) || 32;
+
+    inst.rest = inst.baseLetters.map(function (letter) {
+      var box = letter.getBoundingClientRect();
+      return {
+        x: box.left - rect.left + box.width / 2,
+        y: box.top - rect.top + box.height / 2,
+        w: box.width
+      };
+    });
+
+    if (inst.svg) {
+      inst.svg.setAttribute("viewBox", "0 0 " + Math.max(1, rect.width) + " " + Math.max(1, rect.height));
+    }
+
+    inst.dirty = false;
+  }
+
+  function wordEnsure(inst) {
+    if (inst.dirty) wordMeasure(inst);
+    var rect = inst.el.getBoundingClientRect();
+    inst.rect.left = rect.left;
+    inst.rect.top = rect.top;
+    inst.rect.width = rect.width;
+    inst.rect.height = rect.height;
+  }
+
+  function applyLetters(inst, index, transform) {
+    for (var i = 0; i < 3; i += 1) {
+      var letter = inst.allLetters[i * inst.count + index];
+      if (letter) letter.style.transform = transform;
+    }
+  }
+
+  function clearLetters(inst) {
+    inst.allLetters.forEach(function (letter) { letter.style.transform = ""; });
+  }
+
+  function wordReset(inst) {
+    inst.active = false;
+    inst.lens = null;
+    inst.wave = null;
+    inst.lastPointer = null;
+    inst.el.classList.remove("is-live");
+    inst.el.style.setProperty("--mx", "-999px");
+    inst.el.style.setProperty("--my", "-999px");
+    clearLetters(inst);
+    inst.layers.forEach(function (layer) { layer.style.transform = ""; });
+    if (inst.svg) {
+      inst.svg.innerHTML = "";
+      inst.lattice = null;
+    }
+    if (inst.raf) {
+      cancelAnimationFrame(inst.raf);
+      inst.raf = 0;
+    }
+    if (inst.el.dataset.variant === "lattice") inst.dirty = true;
+  }
+
+  function wordLoop(inst) {
+    if (!state.motion) {
+      inst.raf = 0;
+      return;
+    }
+
+    var variant = inst.el.dataset.variant;
+    var moving = false;
+
+    if (variant === "lens" && inst.lens) {
+      var data = inst.lens;
+      for (var i = 0; i < data.cur.length; i += 1) {
+        var cur = data.cur[i];
+        var tgt = data.tgt[i];
+        cur.x += (tgt.x - cur.x) * 0.18;
+        cur.y += (tgt.y - cur.y) * 0.18;
+        cur.s += (tgt.s - cur.s) * 0.18;
+        if (Math.abs(tgt.x - cur.x) > 0.04 || Math.abs(tgt.y - cur.y) > 0.04 || Math.abs(tgt.s - cur.s) > 0.0008) moving = true;
+        applyLetters(inst, i, "translate3d(" + cur.x.toFixed(2) + "px, " + cur.y.toFixed(2) + "px, 0) scale(" + cur.s.toFixed(3) + ")");
+      }
+    } else if (variant === "wave" && inst.wave) {
+      var bits = inst.wave;
+      var k = 0.085;
+      var damp = 0.9;
+      for (var j = 0; j < bits.length; j += 1) {
+        var bit = bits[j];
+        bit.vx = (bit.vx - k * bit.x) * damp;
+        bit.vy = (bit.vy - k * bit.y) * damp;
+        bit.x += bit.vx;
+        bit.y += bit.vy;
+        var limit = inst.font * 0.085;
+        bit.x = Math.max(-limit, Math.min(limit, bit.x));
+        bit.y = Math.max(-limit, Math.min(limit, bit.y));
+        if (Math.abs(bit.vx) > 0.015 || Math.abs(bit.vy) > 0.015 || Math.abs(bit.x) > 0.03 || Math.abs(bit.y) > 0.03) moving = true;
+        var rot = Math.max(-2.6, Math.min(2.6, bit.vx * 0.32));
+        applyLetters(inst, j, "translate3d(" + bit.x.toFixed(2) + "px, " + bit.y.toFixed(2) + "px, 0) rotate(" + rot.toFixed(2) + "deg)");
+      }
+    }
+
+    if (inst.active || moving) {
+      inst.raf = requestAnimationFrame(function () { wordLoop(inst); });
+    } else {
+      inst.raf = 0;
+    }
+  }
+
+  function startWordLoop(inst) {
+    if (!inst.raf && state.motion) {
+      inst.raf = requestAnimationFrame(function () { wordLoop(inst); });
+    }
+  }
+
+  function localPoint(inst, event) {
+    var rect = inst.el.getBoundingClientRect();
+    return {
+      x: event.clientX - rect.left,
+      y: event.clientY - rect.top,
+      w: rect.width,
+      h: rect.height
+    };
+  }
+
+  function initWordInteraction(inst) {
+    var el = inst.el;
+
+    el.addEventListener("pointerenter", function (event) {
+      if (!state.motion || event.pointerType === "touch") return;
+      wordEnsure(inst);
+      inst.active = true;
+      el.classList.add("is-live");
+
+      if (el.dataset.variant === "wave") {
+        inst.wave = inst.rest.map(function () { return { x: 0, y: 0, vx: 0, vy: 0 }; });
+        startWordLoop(inst);
+      } else if (el.dataset.variant === "lattice") {
+        buildLattice(inst);
+        updateLattice(inst, localPoint(inst, event));
+      } else if (el.dataset.variant === "misprint") {
+        updateMisprint(inst, localPoint(inst, event));
+      }
+    });
+
+    el.addEventListener("pointermove", function (event) {
+      if (!state.motion) return;
+      wordEnsure(inst);
+      inst.active = true;
+      var point = localPoint(inst, event);
+      var variant = el.dataset.variant;
+
+      if (variant === "lens") updateLens(inst, point);
+      else if (variant === "ink") updateInk(inst, point);
+      else if (variant === "wave") updateWave(inst, point, event);
+      else if (variant === "misprint") updateMisprint(inst, point);
+      else if (variant === "lattice") updateLattice(inst, point);
+    });
+
+    el.addEventListener("pointerleave", function () {
+      inst.active = false;
+      el.classList.remove("is-live");
+      clearLetters(inst);
+      el.style.setProperty("--mx", "-999px");
+      el.style.setProperty("--my", "-999px");
+      inst.layers.forEach(function (layer) { layer.style.transform = ""; });
+      if (inst.svg) inst.svg.innerHTML = "";
+      inst.lattice = null;
+      inst.lastPointer = null;
+
+      if (inst.lens) {
+        inst.lens.tgt.forEach(function (t) { t.x = 0; t.y = 0; t.s = 1; });
+        if (inst.raf) {
+          cancelAnimationFrame(inst.raf);
+          inst.raf = 0;
+        }
+        startWordLoop(inst);
+      }
+      if (inst.wave && inst.raf) {
+        // Let the springs finish on their own.
+      }
+    });
+  }
+
+  function updateLens(inst, point) {
+    if (!inst.lens) {
+      inst.lens = {
+        cur: inst.rest.map(function () { return { x: 0, y: 0, s: 1 }; }),
+        tgt: inst.rest.map(function () { return { x: 0, y: 0, s: 1 }; })
+      };
+    }
+
+    var radius = Math.max(inst.font * 1.15, inst.rect.width * 0.18);
+    var maxShift = inst.font * 0.07;
+
+    inst.rest.forEach(function (rest, index) {
+      var dx = point.x - rest.x;
+      var dy = point.y - rest.y;
+      var dist = Math.sqrt(dx * dx + dy * dy) || 1;
+      var t = Math.max(0, 1 - dist / radius);
+      t = t * t;
+      var push = Math.min(dist * 0.16, maxShift) * t;
+      inst.lens.tgt[index].x = (dx / dist) * push;
+      inst.lens.tgt[index].y = (dy / dist) * push;
+      inst.lens.tgt[index].s = 1 + t * 0.07;
+    });
+
+    startWordLoop(inst);
+  }
+
+  function updateInk(inst, point) {
+    inst.el.style.setProperty("--mx", point.x.toFixed(1) + "px");
+    inst.el.style.setProperty("--my", point.y.toFixed(1) + "px");
+    inst.el.classList.add("is-live");
+  }
+
+  function updateWave(inst, point, event) {
+    if (!inst.wave) {
+      inst.wave = inst.rest.map(function () { return { x: 0, y: 0, vx: 0, vy: 0 }; });
+    }
+
+    var now = performance.now();
+    var previous = inst.lastPointer;
+    inst.lastPointer = { x: point.x, y: point.y, time: now };
+    if (!previous) {
+      startWordLoop(inst);
+      return;
+    }
+
+    var pdx = point.x - previous.x;
+    var pdy = point.y - previous.y;
+    var speed = Math.min(30, Math.sqrt(pdx * pdx + pdy * pdy));
+    if (speed < 0.6) return;
+
+    var radius = inst.font * 0.78;
+    inst.rest.forEach(function (rest, index) {
+      var dx = rest.x - point.x;
+      var dy = rest.y - point.y;
+      var dist = Math.sqrt(dx * dx + dy * dy) || 1;
+      if (dist > radius) return;
+      var falloff = 1 - dist / radius;
+      falloff *= falloff;
+      var impulse = (0.9 + speed) * falloff * 0.42;
+      var bit = inst.wave[index];
+      bit.vx += (dx / dist) * impulse;
+      bit.vy += (dy / dist) * impulse * 0.9 + falloff * 0.16;
+    });
+
+    startWordLoop(inst);
+  }
+
+  function updateMisprint(inst, point) {
+    var nx = (point.x / point.w - 0.5) * 2;
+    var ny = (point.y / point.h - 0.5) * 2;
+    nx = Math.max(-1, Math.min(1, nx));
+    ny = Math.max(-1, Math.min(1, ny));
+    inst.layers[0].style.transform = "translate3d(" + (nx * 4).toFixed(2) + "px, " + (ny * 3).toFixed(2) + "px, 0)";
+    inst.layers[2].style.transform =
+      "translate3d(" + (-nx * 8 + 3).toFixed(2) + "px, " + (-ny * 7 + 3).toFixed(2) + "px, 0) rotate(" + (-nx * 0.35).toFixed(2) + "deg)";
+    inst.el.classList.add("is-live");
+  }
+
+  function buildLattice(inst) {
+    var svg = inst.svg;
+    svg.innerHTML = "";
+
+    var ns = "http://www.w3.org/2000/svg";
+    var dots = inst.rest.map(function (rest) {
+      var dot = document.createElementNS(ns, "circle");
+      dot.setAttribute("class", "lattice-anchor");
+      dot.setAttribute("cx", rest.x);
+      dot.setAttribute("cy", rest.y);
+      dot.setAttribute("r", "2");
+      svg.appendChild(dot);
+      return dot;
+    });
+
+    function line() {
+      var el = document.createElementNS(ns, "line");
+      el.setAttribute("class", "lattice-line");
+      svg.appendChild(el);
+      return el;
+    }
+
+    var cursor = document.createElementNS(ns, "circle");
+    cursor.setAttribute("class", "lattice-cursor");
+    cursor.setAttribute("r", "2.6");
+    svg.appendChild(cursor);
+
+    inst.lattice = { dots: dots, lines: [line(), line()], cursor: cursor, near: [0, 1] };
+  }
+
+  function updateLattice(inst, point) {
+    if (!inst.lattice) buildLattice(inst);
+    var lattice = inst.lattice;
+
+    var ranked = inst.rest.map(function (rest, index) {
+      var dx = point.x - rest.x;
+      var dy = point.y - rest.y;
+      return { index: index, dist: Math.sqrt(dx * dx + dy * dy) };
+    }).sort(function (a, b) { return a.dist - b.dist; });
+
+    var near = [ranked[0].index, ranked[1].index];
+    lattice.near = near;
+
+    lattice.dots.forEach(function (dot, index) {
+      if (near.indexOf(index) >= 0) dot.classList.add("is-near");
+      else dot.classList.remove("is-near");
+    });
+
+    near.forEach(function (index, slot) {
+      var rest = inst.rest[index];
+      var line = lattice.lines[slot];
+      line.setAttribute("x1", rest.x);
+      line.setAttribute("y1", rest.y);
+      line.setAttribute("x2", point.x);
+      line.setAttribute("y2", point.y);
+    });
+
+    lattice.cursor.setAttribute("cx", point.x);
+    lattice.cursor.setAttribute("cy", point.y);
+
+    // The two nearest letters lean in slightly, then ease back on leave.
+    inst.rest.forEach(function (rest, index) {
+      var dx = point.x - rest.x;
+      var dy = point.y - rest.y;
+      var dist = Math.sqrt(dx * dx + dy * dy) || 1;
+      var t = Math.max(0, 1 - dist / (inst.font * 1.1));
+      if (t <= 0) {
+        applyLetters(inst, index, "");
+      } else {
+        var shift = inst.font * 0.022 * t * t;
+        applyLetters(inst, index, "translate3d(" + ((dx / dist) * shift).toFixed(2) + "px, " + ((dy / dist) * shift).toFixed(2) + "px, 0)");
+      }
+    });
+  }
+
+  /* ============================================================== mark */
+  function markMarkup() {
+    return (
+      '<svg class="mark" viewBox="0 0 64 64" data-variant="signal" fill="none" stroke="currentColor" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' +
+      '<rect class="mark-hit" x="0" y="0" width="64" height="64" fill="transparent" stroke="none"></rect>' +
+      '<g class="mark-edges">' +
+      '<line class="edge edge--left" x1="27.6" y1="21.1" x2="16.4" y2="41.9" pathLength="1"></line>' +
+      '<line class="edge edge--right" x1="36.4" y1="21.1" x2="47.6" y2="41.9" pathLength="1"></line>' +
+      '<line class="edge edge--base" x1="19" y1="50" x2="45" y2="50" pathLength="1"></line>' +
+      "</g>" +
+      '<g class="mark-signals">' +
+      '<line class="sig-line sig-line--left" x1="27.6" y1="21.1" x2="16.4" y2="41.9" pathLength="1"></line>' +
+      '<line class="sig-line sig-line--right" x1="36.4" y1="21.1" x2="47.6" y2="41.9" pathLength="1"></line>' +
+      '<line class="sig-line sig-line--base" x1="19" y1="50" x2="45" y2="50" pathLength="1"></line>' +
+      "</g>" +
+      '<g class="mark-halos">' +
+      '<circle class="node-halo node-halo--top" cx="32" cy="13" r="7"></circle>' +
+      '<circle class="node-halo node-halo--left" cx="12" cy="50" r="7"></circle>' +
+      '<circle class="node-halo node-halo--right" cx="52" cy="50" r="7"></circle>' +
+      "</g>" +
+      '<g class="mark-nodes">' +
+      '<circle class="node node--top" data-node="top" cx="32" cy="13" r="7"></circle>' +
+      '<circle class="node node--left" data-node="left" cx="12" cy="50" r="7"></circle>' +
+      '<circle class="node node--right" data-node="right" cx="52" cy="50" r="7"></circle>' +
+      "</g>" +
+      "</svg>"
+    );
+  }
+
+  function createMark(container, variant, options) {
+    options = options || {};
+    container.innerHTML = markMarkup();
+    var svg = container.querySelector(".mark");
+    svg.dataset.variant = variant;
+
+    var nodes = {
+      top: svg.querySelector('[data-node="top"]'),
+      left: svg.querySelector('[data-node="left"]'),
+      right: svg.querySelector('[data-node="right"]')
+    };
+    var edges = {
+      left: svg.querySelector(".edge--left"),
+      right: svg.querySelector(".edge--right"),
+      base: svg.querySelector(".edge--base")
+    };
+    var sigs = {
+      left: svg.querySelector(".sig-line--left"),
+      right: svg.querySelector(".sig-line--right"),
+      base: svg.querySelector(".sig-line--base")
+    };
+
+    var inst = {
+      container: container,
+      svg: svg,
+      nodes: nodes,
+      edges: edges,
+      sigs: sigs,
+      pos: cloneRest(),
+      vel: zeroVel(),
+      target: cloneRest(),
+      active: false,
+      raf: 0,
+      traceTimer: 0,
+      hover: false
+    };
+
+    function cloneRest() {
+      return {
+        top: { x: REST.top.x, y: REST.top.y },
+        left: { x: REST.left.x, y: REST.left.y },
+        right: { x: REST.right.x, y: REST.right.y }
+      };
+    }
+    function zeroVel() {
+      return {
+        top: { x: 0, y: 0 },
+        left: { x: 0, y: 0 },
+        right: { x: 0, y: 0 }
+      };
+    }
+
+    function inset(from, to, amount) {
+      var dx = to.x - from.x;
+      var dy = to.y - from.y;
+      var len = Math.sqrt(dx * dx + dy * dy) || 1;
+      return { x: from.x + (dx / len) * amount, y: from.y + (dy / len) * amount };
+    }
+
+    function setLine(line, a, b, amount) {
+      var p1 = inset(a, b, amount);
+      var p2 = inset(b, a, amount);
+      line.setAttribute("x1", p1.x.toFixed(2));
+      line.setAttribute("y1", p1.y.toFixed(2));
+      line.setAttribute("x2", p2.x.toFixed(2));
+      line.setAttribute("y2", p2.y.toFixed(2));
+    }
+
+    function renderPositions(pos) {
+      nodes.top.setAttribute("cx", pos.top.x.toFixed(2));
+      nodes.top.setAttribute("cy", pos.top.y.toFixed(2));
+      nodes.left.setAttribute("cx", pos.left.x.toFixed(2));
+      nodes.left.setAttribute("cy", pos.left.y.toFixed(2));
+      nodes.right.setAttribute("cx", pos.right.x.toFixed(2));
+      nodes.right.setAttribute("cy", pos.right.y.toFixed(2));
+
+      setLine(edges.left, pos.top, pos.left, EDGE_INSET.diag);
+      setLine(edges.right, pos.top, pos.right, EDGE_INSET.diag);
+      setLine(edges.base, pos.left, pos.right, EDGE_INSET.base);
+      setLine(sigs.left, pos.top, pos.left, EDGE_INSET.diag);
+      setLine(sigs.right, pos.top, pos.right, EDGE_INSET.diag);
+      setLine(sigs.base, pos.left, pos.right, EDGE_INSET.base);
+    }
+
+    inst.render = renderPositions;
+    inst.reset = function () {
+      inst.active = false;
+      inst.hover = false;
+      inst.pos = cloneRest();
+      inst.vel = zeroVel();
+      inst.target = cloneRest();
+      renderPositions(inst.pos);
+      svg.classList.remove("is-tracing");
+      clearTimeout(inst.traceTimer);
+      unregisterOrbit(inst);
+      if (inst.raf) {
+        cancelAnimationFrame(inst.raf);
+        inst.raf = 0;
+      }
+    };
+
+    inst.setVariant = function (next) {
+      inst.reset();
+      svg.dataset.variant = next;
+      if (next === "orbit") registerOrbit(inst);
+      if (next === "trace" && state.motion) {
+        requestAnimationFrame(function () { triggerTrace(inst); });
+      }
+    };
+
+    renderPositions(inst.pos);
+
+    if (options.interactive !== false) {
+      initMarkInteraction(inst);
+    }
+
+    if (variant === "orbit") registerOrbit(inst);
+    if (variant === "trace" && options.playTrace) {
+      setTimeout(function () { triggerTrace(inst); }, 180);
+    }
+
+    markInstances.push(inst);
+    return inst;
+  }
+
+  function markReset(inst) {
+    inst.reset();
+    inst.svg.classList.remove("is-tracing");
+    clearTimeout(inst.traceTimer);
+  }
+
+  function markAmbient(inst) {
+    var variant = inst.svg.dataset.variant;
+    if (variant === "orbit") registerOrbit(inst);
+    if (variant === "trace") triggerTrace(inst);
+  }
+
+  function initMarkInteraction(inst) {
+    var svg = inst.svg;
+    var holder = inst.container;
+
+    holder.addEventListener("pointerenter", function (event) {
+      if (!state.motion || event.pointerType === "touch") return;
+      inst.hover = true;
+      inst.active = true;
+      var variant = svg.dataset.variant;
+
+      if (variant === "flex") {
+        var center = { x: 32, y: 37.67 };
+        ["top", "left", "right"].forEach(function (key) {
+          var rest = REST[key];
+          var dx = rest.x - center.x;
+          var dy = rest.y - center.y;
+          var len = Math.sqrt(dx * dx + dy * dy) || 1;
+          inst.target[key].x = rest.x + (dx / len) * 4.6;
+          inst.target[key].y = rest.y + (dy / len) * 4.6;
+        });
+        startMarkLoop(inst);
+      } else if (variant === "trace") {
+        triggerTrace(inst);
+      }
+    });
+
+    holder.addEventListener("pointermove", function (event) {
+      if (!state.motion) return;
+      var variant = svg.dataset.variant;
+      if (variant !== "nodal") return;
+
+      var rect = svg.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      var px = ((event.clientX - rect.left) / rect.width) * 64;
+      var py = ((event.clientY - rect.top) / rect.height) * 64;
+
+      ["top", "left", "right"].forEach(function (key) {
+        var rest = REST[key];
+        var dx = px - rest.x;
+        var dy = py - rest.y;
+        var dist = Math.sqrt(dx * dx + dy * dy) || 1;
+        var pull = Math.max(0, 1 - dist / 52) * 4.4;
+        inst.target[key].x = rest.x + (dx / dist) * pull;
+        inst.target[key].y = rest.y + (dy / dist) * pull;
+      });
+
+      startMarkLoop(inst);
+    });
+
+    function release() {
+      inst.hover = false;
+      inst.active = false;
+      ["top", "left", "right"].forEach(function (key) {
+        inst.target[key].x = REST[key].x;
+        inst.target[key].y = REST[key].y;
+      });
+      startMarkLoop(inst);
+    }
+
+    holder.addEventListener("pointerleave", release);
+  }
+
+  function triggerTrace(inst) {
+    if (!state.motion) return;
+    var svg = inst.svg;
+    if (svg.dataset.variant !== "trace") return;
+    svg.classList.remove("is-tracing");
+    void svg.getBoundingClientRect();
+    svg.classList.add("is-tracing");
+    clearTimeout(inst.traceTimer);
+    inst.traceTimer = setTimeout(function () {
+      svg.classList.remove("is-tracing");
+    }, 1900);
+  }
+
+  function markLoop(inst) {
+    if (!state.motion) {
+      inst.raf = 0;
+      return;
+    }
+    var keys = ["top", "left", "right"];
+    var moving = false;
+
+    keys.forEach(function (key) {
+      var pos = inst.pos[key];
+      var vel = inst.vel[key];
+      var tgt = inst.target[key];
+      vel.x = (vel.x + (tgt.x - pos.x) * 0.2) * 0.74;
+      vel.y = (vel.y + (tgt.y - pos.y) * 0.2) * 0.74;
+      pos.x += vel.x;
+      pos.y += vel.y;
+      if (Math.abs(vel.x) > 0.008 || Math.abs(vel.y) > 0.008 || Math.abs(tgt.x - pos.x) > 0.02 || Math.abs(tgt.y - pos.y) > 0.02) {
+        moving = true;
+      }
+    });
+
+    inst.render(inst.pos);
+
+    if (inst.active || moving) {
+      inst.raf = requestAnimationFrame(function () { markLoop(inst); });
+    } else {
+      inst.raf = 0;
+    }
+  }
+
+  function startMarkLoop(inst) {
+    if (!inst.raf && state.motion) {
+      inst.raf = requestAnimationFrame(function () { markLoop(inst); });
+    }
+  }
+
+  /* -------------------------------------------------------------- orbit */
+  var orbitSet = new Set();
+  var orbitRaf = 0;
+
+  function registerOrbit(inst) {
+    orbitSet.add(inst);
+    if (!orbitRaf && state.motion) orbitRaf = requestAnimationFrame(orbitTick);
+  }
+
+  function unregisterOrbit(inst) {
+    orbitSet.delete(inst);
+    if (!orbitSet.size && orbitRaf) {
+      cancelAnimationFrame(orbitRaf);
+      orbitRaf = 0;
+    }
+  }
+
+  function stopOrbitLoop() {
+    if (orbitRaf) cancelAnimationFrame(orbitRaf);
+    orbitRaf = 0;
+  }
+
+  function orbitTick(now) {
+    orbitRaf = 0;
+    if (!state.motion || !orbitSet.size) return;
+
+    var t = now * 0.00042;
+    orbitSet.forEach(function (inst) {
+      if (inst.svg.dataset.variant !== "orbit") return;
+      var pos = {
+        top: { x: 32 + Math.cos(t) * 1.7, y: 13 + Math.sin(t) * 1.15 },
+        left: { x: 12 + Math.cos(t + 2.1) * 1.55, y: 50 + Math.sin(t + 2.1) * 1.35 },
+        right: { x: 52 + Math.cos(t + 4.2) * 1.55, y: 50 + Math.sin(t + 4.2) * 1.35 }
+      };
+      inst.render(pos);
+    });
+
+    orbitRaf = requestAnimationFrame(orbitTick);
+  }
+
+  /* ============================================================== UI build */
+  function buildOptions(group, variants, kind) {
+    variants.forEach(function (variant) {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.className = "option";
+      button.setAttribute("role", "radio");
+      button.setAttribute("aria-checked", "false");
+      button.dataset.value = variant.id;
+
+      var radio = document.createElement("span");
+      radio.className = "option__radio";
+      radio.setAttribute("aria-hidden", "true");
+
+      var body = document.createElement("span");
+      body.className = "option__body";
+      var name = document.createElement("span");
+      name.className = "option__name";
+      name.textContent = variant.name;
+      var code = document.createElement("code");
+      code.textContent = variant.id;
+      name.appendChild(code);
+      var desc = document.createElement("span");
+      desc.className = "option__desc";
+      desc.textContent = variant.desc;
+      body.appendChild(name);
+      body.appendChild(desc);
+
+      var preview = document.createElement("span");
+      preview.className = "option__preview" + (kind === "mark" ? " option__preview--mark" : "");
+
+      button.appendChild(radio);
+      button.appendChild(body);
+      button.appendChild(preview);
+      group.appendChild(button);
+
+      if (kind === "word") {
+        createWordmark(preview, variant.id);
+      } else {
+        createMark(preview, variant.id, { interactive: true });
+      }
+
+      button.addEventListener("click", function () {
+        if (kind === "word") selectWord(variant.id);
+        else selectMark(variant.id);
+      });
+    });
+
+    group.addEventListener("keydown", function (event) {
+      var buttons = Array.prototype.slice.call(group.querySelectorAll('[role="radio"]'));
+      var currentIndex = buttons.indexOf(document.activeElement);
+      if (currentIndex < 0) return;
+      var nextIndex = null;
+      if (event.key === "ArrowDown" || event.key === "ArrowRight") nextIndex = (currentIndex + 1) % buttons.length;
+      if (event.key === "ArrowUp" || event.key === "ArrowLeft") nextIndex = (currentIndex - 1 + buttons.length) % buttons.length;
+      if (event.key === "Home") nextIndex = 0;
+      if (event.key === "End") nextIndex = buttons.length - 1;
+      if (nextIndex === null) return;
+      event.preventDefault();
+      var next = buttons[nextIndex];
+      if (kind === "word") selectWord(next.dataset.value);
+      else selectMark(next.dataset.value);
+      next.focus();
+    });
+  }
+
+  function paintGroup(group, selected) {
+    var buttons = Array.prototype.slice.call(group.querySelectorAll('[role="radio"]'));
+    buttons.forEach(function (button) {
+      var on = button.dataset.value === selected;
+      button.classList.toggle("is-selected", on);
+      button.setAttribute("aria-checked", on ? "true" : "false");
+      button.tabIndex = on ? 0 : -1;
+    });
+  }
+
+  function variantName(list, id) {
+    for (var i = 0; i < list.length; i += 1) {
+      if (list[i].id === id) return list[i].name;
+    }
+    return id;
+  }
+
+  function selectWord(id) {
+    state.word = id;
+    var name = variantName(WORD_VARIANTS, id);
+    document.getElementById("word-stage-name").textContent = name;
+    document.getElementById("pick-word").textContent = name;
+    paintGroup(document.getElementById("word-options"), id);
+    persistPicks();
+
+    if (stageWordEl && stageWordEl.dataset.variant !== id) {
+      wordReset(stageWord);
+      stageWordEl.dataset.variant = id;
+      stageWordEl.dirty = true;
+    }
+  }
+
+  function selectMark(id) {
+    state.mark = id;
+    var name = variantName(MARK_VARIANTS, id);
+    document.getElementById("mark-stage-name").textContent = name;
+    document.getElementById("pick-mark").textContent = name;
+    paintGroup(document.getElementById("mark-options"), id);
+    persistPicks();
+    dynamicMarks.forEach(function (api) { api.setVariant(id); });
+  }
+
+  function buildSizes() {
+    var host = document.getElementById("sizes");
+    var sizes = [
+      { px: 13, label: "problem map" },
+      { px: 22, label: "top bar" },
+      { px: 34, label: "boot loader" },
+      { px: 64, label: "specimen" }
+    ];
+
+    sizes.forEach(function (size) {
+      var cell = document.createElement("div");
+      cell.className = "size";
+      var hit = document.createElement("div");
+      hit.className = "size__hit";
+      hit.style.setProperty("--s", size.px + "px");
+      var label = document.createElement("span");
+      label.className = "size__label";
+      var strong = document.createElement("b");
+      strong.textContent = size.px + " px";
+      label.appendChild(strong);
+      label.appendChild(document.createTextNode(size.label));
+      cell.appendChild(hit);
+      cell.appendChild(label);
+      host.appendChild(cell);
+
+      var api = createMark(hit, state.mark, { interactive: true });
+      dynamicMarks.push(api);
+    });
+  }
+
+  /* ============================================================== copy */
+  function initCopy() {
+    var button = document.getElementById("copy-picks");
+    var status = document.getElementById("copy-status");
+    button.addEventListener("click", function () {
+      var text = "Wordmark: " + variantName(WORD_VARIANTS, state.word) + "\nMark: " + variantName(MARK_VARIANTS, state.mark);
+      var done = function () {
+        status.textContent = "Copied";
+        setTimeout(function () { status.textContent = ""; }, 1800);
+      };
+      var fallback = function () {
+        try {
+          var picks = document.getElementById("picks");
+          var range = document.createRange();
+          range.selectNodeContents(picks);
+          var selection = window.getSelection();
+          selection.removeAllRanges();
+          selection.addRange(range);
+          status.textContent = "Selected — press Ctrl/Cmd + C";
+        } catch (error) {
+          status.textContent = "Select the picks above";
+        }
+      };
+
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done).catch(fallback);
+      } else {
+        fallback();
+      }
+    });
+  }
+
+  /* ============================================================== resize */
+  var resizeTimer = 0;
+  function onResize() {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(function () {
+      wordInstances.forEach(function (inst) { inst.dirty = true; });
+    }, 140);
+  }
+
+  /* ============================================================== init */
+  function init() {
+    loadState();
+    initThemeControls();
+    initMotionControl();
+
+    buildOptions(document.getElementById("word-options"), WORD_VARIANTS, "word");
+    buildOptions(document.getElementById("mark-options"), MARK_VARIANTS, "mark");
+
+    // Stage wordmark
+    stageWord = createWordmark(document.getElementById("word-stage"), state.word);
+    stageWordEl = stageWord.el;
+
+    // Top bar mark (a production-size instance of the chosen mark)
+    dynamicMarks.push(createMark(document.getElementById("top-mark"), state.mark, { interactive: true }));
+
+    // Stage mark
+    dynamicMarks.push(createMark(document.getElementById("mark-stage"), state.mark, { interactive: true }));
+
+    // Size row
+    buildSizes();
+
+    // Paint current selections
+    paintGroup(document.getElementById("word-options"), state.word);
+    paintGroup(document.getElementById("mark-options"), state.mark);
+    document.getElementById("word-stage-name").textContent = variantName(WORD_VARIANTS, state.word);
+    document.getElementById("mark-stage-name").textContent = variantName(MARK_VARIANTS, state.mark);
+    document.getElementById("pick-word").textContent = variantName(WORD_VARIANTS, state.word);
+    document.getElementById("pick-mark").textContent = variantName(MARK_VARIANTS, state.mark);
+
+    initCopy();
+
+    window.addEventListener("resize", onResize, { passive: true });
+    if (document.fonts && document.fonts.ready) {
+      document.fonts.ready.then(function () {
+        wordInstances.forEach(function (inst) { inst.dirty = true; });
+      });
+    }
+
+    // If the visitor changes their OS theme while the page is on "system",
+    // the token media query handles it; this only keeps the control honest.
+    if (reduceQuery) {
+      var onChange = function () {
+        if (state.motion && reduceQuery.matches && read("mesh-motion-lab-motion", null) === null) {
+          applyMotion(false, false);
+        }
+      };
+      if (reduceQuery.addEventListener) reduceQuery.addEventListener("change", onChange);
+      else if (reduceQuery.addListener) reduceQuery.addListener(onChange);
+    }
+
+    applyMotion(state.motion, false);
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", init);
+  } else {
+    init();
+  }
+})();
+</script>
