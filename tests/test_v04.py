@@ -36,12 +36,16 @@ from mesh.passive import (
 )
 from mesh.dashboard import verify_dashboard_auth
 from mesh.http_server import verify_request_auth
-from mesh.store import _vector_to_blob
+from mesh.store import NamespaceNotFoundError, _vector_to_blob
 from mesh.version import VERSION
 
 
 def _cleanup_ns(ns: str) -> None:
-    delete_namespace(ns)
+    """Cleanup is best-effort: 0.6.3 made deleting a missing namespace an error."""
+    try:
+        delete_namespace(ns)
+    except NamespaceNotFoundError:
+        pass
     _remove_sqlite_files(_get_audit_db_path(ns))
 
 
@@ -211,11 +215,11 @@ def test_wal_cross_process_cache_sync():
         _cleanup_ns(ns)
 
 
-# --- Engine Idle Unload & LRU Cache Survival Tests ---
+# --- Engine Idle Unload & Cache Clearing Tests ---
 
 
-def test_engine_idle_unload_and_lru_cache_survival():
-    """Unloading the model should free _model while keeping _EMBED_CACHE hits instant."""
+def test_engine_idle_unload_clears_cache():
+    """Unloading frees the model and the embed cache; lookups reload on demand."""
     ns = "test_engine_unload"
     try:
         mesh = Mesh(namespace=ns, agent_id="test")
@@ -224,18 +228,19 @@ def test_engine_idle_unload_and_lru_cache_survival():
         status_before = get_engine_status()
         assert status_before["embed_cache_entries"] >= 1
 
-        # Unload the neural model from RAM
+        # Unload the neural model from RAM; 0.6.3 also clears the embed cache
         unload_model()
         status_unloaded = get_engine_status()
         assert status_unloaded["model_loaded"] is False
         assert status_unloaded["backend"] == "unloaded"
+        assert status_unloaded["embed_cache_entries"] == 0
 
-        # Repeated embedding lookup should hit _EMBED_CACHE without reloading the model
+        # The uncached lookup reloads the model on demand and returns a vector
         cached_vec = _embed_cached("FastEmbed and idle unload test memory")
         assert len(cached_vec) == 384
-        assert get_engine_status()["model_loaded"] is False
+        assert get_engine_status()["model_loaded"] is True
 
-        # A brand-new uncached query should seamlessly reload the model on demand
+        # Recall keeps working with the reloaded model
         results = mesh.recall("completely new uncached query string for reload test")
         assert len(results) >= 1
         assert get_engine_status()["model_loaded"] is True

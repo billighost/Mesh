@@ -1,13 +1,18 @@
 r"""
 mesh/http_server.py — High-speed HTTP REST API & Background Daemon Server for Mesh.
+
 Runs on 127.0.0.1:7701 by default. Separate from the dashboard (port 7433).
 
 Security hardening:
   - Strict localhost CORS with properly escaped IPv6 `\[::1\]` origin regex
   - Host & Origin header validation blocking DNS rebinding and cross-site attacks
-  - Per-user 256-bit Bearer / X-Mesh-Token authentication (`~/.mesh/auth_token`) with no `testserver` bypass
+    (`testserver` is rejected by default and accepted only when a test auth override is active;
+    non-loopback binds require `MESH_ALLOWED_HOSTS` to be explicitly configured)
+  - Per-user 256-bit Bearer / X-Mesh-Token authentication (`~/.mesh/auth_token`) compared via `hmac.compare_digest`
+  - Unauthenticated `/identity` HMAC-SHA256 challenge-response endpoint so clients verify daemon
+    identity before ever sending their bearer token
+  - Read-only routes open namespaces with `create=False` so typo'd namespaces never create `.db` files
   - Interactive `y/n` user permission prompts before starting background downloads or warmup workers
-  - Non-blocking threadpool execution for synchronous SQLite & ONNX operations
 """
 from __future__ import annotations
 
@@ -16,10 +21,8 @@ import hashlib
 import hmac
 import os
 import re
-import secrets
 import sys
 import threading
-from datetime import datetime, timezone
 from typing import Any, Optional
 from urllib.parse import urlparse
 
@@ -29,21 +32,22 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from .audit import get_audit_log, validate_namespace
+from .audit import _get_audit_db_path, ensure_secure_mesh_dir, get_audit_log, validate_namespace
 from .context_builder import build_context_bundle
 from .daemon import get_or_create_auth_token, request_user_permission
 from .memory import (
     Mesh,
     _has_local_onnx_pair,
-    ensure_model_downloaded,
     get_engine_status,
     set_idle_unload_seconds,
+    suggest_did_you_mean_namespaces,
     unload_model,
     warmup_model,
 )
+from .store import NamespaceNotFoundError
 from .version import VERSION
 
-_LOCAL_ORIGIN_REGEX = r"^https?://(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$"
+_LOCAL_ORIGIN_REGEX = r"^https?://(127\.0\.0\.1|localhost|[::1])(:\d+)?$"
 _ALLOWED_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]"}
 _ACTIVE_BIND_HOST = "127.0.0.1"
 
@@ -72,7 +76,7 @@ def _extract_hostname(host_header: str) -> str:
 
 def verify_request_auth(request: Request) -> None:
     """
-    Verify the local Mesh authentication token on protected endpoints.
+    Verify the local Mesh authentication token on protected endpoints using `hmac.compare_digest`.
     Can be overridden in unit tests via `app.dependency_overrides[verify_request_auth] = lambda: None`.
     """
     expected_token = get_or_create_auth_token()
@@ -115,20 +119,26 @@ async def _security_middleware(request: Request, call_next: Any) -> Any:
     """
     1. Validate `Host` header to block DNS rebinding attacks.
     2. Validate `Origin` header (if present) to block cross-site requests from arbitrary websites.
-    3. Verify `~/.mesh/auth_token` on all endpoints except `/health` and `OPTIONS` preflights
+    3. Verify `~/.mesh/auth_token` on all endpoints except `/health`, `/identity`, and `OPTIONS` preflights
        (unless overridden via `app.dependency_overrides[verify_request_auth]`).
     """
     configured_host = os.environ.get("MESH_HTTP_HOST", _ACTIVE_BIND_HOST).strip().lower()
-    allowed_hosts = set(_ALLOWED_HOSTS) | {configured_host, _ACTIVE_BIND_HOST}
+    allowed_hosts = set(_ALLOWED_HOSTS)
+    if configured_host not in ("0.0.0.0", "::", "[::]"):
+        allowed_hosts.add(configured_host)
+    if _ACTIVE_BIND_HOST not in ("0.0.0.0", "::", "[::]"):
+        allowed_hosts.add(_ACTIVE_BIND_HOST)
+
+    custom_hosts: set[str] = set()
     env_allowed = os.environ.get("MESH_ALLOWED_HOSTS", "").strip()
     if env_allowed:
         for item in env_allowed.split(","):
-            ci = item.strip().lower()
+            ci = _extract_hostname(item.strip().lower())
             if ci:
                 allowed_hosts.add(ci)
+                custom_hosts.add(ci)
 
-    # If a unit test explicitly registered a dependency override on `verify_request_auth`,
-    # allow FastAPI TestClient's default `testserver` Host header for the DNS-rebinding check.
+    # Only allow FastAPI TestClient's `testserver` Host header when a test auth override is active.
     has_auth_override = verify_request_auth in app.dependency_overrides
     if has_auth_override:
         allowed_hosts.add("testserver")
@@ -144,7 +154,9 @@ async def _security_middleware(request: Request, call_next: Any) -> Any:
     if origin:
         parsed_origin = urlparse(origin)
         origin_host = (parsed_origin.hostname or "").lower()
-        if origin_host not in allowed_hosts or not re.match(_LOCAL_ORIGIN_REGEX, origin):
+        is_valid_local = bool(re.match(_LOCAL_ORIGIN_REGEX, origin))
+        is_valid_custom = origin_host in custom_hosts and parsed_origin.scheme in ("http", "https")
+        if origin_host not in allowed_hosts or not (is_valid_local or is_valid_custom):
             return JSONResponse(
                 status_code=403,
                 content={"detail": "Forbidden cross-origin request."},
@@ -157,7 +169,6 @@ async def _security_middleware(request: Request, call_next: Any) -> Any:
         verify_request_auth(request)
     except HTTPException as exc:
         return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
-
     return await call_next(request)
 
 
@@ -176,24 +187,35 @@ def evict_http_mesh_cache(namespace: Optional[str] = None) -> None:
             _MESH_REGISTRY.pop(k, None)
 
 
-def get_mesh(namespace: Optional[str] = None, agent_id: Optional[str] = None) -> Mesh:
-    """Return a cached Mesh instance for the given namespace and agent_id."""
+def get_mesh(
+    namespace: Optional[str] = None,
+    agent_id: Optional[str] = None,
+    create: bool = True,
+) -> Mesh:
+    """
+    Return a cached `Mesh` instance for the given namespace and agent_id.
+    When `create=False` and the namespace database does not exist, raises `NamespaceNotFoundError`
+    without creating any `.db` file on disk (Phase 3.4).
+    """
     raw_ns = (namespace or os.environ.get("MESH_NAMESPACE", "shared")).strip() or "shared"
     ns = validate_namespace(raw_ns)
     aid = (agent_id or os.environ.get("MESH_AGENT_ID", "http-client")).strip() or "http-client"
     key = (ns, aid)
-    mesh = _MESH_REGISTRY.get(key)
-    if mesh is not None:
-        return mesh
     with _MESH_LOCK:
         mesh = _MESH_REGISTRY.get(key)
-        if mesh is None:
-            mesh = Mesh(namespace=ns, agent_id=aid)
+        if mesh is not None:
+            if not create and not mesh.store.db_path.exists():
+                _MESH_REGISTRY.pop(key, None)
+                raise NamespaceNotFoundError(f"Namespace '{ns}' does not exist.")
+            return mesh
+        mesh = Mesh(namespace=ns, agent_id=aid, create=create)
+        if mesh.store.db_path.exists() or create:
             _MESH_REGISTRY[key] = mesh
         return mesh
 
 
 # --- Request Models ---
+
 
 class LearnRequest(BaseModel):
     content: str
@@ -260,6 +282,10 @@ class ContextRequest(BaseModel):
     include_private: Optional[bool] = False
 
 
+class WarmupRequest(BaseModel):
+    namespace: Optional[str] = None
+
+
 class McpProxyRequest(BaseModel):
     name: str
     arguments: dict[str, Any] = Field(default_factory=dict)
@@ -269,9 +295,10 @@ class McpProxyRequest(BaseModel):
 
 # --- Endpoints (Synchronous `def` so FastAPI runs them in a worker threadpool) ---
 
+
 @app.get("/health")
 def health() -> dict[str, Any]:
-    """Health check. Returns ok if the server is running."""
+    """Unauthenticated health check returning only status and version (no PID or engine details)."""
     return {
         "status": "ok",
         "version": VERSION,
@@ -294,7 +321,6 @@ async def identity(request: Request, nonce: Optional[str] = None) -> dict[str, A
             pass
     if not clean_nonce:
         clean_nonce = request.headers.get("x-mesh-nonce", "").strip()
-
     if not clean_nonce:
         raise HTTPException(status_code=400, detail="Missing challenge nonce.")
 
@@ -319,6 +345,17 @@ def engine_status() -> dict[str, Any]:
     return {"status": "ok", "engine": get_engine_status()}
 
 
+@app.post("/warmup", dependencies=[Depends(verify_request_auth)])
+def warmup_endpoint(req: WarmupRequest) -> dict[str, Any]:
+    """Warm the embedding model and (if the namespace already exists) heal pending embeddings."""
+    try:
+        ns = validate_namespace((req.namespace or os.environ.get("MESH_NAMESPACE", "shared")).strip() or "shared")
+        warmup_model(namespace=ns, blocking=False, assume_yes=False)
+        return {"status": "ok", "engine": get_engine_status()}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @app.post("/unload", dependencies=[Depends(verify_request_auth)])
 def unload_engine() -> dict[str, Any]:
     """Explicitly unload the neural embedding model from RAM to free memory immediately."""
@@ -336,7 +373,6 @@ def mcp_proxy(req: McpProxyRequest) -> dict[str, Any]:
             validate_namespace(str(req.arguments["namespace"]))
         if req.default_namespace:
             validate_namespace(str(req.default_namespace))
-
         payload = _execute_tool_sync(
             name=req.name,
             arguments=req.arguments,
@@ -352,19 +388,23 @@ def mcp_proxy(req: McpProxyRequest) -> dict[str, Any]:
 
 
 @app.post("/learn", dependencies=[Depends(verify_request_auth)])
-def learn(req: LearnRequest) -> dict[str, Any]:
-    """Store a memory. Returns the memory ID and any contradiction warnings."""
+def learn(req: LearnRequest) -> Any:
+    """Store a memory. Runs `guard_ingest` and returns the memory ID and any contradiction warnings."""
     try:
         from .guards import guard_ingest
 
         guard = guard_ingest(req.content, local_only=bool(req.local_only))
         if guard.rejected:
-            raise HTTPException(
+            reason_str = guard.reason or "Memory content rejected by ingestion guard."
+            return JSONResponse(
                 status_code=400,
-                detail=guard.reason or "Memory content rejected by ingestion guard.",
+                content={
+                    "status": "rejected",
+                    "error": reason_str,
+                    "detail": reason_str,
+                },
             )
-
-        mesh = get_mesh(req.namespace, req.agent_id)
+        mesh = get_mesh(req.namespace, req.agent_id, create=True)
         result = mesh.learn(
             content=guard.content,
             memory_type=req.memory_type or "fact",
@@ -373,6 +413,8 @@ def learn(req: LearnRequest) -> dict[str, Any]:
             local_only=bool(guard.local_only),
             ttl_days=req.ttl_days,
         )
+        if guard.warnings:
+            result["warnings"] = guard.warnings
         return {"status": "ok", "result": result}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -384,7 +426,22 @@ def learn(req: LearnRequest) -> dict[str, Any]:
 def recall(req: RecallRequest) -> dict[str, Any]:
     """Retrieve memories relevant to a query using 5-stage hybrid search + peripheral snippets."""
     try:
-        mesh = get_mesh(req.namespace, req.agent_id)
+        raw_ns = (req.namespace or os.environ.get("MESH_NAMESPACE", "shared")).strip() or "shared"
+        ns = validate_namespace(raw_ns)
+        try:
+            mesh = get_mesh(ns, req.agent_id, create=False)
+        except NamespaceNotFoundError:
+            return {
+                "status": "ok",
+                "namespace": ns,
+                "namespace_exists": False,
+                "did_you_mean": suggest_did_you_mean_namespaces(ns),
+                "results": [],
+                "count": 0,
+                "total_in_namespace": 0,
+                "other_possible_memories": [],
+                "filter_hint": None,
+            }
         limit_n = req.n if req.n is not None else (req.count or 5)
         max_other = (req.max_other_possible or 5) if req.include_other_possible is not False else 0
         inc_priv = False if req.include_private is None else bool(req.include_private)
@@ -402,6 +459,8 @@ def recall(req: RecallRequest) -> dict[str, Any]:
         )
         return {
             "status": "ok",
+            "namespace": ns,
+            "namespace_exists": True,
             "results": bundle["results"],
             "count": bundle["count"],
             "total_in_namespace": bundle["total_in_namespace"],
@@ -418,7 +477,7 @@ def recall(req: RecallRequest) -> dict[str, Any]:
 def update(req: UpdateRequest) -> dict[str, Any]:
     """Update an existing memory in-place by ID (supports clearing TTL via `clear_ttl=True`)."""
     try:
-        mesh = get_mesh(req.namespace, req.agent_id)
+        mesh = get_mesh(req.namespace, req.agent_id, create=False)
         result = mesh.update(
             memory_id=req.memory_id,
             content=req.content,
@@ -430,6 +489,8 @@ def update(req: UpdateRequest) -> dict[str, Any]:
             local_only=req.local_only,
         )
         return {"status": "ok", "result": result}
+    except NamespaceNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
         msg = str(e)
         status_code = 404 if "not found" in msg.lower() else 400
@@ -442,7 +503,10 @@ def update(req: UpdateRequest) -> dict[str, Any]:
 def forget(req: ForgetRequest) -> dict[str, Any]:
     """Delete a memory by ID."""
     try:
-        mesh = get_mesh(req.namespace, req.agent_id)
+        try:
+            mesh = get_mesh(req.namespace, req.agent_id, create=False)
+        except NamespaceNotFoundError:
+            return {"status": "not_found", "deleted": None}
         deleted = mesh.forget(req.memory_id)
         return {
             "status": "ok" if deleted else "not_found",
@@ -464,14 +528,32 @@ def inspect(
 ) -> dict[str, Any]:
     """List memories in the namespace (excludes `local_only` private memories by default)."""
     try:
-        mesh = get_mesh(namespace)
+        raw_ns = (namespace or os.environ.get("MESH_NAMESPACE", "shared")).strip() or "shared"
+        ns = validate_namespace(raw_ns)
+        try:
+            mesh = get_mesh(ns, create=False)
+        except NamespaceNotFoundError:
+            return {
+                "status": "ok",
+                "namespace": ns,
+                "namespace_exists": False,
+                "did_you_mean": suggest_did_you_mean_namespaces(ns),
+                "memories": [],
+                "count": 0,
+            }
         result = mesh.inspect(
             limit=limit,
             memory_type=memory_type,
             tag=tag,
             include_private=include_private,
         )
-        return {"status": "ok", "memories": result, "count": len(result)}
+        return {
+            "status": "ok",
+            "namespace": ns,
+            "namespace_exists": True,
+            "memories": result,
+            "count": len(result),
+        }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -485,9 +567,30 @@ def patterns(
 ) -> dict[str, Any]:
     """Return pattern analysis: top queries, memory gaps, unused and stale memories."""
     try:
-        mesh = get_mesh(namespace)
+        raw_ns = (namespace or os.environ.get("MESH_NAMESPACE", "shared")).strip() or "shared"
+        ns = validate_namespace(raw_ns)
+        try:
+            mesh = get_mesh(ns, create=False)
+        except NamespaceNotFoundError:
+            return {
+                "status": "ok",
+                "namespace": ns,
+                "namespace_exists": False,
+                "did_you_mean": suggest_did_you_mean_namespaces(ns),
+                "patterns": {
+                    "top_topics": [],
+                    "memory_gaps": [],
+                    "unused_memories": [],
+                    "stale_memories": [],
+                },
+            }
         result = mesh.patterns(include_private=include_private)
-        return {"status": "ok", "patterns": result}
+        return {
+            "status": "ok",
+            "namespace": ns,
+            "namespace_exists": True,
+            "patterns": result,
+        }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -501,9 +604,27 @@ def contradictions(
 ) -> dict[str, Any]:
     """Return unresolved (or resolved) contradictions in the namespace."""
     try:
-        mesh = get_mesh(namespace)
+        raw_ns = (namespace or os.environ.get("MESH_NAMESPACE", "shared")).strip() or "shared"
+        ns = validate_namespace(raw_ns)
+        try:
+            mesh = get_mesh(ns, create=False)
+        except NamespaceNotFoundError:
+            return {
+                "status": "ok",
+                "namespace": ns,
+                "namespace_exists": False,
+                "did_you_mean": suggest_did_you_mean_namespaces(ns),
+                "contradictions": [],
+                "count": 0,
+            }
         items = mesh.contradictions(resolved=resolved)
-        return {"status": "ok", "contradictions": items, "count": len(items)}
+        return {
+            "status": "ok",
+            "namespace": ns,
+            "namespace_exists": True,
+            "contradictions": items,
+            "count": len(items),
+        }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -514,9 +635,11 @@ def contradictions(
 def resolve_contradiction(req: ResolveContradictionRequest) -> dict[str, Any]:
     """Mark a contradiction as resolved."""
     try:
-        mesh = get_mesh(req.namespace)
+        mesh = get_mesh(req.namespace, create=False)
         mesh.resolve_contradiction(req.contradiction_id)
         return {"status": "ok", "resolved": req.contradiction_id}
+    except NamespaceNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
         msg = str(e)
         status_code = 404 if "not found" in msg.lower() else 400
@@ -532,7 +655,19 @@ def context(req: ContextRequest) -> dict[str, Any]:
     Excludes `local_only=True` private memories by default unless `include_private=True`.
     """
     try:
-        mesh = get_mesh(req.namespace, "http-context")
+        raw_ns = (req.namespace or os.environ.get("MESH_NAMESPACE", "shared")).strip() or "shared"
+        ns = validate_namespace(raw_ns)
+        try:
+            mesh = get_mesh(ns, "http-context", create=False)
+        except NamespaceNotFoundError:
+            return {
+                "status": "ok",
+                "namespace": ns,
+                "namespace_exists": False,
+                "did_you_mean": suggest_did_you_mean_namespaces(ns),
+                "context": "",
+                "memory_count": 0,
+            }
         bundle = build_context_bundle(
             query=req.query,
             namespace=mesh.namespace,
@@ -548,6 +683,8 @@ def context(req: ContextRequest) -> dict[str, Any]:
         )
         return {
             "status": "ok",
+            "namespace": ns,
+            "namespace_exists": bundle.get("namespace_exists", True),
             "context": bundle["context"],
             "memory_count": bundle["memory_count"],
         }
@@ -566,8 +703,18 @@ def audit(
     """Return the audit trail: recent memory reads and writes."""
     try:
         ns = validate_namespace((namespace or os.environ.get("MESH_NAMESPACE", "shared")).strip() or "shared")
+        db_file = ensure_secure_mesh_dir().resolve() / f"mesh_{ns}.db"
+        audit_file = _get_audit_db_path(ns)
         entries = get_audit_log(namespace=ns, limit=limit, action_filter=action)
-        return {"status": "ok", "entries": entries}
+        if not db_file.exists() and not audit_file.exists():
+            return {
+                "status": "ok",
+                "namespace": ns,
+                "namespace_exists": False,
+                "did_you_mean": suggest_did_you_mean_namespaces(ns),
+                "entries": [],
+            }
+        return {"status": "ok", "namespace": ns, "namespace_exists": True, "entries": entries}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -605,12 +752,11 @@ def start(host: Optional[str] = None, port: Optional[int] = None) -> None:
         help="Skip interactive y/n permission prompts",
     )
     args, _ = parser.parse_known_args()
-
     actual_host = (host or args.host).strip()
     actual_port = int(port or args.port)
-
     _ACTIVE_BIND_HOST = actual_host.lower()
     os.environ["MESH_HTTP_HOST"] = actual_host
+
     env_allowed = os.environ.get("MESH_ALLOWED_HOSTS", "").strip()
     if _ACTIVE_BIND_HOST not in ("127.0.0.1", "localhost", "::1", "[::1]"):
         if not env_allowed:
@@ -630,7 +776,6 @@ def start(host: Optional[str] = None, port: Optional[int] = None) -> None:
     set_idle_unload_seconds(args.idle_timeout)
 
     allow_auto_download = bool(args.yes or os.environ.get("MESH_ALLOW_DAEMON_DOWNLOAD") == "1")
-
     if not args.no_warmup:
         if _has_local_onnx_pair() is None:
             from .memory import _get_onnx_model_dir
@@ -651,7 +796,7 @@ def start(host: Optional[str] = None, port: Optional[int] = None) -> None:
                 daemon=True,
             ).start()
 
-    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+    uvicorn.run(app, host=actual_host, port=actual_port, log_level="warning")
 
 
 if __name__ == "__main__":

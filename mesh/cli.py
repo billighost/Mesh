@@ -5,10 +5,12 @@ Features:
   - Zero-overhead lazy command routing (never imports FastAPI, Uvicorn, or MCP on CLI operations)
   - Interactive `y/n` user permission prompts before starting background processes, modifying OS startup,
     deleting namespaces, or installing shell RC completions
-  - Authenticated, idempotent local daemon proxy across read and write commands
-  - Full namespace management (`list`, `stats`, `rename`, `delete`) with confirmation
+  - Cryptographically verified (`verify_daemon_identity`) local daemon proxy with safe read fallback
+    and non-retrying mutating command protection on timeout/502/503/504
+  - Read-only commands use `create=False` so typo'd namespaces never create empty `.db` files on disk
+  - Full namespace management (`list`, `stats`, `rename`, `delete`) with locked-file handling
   - Multi-shell autocompletion (`bash`, `zsh`, `fish`, `powershell`) with idempotent `--install`
-  - Comprehensive `mesh doctor` diagnostics (SQLite WAL/FTS5, permissions, ONNX SHA-256, daemon, MCP)
+  - Comprehensive `mesh doctor` diagnostics (SQLite WAL/FTS5, permissions, ONNX SHA-256, degraded state, daemon, MCP)
   - Non-recursive interactive REPL shell (`mesh shell` / `mesh i`) with namespace switching
 """
 from __future__ import annotations
@@ -51,8 +53,11 @@ _C_ACCENT = "\033[38;2;16;185;129m"   # #10b981 Emerald
 _C_BLUE = "\033[38;2;59;130;246m"     # #3b82f6 Blue
 _C_PURPLE = "\033[38;2;139;92;246m"   # #8b5cf6 Purple
 _C_AMBER = "\033[38;2;245;158;11m"    # #f59e0b Amber
+_C_YELLOW = _C_AMBER                  # Alias for amber warning color
 _C_RED = "\033[38;2;239;68;68m"       # #ef4444 Red
 _C_MUTED = "\033[38;2;139;149;167m"   # #8b95a7 Muted
+
+_FALLBACK_HTTP_CODES = {502, 503, 504}
 
 
 def _supports_color() -> bool:
@@ -73,7 +78,7 @@ def _sim_bar(similarity: float) -> str:
     pct = round(max(0.0, min(1.0, similarity)) * 100)
     filled = round(pct / 10)
     try:
-        "█░".encode(sys.stdout.encoding or "utf-8")
+        "█".encode(sys.stdout.encoding or "utf-8")
         bar = "█" * filled + "░" * (10 - filled)
     except (UnicodeEncodeError, LookupError):
         bar = "#" * filled + "-" * (10 - filled)
@@ -89,6 +94,17 @@ def _resolve_namespace(ns_arg: Optional[str]) -> str:
         sys.exit(1)
 
 
+def _handle_missing_namespace_cli(ns: str) -> None:
+    """Print a clear message and `did_you_mean` suggestions when a read command targets a missing namespace."""
+    from .memory import suggest_did_you_mean_namespaces
+
+    suggestions = suggest_did_you_mean_namespaces(ns)
+    msg = f"  Namespace '{ns}' does not exist."
+    if suggestions:
+        msg += f" Did you mean: {', '.join(suggestions)}?"
+    print(_c(_C_AMBER, msg), file=sys.stderr)
+
+
 def _daemon_request(
     path: str,
     payload: Optional[dict[str, Any]] = None,
@@ -99,15 +115,15 @@ def _daemon_request(
 ) -> Optional[dict[str, Any]]:
     """
     Send an authenticated request to the running local daemon if reachable.
+    - Never sends the bearer token until `verify_daemon_identity` succeeds.
     - Never silently spawns a background daemon if the socket is closed.
-    - Returns `{"_http_error": code, "detail": ...}` on 4xx/5xx or mid-request timeout
-      so callers never re-run a mutating operation locally a second time.
+    - Returns `{"_http_error": code, "detail": ..., "_timeout": bool}` on 4xx/5xx or mid-request timeout
+      so callers can distinguish read fallback (502/503/504/timeout) from mutating uncertainty.
     """
     if os.environ.get("MESH_NO_DAEMON_PROXY", "").strip().lower() in ("1", "true", "yes"):
         return None
     req_host = host or os.environ.get("MESH_HTTP_HOST", "127.0.0.1")
     req_port = int(port or os.environ.get("MESH_HTTP_PORT", 7701))
-
     try:
         with socket.create_connection((req_host, req_port), timeout=0.08):
             pass
@@ -125,7 +141,6 @@ def _daemon_request(
     headers = get_auth_headers()
     if data is not None:
         headers["Content-Type"] = "application/json"
-
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -137,17 +152,103 @@ def _daemon_request(
             detail = err_body.get("detail") if isinstance(err_body, dict) else str(e)
         except Exception:
             detail = str(e)
-        return {"_http_error": e.code, "detail": detail}
+        return {"_http_error": int(e.code), "detail": detail}
     except (TimeoutError, socket.timeout) as e:
-        invalidate_daemon_identity_cache(host, port)
+        invalidate_daemon_identity_cache(req_host, req_port)
         return {
             "_http_error": 504,
+            "_timeout": True,
             "detail": f"Daemon timed out after {timeout}s while processing {path}: {e}",
         }
-    except (urllib.error.URLError, OSError, ValueError):
-        invalidate_daemon_identity_cache(host, port)
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        invalidate_daemon_identity_cache(req_host, req_port)
+        if isinstance(getattr(e, "reason", None), (TimeoutError, socket.timeout)):
+            return {
+                "_http_error": 504,
+                "_timeout": True,
+                "detail": f"Daemon timed out after {timeout}s while processing {path}: {e}",
+            }
         return None
     return None
+
+
+def _check_daemon_read_response(proxied: Optional[dict[str, Any]], cmd_label: str) -> Optional[dict[str, Any]]:
+    """
+    Handle daemon response for read-only CLI commands (Phase 4.1):
+    - On 502/503/504 or timeout: print a one-line stderr note and return None to fall back to local execution.
+    - On 4xx (or 500): print the error and exit non-zero.
+    """
+    if proxied is None:
+        return None
+    if "_http_error" in proxied:
+        code = int(proxied["_http_error"])
+        detail = proxied.get("detail") or f"HTTP {code}"
+        if code in _FALLBACK_HTTP_CODES or proxied.get("_timeout"):
+            print(
+                _c(_C_AMBER, f"  [Note] Daemon unavailable ({detail}); falling back to local execution for '{cmd_label}'."),
+                file=sys.stderr,
+            )
+            return None
+        print(_c(_C_RED, f"    Error: {detail}"), file=sys.stderr)
+        sys.exit(1)
+    return proxied
+
+
+def _check_daemon_write_response(proxied: Optional[dict[str, Any]], cmd_label: str) -> Optional[dict[str, Any]]:
+    """
+    Handle daemon response for mutating CLI commands (Phase 4.1):
+    - Never auto-retry locally on 502/503/504 or timeout because the daemon may have applied the write.
+      Print 'outcome unknown — run mesh inspect to check' and exit non-zero.
+    - On 4xx/500: print the error and exit non-zero.
+    """
+    if proxied is None:
+        return None
+    if "_http_error" in proxied:
+        code = int(proxied["_http_error"])
+        detail = proxied.get("detail") or f"HTTP {code}"
+        if code in _FALLBACK_HTTP_CODES or proxied.get("_timeout"):
+            print(
+                _c(
+                    _C_RED,
+                    f"    Error: {detail} — outcome unknown — run mesh inspect to check",
+                ),
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        print(_c(_C_RED, f"    Error: {detail}"), file=sys.stderr)
+        sys.exit(1)
+    return proxied
+
+
+def _namespace_degraded_counts(namespace: str) -> tuple[int, int]:
+    """Return `(hash_384_count, needs_reembed_count)` for an existing namespace DB without creating one."""
+    from .audit import ensure_secure_mesh_dir
+
+    db_path = ensure_secure_mesh_dir().resolve() / f"mesh_{namespace}.db"
+    if not db_path.exists():
+        return 0, 0
+    try:
+        conn = sqlite3.connect(db_path, timeout=2.0)
+        try:
+            hash_cnt = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM memories WHERE namespace = ? AND embedding_model = 'hash-384'",
+                    (namespace,),
+                ).fetchone()[0]
+                or 0
+            )
+            reembed_cnt = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM memories WHERE namespace = ? AND (embedding_model = 'needs-reembed' OR embedding_model = 'unknown' OR embedding IS NULL)",
+                    (namespace,),
+                ).fetchone()[0]
+                or 0
+            )
+            return hash_cnt, reembed_cnt
+        finally:
+            conn.close()
+    except Exception:
+        return 0, 0
 
 
 # --- Smart Command & Flag Typo Recovery ---
@@ -172,11 +273,13 @@ _COMMAND_ALIASES = {
     "i": "shell",
 }
 
+
 def _suggest_did_you_mean(unknown: str, choices: list[str]) -> list[str]:
     return difflib.get_close_matches(unknown.lower(), choices, n=2, cutoff=0.5)
 
 
 # --- Commands ---
+
 
 def setup_cmd() -> None:
     parser = argparse.ArgumentParser(description="Launch background worker and warm ONNX model.")
@@ -247,7 +350,7 @@ def setup_cmd() -> None:
         f"download the ONNX embedding model into {_ONNX_MODEL_DIR}",
         assume_yes=args.yes,
     ):
-        if args.wait:
+        if args.wait or args.yes:
             pair = ensure_model_downloaded(blocking=True, timeout=120.0, assume_yes=True)
             if pair is not None:
                 print(_c(_C_ACCENT, f"    [OK] ONNX model downloaded: {pair[0].parent}"))
@@ -263,14 +366,15 @@ def setup_cmd() -> None:
     _run_install_skills(assume_yes=args.yes)
 
 
-
-def _run_install_skills(assume_yes: bool = False) -> None:
+def _run_install_skills(assume_yes: bool = False, force: bool = False) -> None:
     """Shared helper: install skill into all agent folders, print results."""
     from .skill_installer import install_all
 
     print(_c(_C_ACCENT, "    Installing Mesh agent skill..."))
     results = install_all(
         assume_yes=assume_yes,
+        overwrite=True,
+        force=force,
         permission_fn=None,  # uses daemon.request_user_permission when available
     )
     installed = 0
@@ -288,6 +392,7 @@ def _run_install_skills(assume_yes: bool = False) -> None:
         else:
             skipped += 1
             print(_c(_C_DIM, f"    [..]    {agent}: {status}"))
+
     summary_parts = []
     if installed:
         summary_parts.append(f"{installed} installed")
@@ -311,6 +416,11 @@ def install_skills_cmd() -> None:
         help="Skip interactive y/n permission prompts",
     )
     parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Reinstall even if .mesh-skill-version matches the current version",
+    )
+    parser.add_argument(
         "--list",
         action="store_true",
         help="List detected agent skill directories and current install status, then exit",
@@ -318,7 +428,8 @@ def install_skills_cmd() -> None:
     args = parser.parse_args()
 
     if args.list:
-        from .skill_installer import _candidate_skill_roots, _SKILL_NAME
+        from .skill_installer import _SKILL_NAME, _candidate_skill_roots
+
         print(_c(_C_ACCENT, "\n    Detected agent skill directories:\n"))
         candidates = _candidate_skill_roots()
         if not candidates:
@@ -331,7 +442,7 @@ def install_skills_cmd() -> None:
         print()
         return
 
-    _run_install_skills(assume_yes=args.yes)
+    _run_install_skills(assume_yes=args.yes, force=args.force)
 
 
 def add_cmd() -> None:
@@ -342,7 +453,12 @@ def add_cmd() -> None:
     parser.add_argument("--type", dest="memory_type", default="fact", choices=sorted(VALID_MEMORY_TYPES))
     parser.add_argument("--tags", default="")
     parser.add_argument("--private", action="store_true")
-    parser.add_argument("--force-public", action="store_true", default=False, help="Force memory to be public even if credentials detected")
+    parser.add_argument(
+        "--force-public",
+        action="store_true",
+        default=False,
+        help="Force memory to be public even if credentials detected (interactive TTY only)",
+    )
     parser.add_argument("--namespace", default=None)
     parser.add_argument("--confidence", type=float, default=1.0)
     parser.add_argument("--ttl", type=float, default=None)
@@ -356,7 +472,7 @@ def add_cmd() -> None:
             print()
             return
         if not content:
-            print(_c(_C_RED, "    Error: content cannot be empty."))
+            print(_c(_C_RED, "    Error: content cannot be empty."), file=sys.stderr)
             sys.exit(1)
 
     from .guards import guard_ingest
@@ -369,17 +485,29 @@ def add_cmd() -> None:
     final_content = guard.content
     final_private = guard.local_only
     if guard.local_only and not args.private:
-        if args.force_public and sys.stdin.isatty():
+        if args.force_public and hasattr(sys.stdin, "isatty") and sys.stdin.isatty():
             final_private = False
-            print(_c(_C_YELLOW, "    [WARNING] Credential pattern detected, but --force-public specified on terminal: saving as public memory."), file=sys.stderr)
+            print(
+                _c(
+                    _C_AMBER,
+                    "    [WARNING] Credential pattern detected, but --force-public specified on terminal: saving as public memory.",
+                ),
+                file=sys.stderr,
+            )
         else:
             final_private = True
-            print(_c(_C_YELLOW, "    [WARNING] Credential pattern detected: content was redacted and saved as private (local_only). Use --force-public on a terminal to override."), file=sys.stderr)
+            print(
+                _c(
+                    _C_AMBER,
+                    "    [WARNING] Credential pattern detected: content was redacted and saved as private (local_only). Use --force-public on a terminal to override.",
+                ),
+                file=sys.stderr,
+            )
 
     ns = _resolve_namespace(args.namespace)
     tags = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else []
 
-    proxied = _daemon_request(
+    raw_proxied = _daemon_request(
         "/learn",
         payload={
             "content": final_content,
@@ -392,10 +520,8 @@ def add_cmd() -> None:
             "agent_id": "human-cli",
         },
     )
+    proxied = _check_daemon_write_response(raw_proxied, "mesh add")
     if proxied is not None:
-        if "_http_error" in proxied:
-            print(_c(_C_RED, f"    Error: {proxied.get('detail')}"), file=sys.stderr)
-            sys.exit(1)
         if proxied.get("status") == "ok":
             result = proxied["result"]
         else:
@@ -404,7 +530,7 @@ def add_cmd() -> None:
     else:
         from .memory import Mesh
 
-        mesh = Mesh(namespace=ns, agent_id="human-cli")
+        mesh = Mesh(namespace=ns, agent_id="human-cli", create=True)
         try:
             result = mesh.learn(
                 content=final_content,
@@ -418,11 +544,20 @@ def add_cmd() -> None:
             print(_c(_C_RED, f"    Error: {e}"), file=sys.stderr)
             sys.exit(1)
 
-    priv_str = _c(_C_RED, " [PRIVATE]") if args.private else ""
+    priv_str = _c(_C_RED, " [PRIVATE]") if final_private else ""
     dedup_str = _c(_C_AMBER, " (reinforced existing memory)") if result.get("deduplicated") else ""
     print(_c(_C_ACCENT, f"\n    Stored [{args.memory_type}] in namespace '{ns}'{priv_str}{dedup_str}"))
     if result.get("memory_id"):
         print(_c(_C_DIM, f"    ID: {result['memory_id']}"))
+    if result.get("namespace_created") and result.get("similar_existing"):
+        sims = ", ".join(result["similar_existing"])
+        print(
+            _c(
+                _C_AMBER,
+                f"    [Note] Created new namespace '{ns}' (similar existing namespaces: {sims}).",
+            ),
+            file=sys.stderr,
+        )
     if result.get("conflict"):
         existing = result["conflict"].get("existing_content", "")
         print(_c(_C_AMBER, f'\n    Warning: Contradicts existing memory:\n     "{existing}"'))
@@ -430,6 +565,7 @@ def add_cmd() -> None:
 
 def ask_cmd() -> None:
     from .memory import VALID_MEMORY_TYPES
+    from .store import NamespaceNotFoundError
 
     parser = argparse.ArgumentParser(description="Search Mesh using 5-stage hybrid search.")
     parser.add_argument("query", nargs="?", default=None, help="What to search for")
@@ -452,17 +588,17 @@ def ask_cmd() -> None:
             print()
             return
         if not query:
-            print(_c(_C_RED, "    Error: query cannot be empty."))
+            print(_c(_C_RED, "    Error: query cannot be empty."), file=sys.stderr)
             sys.exit(1)
 
     ns = _resolve_namespace(args.namespace)
     tags = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else None
 
-    results = []
-    other_possible = []
+    results: list[dict[str, Any]] = []
+    other_possible: list[dict[str, Any]] = []
     filter_hint = None
 
-    proxied = _daemon_request(
+    raw_proxied = _daemon_request(
         "/recall",
         payload={
             "query": query,
@@ -478,18 +614,23 @@ def ask_cmd() -> None:
             "agent_id": "human-cli",
         },
     )
-    if proxied is not None and "_http_error" in proxied:
-        print(_c(_C_RED, f"    Error: {proxied.get('detail')}"), file=sys.stderr)
-        sys.exit(1)
-
+    proxied = _check_daemon_read_response(raw_proxied, "mesh ask")
     if proxied and proxied.get("status") == "ok":
+        if proxied.get("namespace_exists") is False:
+            _handle_missing_namespace_cli(ns)
+            return
         results = proxied.get("results", [])
         other_possible = proxied.get("other_possible_memories", []) or []
         filter_hint = proxied.get("filter_hint")
     else:
         from .memory import Mesh
 
-        mesh = Mesh(namespace=ns, agent_id="human-cli")
+        try:
+            mesh = Mesh(namespace=ns, agent_id="human-cli", create=False)
+        except NamespaceNotFoundError:
+            _handle_missing_namespace_cli(ns)
+            return
+
         if not args.no_other and hasattr(mesh, "recall_with_context"):
             bundle = mesh.recall_with_context(
                 query=query,
@@ -552,6 +693,7 @@ def ask_cmd() -> None:
 
 def inspect_cmd() -> None:
     from .memory import VALID_MEMORY_TYPES
+    from .store import NamespaceNotFoundError
 
     parser = argparse.ArgumentParser(description="Browse memories in namespace.")
     parser.add_argument("--limit", type=int, default=30)
@@ -572,17 +714,25 @@ def inspect_cmd() -> None:
     if args.tag:
         query_params["tag"] = args.tag
 
-    proxied = _daemon_request(
+    raw_proxied = _daemon_request(
         f"/inspect?{urllib.parse.urlencode(query_params)}",
         payload=None,
         method="GET",
     )
-    if proxied is not None and "_http_error" not in proxied and proxied.get("status") == "ok":
+    proxied = _check_daemon_read_response(raw_proxied, "mesh inspect")
+    if proxied is not None and proxied.get("status") == "ok":
+        if proxied.get("namespace_exists") is False:
+            _handle_missing_namespace_cli(ns)
+            return
         mems = proxied.get("memories", [])
     else:
         from .memory import Mesh
 
-        mesh = Mesh(namespace=ns, agent_id="cli")
+        try:
+            mesh = Mesh(namespace=ns, agent_id="cli", create=False)
+        except NamespaceNotFoundError:
+            _handle_missing_namespace_cli(ns)
+            return
         mems = mesh.inspect(
             limit=args.limit,
             memory_type=args.memory_type,
@@ -625,7 +775,7 @@ def update_cmd() -> None:
     tags = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags is not None else None
     should_clear_ttl = bool(args.clear_ttl) or (args.ttl is not None and args.ttl <= 0)
 
-    proxied = _daemon_request(
+    raw_proxied = _daemon_request(
         "/update",
         payload={
             "memory_id": args.memory_id,
@@ -640,18 +790,17 @@ def update_cmd() -> None:
             "agent_id": "human-cli",
         },
     )
+    proxied = _check_daemon_write_response(raw_proxied, "mesh update")
     if proxied is not None:
-        if "_http_error" in proxied:
-            print(_c(_C_RED, f"    Error: {proxied.get('detail')}"), file=sys.stderr)
-            sys.exit(1)
         if proxied.get("status") == "ok":
             print(_c(_C_ACCENT, f"    Updated memory '{args.memory_id}' in namespace '{ns}'"))
             return
 
     from .memory import Mesh
+    from .store import NamespaceNotFoundError
 
-    mesh = Mesh(namespace=ns, agent_id="human-cli")
     try:
+        mesh = Mesh(namespace=ns, agent_id="human-cli", create=False)
         res = mesh.update(
             memory_id=args.memory_id,
             content=args.content,
@@ -663,6 +812,9 @@ def update_cmd() -> None:
             local_only=args.local_only,
         )
         print(_c(_C_ACCENT, f"    Updated memory '{res['memory_id'][:8]}' in namespace '{ns}'"))
+    except NamespaceNotFoundError:
+        _handle_missing_namespace_cli(ns)
+        sys.exit(1)
     except ValueError as e:
         print(_c(_C_RED, f"    Error: {e}"), file=sys.stderr)
         sys.exit(1)
@@ -675,14 +827,12 @@ def forget_cmd() -> None:
     args = parser.parse_args()
 
     ns = _resolve_namespace(args.namespace)
-    proxied = _daemon_request(
+    raw_proxied = _daemon_request(
         "/forget",
         payload={"memory_id": args.memory_id, "namespace": ns, "agent_id": "human-cli"},
     )
+    proxied = _check_daemon_write_response(raw_proxied, "mesh forget")
     if proxied is not None:
-        if "_http_error" in proxied:
-            print(_c(_C_RED, f"    Error: {proxied.get('detail')}"), file=sys.stderr)
-            sys.exit(1)
         if proxied.get("status") == "ok":
             print(_c(_C_ACCENT, f"    Deleted memory '{args.memory_id}' from namespace '{ns}'"))
             return
@@ -691,10 +841,14 @@ def forget_cmd() -> None:
             sys.exit(1)
 
     from .memory import Mesh
+    from .store import NamespaceNotFoundError
 
-    mesh = Mesh(namespace=ns, agent_id="human-cli")
     try:
+        mesh = Mesh(namespace=ns, agent_id="human-cli", create=False)
         deleted = mesh.forget(args.memory_id)
+    except NamespaceNotFoundError:
+        _handle_missing_namespace_cli(ns)
+        sys.exit(1)
     except ValueError as e:
         print(_c(_C_RED, f"    Error: {e}"), file=sys.stderr)
         sys.exit(1)
@@ -706,48 +860,57 @@ def forget_cmd() -> None:
 
 
 def conflicts_cmd() -> None:
+    from .store import NamespaceNotFoundError
+
     parser = argparse.ArgumentParser(description="Inspect unresolved memory contradictions.")
     parser.add_argument("--resolve", default=None, help="Resolve contradiction by ID or short ID")
     parser.add_argument("--namespace", default=None)
     args = parser.parse_args()
 
     ns = _resolve_namespace(args.namespace)
-
     if args.resolve:
-        proxied = _daemon_request(
+        raw_proxied = _daemon_request(
             "/contradictions/resolve",
             payload={"contradiction_id": args.resolve, "namespace": ns},
         )
+        proxied = _check_daemon_write_response(raw_proxied, "mesh conflicts --resolve")
         if proxied is not None:
-            if "_http_error" in proxied:
-                print(_c(_C_RED, f"    Error: {proxied.get('detail')}"), file=sys.stderr)
-                sys.exit(1)
             if proxied.get("status") == "ok":
                 print(_c(_C_ACCENT, f"    Resolved contradiction '{args.resolve}'"))
                 return
-
         from .memory import Mesh
 
-        mesh = Mesh(namespace=ns, agent_id="cli")
         try:
+            mesh = Mesh(namespace=ns, agent_id="cli", create=False)
             mesh.resolve_contradiction(args.resolve)
             print(_c(_C_ACCENT, f"    Resolved contradiction '{args.resolve}'"))
+        except NamespaceNotFoundError:
+            _handle_missing_namespace_cli(ns)
+            sys.exit(1)
         except ValueError as e:
             print(_c(_C_RED, f"    Error: {e}"), file=sys.stderr)
             sys.exit(1)
         return
 
-    proxied_list = _daemon_request(
+    raw_list = _daemon_request(
         f"/contradictions?{urllib.parse.urlencode({'namespace': ns, 'resolved': 'false'})}",
         payload=None,
         method="GET",
     )
-    if proxied_list is not None and "_http_error" not in proxied_list and proxied_list.get("status") == "ok":
+    proxied_list = _check_daemon_read_response(raw_list, "mesh conflicts")
+    if proxied_list is not None and proxied_list.get("status") == "ok":
+        if proxied_list.get("namespace_exists") is False:
+            _handle_missing_namespace_cli(ns)
+            return
         conflicts = proxied_list.get("contradictions", [])
     else:
         from .memory import Mesh
 
-        mesh = Mesh(namespace=ns, agent_id="cli")
+        try:
+            mesh = Mesh(namespace=ns, agent_id="cli", create=False)
+        except NamespaceNotFoundError:
+            _handle_missing_namespace_cli(ns)
+            return
         conflicts = mesh.contradictions(resolved=False)
 
     if not conflicts:
@@ -764,6 +927,8 @@ def conflicts_cmd() -> None:
 
 
 def patterns_cmd() -> None:
+    from .store import NamespaceNotFoundError
+
     parser = argparse.ArgumentParser(description="Surface query patterns, memory gaps & stale items.")
     parser.add_argument("--namespace", default=None)
     parser.add_argument(
@@ -773,23 +938,29 @@ def patterns_cmd() -> None:
         help="Include private (local_only) memories and queries in pattern analysis",
     )
     args = parser.parse_args()
-
     ns = _resolve_namespace(args.namespace)
-    query_params = {"namespace": ns}
+    query_params: dict[str, Any] = {"namespace": ns}
     if args.include_private:
-        query_params["include_private"] = "1"
-
-    proxied = _daemon_request(
+        query_params["include_private"] = "true"
+    raw_proxied = _daemon_request(
         f"/patterns?{urllib.parse.urlencode(query_params)}",
         payload=None,
         method="GET",
     )
-    if proxied is not None and "_http_error" not in proxied and proxied.get("status") == "ok":
+    proxied = _check_daemon_read_response(raw_proxied, "mesh patterns")
+    if proxied is not None and proxied.get("status") == "ok":
+        if proxied.get("namespace_exists") is False:
+            _handle_missing_namespace_cli(ns)
+            return
         p = proxied.get("patterns", {})
     else:
         from .memory import Mesh
 
-        mesh = Mesh(namespace=ns, agent_id="cli")
+        try:
+            mesh = Mesh(namespace=ns, agent_id="cli", create=False)
+        except NamespaceNotFoundError:
+            _handle_missing_namespace_cli(ns)
+            return
         p = mesh.patterns(include_private=args.include_private)
 
     print(_c(_C_ACCENT, f"\n    Memory Patterns & Gaps for '{ns}':\n"))
@@ -803,16 +974,17 @@ def patterns_cmd() -> None:
 
 
 def doctor_cmd() -> None:
-    """Comprehensive diagnostic check for SQLite WAL/FTS5, permissions, ONNX SHA-256, daemon, and MCP."""
+    """Comprehensive diagnostic check for SQLite WAL/FTS5, permissions, ONNX SHA-256, degraded state, daemon, and MCP."""
     print(_c(_C_ACCENT, "\n    Mesh Diagnostic Doctor v" + VERSION + "\n"))
-    from .audit import MESH_DIR, ensure_secure_mesh_dir
-    from .daemon import get_daemon_health
+    from .audit import ensure_secure_mesh_dir
+    from .daemon import get_daemon_health, verify_daemon_identity
     from .memory import (
         _ALLOWED_MODEL_SHA256,
         _ALLOWED_TOKENIZER_SHA256,
         _has_local_onnx_pair,
         _verify_sha256,
         get_engine_status,
+        get_model_status,
     )
     from .namespaces import list_namespaces
 
@@ -821,8 +993,6 @@ def doctor_cmd() -> None:
 
     # 1. Directory & Permissions check
     try:
-        from .audit import ensure_secure_mesh_dir, get_mesh_dir
-
         mesh_dir = ensure_secure_mesh_dir()
         if os.name != "nt" and mesh_dir.exists():
             mode = stat.S_IMODE(mesh_dir.stat().st_mode)
@@ -849,19 +1019,29 @@ def doctor_cmd() -> None:
         failures += 1
         print(f"    SQLite & FTS5:  {_c(_C_RED, f'FAIL ({e})')}")
 
-    # 3. Daemon Server check
-    health = get_daemon_health(timeout=0.4)
-    if health:
-        print(f"    Daemon Server:  {_c(_C_ACCENT, 'RUNNING (PID ' + str(health.get('pid')) + ')')}")
+    # 3. Daemon Server check (verified via /identity)
+    ident = verify_daemon_identity(timeout=0.4)
+    if ident and ident.get("identity_verified"):
+        print(f"    Daemon Server:  {_c(_C_ACCENT, 'RUNNING & VERIFIED (PID ' + str(ident.get('pid')) + ')')}")
     else:
-        print(f"    Daemon Server:  {_c(_C_DIM, 'STOPPED (optional — run `mesh daemon start` to enable)')}")
+        health = get_daemon_health(timeout=0.3)
+        if health:
+            warnings += 1
+            print(f"    Daemon Server:  {_c(_C_AMBER, 'UNVERIFIED PROCESS ON PORT (failed HMAC identity check)')}")
+        else:
+            print(f"    Daemon Server:  {_c(_C_DIM, 'STOPPED (optional — run `mesh daemon start` to enable)')}")
 
-    # 4. ONNX Model & SHA-256 verification
+    # 4. ONNX Model, SHA-256 verification & Degraded State check (Phase 3.3)
     pair = _has_local_onnx_pair()
     eng = get_engine_status()
+    m_status = get_model_status()
+    backend_str = eng.get("backend", "unloaded")
+    model_tag_str = eng.get("model_tag", "hash-384")
+    last_err = eng.get("last_error") or m_status.get("last_error")
+
     if pair is not None:
-        model_ok = _verify_sha256(pair[0], _ALLOWED_MODEL_SHA256, "MESH_MODEL_SHA256")
-        tok_ok = _verify_sha256(pair[1], _ALLOWED_TOKENIZER_SHA256, "MESH_TOKENIZER_SHA256")
+        model_ok = _verify_sha256(pair[0], _ALLOWED_MODEL_SHA256, "MESH_MODEL_SHA256", source_label=str(pair[0]))
+        tok_ok = _verify_sha256(pair[1], _ALLOWED_TOKENIZER_SHA256, "MESH_TOKENIZER_SHA256", source_label=str(pair[1]))
         if model_ok and tok_ok:
             print(f"    ONNX on disk:   {_c(_C_ACCENT, 'YES (SHA-256 verified)')}")
         else:
@@ -869,14 +1049,21 @@ def doctor_cmd() -> None:
             print(f"    ONNX on disk:   {_c(_C_RED, 'CHECKSUM MISMATCH (corrupted model/tokenizer files)')}")
     else:
         warnings += 1
-        print(f"    ONNX on disk:   {_c(_C_AMBER, 'Not downloaded yet (using local hash-384 fallback)')}")
+        print(
+            f"    ONNX on disk:   {_c(_C_AMBER, 'WARNING: Not downloaded yet (degraded mode: using hash-384 fallback — run `mesh setup`)')}"
+        )
 
-    print(f"    Model State:    {eng.get('backend', 'unloaded')}")
+    print(f"    Embedding Info: backend={backend_str}, model_tag={model_tag_str}")
+    if eng.get("embedding_degraded"):
+        print(f"    Degraded State: {_c(_C_AMBER, 'WARNING: Active embedding backend is hash-384 fallback')}")
+    if last_err:
+        print(f"    Last Error:     {_c(_C_AMBER, str(last_err))}")
 
     # 5. MCP Config discovery
     home = Path.home()
     if os.name == "nt":
-        claude_mcp = Path(os.environ.get("APPDATA", "")) / "Claude" / "claude_desktop_config.json"
+        appdata_raw = os.environ.get("APPDATA", "").strip()
+        claude_mcp = (Path(appdata_raw) / "Claude" / "claude_desktop_config.json") if appdata_raw else (home / "claude_desktop_config.json")
         windsurf_mcp = home / ".codeium" / "windsurf" / "mcp_config.json"
     elif sys.platform == "darwin":
         claude_mcp = home / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json"
@@ -898,10 +1085,22 @@ def doctor_cmd() -> None:
     else:
         print(f"    MCP Configs:    {_c(_C_DIM, 'None detected in default Claude/Cursor paths')}")
 
-    # 6. Namespaces summary
+    # 6. Namespaces summary & per-namespace hash-384/needs-reembed counts
     ns_list = list_namespaces()
     ns_preview = ", ".join(n["namespace"] for n in ns_list[:3]) if ns_list else "none"
     print(f"    Namespaces:     {len(ns_list)} found ({ns_preview})")
+    for n_info in ns_list:
+        ns_name = n_info["namespace"]
+        if "error" in n_info:
+            warnings += 1
+            print(f"      - {ns_name}: {_c(_C_RED, 'ERROR: ' + str(n_info['error']))}")
+            continue
+        h_cnt, r_cnt = _namespace_degraded_counts(ns_name)
+        if h_cnt > 0 or r_cnt > 0:
+            print(
+                f"      - {ns_name}: {n_info['memory_count']} memories "
+                f"({_c(_C_AMBER, f'{h_cnt} hash-384, {r_cnt} needs-reembed')})"
+            )
 
     if failures > 0:
         print(_c(_C_RED, f"\n    Doctor finished with {failures} failure(s) and {warnings} warning(s).\n"))
@@ -917,13 +1116,12 @@ def shell_cmd() -> None:
     parser = argparse.ArgumentParser(description="Interactive Mesh REPL shell.")
     parser.add_argument("--namespace", default=None)
     args, _ = parser.parse_known_args()
-
     ns = _resolve_namespace(args.namespace)
+
     print(_c(_C_ACCENT, f"\n    Mesh Interactive Shell (namespace: '{ns}')"))
     print(_c(_C_DIM, "  Type 'help' for commands, 'ns <name>' to switch namespace, 'exit' to leave.\n"))
 
     cmd_map = _get_command_mapping()
-
     while True:
         try:
             line = input(_c(_C_BLUE, f"mesh ({ns})> ")).strip()
@@ -972,9 +1170,9 @@ def shell_cmd() -> None:
             print(_c(_C_RED, f"  Unknown command '{cmd}'. Type 'help' for available commands."))
             continue
 
-        # Inject active REPL namespace if `--namespace` wasn't explicitly passed
         if (
-            resolved_cmd in (
+            resolved_cmd
+            in (
                 "add",
                 "ask",
                 "inspect",
@@ -1062,10 +1260,9 @@ complete -c mesh -l type -a "fact preference context result instruction process 
 
 _POWERSHELL_COMPLETION_SCRIPT = """# Added by Mesh
 Register-ArgumentCompleter -Native -CommandName mesh -ScriptBlock {
-    param($wordToComplete, $commandAst, $cursorPosition)
-    $commands = @('add','ask','inspect','update','forget','status','why','context','setup','install-skills','daemon','server','dashboard','http','namespaces','export','import','capture','digest','conflicts','patterns','doctor','shell','completion','help','version')
-    $commands | Where-Object { $_ -like "$wordToComplete*" } | ForEach-Object {
-        [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
+    param($wordToComplete, $commandAst,$cursorPosition)
+    $commands = @('add','ask','inspect','update','forget','status','why','context','setup','install-skills','daemon','server','dashboard','http','namespaces','export','import','capture','digest','conflicts','patterns','doctor','shell','completion','help','version')$commands | Where-Object { $_ -like "$wordToComplete*" } | ForEach-Object {
+        [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue',$_)
     }
 }
 """
@@ -1124,19 +1321,25 @@ def completion_cmd() -> None:
 
 
 def export_cmd() -> None:
+    from .store import NamespaceNotFoundError
+
     parser = argparse.ArgumentParser(description="Export Mesh memories to JSON.")
     parser.add_argument("output")
     parser.add_argument("--namespace", default=None)
     parser.add_argument("--no-embeddings", action="store_true")
     args = parser.parse_args()
-
+    ns = _resolve_namespace(args.namespace)
     from .io import export_namespace
 
-    export_namespace(
-        namespace=_resolve_namespace(args.namespace),
-        output_path=args.output,
-        include_embeddings=not args.no_embeddings,
-    )
+    try:
+        export_namespace(
+            namespace=ns,
+            output_path=args.output,
+            include_embeddings=not args.no_embeddings,
+        )
+    except NamespaceNotFoundError:
+        _handle_missing_namespace_cli(ns)
+        sys.exit(1)
 
 
 def import_cmd() -> None:
@@ -1146,7 +1349,6 @@ def import_cmd() -> None:
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
-
     from .io import import_namespace
 
     target_ns = _resolve_namespace(args.namespace) if args.namespace else None
@@ -1173,7 +1375,6 @@ def namespaces_cmd() -> None:
     parser.add_argument("args", nargs="*")
     parser.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt on delete")
     args = parser.parse_args()
-
     from .namespaces import delete_namespace, list_namespaces, namespace_stats, rename_namespace
 
     if args.command == "list":
@@ -1182,10 +1383,18 @@ def namespaces_cmd() -> None:
             print("  No namespaces found.")
             return
         for ns in items:
-            print(
-                f"  {ns['namespace']:<25} {ns['memory_count']:>5} memories "
-                f"({ns['local_only_count']} private, updated {str(ns['last_updated'])[:19]})"
-            )
+            if "error" in ns:
+                print(
+                    _c(
+                        _C_RED,
+                        f"  {ns['namespace']:<25} [ERROR: {ns['error']}]",
+                    )
+                )
+            else:
+                print(
+                    f"  {ns['namespace']:<25} {ns['memory_count']:>5} memories "
+                    f"({ns['local_only_count']} private, updated {str(ns['last_updated'])[:19]})"
+                )
     elif args.command == "stats":
         target = _resolve_namespace(args.args[0] if args.args else None)
         try:
@@ -1199,6 +1408,7 @@ def namespaces_cmd() -> None:
             print(f"    Total Recalls:    {st['total_recalls']}")
             print(f"    Types:            {st['type_breakdown']}\n")
         except ValueError as e:
+            _handle_missing_namespace_cli(target)
             print(_c(_C_RED, f"  Error: {e}"), file=sys.stderr)
             sys.exit(1)
     elif args.command == "delete":
@@ -1214,8 +1424,22 @@ def namespaces_cmd() -> None:
         ):
             print(_c(_C_DIM, f"  Aborted deleting namespace '{target}'."))
             return
-        removed = delete_namespace(target)
-        print(_c(_C_ACCENT, f"  Deleted namespace '{target}' ({removed} memories removed)."))
+        try:
+            removed = delete_namespace(target)
+            print(_c(_C_ACCENT, f"  Deleted namespace '{target}' ({removed} memories removed)."))
+        except ValueError as e:
+            print(_c(_C_RED, f"  Error: {e}"), file=sys.stderr)
+            sys.exit(1)
+        except (RuntimeError, OSError) as e:
+            print(
+                _c(
+                    _C_RED,
+                    f"  Error: Another process still holds the database open. "
+                    f"Run mesh daemon stop, close agents using this namespace, and retry ({e})",
+                ),
+                file=sys.stderr,
+            )
+            sys.exit(1)
     elif args.command == "rename":
         if len(args.args) < 2:
             print(_c(_C_RED, "  Error: usage: mesh namespaces rename <old> <new>"), file=sys.stderr)
@@ -1225,7 +1449,7 @@ def namespaces_cmd() -> None:
         try:
             moved = rename_namespace(old_ns, new_ns)
             print(_c(_C_ACCENT, f"  Renamed namespace '{old_ns}' -> '{new_ns}' ({moved} memories moved)."))
-        except ValueError as e:
+        except (ValueError, RuntimeError, OSError) as e:
             print(_c(_C_RED, f"  Error: {e}"), file=sys.stderr)
             sys.exit(1)
 
@@ -1247,7 +1471,7 @@ def context_cmd() -> None:
     ns = _resolve_namespace(args.namespace)
     tags = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else None
 
-    proxied = _daemon_request(
+    raw_proxied = _daemon_request(
         "/context",
         payload={
             "query": args.query,
@@ -1260,13 +1484,17 @@ def context_cmd() -> None:
             "include_private": args.include_private,
         },
     )
-    if proxied is not None and "_http_error" not in proxied and proxied.get("status") == "ok":
+    proxied = _check_daemon_read_response(raw_proxied, "mesh context")
+    if proxied is not None and proxied.get("status") == "ok":
+        if proxied.get("namespace_exists") is False:
+            _handle_missing_namespace_cli(ns)
+            return
         print(proxied.get("context", ""))
         return
 
-    from .context_builder import build_context
+    from .context_builder import build_context_bundle
 
-    res = build_context(
+    bundle = build_context_bundle(
         query=args.query,
         namespace=ns,
         count=args.count,
@@ -1276,7 +1504,10 @@ def context_cmd() -> None:
         tags=tags,
         include_private=args.include_private,
     )
-    print(res)
+    if bundle.get("namespace_exists") is False:
+        _handle_missing_namespace_cli(ns)
+        return
+    print(bundle.get("context", ""))
 
 
 def why_cmd() -> None:
@@ -1285,11 +1516,18 @@ def why_cmd() -> None:
     parser.add_argument("--namespace", default=None)
     parser.add_argument("--action", choices=["read", "write", "update", "forget", "delete", "all"], default="all")
     args = parser.parse_args()
+    ns = _resolve_namespace(args.namespace)
 
-    from .audit import get_audit_log
+    from .audit import _get_audit_db_path, ensure_secure_mesh_dir, get_audit_log
+
+    db_path = ensure_secure_mesh_dir().resolve() / f"mesh_{ns}.db"
+    audit_path = _get_audit_db_path(ns)
+    if not db_path.exists() and not audit_path.exists():
+        _handle_missing_namespace_cli(ns)
+        return
 
     entries = get_audit_log(
-        namespace=_resolve_namespace(args.namespace),
+        namespace=ns,
         limit=args.limit,
         action_filter=args.action,
     )
@@ -1309,20 +1547,51 @@ def status_cmd() -> None:
     parser.add_argument("--namespace", default=None)
     parser.add_argument("--check-updates", action="store_true", help="Check PyPI for newer Mesh versions")
     args = parser.parse_args()
-
     check_for_updates(force=args.check_updates, blocking=bool(args.check_updates))
+
+    from .memory import get_engine_status, get_model_status
     from .namespaces import namespace_stats
 
     ns = _resolve_namespace(args.namespace)
+    eng = get_engine_status()
+    m_status = get_model_status()
+    backend_str = eng.get("backend", "unloaded")
+    model_tag = eng.get("model_tag", "hash-384")
+    last_err = eng.get("last_error") or m_status.get("last_error")
+
     try:
         st = namespace_stats(ns)
+        h_cnt, r_cnt = _namespace_degraded_counts(ns)
         print(_c(_C_ACCENT, f"\n    Mesh Status — namespace: '{ns}'"))
         print(
-            f"    Memories: {st['memory_count']} total ({st['local_only_count']} private, {st['stale_count']} stale)"
+            f"    Memories:   {st['memory_count']} total ({st['local_only_count']} private, {st['stale_count']} stale)"
         )
-        print(f"    Recalls:  {st['total_recalls']}\n")
+        print(f"    Recalls:    {st['total_recalls']}")
+        print(f"    Embedding:  backend={backend_str}, model_tag={model_tag}")
+        if h_cnt > 0 or r_cnt > 0:
+            print(f"    Pending:    {h_cnt} hash-384, {r_cnt} needs-reembed")
+        if eng.get("embedding_degraded"):
+            print(
+                _c(
+                    _C_AMBER,
+                    "    [WARNING] Active embedding backend is hash-384 fallback (run `mesh setup` to enable ONNX).",
+                )
+            )
+        if last_err:
+            print(_c(_C_AMBER, f"    Last Error: {last_err}"))
+        print()
     except ValueError:
-        print(f"Namespace '{ns}' does not exist yet.")
+        _handle_missing_namespace_cli(ns)
+        print(f"    Embedding:  backend={backend_str}, model_tag={model_tag}")
+        if eng.get("embedding_degraded"):
+            print(
+                _c(
+                    _C_AMBER,
+                    "    [WARNING] Active embedding backend is hash-384 fallback (run `mesh setup` to enable ONNX).",
+                )
+            )
+        if last_err:
+            print(_c(_C_AMBER, f"    Last Error: {last_err}"))
 
 
 def help_cmd() -> None:
@@ -1341,6 +1610,8 @@ def help_cmd() -> None:
     print("    mesh doctor             Diagnose ONNX model, daemon, SQLite & MCP configs")
     print("    mesh conflicts          Inspect & resolve memory contradictions")
     print("    mesh patterns           Surface top queries, knowledge gaps & stale items")
+    print("    mesh digest             Summarize recent session activity")
+    print("    mesh why                Show recent audit trail")
     print("    mesh completion         Install shell Tab autocompletion (bash, zsh, fish, powershell)")
     print()
     print("  SYSTEM & SERVERS")
@@ -1351,6 +1622,7 @@ def help_cmd() -> None:
     print("    mesh http               Start REST API server on http://localhost:7701")
     print("    mesh namespaces         List, stats, rename, or delete namespaces")
     print("    mesh export / import    Backup or restore namespaces to/from JSON")
+    print("    mesh capture            Extract memories from session logs (--file / --stdin)")
     print()
 
 
@@ -1425,7 +1697,6 @@ def main() -> None:
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
         help_cmd()
         return
-
     if sys.argv[1] in ("-v", "--version", "version"):
         print(f"mesh {VERSION}")
         return

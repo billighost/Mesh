@@ -1,0 +1,116 @@
+{
+  "normal_queries": [
+    {"query": "what port does redis use", "expected": ["port-redis"]},
+    {"query": "database port", "expected": ["port-postgres"]},
+    {"query": "backend server port", "expected": ["port-backend"]},
+    {"query": "nextjs dev port", "expected": ["port-frontend"]},
+    {"query": "ssh port for bastion", "expected": ["port-ssh"]},
+    {"query": "mail relay smtp port", "expected": ["port-smtp"]},
+    {"query": "prometheus metrics port", "expected": ["port-metrics"]},
+    {"query": "grafana port", "expected": ["port-grafana"]},
+    {"query": "mongodb port", "expected": ["port-mongo"]},
+    {"query": "kafka broker port", "expected": ["port-kafka"]},
+    {"query": "quarterly financial report due date", "expected": ["neg-report-finance"]},
+    {"query": "annual sales report", "expected": ["neg-report-sales"]},
+    {"query": "compliance audit report", "expected": ["neg-report-audit"]},
+    {"query": "weekly bug report memory leak", "expected": ["neg-report-bug"]},
+    {"query": "python import error", "expected": ["neg-import-py"]},
+    {"query": "csv import pipeline", "expected": ["neg-import-csv"]},
+    {"query": "customs duty import tariffs", "expected": ["neg-import-tax"]},
+    {"query": "customer support for billing", "expected": ["neg-support-tier1"]},
+    {"query": "technical support desk escalation", "expected": ["neg-support-tech"]},
+    {"query": "docker arm64 architecture support", "expected": ["neg-support-arch"]},
+    {"query": "airport boarding pass", "expected": ["pass-boarding"]},
+    {"query": "monthly bus pass validity", "expected": ["pass-bus"]},
+    {"query": "mountain pass closed winter", "expected": ["pass-mountain"]},
+    {"query": "pass the salt", "expected": ["pass-salt"]},
+    {"query": "neural network forward pass", "expected": ["pass-forward"]},
+    {"query": "database password vault", "expected": ["neg-pw-db"]},
+    {"query": "admin password requirements", "expected": ["neg-pw-admin"]},
+    {"query": "root password rotation", "expected": ["neg-pw-root"]},
+    {"query": "guest wifi password", "expected": ["neg-pw-wifi"]},
+    {"query": "api secret key password token", "expected": ["neg-pw-api"]},
+    {"query": "merge feature branch into main", "expected": ["main-git"]},
+    {"query": "application main entrypoint function", "expected": ["main-entry"]},
+    {"query": "corporate main office location", "expected": ["main-office"]},
+    {"query": "water main pipe inspection", "expected": ["main-pipe"]},
+    {"query": "ui main thread blocking", "expected": ["main-thread"]},
+    {"query": "kubernetes production cluster nodes", "expected": ["neg-prod-cluster"]},
+    {"query": "production environment postgres cluster", "expected": ["neg-prod-db"]},
+    {"query": "deploying release to production", "expected": ["neg-prod-release"]},
+    {"query": "cloudflare production traffic", "expected": ["neg-prod-traffic"]},
+    {"query": "production outage incident review", "expected": ["neg-prod-incident"]},
+    {"query": "database host name", "expected": ["host-db"]},
+    {"query": "bastion host ssh access", "expected": ["host-bastion"]},
+    {"query": "prometheus metrics host", "expected": ["host-metrics"]},
+    {"query": "redis cache host", "expected": ["host-redis"]},
+    {"query": "nginx virtual host configuration", "expected": ["host-virtual"]},
+    {"query": "user registration api endpoint", "expected": ["neg-endpoint-users"]},
+    {"query": "graphql endpoint schema", "expected": ["neg-endpoint-graphql"]},
+    {"query": "stripe webhook endpoint", "expected": ["neg-endpoint-webhook"]},
+    {"query": "health check probe endpoint", "expected": ["neg-endpoint-health"]},
+    {"query": "oauth callback endpoint", "expected": ["neg-endpoint-auth"]},
+    {"query": "documentation url", "expected": ["url-docs"]},
+    {"query": "cdn asset url", "expected": ["url-cdn"]},
+    {"query": "github repository url", "expected": ["url-repo"]},
+    {"query": "public status page url", "expected": ["url-status"]},
+    {"query": "internal dns resolver ip", "expected": ["ip-dns"]},
+    {"query": "default gateway ip address", "expected": ["ip-gateway"]},
+    {"query": "wireguard vpn server ip", "expected": ["ip-vpn"]},
+    {"query": "python version requirement", "expected": ["ver-python"]},
+    {"query": "nodejs version build agent", "expected": ["ver-node"]},
+    {"query": "postgresql version in production", "expected": ["ver-postgres"]}
+  ],
+  "hard_negatives": [
+    {
+      "query": "port",
+      "expected_targets": ["port-redis", "port-postgres", "port-backend", "port-frontend", "port-ssh", "port-smtp", "port-metrics", "port-grafana", "port-mongo", "port-kafka"],
+      "hard_negative_targets": ["neg-report-finance", "neg-report-sales", "neg-report-audit", "neg-report-bug", "neg-import-py", "neg-import-csv", "neg-import-tax", "neg-support-tier1", "neg-support-tech", "neg-support-arch"]
+    },
+    {
+      "query": "ports",
+      "expected_targets": ["port-redis", "port-postgres", "port-backend", "port-frontend", "port-ssh", "port-smtp", "port-metrics", "port-grafana", "port-mongo", "port-kafka"],
+      "hard_negative_targets": ["neg-report-finance", "neg-report-sales", "neg-report-audit", "neg-report-bug", "neg-import-py", "neg-import-csv", "neg-import-tax", "neg-support-tier1", "neg-support-tech", "neg-support-arch"]
+    },
+    {
+      "query": "network port",
+      "expected_targets": ["port-redis", "port-postgres", "port-backend", "port-frontend", "port-ssh", "port-smtp", "port-metrics", "port-grafana", "port-mongo", "port-kafka"],
+      "hard_negative_targets": ["neg-support-tech", "neg-import-py"]
+    },
+    {
+      "query": "pass",
+      "expected_targets": ["pass-boarding", "pass-bus", "pass-mountain", "pass-salt", "pass-forward"],
+      "hard_negative_targets": ["neg-pw-db", "neg-pw-admin", "neg-pw-root", "neg-pw-wifi", "neg-pw-api"]
+    },
+    {
+      "query": "transit pass",
+      "expected_targets": ["pass-bus", "pass-boarding"],
+      "hard_negative_targets": ["neg-pw-db", "neg-pw-admin", "neg-pw-root", "neg-pw-wifi", "neg-pw-api"]
+    },
+    {
+      "query": "main",
+      "expected_targets": ["main-git", "main-entry", "main-office", "main-pipe", "main-thread"],
+      "hard_negative_targets": ["neg-prod-cluster", "neg-prod-db", "neg-prod-release", "neg-prod-traffic", "neg-prod-incident"]
+    },
+    {
+      "query": "main branch",
+      "expected_targets": ["main-git", "git-branch-release", "git-branch-rebase"],
+      "hard_negative_targets": ["neg-prod-cluster", "neg-prod-db", "neg-prod-release", "neg-prod-traffic", "neg-prod-incident"]
+    },
+    {
+      "query": "host",
+      "expected_targets": ["host-db", "host-bastion", "host-metrics", "host-redis", "host-virtual"],
+      "hard_negative_targets": ["neg-endpoint-users", "neg-endpoint-graphql", "neg-endpoint-webhook", "neg-endpoint-health", "neg-endpoint-auth"]
+    },
+    {
+      "query": "server host",
+      "expected_targets": ["host-db", "host-bastion", "host-metrics", "host-redis", "host-virtual"],
+      "hard_negative_targets": ["neg-endpoint-users", "neg-endpoint-graphql", "neg-endpoint-webhook", "neg-endpoint-health", "neg-endpoint-auth"]
+    },
+    {
+      "query": "url",
+      "expected_targets": ["url-docs", "url-cdn", "url-repo", "url-status", "url-registry"],
+      "hard_negative_targets": ["port-redis", "port-postgres", "port-backend", "neg-endpoint-users", "neg-endpoint-graphql"]
+    }
+  ]
+}

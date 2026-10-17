@@ -3,13 +3,16 @@ mesh/namespaces.py — Namespace listing, deletion, renaming, and statistics.
 
 Security & Integrity:
   - Validates all namespace identifiers against path traversal via `validate_namespace()`
+  - Flushes buffered telemetry (`flush_all_telemetry`) before reading stats, deleting, or renaming
   - Uses `_compute_row_effective_confidence()` from `store.py` for a single unified staleness definition
-  - Evicts all in-memory vector, connection, audit, context, HTTP, MCP, and Dashboard caches on delete/rename
+  - Evicts all in-memory vector, connection, lock, audit, context, HTTP, MCP, and Dashboard caches on delete/rename
+  - Cleans up advisory `.mesh_<ns>.lock` files and enforces atomic rollback on failed `rename_namespace()`
   - Enforces 0600 POSIX file permissions on renamed SQLite databases
 """
 from __future__ import annotations
 
 import gc
+import logging
 import shutil
 import sqlite3
 import sys
@@ -27,6 +30,7 @@ from .audit import (
     validate_namespace,
 )
 from .store import (
+    NamespaceNotFoundError,
     _CACHE_LOCK,
     _INITIALIZED_DBS,
     _TRANSIENT_EMBEDDINGS,
@@ -34,7 +38,11 @@ from .store import (
     _compute_row_effective_confidence,
     _utc_now,
     close_store_connection,
+    evict_namespace_write_lock,
+    flush_all_telemetry,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _get_all_db_paths() -> list[Path]:
@@ -70,6 +78,9 @@ def _evict_namespace_caches(namespace: str, db_path: Path) -> None:
     """
     clean_ns = validate_namespace(namespace)
     resolved_db = db_path.resolve()
+
+    evict_namespace_write_lock(clean_ns)
+
     with _CACHE_LOCK:
         _VECTOR_CACHE.pop(resolved_db, None)
         _VECTOR_CACHE.pop(db_path, None)
@@ -139,68 +150,111 @@ def _remove_sqlite_files(db_path: Path, strict: bool = False) -> bool:
 def list_namespaces() -> list[dict[str, Any]]:
     """
     List all validated namespaces with their memory counts and last updated time.
-    Returns:
-        List of dicts with keys: namespace, memory_count, local_only_count, last_updated
+    - Never silently drops a namespace whose DB file errors; includes it with `"error": "<message>"` (Phase 4.3).
+    - Computes `last_updated` taking edits and accesses into account (`MAX(created_at, updated_at, accessed_at)`).
     """
+    flush_all_telemetry()
     results: list[dict[str, Any]] = []
-
     for db_path in _get_all_db_paths():
         namespace = _namespace_from_db_path(db_path)
         try:
             clean_ns = validate_namespace(namespace)
+        except ValueError:
+            continue
+        try:
             conn = sqlite3.connect(db_path, timeout=5.0)
             conn.row_factory = sqlite3.Row
             try:
                 cursor = conn.cursor()
+                cols = {r[1] for r in cursor.execute("PRAGMA table_info(memories)").fetchall()}
+                if not cols:
+                    raise sqlite3.DatabaseError(f"Database '{db_path.name}' is missing 'memories' table")
                 cursor.execute(
                     "SELECT COUNT(*) as count FROM memories WHERE namespace = ?",
                     (clean_ns,),
                 )
                 total = int(cursor.fetchone()["count"] or 0)
-
                 cursor.execute(
                     "SELECT COUNT(*) as count FROM memories WHERE namespace = ? AND local_only = 1",
                     (clean_ns,),
                 )
                 local_only = int(cursor.fetchone()["count"] or 0)
-
-                cursor.execute(
-                    "SELECT MAX(created_at) as last FROM memories WHERE namespace = ?",
-                    (clean_ns,),
-                )
+                if "updated_at" in cols:
+                    cursor.execute(
+                        """
+                        SELECT MAX(
+                            CASE
+                                WHEN COALESCE(updated_at, '') >= COALESCE(created_at, '')
+                                     AND COALESCE(updated_at, '') >= COALESCE(accessed_at, '')
+                                THEN updated_at
+                                WHEN COALESCE(accessed_at, '') >= COALESCE(created_at, '')
+                                THEN accessed_at
+                                ELSE created_at
+                            END
+                        ) as last
+                        FROM memories WHERE namespace = ?
+                        """,
+                        (clean_ns,),
+                    )
+                else:
+                    cursor.execute(
+                        """
+                        SELECT MAX(
+                            CASE
+                                WHEN COALESCE(accessed_at, '') >= COALESCE(created_at, '')
+                                THEN accessed_at
+                                ELSE created_at
+                            END
+                        ) as last
+                        FROM memories WHERE namespace = ?
+                        """,
+                        (clean_ns,),
+                    )
                 row = cursor.fetchone()
                 last_updated = row["last"] if row and row["last"] else "never"
                 cursor.close()
             finally:
                 conn.close()
-
             results.append(
                 {
                     "namespace": clean_ns,
                     "memory_count": total,
                     "local_only_count": local_only,
                     "last_updated": last_updated,
+                    "updated_at": last_updated,
                 }
             )
-        except Exception:
-            pass
-
+        except Exception as exc:
+            results.append(
+                {
+                    "namespace": clean_ns,
+                    "memory_count": 0,
+                    "local_only_count": 0,
+                    "last_updated": "error",
+                    "updated_at": "error",
+                    "error": str(exc),
+                }
+            )
     results.sort(key=lambda x: x["namespace"])
     return results
 
 
 def delete_namespace(namespace: str) -> int:
     """
-    Delete a validated namespace and ALL its memories (plus its isolated audit trail DB).
-    Returns:
-        Number of memories deleted.
+    Delete a validated namespace and ALL its memories (plus its isolated audit trail DB and `.lock` file).
+    Raises `NamespaceNotFoundError` (a `ValueError` subclass) if the namespace does not exist (Phase 4.2).
     """
     clean_ns = validate_namespace(namespace)
+    flush_all_telemetry()
     base_dir = ensure_secure_mesh_dir().resolve()
     db_path = (base_dir / f"mesh_{clean_ns}.db").resolve()
     audit_db_path = _get_audit_db_path(clean_ns)
-    count = 0
 
+    if not db_path.exists() and not audit_db_path.exists():
+        evict_namespace_write_lock(clean_ns)
+        raise NamespaceNotFoundError(f"Namespace '{namespace}' does not exist")
+
+    count = 0
     _evict_namespace_caches(clean_ns, db_path)
 
     if db_path.exists():
@@ -215,7 +269,8 @@ def delete_namespace(namespace: str) -> int:
                 conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             except sqlite3.OperationalError:
                 pass
-        except Exception:
+        except sqlite3.Error as exc:
+            logger.warning("Could not read memory count before deleting namespace '%s': %s", clean_ns, exc)
             count = 0
         finally:
             conn.close()
@@ -230,25 +285,28 @@ def delete_namespace(namespace: str) -> int:
                 conn_audit.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             except sqlite3.OperationalError:
                 pass
-        except Exception:
-            pass
+        except sqlite3.Error as exc:
+            logger.warning("Could not checkpoint audit DB for namespace '%s': %s", clean_ns, exc)
         finally:
             conn_audit.close()
 
         evict_audit_cache(clean_ns)
         _remove_sqlite_files(audit_db_path, strict=True)
 
+    evict_namespace_write_lock(clean_ns)
     return count
 
 
 def rename_namespace(old_name: str, new_name: str) -> int:
     """
-    Rename a namespace safely with full validation and cache eviction.
-    Returns:
-        Number of memories moved.
+    Rename a namespace safely with full validation, cache eviction, and atomic rollback on failure (Phase 4.3).
     """
     clean_old = validate_namespace(old_name)
     clean_new = validate_namespace(new_name)
+    if clean_old == clean_new:
+        raise ValueError(f"Old and new namespace names are identical ('{clean_old}').")
+
+    flush_all_telemetry()
     base_dir = ensure_secure_mesh_dir().resolve()
     old_db = (base_dir / f"mesh_{clean_old}.db").resolve()
     new_db = (base_dir / f"mesh_{clean_new}.db").resolve()
@@ -256,7 +314,7 @@ def rename_namespace(old_name: str, new_name: str) -> int:
     new_audit = _get_audit_db_path(clean_new)
 
     if not old_db.exists():
-        raise ValueError(f"Namespace '{old_name}' does not exist")
+        raise NamespaceNotFoundError(f"Namespace '{old_name}' does not exist")
     if new_db.exists() or new_audit.exists():
         raise ValueError(f"Namespace '{new_name}' already exists. Delete it first.")
 
@@ -272,62 +330,78 @@ def rename_namespace(old_name: str, new_name: str) -> int:
     finally:
         conn_old.close()
 
-    shutil.copy2(old_db, new_db)
-    secure_file_permissions(new_db)
-
     count = 0
-    conn_new = sqlite3.connect(new_db, timeout=5.0)
     try:
-        conn_new.execute("UPDATE memories SET namespace = ? WHERE namespace = ?", (clean_new, clean_old))
-        conn_new.execute("UPDATE queries SET namespace = ? WHERE namespace = ?", (clean_new, clean_old))
-        conn_new.execute(
-            "UPDATE contradictions SET namespace = ? WHERE namespace = ?", (clean_new, clean_old)
-        )
-        conn_new.commit()
+        shutil.copy2(old_db, new_db)
+        secure_file_permissions(new_db)
 
-        cur = conn_new.execute(
-            "SELECT COUNT(*) FROM memories WHERE namespace = ?", (clean_new,)
-        )
-        row = cur.fetchone()
-        count = int(row[0]) if row else 0
-        cur.close()
-    finally:
-        conn_new.close()
+        conn_new = sqlite3.connect(new_db, timeout=5.0)
+        try:
+            conn_new.execute("UPDATE memories SET namespace = ? WHERE namespace = ?", (clean_new, clean_old))
+            conn_new.execute("UPDATE queries SET namespace = ? WHERE namespace = ?", (clean_new, clean_old))
+            conn_new.execute(
+                "UPDATE contradictions SET namespace = ? WHERE namespace = ?", (clean_new, clean_old)
+            )
+            # Bump content_version in mesh_meta if present
+            tables = {
+                r[0]
+                for r in conn_new.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            if "mesh_meta" in tables:
+                conn_new.execute(
+                    "INSERT OR REPLACE INTO mesh_meta (key, value) VALUES ('content_version', COALESCE((SELECT CAST(value AS INTEGER) + 1 FROM mesh_meta WHERE key = 'content_version'), '1'))"
+                )
+            conn_new.commit()
+            cur = conn_new.execute(
+                "SELECT COUNT(*) FROM memories WHERE namespace = ?", (clean_new,)
+            )
+            row = cur.fetchone()
+            count = int(row[0]) if row else 0
+            cur.close()
+        finally:
+            conn_new.close()
+        secure_file_permissions(new_db)
 
-    secure_file_permissions(new_db)
+        if old_audit.exists():
+            conn_audit_old = sqlite3.connect(old_audit, timeout=5.0)
+            try:
+                try:
+                    conn_audit_old.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                except sqlite3.OperationalError:
+                    pass
+            finally:
+                conn_audit_old.close()
+
+            shutil.copy2(old_audit, new_audit)
+            secure_file_permissions(new_audit)
+            conn_audit_new = sqlite3.connect(new_audit, timeout=5.0)
+            try:
+                conn_audit_new.execute(
+                    "UPDATE audit_log SET namespace = ? WHERE namespace = ?",
+                    (clean_new, clean_old),
+                )
+                conn_audit_new.commit()
+            finally:
+                conn_audit_new.close()
+            secure_file_permissions(new_audit)
+    except Exception:
+        # Roll back partially created new DB and audit DB so old namespace remains untouched
+        _evict_namespace_caches(clean_new, new_db)
+        _remove_sqlite_files(new_db)
+        if new_audit.exists():
+            evict_audit_cache(clean_new)
+            _remove_sqlite_files(new_audit)
+        raise
+
+    # Both DB and Audit DB succeeded — now remove old files and old lock file
     _evict_namespace_caches(clean_old, old_db)
     _remove_sqlite_files(old_db)
-
-    old_audit = _get_audit_db_path(clean_old)
-    new_audit = _get_audit_db_path(clean_new)
     if old_audit.exists():
-        conn_audit_old = sqlite3.connect(old_audit, timeout=5.0)
-        try:
-            try:
-                conn_audit_old.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            except sqlite3.OperationalError:
-                pass
-        finally:
-            conn_audit_old.close()
-
-        shutil.copy2(old_audit, new_audit)
-        secure_file_permissions(new_audit)
-        conn_audit_new = sqlite3.connect(new_audit, timeout=5.0)
-        try:
-            conn_audit_new.execute(
-                "UPDATE audit_log SET namespace = ? WHERE namespace = ?",
-                (clean_new, clean_old),
-            )
-            conn_audit_new.commit()
-        except Exception:
-            pass
-        finally:
-            conn_audit_new.close()
-
-        secure_file_permissions(new_audit)
         evict_audit_cache(clean_old)
         _remove_sqlite_files(old_audit)
-
+    evict_namespace_write_lock(clean_old)
     return count
 
 
@@ -335,19 +409,20 @@ def namespace_stats(namespace: str) -> dict[str, Any]:
     """
     Return detailed statistics for a validated namespace using the unified
     `_compute_row_effective_confidence()` staleness definition.
+    Never creates a `.db` file if the namespace does not exist.
     """
     clean_ns = validate_namespace(namespace)
+    flush_all_telemetry()
     base_dir = ensure_secure_mesh_dir().resolve()
     db_path = (base_dir / f"mesh_{clean_ns}.db").resolve()
     if not db_path.exists():
-        raise ValueError(f"Namespace '{namespace}' does not exist")
+        raise NamespaceNotFoundError(f"Namespace '{namespace}' does not exist")
 
     now = _utc_now()
     conn = sqlite3.connect(db_path, timeout=5.0)
     conn.row_factory = sqlite3.Row
     try:
         cursor = conn.cursor()
-
         cursor.execute("SELECT COUNT(*) as c FROM memories WHERE namespace = ?", (clean_ns,))
         total = int(cursor.fetchone()["c"] or 0)
 
