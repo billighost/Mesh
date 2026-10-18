@@ -47,6 +47,7 @@ from mesh.io import export_namespace, import_namespace
 from mesh.memory import (
     MAX_CONTENT_LENGTH,
     _extract_subject_value_pair,
+    _is_true_contradiction,
 )
 from mesh.namespaces import delete_namespace
 from mesh.passive import (
@@ -111,6 +112,17 @@ def test_alphanumeric_slot_contradictions():
         _cleanup(ns2)
     finally:
         _cleanup(ns)
+
+
+def test_numeric_slot_conflict_ignores_embedding_similarity():
+    """Structural slot conflicts must survive the hash-384 fallback's low cosine."""
+    assert _is_true_contradiction(
+        "primary database is db1", "primary database is db2", 0.64
+    ) is True
+    # Compatible elaborations still do not conflict.
+    assert _is_true_contradiction(
+        "PostgreSQL runs on port 5432", "PostgreSQL 16 runs on port 5432", 0.9
+    ) is False
 
 
 # ==============================================================================
