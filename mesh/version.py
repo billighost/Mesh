@@ -11,7 +11,7 @@ import threading
 import urllib.request
 from typing import Optional
 
-VERSION = "0.7.0"
+VERSION = "0.7.1"
 
 _PEP440_RE = re.compile(
     r"^\s*v?(?P<release>\d+(?:\.\d+)*)"

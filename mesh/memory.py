@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import difflib
 import gc
+import contextvars
 import hashlib
 import json
 import math
@@ -49,14 +50,12 @@ from .audit import (
     secure_file_permissions,
     validate_namespace,
 )
+from .envutil import env_float, env_int
 from .store import (
     EMBEDDING_DIM,
-    MESH_DIR,
     STALE_THRESHOLD,
     MeshStore,
-    NamespaceNotFoundError,
     _extract_search_tokens,
-    _is_mixed_space,
     _is_same_known_space,
     _parse_iso_utc,
     _utc_now,
@@ -66,6 +65,8 @@ from .store import (
 )
 
 _MODEL_LOCK = threading.RLock()
+_WARNED_MESSAGES: set[str] = set()
+_WARNED_LOCK = threading.Lock()
 _model: Optional[Any] = None
 _torch: Optional[Any] = None
 _model_backend: Optional[str] = None
@@ -116,6 +117,8 @@ _download_in_progress: bool = False
 _download_complete_event = threading.Event()
 _download_permission_decided: bool = False
 _download_permission_granted: bool = False
+_download_failed_until: float = 0.0
+_DOWNLOAD_RETRY_SECONDS = 300.0
 _bootstrap_triggered: bool = False
 
 # In-flight namespace healing thread registry (Phase 3.2)
@@ -174,7 +177,7 @@ class _BoundedReembedQueue:
 _PENDING_REEMBED_QUEUE = _BoundedReembedQueue(_PENDING_REEMBED_MAXSIZE)
 
 # Unload neural model weights after N seconds of inactivity (default: 180s / 3 minutes).
-_IDLE_UNLOAD_SECONDS: float = float(os.environ.get("MESH_IDLE_UNLOAD_SECONDS", "180"))
+_IDLE_UNLOAD_SECONDS: float = env_float("MESH_IDLE_UNLOAD_SECONDS", 180.0, minimum=0.0)
 
 # Maps cleaned_text -> (readonly_float32_ndarray, model_tag) (Phase 3.1)
 _EMBED_CACHE_LOCK = threading.Lock()
@@ -194,7 +197,7 @@ _EMBED_CACHE_MAXSIZE = _get_embed_cache_maxsize()
 _EMBED_CACHE: OrderedDict[str, tuple[np.ndarray, str]] = OrderedDict()
 
 # Maximum allowed characters in a single memory content string (16 KB)
-MAX_CONTENT_LENGTH = int(os.environ.get("MESH_MAX_CONTENT_LENGTH", "16384"))
+MAX_CONTENT_LENGTH = env_int("MESH_MAX_CONTENT_LENGTH", 16384, minimum=1)
 
 # Similarity threshold above which two memories are checked for contradiction
 CONTRADICTION_THRESHOLD = 0.82
@@ -401,6 +404,33 @@ def _compute_file_sha256(path: Path) -> str:
     return h.hexdigest().lower()
 
 
+_SHA256_CACHE: dict[tuple[str, int, int], str] = {}
+_SHA256_CACHE_LOCK = threading.Lock()
+
+
+def _compute_file_sha256_cached(path: Path) -> str:
+    """SHA-256 of `path`, memoized by (path, size, mtime) so a 90 MB model is hashed once.
+
+    Re-hashing a large ONNX file on every engine lookup/status call was the slow
+    checksum path; file replacement changes size+mtime and invalidates the entry.
+    """
+    try:
+        st = path.stat()
+    except OSError:
+        return ""
+    key = (str(path.resolve()), int(st.st_size), int(st.st_mtime_ns))
+    with _SHA256_CACHE_LOCK:
+        cached = _SHA256_CACHE.get(key)
+    if cached is not None:
+        return cached
+    actual = _compute_file_sha256(path)
+    with _SHA256_CACHE_LOCK:
+        if len(_SHA256_CACHE) >= 16:
+            _SHA256_CACHE.clear()
+        _SHA256_CACHE[key] = actual
+    return actual
+
+
 def _verify_sha256(
     path: Path,
     allowed_hashes: set[str],
@@ -421,7 +451,7 @@ def _verify_sha256(
     if not expected:
         return True
     try:
-        actual = _compute_file_sha256(path)
+        actual = _compute_file_sha256_cached(path)
         if actual in expected:
             return True
         expected_list = sorted(expected)
@@ -712,7 +742,11 @@ def _hash_embed_384(text: str) -> np.ndarray:
 
 def _has_local_onnx_pair() -> Optional[tuple[Path, Path]]:
     """
-    O(1) hot-path check (<0.02ms) for `~/.mesh/models/all-MiniLM-L6-v2-onnx/{model.onnx, tokenizer.json}`.
+    Hot-path check for a *valid* `~/.mesh/models/all-MiniLM-L6-v2-onnx/{model.onnx, tokenizer.json}`.
+
+    Checksums are verified too (cached by path/size/mtime), so a truncated or
+    corrupted file is no longer reported as a usable model. First verification
+    reads the files once; later calls are O(1).
     """
     model_dir = _get_onnx_model_dir()
     target_model = model_dir / "model.onnx"
@@ -720,7 +754,18 @@ def _has_local_onnx_pair() -> Optional[tuple[Path, Path]]:
     if target_model.exists() and target_tok.exists():
         try:
             if target_model.stat().st_size > 80_000_000 and target_tok.stat().st_size > 100_000:
-                return target_model, target_tok
+                if _verify_sha256(
+                    target_model,
+                    _ALLOWED_MODEL_SHA256,
+                    "MESH_MODEL_SHA256",
+                    source_label=str(target_model),
+                ) and _verify_sha256(
+                    target_tok,
+                    _ALLOWED_TOKENIZER_SHA256,
+                    "MESH_TOKENIZER_SHA256",
+                    source_label=str(target_tok),
+                ):
+                    return target_model, target_tok
         except OSError:
             pass
     return None
@@ -779,13 +824,22 @@ def _discover_local_onnx_pair() -> Optional[tuple[Path, Path]]:
         except OSError:
             continue
 
-    if found_tok is not None and not target_tok.exists():
+    # Copy a verified cache hit over a missing *or invalid* local target: an
+    # interrupted download leaves a file that passes the size check but fails
+    # SHA-256, and refusing to replace it would keep using a corrupt model.
+    target_tok_ok = target_tok.exists() and _verify_sha256(
+        target_tok, _ALLOWED_TOKENIZER_SHA256, "MESH_TOKENIZER_SHA256", source_label=str(target_tok)
+    )
+    if found_tok is not None and not target_tok_ok:
         try:
             ensure_secure_mesh_dir(model_dir)
             shutil.copy2(found_tok, target_tok)
         except OSError:
             pass
-    if found_model is not None and not target_model.exists():
+    target_model_ok = target_model.exists() and _verify_sha256(
+        target_model, _ALLOWED_MODEL_SHA256, "MESH_MODEL_SHA256", source_label=str(target_model)
+    )
+    if found_model is not None and not target_model_ok:
         try:
             ensure_secure_mesh_dir(model_dir)
             shutil.copy2(found_model, target_model)
@@ -817,7 +871,7 @@ def _download_file_from_mirrors(
             pass
 
     ensure_secure_mesh_dir(_get_onnx_model_dir())
-    headers = {"User-Agent": "mesh-context-layer/0.7.0"}
+    headers = {"User-Agent": "mesh-context-layer/0.7.1"}
     hf_token = (
         os.environ.get("HF_TOKEN")
         or os.environ.get("HUGGING_FACE_HUB_TOKEN")
@@ -1010,7 +1064,16 @@ def _background_download_worker() -> None:
             model_dir = _get_onnx_model_dir()
             tok_dest = model_dir / "tokenizer.json"
             model_dest = model_dir / "model.onnx"
-            if not tok_dest.exists():
+            need_tok = not (
+                tok_dest.exists()
+                and _verify_sha256(
+                    tok_dest,
+                    _ALLOWED_TOKENIZER_SHA256,
+                    "MESH_TOKENIZER_SHA256",
+                    source_label=str(tok_dest),
+                )
+            )
+            if need_tok:
                 _download_file_from_mirrors(
                     _TOKENIZER_MIRRORS,
                     tok_dest,
@@ -1018,7 +1081,16 @@ def _background_download_worker() -> None:
                     allowed_sha256=_ALLOWED_TOKENIZER_SHA256,
                     sha256_env_key="MESH_TOKENIZER_SHA256",
                 )
-            if not model_dest.exists():
+            need_model = not (
+                model_dest.exists()
+                and _verify_sha256(
+                    model_dest,
+                    _ALLOWED_MODEL_SHA256,
+                    "MESH_MODEL_SHA256",
+                    source_label=str(model_dest),
+                )
+            )
+            if need_model:
                 _download_file_from_mirrors(
                     _ONNX_MODEL_MIRRORS,
                     model_dest,
@@ -1036,11 +1108,33 @@ def _background_download_worker() -> None:
                     _model_backend = "onnx"
                     _ensure_idle_watchdog()
                 _record_model_status(state="ready", backend="onnx", last_error=None)
-                _backfill_pending_embeddings()
             except Exception as exc:
                 err_msg = f"ONNX session initialization failed: {exc}"
                 _emit_warning(err_msg)
                 _record_model_status(state="onnx_init_failed", backend="hash-fallback", last_error=err_msg)
+            else:
+                # Backfill is a separate failure domain: a re-embedding problem must
+                # not be reported as "the ONNX model failed to initialize".
+                try:
+                    _backfill_pending_embeddings()
+                except Exception as exc:
+                    err_msg = f"Embedding backfill failed after ONNX load: {exc}"
+                    _emit_warning(err_msg)
+                    _record_model_status(state="backfill_failed", backend="onnx", last_error=err_msg)
+        else:
+            # No model and no usable download: stop advertising "onnx-warming",
+            # which otherwise never clears and makes status look stuck forever.
+            global _download_failed_until
+            _download_failed_until = time.monotonic() + _DOWNLOAD_RETRY_SECONDS
+            with _MODEL_LOCK:
+                if _model is None or _model is _hash_embed_384:
+                    _model = _hash_embed_384
+                    _model_backend = "hash-fallback"
+            _record_model_status(
+                state="download_failed",
+                backend="hash-fallback",
+                last_error="ONNX model is unavailable; using the hash-384 fallback",
+            )
     finally:
         with _DOWNLOAD_LOCK:
             _download_in_progress = False
@@ -1260,14 +1354,23 @@ def _get_model() -> tuple[Any, str]:
     _last_model_use_ts = time.monotonic()
 
     if _model is not None and _model_backend is not None:
-        if _model_backend != "onnx-warming" or _has_local_onnx_pair() is None:
+        if _model_backend not in ("onnx-warming", "hash-fallback"):
             return _model, _model_backend
+        if _has_local_onnx_pair() is None:
+            # Fallback is in use. Retry the download only after the cooling-off
+            # window so a dead mirror cannot turn every encode into a retry storm.
+            if _download_in_progress or time.monotonic() < _download_failed_until:
+                return _model, _model_backend
 
     with _MODEL_LOCK:
         _last_model_use_ts = time.monotonic()
         onnx_pair = _has_local_onnx_pair() or _discover_local_onnx_pair()
         if _model is not None and _model_backend is not None:
-            if _model_backend != "onnx-warming" or onnx_pair is None:
+            if _model_backend not in ("onnx-warming", "hash-fallback"):
+                return _model, _model_backend
+            if onnx_pair is None and (
+                _download_in_progress or time.monotonic() < _download_failed_until
+            ):
                 return _model, _model_backend
 
         force_pytorch = os.environ.get("MESH_FORCE_PYTORCH", "").strip().lower() in ("1", "true", "yes")
@@ -1324,7 +1427,10 @@ def _get_model() -> tuple[Any, str]:
         if _request_model_download_permission(assume_yes=False):
             _start_background_model_download()
         _model = _hash_embed_384
-        _model_backend = "onnx-warming"
+        # `onnx-warming` must mean "a download is actually running". If permission
+        # was denied or the download already failed, the honest state is the
+        # hash-384 fallback.
+        _model_backend = "onnx-warming" if _download_in_progress else "hash-fallback"
         _ensure_idle_watchdog()
         return _model, _model_backend
 
@@ -1637,7 +1743,9 @@ def _compute_decay_metrics(
     try:
         ttl = float(ttl_days)
         if ttl <= 0.0:
-            return 0.0, 0
+            # `ttl_days <= 0` means "permanent" at every ingestion surface, so it
+            # must not decay here either (a legacy row may still carry 0).
+            return 1.0, None
         start = _parse_iso_utc(decay_start_at)
         if start is None:
             return 1.0, None
@@ -1905,12 +2013,50 @@ def _resolve_sdk_include_private(include_private: Optional[bool]) -> bool:
     return True
 
 
+_OWNERSHIP_EXEMPT_AGENTS = frozenset({"human-cli", "dashboard", "cli"})
+
+
+_OWNERSHIP_ENFORCEMENT_OVERRIDE: contextvars.ContextVar[Optional[bool]] = contextvars.ContextVar(
+    "mesh_ownership_enforcement_override", default=None
+)
+
+
+def _ownership_enforced() -> bool:
+    override = _OWNERSHIP_ENFORCEMENT_OVERRIDE.get()
+    if override is not None:
+        return override
+    return os.environ.get("MESH_ENFORCE_AGENT_OWNERSHIP", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def _can_modify_agent_memory(agent_id: str, existing_agent: Optional[str]) -> bool:
+    """Return True when `agent_id` may modify a memory owned by `existing_agent`."""
+    if not _ownership_enforced():
+        return True
+    if not existing_agent or existing_agent == agent_id:
+        return True
+    return agent_id in _OWNERSHIP_EXEMPT_AGENTS
+
+
 def _check_agent_ownership(agent_id: str, existing_agent: Optional[str]) -> None:
-    if os.environ.get("MESH_ENFORCE_AGENT_OWNERSHIP", "").strip().lower() in ("1", "true", "yes"):
-        if existing_agent and existing_agent != agent_id and agent_id not in ("human-cli", "dashboard", "cli"):
-            raise ValueError(
-                f"Agent '{agent_id}' is not authorized to modify memory owned by '{existing_agent}'."
-            )
+    if not _can_modify_agent_memory(agent_id, existing_agent):
+        raise ValueError(
+            f"Agent '{agent_id}' is not authorized to modify memory owned by '{existing_agent}'."
+        )
+
+
+def _clamp_confidence(value: Any, *, field: str = "confidence") -> float:
+    """Return a finite confidence clamped to [0.0, 1.0]; reject NaN and infinities."""
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{field} must be a number, got {value!r}")
+    if not math.isfinite(parsed):
+        raise ValueError(f"{field} must be a finite number, got {value!r}")
+    return max(0.0, min(1.0, parsed))
 
 
 class Mesh:
@@ -2043,7 +2189,7 @@ class Mesh:
                 f"memory_type must be one of {sorted(VALID_MEMORY_TYPES)}, got '{memory_type}'"
             )
 
-        confidence = max(0.0, min(1.0, float(confidence)))
+        confidence = _clamp_confidence(confidence)
         clean_tags = _parse_tags(tags)
         ttl_val = float(ttl_days) if ttl_days is not None and float(ttl_days) > 0 else None
         now = _utc_now_iso()
@@ -2085,6 +2231,13 @@ class Mesh:
                         existing_id = ids[i] if ids and i < len(ids) else None
                         existing_is_priv = bool(meta.get("local_only"))
                         if existing_is_priv and not local_only:
+                            continue
+                        if existing_id and not _can_modify_agent_memory(
+                            self.agent_id, meta.get("source_agent")
+                        ):
+                            # Never mutate a memory owned by another agent through the
+                            # dedup path when ownership enforcement is active; store a
+                            # separate memory instead of raising for benign duplicates.
                             continue
                         if existing_id and _is_true_duplicate(clean_content, doc, similarity):
                             existing_tags = _parse_tags(meta.get("tags"))
@@ -2131,9 +2284,14 @@ class Mesh:
                     if not _is_same_known_space(meta.get("embedding_model"), emb_model_tag):
                         continue
                     similarity = round(1.0 - float(distances[i]), 4)
+                    existing_is_private = bool(meta.get("local_only"))
+                    if existing_is_private and not local_only:
+                        # A public write must not probe private memories: the conflict
+                        # payload and the persisted contradiction record would both
+                        # reveal the existence and content of a local_only memory.
+                        continue
                     if _is_true_contradiction(clean_content, doc, similarity):
                         existing_id = ids[i] if ids and i < len(ids) else None
-                        existing_is_private = bool(meta.get("local_only"))
                         safe_existing_doc = (
                             REDACTED_CONTENT_PLACEHOLDER if existing_is_private else doc
                         )
@@ -2496,7 +2654,7 @@ class Mesh:
 
         clean_conf: Optional[float] = None
         if confidence is not None:
-            clean_conf = max(0.0, min(1.0, float(confidence)))
+            clean_conf = _clamp_confidence(confidence)
 
         clean_tags = _parse_tags(tags) if tags is not None else None
         should_clear_ttl = bool(clear_ttl) or (ttl_days is not None and float(ttl_days) <= 0)
@@ -2652,10 +2810,21 @@ class Mesh:
 
 
 def _emit_warning(msg: Any) -> None:
-    """User-facing warning on stderr, styled like the rest of the CLI (plain fallback if ui fails)."""
+    """User-facing warning on stderr, styled like the rest of the CLI (plain fallback if ui fails).
+
+    Identical messages are emitted once per process: download retries, model
+    lookups, and status polls would otherwise repeat the same warning many times.
+    """
+    text = " ".join(str(msg).split())
+    with _WARNED_LOCK:
+        if text in _WARNED_MESSAGES:
+            return
+        if len(_WARNED_MESSAGES) >= 256:
+            _WARNED_MESSAGES.clear()
+        _WARNED_MESSAGES.add(text)
     try:
         from . import ui
 
-        ui.warn(" ".join(str(msg).split()))
+        ui.warn(text)
     except Exception:
-        sys.stderr.write(f"[Mesh WARNING] {msg}\n")
+        sys.stderr.write(f"[Mesh WARNING] {text}\n")

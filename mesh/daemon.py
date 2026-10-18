@@ -34,7 +34,8 @@ from pathlib import Path
 from typing import Any, Optional, Union
 from xml.sax.saxutils import escape as xml_escape
 
-from .audit import MESH_DIR, ensure_secure_mesh_dir, get_mesh_dir, secure_file_permissions
+from .audit import ensure_secure_mesh_dir, get_mesh_dir, secure_file_permissions
+from .envutil import env_float, env_int
 
 
 def _pid_file() -> Path:
@@ -58,10 +59,9 @@ DAEMON_LOG_FILE = _log_file()
 AUTH_TOKEN_FILE = _auth_token_file()
 AUTOSTART_MARKER_FILE = _autostart_marker_file()
 
-DEFAULT_PORT = int(os.environ.get("MESH_HTTP_PORT", 7701))
+DEFAULT_PORT = env_int("MESH_HTTP_PORT", 7701, minimum=1, maximum=65535)
 DEFAULT_HOST = os.environ.get("MESH_HTTP_HOST", "127.0.0.1")
-DEFAULT_IDLE_TIMEOUT = float(os.environ.get("MESH_IDLE_UNLOAD_SECONDS", "180"))
-DAEMON_CHALLENGE_PREFIX = "mesh-daemon-v1"
+DEFAULT_IDLE_TIMEOUT = env_float("MESH_IDLE_UNLOAD_SECONDS", 180.0, minimum=0.0)
 
 _WIN_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 _WIN_RUN_VALUE_NAME = "MeshContextDaemon"
@@ -218,47 +218,6 @@ def get_or_create_auth_token() -> str:
         _CACHED_TOKEN = token
         _CACHED_TOKEN_PATH = token_file
         return token
-
-
-def compute_daemon_challenge_signature(
-    nonce: str,
-    pid: int,
-    token: Optional[str] = None,
-) -> str:
-    """
-    Compute an HMAC-SHA256 proof (`mesh-daemon-v1:{nonce}:{pid}`) keyed by `~/.mesh/auth_token`.
-    """
-    clean_nonce = (nonce or "").strip()
-    if not clean_nonce:
-        return ""
-    secret = (token if token is not None else get_or_create_auth_token()).encode("utf-8")
-    message = f"{DAEMON_CHALLENGE_PREFIX}:{clean_nonce}:{int(pid)}".encode("utf-8")
-    return hmac.new(secret, message, hashlib.sha256).hexdigest()
-
-
-def verify_daemon_challenge_signature(
-    nonce: str,
-    pid: Any,
-    signature: Any,
-    token: Optional[str] = None,
-) -> bool:
-    """Verify the HMAC-SHA256 challenge signature."""
-    if not nonce or not isinstance(signature, str) or not signature.strip():
-        return False
-    try:
-        pid_int = int(pid)
-    except (TypeError, ValueError):
-        return False
-    expected = compute_daemon_challenge_signature(nonce, pid_int, token=token)
-    if not expected:
-        return False
-    try:
-        return hmac.compare_digest(
-            signature.strip().lower().encode("ascii"),
-            expected.lower().encode("ascii"),
-        )
-    except Exception:
-        return False
 
 
 def get_auth_headers() -> dict[str, str]:

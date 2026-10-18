@@ -4,6 +4,39 @@ All notable changes to `mesh-context-layer` are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (pre-1.0: minor versions may include behavior changes).
 
+## [0.7.1] - 2026-10-18
+
+A remediation release from a full audit of the 0.7.x tree: privacy leaks, import safety, TTL semantics, namespace and daemon edge cases, and defensive environment parsing. All are covered by the new `tests/test_remediation.py` regression suite.
+
+### Security
+
+- **Imports can no longer overwrite private memories.** A Mesh export never contains private rows, so an entry claiming an existing private ID is hand-crafted or hostile. `merge_strategy="overwrite"` now skips it and leaves the stored memory untouched.
+- **Private recall queries are redacted from the audit log.** If any returned memory is private, the logged query text is replaced with `[REDACTED]` — a search for the exact private text would otherwise reproduce it in `audit_log`.
+- **Privatizing a memory scrubs its contradiction text**, and rewriting content scrubs matching query telemetry, so neither surface keeps the old plaintext.
+- **`mesh update` runs the same ingestion guard as `mesh learn`.** Content edits now strip control/zero-width characters, reject prompt-injection attempts, and redact credentials; previously `mesh update` was a bypass.
+- **Passive capture redaction hardened:** URL-embedded credentials with empty usernames (`redis://:pass@host`) or passwords containing `@` are fully redacted, as are `Authorization:` headers. Zero-width/bidi characters are stripped before poison-pattern matching.
+- **No unconsented cloud extraction.** A configured-but-unavailable LLM provider now degrades to local extraction *before* dispatch, so log text is never POSTed without the consent prompt.
+
+### Fixed
+
+- **`ttl_days=0` now means "no TTL"** instead of "expired": `mesh update <id> --ttl 0` clears an existing TTL like `clear_ttl`, `reset_ttl` restarts the existing duration, and `mesh learn` stores the memory permanently. Effective-confidence math follows the same rule.
+- **Imports are deterministic and idempotent.** Entries without IDs receive a content-derived UUID, so re-importing the same file skips instead of duplicating.
+- **Namespace safety.** Namespace paths are resolved inside the Mesh directory and refuse symlink escapes; destructive operations refuse to run when a case-insensitive filesystem maps two casings to the same database (`mesh_Work.db` vs `mesh_work.db`); deletion refuses to proceed if a WAL checkpoint cannot complete, rather than orphaning plaintext frames; `list_namespaces()` aggregates every namespace value stored in a shared file.
+- **No stale vectors.** Updates trust the embedding BLOB on disk instead of reusing an old in-memory vector, and telemetry stamp refreshes no longer make another process's writes invisible.
+- **Interrupted model downloads recover.** A file that passes the size check but fails SHA-256 is replaced from the verified cache; checksum results are cached; `onnx-warming` no longer sticks forever when no model is available.
+- **Daemon-proxy correctness.** Ambiguous write failures (daemon answered, then the connection dropped) are reported as unknown outcomes and never silently re-executed; `context` travels with proxied calls so private defaults, ownership enforcement, workspace, and sync flags match the caller instead of the daemon's environment.
+- **MCP and HTTP private-memory defaults honor the caller's context.** `default_include_private` from the MCP client, the `MESH_MCP_INCLUDE_PRIVATE` env var, and HTTP `inspect` / `patterns` / `context` now agree instead of silently diverging.
+- **Malformed numeric environment variables never crash or corrupt a session.** New `mesh/envutil.py` parses `MESH_HTTP_PORT`, `MESH_IDLE_UNLOAD_SECONDS`, `MESH_EMBED_CACHE_SIZE`, and other numeric settings with documented defaults and bounds; `nan`/`inf`/garbage fall back cleanly.
+- **Passive capture bounds memory use** when reading piped multi-GB logs, and joins selected files chronologically so truncation drops the oldest content.
+- **`mesh.__all__` now matches the lazy export table**, so IDEs and static analysers see the real public API.
+- **Test clients**: `get_audit_log()` filters strictly by namespace.
+- **Dashboard** save, conflict-resolve, and namespace-delete failures show an error instead of failing silently.
+- Package version bumped to `0.7.1`.
+
+### Documentation
+
+- `SKILL.md` documents skill install locations per agent, separate Antigravity and Gemini CLI MCP config files, `ttl_days=0` semantics, the full `guard_ingest()` coverage, and the newer environment variables (`MESH_TOKEN`, `MESH_NO_AUTO_DAEMON`, `MESH_ALLOW_DAEMON_DOWNLOAD`, `MESH_WORKSPACE`, `MESH_MODEL_SHA256`, `MESH_TOKENIZER_SHA256`, `MESH_AI_*`) and daemon subcommands.
+
 ## [0.7.0] - 2026-10-18
 
 This release redesigns the command-line experience around a single design system. Commands, flags, and stored data are unchanged; the differences are in how results are presented and how scripted use behaves.

@@ -99,7 +99,7 @@ export default function InstallSection() {
             Use on Agensi
           </Button>
         </div>
-        <p className="install__meta">Python 3.10+ · MIT · v0.7.0 · local-first</p>
+        <p className="install__meta">Python 3.10+ · MIT · v0.7.1 · local-first</p>
       </div>
     </section>
   );

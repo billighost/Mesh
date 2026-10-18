@@ -85,15 +85,22 @@ _CLOUD_REDACTION_RULES: list[tuple[re.Pattern[str], str]] = [
     ),
     (re.compile(r"(?i)\b(Bearer\s+)[^\s\"'`]{8,}"), r"\1[REDACTED_TOKEN]"),
     (
-        re.compile(r"([a-zA-Z0-9+.-]+://[^/\s:@]+:)([^@\s]+)(@)"),
+        # URL userinfo. Empty usernames (`redis://:pass@host`) and passwords that
+        # contain `@` (`postgres://user:p@ss@host/db`) must both be fully redacted:
+        # the password group is greedy so it ends at the *last* `@` before the host.
+        re.compile(r"([a-zA-Z0-9+.-]+://[^/\s:@]*:)([^\s/]*)(@[^@\s/]+)"),
         r"\1[REDACTED_PASSWORD]\3",
     ),
     (
         re.compile(
-            r"(?i)\b(password|passwd|pwd|secret|api[_\s-]?key|access[_\s-]?token|auth[_\s-]?token|private[_\s-]?key|client[_\s-]?secret|aws_secret_access_key|aws_session_token)"
-            r"(\s*(?:is|=|:)\s*['\"]?)([^\s,'\"`;\n]{3,})"
+            r"(?i)\b(password|passwd|pwd|secret|api[_\s-]?key|access[_\s-]?token|auth[_\s-]?token|refresh[_\s-]?token|private[_\s-]?key|client[_\s-]?secret|aws_secret_access_key|aws_session_token|token)"
+            r"(['\"]?\s*(?:is|=|:)\s*['\"]?)([^\s,'\"`;\n[]{3,})"
         ),
         r"\1\2[REDACTED_SECRET]",
+    ),
+    (
+        re.compile(r"(?i)\b(authorization\s*[:=]\s*)(basic|bearer|token)\s+([^\s,'\"`;\n]{3,})"),
+        r"\1\2 [REDACTED_TOKEN]",
     ),
     (
         re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"),
@@ -156,6 +163,10 @@ def _resolve_log_input(log_input: str, max_chars: int = 16000) -> str:
                             total_len += len(chunk)
                             if total_len >= max_chars:
                                 break
+                    # Files were selected newest-first, but the caller keeps the
+                    # *tail* of this string. Join chronologically so truncation
+                    # drops the oldest content instead of the newest log.
+                    chunks.reverse()
                     return "\n\n".join(chunks)
         except OSError:
             pass
@@ -456,6 +467,10 @@ _CREDENTIAL_PATTERNS = [
     r"\bprivate[_\s-]?key\b",
     r"sk-[a-zA-Z0-9_-]{6,}",
     r"Bearer\s+\S{8,}",
+    # URL-embedded credentials, including empty usernames (`redis://:pass@host`)
+    r"[a-zA-Z][a-zA-Z0-9+.-]*://[^/\s:@]*:[^@\s]+@",
+    # Authorization headers (`Authorization: Basic ...`, `authorization=bearer ...`)
+    r"(?i)\bauthorization\s*[:=]\s*(?:basic|bearer|token)\b",
     r"\[REDACTED_(?:SECRET|API_KEY|TOKEN|PASSWORD|JWT|PRIVATE_KEY|EMAIL)\]",
 ]
 _NOISE_PATTERNS = [
@@ -470,12 +485,18 @@ _NOISE_PATTERNS = [
 ]
 
 _POISON_PATTERNS = [
-    r"(?i)\bignore\s+(?:all\s+)?(?:(?:previous|prior|above)\s+)?(?:instructions|prompts|rules)\b",
-    r"(?i)\bdisregard\s+(?:all\s+)?(?:previous|prior|system)\b",
+    r"(?i)\bignore\s+(?:all\s+|the\s+)?(?:(?:previous|prior|above|earlier|preceding)\s+)?(?:instructions?|prompts?|rules?)\b",
+    r"(?i)\bdisregard\s+(?:all\s+|the\s+)?(?:previous|prior|above|system|earlier|preceding)\b",
+    r"(?i)\bforget\s+(?:all\s+|the\s+)?(?:previous|prior|above|earlier)\s+(?:instructions?|prompts?|rules?)\b",
     r"(?i)\byou\s+are\s+now\s+in\s+developer\s+mode\b",
     r"(?i)</?\s*mesh_context\b",
     r"(?i)\bsystem\s*prompt\s*:",
 ]
+
+# Invisible formatting characters (zero-width spaces/joiners, BOM, bidi controls)
+# can split a poison phrase so the regex misses it while the prompt sanitizer
+# later rejoins it. Normalize them away before matching.
+_ZERO_WIDTH_RE = re.compile(r"[​-‏⁠﻿‪-‮⁦-⁩]")
 
 _compiled_signals = [re.compile(p, re.IGNORECASE) for p in _SIGNAL_PATTERNS]
 _compiled_credentials = [re.compile(p, re.IGNORECASE) for p in _CREDENTIAL_PATTERNS]
@@ -492,7 +513,8 @@ def _is_noise(sentence: str) -> bool:
 
 
 def _is_poison_attempt(sentence: str) -> bool:
-    return any(p.search(sentence) for p in _compiled_poison)
+    normalized = _ZERO_WIDTH_RE.sub("", sentence)
+    return any(p.search(normalized) for p in _compiled_poison)
 
 
 def _has_signal(sentence: str) -> bool:
@@ -561,7 +583,10 @@ def _parse_json_response(raw: str) -> list[dict[str, Any]]:
         else:
             return []
     parsed = json.loads(raw)
-    return parsed if isinstance(parsed, list) else []
+    if not isinstance(parsed, list):
+        return []
+    # A model may return `["some text"]`; callers index these as mappings.
+    return [item for item in parsed if isinstance(item, dict)]
 
 
 def extract_memories_from_log(
@@ -595,8 +620,18 @@ def extract_memories_from_log(
     else:
         config = detect_provider()
 
+    # A configured-but-unavailable provider must degrade to local *before* the
+    # dispatch below: otherwise the log is POSTed to the cloud endpoint without
+    # the consent prompt (which is gated on `available`).
+    if config["provider"] != "local" and not config.get("available"):
+        if verbose:
+            ui.info(
+                f"Configured provider '{config['provider']}' is unavailable — using local keyword extraction"
+            )
+        config = {"provider": "local", "available": True}
+
     # Prompt user for permission before sending log text to external LLM APIs
-    if config["provider"] != "local" and config.get("available"):
+    if config["provider"] != "local":
         provider_name = config["provider"]
         if not request_user_permission(
             f"send redacted session log text to external cloud LLM provider '{provider_name}' for memory extraction",
@@ -780,7 +815,8 @@ def capture_cmd() -> None:
         sys.exit(1)
 
     if args.stdin:
-        log_text = sys.stdin.read()
+        # Bound memory use: a piped multi-GB log must not be read wholesale.
+        log_text = sys.stdin.read(1_000_000)
     else:
         path = Path(args.file).expanduser()
         if not path.exists():

@@ -41,6 +41,7 @@ from typing import Any, Callable, Optional
 
 from . import ui
 from .audit import validate_namespace
+from .envutil import env_int
 from .version import VERSION, check_for_updates
 
 # Ensure Windows cp1252 / legacy consoles never crash on Unicode output
@@ -129,7 +130,7 @@ def _handle_missing_namespace_cli(ns: str, as_json: bool = False) -> None:
 def _daemon_port_open(timeout: float = 0.08) -> Optional[int]:
     host = os.environ.get("MESH_HTTP_HOST", "127.0.0.1")
     try:
-        port = int(os.environ.get("MESH_HTTP_PORT", 7701))
+        port = env_int("MESH_HTTP_PORT", 7701, minimum=1, maximum=65535)
         with socket.create_connection((host, port), timeout=timeout):
             return port
     except (OSError, ValueError):
@@ -148,13 +149,17 @@ def _daemon_request(
     Send an authenticated request to the running local daemon if reachable.
     - Never sends the bearer token until `verify_daemon_identity` succeeds.
     - Never silently spawns a background daemon if the socket is closed.
-    - Returns `{"_http_error": code, "detail": ..., "_timeout": bool}` on 4xx/5xx or mid-request timeout
-      so callers can distinguish read fallback (502/503/504/timeout) from mutating uncertainty.
+    - Returns `None` only when the daemon was never reached, so callers know local
+      execution is safe.
+    - Returns `{"_http_error": code, "detail": ..., "_timeout": bool}` on 4xx/5xx or
+      mid-request timeout, and `{"_daemon_lost": True, "detail": ...}` when the request
+      was sent but its response was lost. Both mean a write may already have been
+      applied, so mutating callers must never silently re-execute locally.
     """
     if os.environ.get("MESH_NO_DAEMON_PROXY", "").strip().lower() in ("1", "true", "yes"):
         return None
     req_host = host or os.environ.get("MESH_HTTP_HOST", "127.0.0.1")
-    req_port = int(port or os.environ.get("MESH_HTTP_PORT", 7701))
+    req_port = int(port or env_int("MESH_HTTP_PORT", 7701, minimum=1, maximum=65535))
     try:
         with socket.create_connection((req_host, req_port), timeout=0.08):
             pass
@@ -175,8 +180,24 @@ def _daemon_request(
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            if resp.status == 200:
-                return json.loads(resp.read().decode("utf-8"))
+            if 200 <= int(resp.status) < 300:
+                raw_body = resp.read().decode("utf-8")
+                if not raw_body.strip():
+                    return {}
+                try:
+                    parsed = json.loads(raw_body)
+                except ValueError:
+                    # The daemon answered, so the write (if any) already happened;
+                    # report it as ambiguous instead of triggering a local retry.
+                    return {
+                        "_daemon_lost": True,
+                        "detail": f"Daemon returned an unreadable response for {path}.",
+                    }
+                return parsed
+            return {
+                "_daemon_lost": True,
+                "detail": f"Daemon returned unexpected HTTP {resp.status} for {path}.",
+            }
     except urllib.error.HTTPError as e:
         try:
             err_body = json.loads(e.read().decode("utf-8"))
@@ -191,7 +212,7 @@ def _daemon_request(
             "_timeout": True,
             "detail": f"Daemon timed out after {timeout}s while processing {path}: {e}",
         }
-    except (urllib.error.URLError, OSError, ValueError) as e:
+    except (urllib.error.URLError, OSError) as e:
         invalidate_daemon_identity_cache(req_host, req_port)
         if isinstance(getattr(e, "reason", None), (TimeoutError, socket.timeout)):
             return {
@@ -199,8 +220,16 @@ def _daemon_request(
                 "_timeout": True,
                 "detail": f"Daemon timed out after {timeout}s while processing {path}: {e}",
             }
-        return None
-    return None
+        # The socket probe and identity check already succeeded, so the request was
+        # almost certainly transmitted before the connection failed.
+        return {
+            "_daemon_lost": True,
+            "detail": f"Lost the daemon connection while processing {path}: {e}",
+        }
+    return {
+        "_daemon_lost": True,
+        "detail": f"Daemon gave no response for {path}.",
+    }
 
 
 def _check_daemon_read_response(proxied: Optional[dict[str, Any]], cmd_label: str) -> Optional[dict[str, Any]]:
@@ -209,6 +238,10 @@ def _check_daemon_read_response(proxied: Optional[dict[str, Any]], cmd_label: st
     on other errors print and exit non-zero.
     """
     if proxied is None:
+        return None
+    if proxied.get("_daemon_lost"):
+        detail = proxied.get("detail") or "Lost the daemon response."
+        ui.note(f"Daemon unavailable ({detail}); using the local database for '{cmd_label}'.")
         return None
     if "_http_error" in proxied:
         code = int(proxied["_http_error"])
@@ -227,6 +260,12 @@ def _check_daemon_write_response(proxied: Optional[dict[str, Any]], cmd_label: s
     """
     if proxied is None:
         return None
+    if proxied.get("_daemon_lost"):
+        ui.fail(
+            str(proxied.get("detail") or "Lost the daemon response."),
+            "The daemon may or may not have applied this change. "
+            "Run `mesh inspect` to check before retrying.",
+        )
     if "_http_error" in proxied:
         code = int(proxied["_http_error"])
         detail = proxied.get("detail") or f"HTTP {code}"
@@ -963,6 +1002,23 @@ def update_cmd() -> None:
     tags = _split_tags(args.tags) if args.tags is not None else None
     should_clear_ttl = bool(args.clear_ttl) or (args.ttl is not None and args.ttl <= 0)
 
+    # Every ingestion surface must run the same guard; otherwise `mesh update`
+    # would be a way to bypass prompt-injection/credential handling.
+    content = args.content
+    local_only = args.local_only
+    if content is not None:
+        from .guards import guard_ingest
+
+        guard = guard_ingest(content, local_only=bool(args.local_only))
+        if guard.rejected:
+            ui.fail(guard.reason or "Rejected by the ingestion guard.")
+        content = guard.content
+        if guard.local_only and not args.local_only:
+            local_only = True
+            ui.warn(
+                "That looks like a credential — the secret was redacted and the memory saved as private"
+            )
+
     changed = [
         name
         for name, on in (
@@ -989,13 +1045,13 @@ def update_cmd() -> None:
         "/update",
         payload={
             "memory_id": args.memory_id,
-            "content": args.content,
+            "content": content,
             "memory_type": args.memory_type,
             "confidence": args.confidence,
             "tags": tags,
             "ttl_days": None if should_clear_ttl else args.ttl,
             "clear_ttl": should_clear_ttl,
-            "local_only": args.local_only,
+            "local_only": local_only,
             "namespace": ns,
             "agent_id": "human-cli",
         },
@@ -1012,13 +1068,13 @@ def update_cmd() -> None:
         mesh = Mesh(namespace=ns, agent_id="human-cli", create=False)
         res = mesh.update(
             memory_id=args.memory_id,
-            content=args.content,
+            content=content,
             memory_type=args.memory_type,
             confidence=args.confidence,
             tags=tags,
             ttl_days=None if should_clear_ttl else args.ttl,
             clear_ttl=should_clear_ttl,
-            local_only=args.local_only,
+            local_only=local_only,
         )
         _done(str(res["memory_id"]))
     except NamespaceNotFoundError:
