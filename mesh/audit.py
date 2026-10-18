@@ -289,6 +289,7 @@ def _write_audit_entry(namespace: str, sql: str, params: tuple[Any, ...]) -> Non
     Execute an audit log statement on the pooled connection, enforce retention limits,
     and refresh the tracked file stamp so subsequent writes never re-run schema initialization.
     """
+    namespace = validate_namespace(namespace)
     db_path = _get_audit_db_path(namespace)
     with _AUDIT_LOCK:
         stamp = _get_audit_db_stamp(db_path)
@@ -314,7 +315,7 @@ def log_recall(
     agent_id: str,
     results: list[dict[str, Any]],
 ) -> None:
-    """Log a recall event to the audit trail, redacting local_only top results."""
+    """Log a recall event to the audit trail, redacting local_only top results and queries."""
     try:
         top_result: Optional[str] = None
         top_similarity: Optional[float] = None
@@ -325,6 +326,13 @@ def log_recall(
                 top_result = REDACTED_CONTENT_PLACEHOLDER
             else:
                 top_result = first.get("content")
+        # If any returned memory is private, the query may itself reproduce private
+        # content (a search for the exact text). Redact it rather than logging it.
+        logged_query = (
+            REDACTED_CONTENT_PLACEHOLDER
+            if any(r.get("local_only") for r in results)
+            else query
+        )
         _write_audit_entry(
             namespace=namespace,
             sql="""
@@ -336,7 +344,7 @@ def log_recall(
                 datetime.now(timezone.utc).isoformat(),
                 agent_id,
                 namespace,
-                query,
+                logged_query,
                 top_result,
                 top_similarity,
                 len(results),
@@ -366,7 +374,9 @@ def log_learn(
                 if db_path.exists() and _get_audit_db_stamp(db_path) is not None:
                     with _connect_audit(db_path) as conn:
                         row = conn.execute(
-                            "SELECT id, action, memory_id FROM audit_log ORDER BY id DESC LIMIT 1"
+                            "SELECT id, action, memory_id FROM audit_log "
+                            "WHERE namespace = ? ORDER BY id DESC LIMIT 1",
+                            (namespace,),
                         ).fetchone()
                         if row and row[1] == "learn" and row[2] == mem_id:
                             conn.execute(
@@ -415,6 +425,7 @@ def scrub_memory_update_from_audit(
     (e.g. when a user edits out an accidentally pasted secret or marks a memory `local_only=True`).
     """
     try:
+        namespace = validate_namespace(namespace)
         db_path = _get_audit_db_path(namespace)
         if not db_path.exists() or _get_audit_db_stamp(db_path) is None:
             return
@@ -426,23 +437,23 @@ def scrub_memory_update_from_audit(
                         """
                         UPDATE audit_log
                         SET content = ?
-                        WHERE memory_id = ? AND action IN ('learn', 'update')
+                        WHERE namespace = ? AND memory_id = ? AND action IN ('learn', 'update')
                         """,
-                        (placeholder, memory_id),
+                        (placeholder, namespace, memory_id),
                     )
                 if old_content and old_content.strip():
                     clean_old = old_content.strip()
                     conn.execute(
-                        "UPDATE audit_log SET content = ? WHERE content = ?",
-                        (placeholder, clean_old),
+                        "UPDATE audit_log SET content = ? WHERE namespace = ? AND content = ?",
+                        (placeholder, namespace, clean_old),
                     )
                     conn.execute(
-                        "UPDATE audit_log SET top_result = ? WHERE top_result = ?",
-                        (placeholder, clean_old),
+                        "UPDATE audit_log SET top_result = ? WHERE namespace = ? AND top_result = ?",
+                        (placeholder, namespace, clean_old),
                     )
                     conn.execute(
-                        "UPDATE audit_log SET query = ? WHERE query = ?",
-                        (placeholder, clean_old),
+                        "UPDATE audit_log SET query = ? WHERE namespace = ? AND query = ?",
+                        (placeholder, namespace, clean_old),
                     )
                 conn.commit()
                 try:
@@ -509,6 +520,7 @@ def purge_memory_from_audit(
     from the audit trail so `forget()` guarantees complete erasure.
     """
     try:
+        namespace = validate_namespace(namespace)
         db_path = _get_audit_db_path(namespace)
         if not db_path.exists() or _get_audit_db_stamp(db_path) is None:
             return
@@ -518,23 +530,23 @@ def purge_memory_from_audit(
                     """
                     UPDATE audit_log
                     SET content = ?
-                    WHERE memory_id = ? AND action IN ('learn', 'update')
+                    WHERE namespace = ? AND memory_id = ? AND action IN ('learn', 'update')
                     """,
-                    (PURGED_CONTENT_PLACEHOLDER, memory_id),
+                    (PURGED_CONTENT_PLACEHOLDER, namespace, memory_id),
                 )
                 if content and content.strip():
                     clean = content.strip()
                     conn.execute(
-                        "UPDATE audit_log SET content = ? WHERE content = ?",
-                        (PURGED_CONTENT_PLACEHOLDER, clean),
+                        "UPDATE audit_log SET content = ? WHERE namespace = ? AND content = ?",
+                        (PURGED_CONTENT_PLACEHOLDER, namespace, clean),
                     )
                     conn.execute(
-                        "UPDATE audit_log SET top_result = ? WHERE top_result = ?",
-                        (PURGED_CONTENT_PLACEHOLDER, clean),
+                        "UPDATE audit_log SET top_result = ? WHERE namespace = ? AND top_result = ?",
+                        (PURGED_CONTENT_PLACEHOLDER, namespace, clean),
                     )
                     conn.execute(
-                        "UPDATE audit_log SET query = ? WHERE query = ?",
-                        (PURGED_CONTENT_PLACEHOLDER, clean),
+                        "UPDATE audit_log SET query = ? WHERE namespace = ? AND query = ?",
+                        (PURGED_CONTENT_PLACEHOLDER, namespace, clean),
                     )
                 conn.commit()
                 try:
@@ -591,7 +603,8 @@ def get_audit_log(
                        "delete" (maps to forget), or an explicit action
                        ("recall", "learn", "update", "forget").
     """
-    db_path = _get_audit_db_path(namespace)
+    clean_ns = validate_namespace(namespace)
+    db_path = _get_audit_db_path(clean_ns)
     clean_filter = (action_filter or "all").strip().lower()
     if clean_filter != "all" and clean_filter not in _ACTION_FILTER_MAP:
         valid_filters = sorted({"all", *_ACTION_FILTER_MAP.keys()})
@@ -609,20 +622,21 @@ def get_audit_log(
                 cur = conn.execute(
                     """
                     SELECT * FROM audit_log
-                    WHERE action = ?
+                    WHERE namespace = ? AND action = ?
                     ORDER BY timestamp DESC, id DESC
                     LIMIT ?
                     """,
-                    (action_sql, safe_limit),
+                    (clean_ns, action_sql, safe_limit),
                 )
             else:
                 cur = conn.execute(
                     """
                     SELECT * FROM audit_log
+                    WHERE namespace = ?
                     ORDER BY timestamp DESC, id DESC
                     LIMIT ?
                     """,
-                    (safe_limit,),
+                    (clean_ns, safe_limit),
                 )
             rows = [dict(r) for r in cur.fetchall()]
             cur.close()
@@ -631,7 +645,8 @@ def get_audit_log(
 
 def get_audit_stats(namespace: str) -> dict[str, Any]:
     """Return aggregate stats from the audit log in a minimal query pass."""
-    db_path = _get_audit_db_path(namespace)
+    clean_ns = validate_namespace(namespace)
+    db_path = _get_audit_db_path(clean_ns)
     if not db_path.exists() or _get_audit_db_stamp(db_path) is None:
         return {
             "total_recalls": 0,
@@ -655,12 +670,16 @@ def get_audit_stats(namespace: str) -> dict[str, Any]:
                     COALESCE(SUM(CASE WHEN had_conflict = 1 THEN 1 ELSE 0 END), 0) AS conflicts,
                     MAX(timestamp) AS last_activity
                 FROM audit_log
-                """
+                WHERE namespace = ?
+                """,
+                (clean_ns,),
             )
             agg = cur_agg.fetchone()
             cur_agg.close()
             cur_agents = conn.execute(
-                "SELECT DISTINCT agent_id FROM audit_log WHERE agent_id IS NOT NULL"
+                "SELECT DISTINCT agent_id FROM audit_log "
+                "WHERE namespace = ? AND agent_id IS NOT NULL",
+                (clean_ns,),
             )
             agents = [r["agent_id"] for r in cur_agents.fetchall()]
             cur_agents.close()

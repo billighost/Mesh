@@ -567,7 +567,9 @@ def _readline_safe(prompt: str) -> str:
     if os.name == "nt":
         return prompt
     try:
-        import readline  # noqa: F401
+        # Imported for its side effect: enables arrow-key editing and history.
+        # `__import__` keeps linters from flagging an otherwise "unused" import.
+        __import__("readline")
     except ImportError:
         return prompt
     return re.sub(r"(\x1b\[[0-9;]*m)", "\001\\1\002", prompt)

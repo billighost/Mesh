@@ -48,10 +48,12 @@ from mcp.server.stdio import stdio_server
 from .audit import validate_namespace
 from .context_builder import build_context_bundle
 from .daemon import get_auth_headers, request_user_permission
+from .envutil import env_int
 from .guards import guard_ingest
 from .memory import (
     VALID_MEMORY_TYPES,
     Mesh,
+    _OWNERSHIP_ENFORCEMENT_OVERRIDE,
     get_engine_status,
     suggest_did_you_mean_namespaces,
     warmup_model,
@@ -68,11 +70,33 @@ def _get_default_agent_id() -> str:
 
 
 def _get_default_include_private() -> bool:
-    return os.environ.get("MESH_MCP_INCLUDE_PRIVATE", "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-    )
+    return _env_flag("MESH_MCP_INCLUDE_PRIVATE")
+
+
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes")
+
+
+def _ctx_default_include_private(context: Optional[dict[str, Any]]) -> bool:
+    """Resolve the include-private default from the *calling* process, not the daemon's env."""
+    value = (context or {}).get("default_include_private")
+    return _get_default_include_private() if value is None else bool(value)
+
+
+def _ctx_flag(context: Optional[dict[str, Any]], key: str, default: bool) -> bool:
+    value = (context or {}).get(key)
+    return default if value is None else bool(value)
+
+
+def _ctx_workspace_root(context: Optional[dict[str, Any]]) -> Optional[Path]:
+    """Use the caller's workspace when proxied, falling back to this process's cwd."""
+    raw = str((context or {}).get("workspace_root") or "").strip()
+    if raw:
+        try:
+            return Path(raw).expanduser().resolve()
+        except OSError:
+            return None
+    return _infer_workspace_root()
 
 
 NAMESPACE = _get_default_namespace()
@@ -234,7 +258,7 @@ def _try_proxy_via_daemon(name: str, arguments: dict[str, Any]) -> Optional[dict
     _DAEMON_CHECK_TS = now
 
     host = os.environ.get("MESH_HTTP_HOST", "127.0.0.1")
-    port = int(os.environ.get("MESH_HTTP_PORT", 7701))
+    port = env_int("MESH_HTTP_PORT", 7701, minimum=1, maximum=65535)
     is_mutating = name in _MUTATING_TOOLS
 
     from .daemon import invalidate_daemon_identity_cache, verify_daemon_identity
@@ -249,6 +273,17 @@ def _try_proxy_via_daemon(name: str, arguments: dict[str, Any]) -> Optional[dict
             "arguments": arguments,
             "default_namespace": _get_default_namespace(),
             "agent_id": _get_default_agent_id(),
+            # The daemon has its own environment/cwd. Everything that changes a
+            # tool's semantics must travel with the request or it silently
+            # diverges from what this MCP client would have done locally.
+            "context": {
+                "default_include_private": _get_default_include_private(),
+                "enforce_agent_ownership": _env_flag("MESH_ENFORCE_AGENT_OWNERSHIP"),
+                "workspace_root": os.getcwd(),
+                "allow_log_sync": _env_flag("MESH_ENABLE_AUTO_SYNC")
+                or _env_flag("MESH_ALLOW_LOG_SYNC"),
+                "allow_cloud_sync": _env_flag("MESH_ALLOW_CLOUD_SYNC"),
+            },
         }
     ).encode("utf-8")
     headers = {
@@ -997,12 +1032,13 @@ async def list_tools() -> list[types.Tool]:
     return _MCP_TOOLS
 
 
-def _execute_tool_sync(
+def _execute_tool_sync_impl(
     name: str,
     arguments: dict[str, Any],
     default_namespace: Optional[str] = None,
     agent_id: Optional[str] = None,
     allow_daemon_proxy: bool = True,
+    context: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """Execute a tool synchronously with thread-safe stdout redirection for MCP stdio safety."""
     with _track_foreground_tool_call():
@@ -1067,7 +1103,7 @@ def _execute_tool_sync(
                 inc_priv = (
                     bool(arguments["include_private"])
                     if "include_private" in arguments and arguments["include_private"] is not None
-                    else _get_default_include_private()
+                    else _ctx_default_include_private(context)
                 )
                 try:
                     mesh = get_mesh(namespace=validated_ns, agent_id=agent_id, create=False)
@@ -1108,6 +1144,18 @@ def _execute_tool_sync(
                 return res
 
             elif name == "mesh_update":
+                guard_res = None
+                if arguments.get("content") is not None:
+                    guard_res = guard_ingest(
+                        str(arguments.get("content")),
+                        local_only=bool(arguments.get("local_only", False)),
+                    )
+                    if guard_res.rejected:
+                        return {
+                            "status": "rejected",
+                            "error": f"Memory rejected: {guard_res.reason}",
+                            "namespace": validated_ns,
+                        }
                 try:
                     mesh = get_mesh(namespace=validated_ns, agent_id=agent_id, create=False)
                 except NamespaceNotFoundError:
@@ -1119,20 +1167,27 @@ def _execute_tool_sync(
                     }
                 updated = mesh.update(
                     memory_id=arguments["memory_id"],
-                    content=arguments.get("content"),
+                    content=guard_res.content if guard_res else arguments.get("content"),
                     memory_type=arguments.get("memory_type"),
                     confidence=arguments.get("confidence"),
                     tags=arguments.get("tags"),
                     ttl_days=arguments.get("ttl_days"),
                     clear_ttl=bool(arguments.get("clear_ttl", False)),
-                    local_only=arguments.get("local_only"),
+                    local_only=(
+                        True
+                        if guard_res is not None and guard_res.local_only
+                        else arguments.get("local_only")
+                    ),
                 )
-                return {
+                update_resp: dict[str, Any] = {
                     "status": "updated",
                     "memory_id": updated["memory_id"],
                     "namespace": mesh.namespace,
                     "memory": updated["memory"],
                 }
+                if guard_res is not None and guard_res.warnings:
+                    update_resp["warnings"] = guard_res.warnings
+                return update_resp
 
             elif name == "mesh_forget":
                 try:
@@ -1157,7 +1212,7 @@ def _execute_tool_sync(
                 inc_priv = (
                     bool(arguments["include_private"])
                     if "include_private" in arguments and arguments["include_private"] is not None
-                    else _get_default_include_private()
+                    else _ctx_default_include_private(context)
                 )
                 try:
                     mesh = get_mesh(namespace=validated_ns, agent_id=agent_id, create=False)
@@ -1207,7 +1262,11 @@ def _execute_tool_sync(
                     min_confidence=float(arguments.get("min_confidence", 0.3)),
                     memory_type=arguments.get("memory_type"),
                     tags=arguments.get("tags"),
-                    include_private=bool(arguments.get("include_private", False)),
+                    include_private=(
+                        bool(arguments["include_private"])
+                        if arguments.get("include_private") is not None
+                        else _ctx_default_include_private(context)
+                    ),
                     mesh_instance=mesh,
                 )
                 out_ctx: dict[str, Any] = {
@@ -1224,7 +1283,7 @@ def _execute_tool_sync(
                 inc_priv = (
                     bool(arguments["include_private"])
                     if "include_private" in arguments and arguments["include_private"] is not None
-                    else _get_default_include_private()
+                    else _ctx_default_include_private(context)
                 )
                 try:
                     mesh = get_mesh(namespace=validated_ns, agent_id=agent_id, create=False)
@@ -1307,9 +1366,10 @@ def _execute_tool_sync(
                         local_only=guard_res.local_only,
                     )
 
-                allow_log_sync = (
-                    os.environ.get("MESH_ENABLE_AUTO_SYNC", "").strip().lower() in ("1", "true", "yes")
-                    or os.environ.get("MESH_ALLOW_LOG_SYNC", "").strip().lower() in ("1", "true", "yes")
+                allow_log_sync = _ctx_flag(
+                    context,
+                    "allow_log_sync",
+                    _env_flag("MESH_ENABLE_AUTO_SYNC") or _env_flag("MESH_ALLOW_LOG_SYNC"),
                 )
                 if not allow_log_sync:
                     if mesh is None:
@@ -1334,16 +1394,14 @@ def _execute_tool_sync(
 
                 log_dirs = detect_agent_logs()
                 log_text = _collect_incremental_logs(log_dirs) if log_dirs else ""
-                ws_root = _infer_workspace_root()
+                ws_root = _ctx_workspace_root(context)
                 log_text = _filter_log_text_to_workspace(log_text, ws_root)
                 captured_count = 0
                 if log_text:
                     if mesh is None:
                         mesh = get_mesh(namespace=validated_ns, agent_id=agent_id, create=True)
-                    allow_cloud = os.environ.get("MESH_ALLOW_CLOUD_SYNC", "").strip().lower() in (
-                        "1",
-                        "true",
-                        "yes",
+                    allow_cloud = _ctx_flag(
+                        context, "allow_cloud_sync", _env_flag("MESH_ALLOW_CLOUD_SYNC")
                     )
                     capture_res = extract_memories_from_log(
                         log_text,
@@ -1374,6 +1432,34 @@ def _execute_tool_sync(
 
             else:
                 return {"error": f"Unknown tool: {name}", "status": "error"}
+
+
+def _execute_tool_sync(
+    name: str,
+    arguments: dict[str, Any],
+    default_namespace: Optional[str] = None,
+    agent_id: Optional[str] = None,
+    allow_daemon_proxy: bool = True,
+    context: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Run a tool, honoring caller-supplied context (used when executing inside the daemon)."""
+    token = None
+    if context is not None and context.get("enforce_agent_ownership") is not None:
+        token = _OWNERSHIP_ENFORCEMENT_OVERRIDE.set(
+            bool(context["enforce_agent_ownership"])
+        )
+    try:
+        return _execute_tool_sync_impl(
+            name=name,
+            arguments=arguments,
+            default_namespace=default_namespace,
+            agent_id=agent_id,
+            allow_daemon_proxy=allow_daemon_proxy,
+            context=context,
+        )
+    finally:
+        if token is not None:
+            _OWNERSHIP_ENFORCEMENT_OVERRIDE.reset(token)
 
 
 class MeshCallToolResult(types.CallToolResult):

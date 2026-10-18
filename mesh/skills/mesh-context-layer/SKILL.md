@@ -9,7 +9,7 @@ description: >-
   manage persistent agent memory across sessions.
 ---
 
-# Mesh Context Layer — Full Agent Skill (v0.7.0)
+# Mesh Context Layer — Full Agent Skill (v0.7.1)
 
 > **Mesh** gives every AI agent persistent, shared memory. When one agent learns
 > something, every other agent can recall it — by meaning, keyword, or exact
@@ -89,14 +89,24 @@ folders without running the full setup:
 mesh install-skills
 mesh install-skills --list   # Show where the skill is installed
 mesh install-skills --yes    # Skip y/n prompt
+mesh install-skills --force  # Reinstall even if the installed version matches
 ```
+
+> Mesh detects skill folders for Antigravity (`~/.gemini/config/skills`),
+> Gemini CLI (`~/.gemini/skills`), Claude Code (`~/.claude/skills`), Cursor
+> (`~/.cursor/skills`), Codex (`~/.codex/skills`), OpenCode
+> (`~/.config/opencode/skills`), Windsurf (`~/.codeium/windsurf/skills`), and
+> the generic `.agents` standard (`~/.agents/skills`).
 
 ### 1.4 MCP Server Configuration
 
 Mesh exposes **10 MCP tools** over stdio. Configure your AI client to launch
-the MCP server:
+the MCP server. Mesh does **not** rewrite your client's MCP config
+automatically; add the entry yourself.
 
-#### Antigravity / Gemini CLI (`~/.gemini/config/mcp_config.json`)
+#### Antigravity
+
+Antigravity reads MCP servers from `~/.gemini/config/mcp_config.json`:
 
 ```json
 {
@@ -111,6 +121,29 @@ the MCP server:
   }
 }
 ```
+
+#### Gemini CLI
+
+Gemini CLI uses its own settings file — `~/.gemini/settings.json` (user scope)
+or `.gemini/settings.json` (project scope):
+
+```json
+{
+  "mcpServers": {
+    "mesh": {
+      "command": "mesh-server",
+      "env": {
+        "MESH_NAMESPACE": "my-project",
+        "MESH_AGENT_ID": "gemini-cli"
+      }
+    }
+  }
+}
+```
+
+> These client config locations are evolving (Gemini CLI and Antigravity both
+> use `~/.gemini/`, but different files). If the file does not exist, check
+> your client's current MCP documentation before creating it.
 
 #### Claude Desktop (`claude_desktop_config.json`)
 
@@ -192,7 +225,9 @@ Every memory has a `memory_type` that classifies it. Use the most specific type:
   considered **stale** when effective confidence drops below 0.3 (this happens
   before the TTL fully runs out).
 - **Clearing TTL**: Use `clear_ttl=true` on `mesh_update` to make a temporary
-  memory permanent.
+  memory permanent. On `mesh_update`, `ttl_days=0` (or any value ≤ 0) is
+  treated the same as `clear_ttl=true`. On `mesh_learn`, `ttl_days=0` means
+  "no TTL" and the memory is stored permanently.
 
 ### 2.4 Privacy (`local_only`)
 
@@ -235,12 +270,20 @@ agents learning the same fact produce one memory, not duplicates.
 
 ### 2.6 Ingestion Guards
 
-Every ingestion path (`mesh_learn`, `mesh_sync`, HTTP `/learn`, CLI `mesh add`,
-dashboard, imports) runs the same checks:
-- **Credentials** are redacted and the memory is forced to `local_only=true`.
-- **Prompt-injection attempts** are rejected with `status: "rejected"` (the
-  MCP call is returned as an error).
-- Control characters are stripped.
+Every path that writes memory text runs `guard_ingest()` before storage:
+`mesh_learn`, `mesh_update` (when content changes), `mesh_sync` summaries,
+HTTP `/learn` and `/update`, CLI `mesh add` / `mesh update`, dashboard saves
+and edits, and `mesh import`. Each guarded path:
+- **Strips** control and zero-width characters.
+- **Rejects** prompt-injection attempts with `status: "rejected"` (MCP calls
+  surface this as an error; HTTP endpoints return 400).
+- **Redacts** credential/secret patterns and forces the memory to
+  `local_only=true`.
+
+Passive log capture (`mesh_sync`'s log scanning, `mesh capture`) applies its
+own sanitisation and cloud-redaction rules before extracting facts; it never
+bypasses the credential and poison checks, but it is a separate pipeline from
+`guard_ingest()`.
 
 ---
 
@@ -351,7 +394,8 @@ creation timestamp, original author, or access count.
 - `memory_type` (string): Updated type.
 - `confidence` (number): Updated confidence score.
 - `tags` (string array): Updated tag list (replaces existing tags entirely).
-- `ttl_days` (number): Updated TTL (resets the decay timer).
+- `ttl_days` (number): Updated TTL (resets the decay timer). A value of `0`
+  (or any value ≤ 0) clears the TTL, same as `clear_ttl=true`.
 - `clear_ttl` (boolean, default `false`): Set true to remove TTL and make
   permanent.
 - `local_only` (boolean): Updated privacy flag.
@@ -628,7 +672,13 @@ concrete facts from recent agent session logs.
 | `MESH_ALLOWED_HOSTS`           | Comma-separated hostnames/IPs; required for non-loopback binds   | Not set                          |
 | `MESH_NO_DAEMON_PROXY`         | Disable proxying CLI/MCP calls through the warm daemon           | `0`                              |
 | `MESH_AUTO_START_DAEMON`       | Auto-start the daemon on SDK instantiation                       | `0`                              |
+| `MESH_NO_AUTO_DAEMON`          | Never auto-start the daemon or prompt for it                     | `0`                              |
+| `MESH_ALLOW_DAEMON_DOWNLOAD`   | Let a spawned daemon download the embedding model without asking | `0`                              |
 | `MESH_AUTH_TOKEN`              | Explicit override for the local daemon/dashboard token           | Not set                          |
+| `MESH_TOKEN`                   | Alias for `MESH_AUTH_TOKEN`                                      | Not set                          |
+| `MESH_WORKSPACE`               | Workspace path used to scope passive log capture                 | Current directory                |
+| `MESH_MODEL_SHA256`            | Override the expected ONNX model checksum                        | Built-in constant                |
+| `MESH_TOKENIZER_SHA256`        | Override the expected tokenizer checksum                         | Built-in constant                |
 | `MESH_NO_MODEL_DOWNLOAD`       | Never download ONNX; always use `hash-384`                       | `0`                              |
 | `MESH_SKIP_CHECKSUM`           | Skip ONNX SHA-256 verification (not recommended)                 | `0`                              |
 | `MESH_FORCE_PYTORCH`           | Force the PyTorch `sentence-transformers` backend                | `0`                              |
@@ -640,6 +690,10 @@ concrete facts from recent agent session logs.
 | `MESH_EMBED_CACHE_SIZE`        | Max entries in the embedding cache                               | `1024`                           |
 | `MESH_TELEMETRY_BATCH`         | Telemetry events buffered before a SQLite flush                  | `50`                             |
 | `MESH_TELEMETRY_FLUSH_SECONDS` | Max seconds before buffered telemetry is flushed                 | `5.0`                            |
+| `MESH_AI_PROVIDER`             | Force the passive-capture LLM provider (`anthropic`, `openai`, `groq`, ...) | Auto-detect             |
+| `MESH_AI_API_KEY`              | API key for passive-capture LLM extraction                       | Provider-specific env var        |
+| `MESH_AI_MODEL`                | Override the passive-capture model                               | Provider default                 |
+| `MESH_AI_BASE_URL`             | OpenAI-compatible endpoint for passive capture                   | Provider default                 |
 
 ---
 
@@ -658,6 +712,8 @@ mesh daemon restart                 # Restart daemon
 mesh daemon status                  # Health check
 mesh daemon warmup                  # Pre-load ONNX model into RAM
 mesh daemon unload                  # Release model weights from RAM
+mesh daemon install-startup         # Register OS login auto-start [--yes]
+mesh daemon remove-startup          # Remove the login auto-start registration
 
 # Memory CRUD
 mesh add "fact content" --type fact --tags tag1,tag2 [--private] [--ttl 30]
@@ -670,7 +726,8 @@ mesh inspect [--limit 30] [--no-private]   # Browse recent memories
 mesh context --query "topic" --format markdown [--include-private]
 mesh conflicts [--resolve <id>]            # List / resolve contradictions
 mesh patterns [--include-private]          # Usage analytics
-mesh why <id-or-query>                     # Explain why a memory matched
+mesh why [--limit 20] [--action all]       # Audit trail: who read/changed what
+                                           # --action: read|write|update|forget|delete|all
 mesh digest [--hours 24]                   # Session activity summary
 
 # Machine-readable output (stable JSON on stdout)
@@ -689,7 +746,7 @@ mesh capture --file session.log            # Extract memories from logs (or --st
 # Utilities
 mesh namespaces list | stats <ns> | rename <old> <new> | delete <ns>
 mesh shell                                 # Interactive REPL
-mesh install-skills [--list] [--yes]       # Install skill to all AI agent folders
+mesh install-skills [--list] [--yes] [--force]  # Install skill to all AI agent folders
 mesh completion powershell --install       # Tab completion (bash, zsh, fish, powershell)
 mesh-dashboard --namespace myproj          # Launch web dashboard
 ```

@@ -34,6 +34,7 @@ from .memory import (
     _PENDING_REEMBED_LOCK,
     _PENDING_REEMBED_QUEUE,
     _embed_batch_with_tag,
+    _hash_embed_384,
     _parse_tags,
 )
 from .passive import _normalize_memory_type
@@ -85,7 +86,13 @@ def _is_valid_file_vector(raw_emb: Any, file_model_tag: str) -> bool:
 
 
 def _load_existing_id_privacy_map(namespace: str) -> dict[str, bool]:
-    """Read `{memory_id: is_local_only}` from an existing namespace DB without creating a new DB file."""
+    """
+    Read `{memory_id: is_local_only}` from an existing namespace DB without creating a new DB file.
+
+    Fails *closed*: a genuine read failure (locked/corrupt DB) raises instead of returning
+    `{}`, because an empty map would disable both the private-overwrite guard and the
+    `skip_existing` check. Only an absent DB/table/column is treated as "nothing exists".
+    """
     db_path = ensure_secure_mesh_dir().resolve() / f"mesh_{namespace}.db"
     if not db_path.exists():
         return {}
@@ -93,15 +100,32 @@ def _load_existing_id_privacy_map(namespace: str) -> dict[str, bool]:
     try:
         conn = sqlite3.connect(db_path, timeout=5.0)
         try:
-            for mid, lo in conn.execute(
-                "SELECT id, local_only FROM memories WHERE namespace = ?",
-                (namespace,),
-            ).fetchall():
+            columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(memories)")}
+            if not columns:
+                return {}
+            if "local_only" in columns:
+                rows = conn.execute(
+                    "SELECT id, local_only FROM memories WHERE namespace = ?",
+                    (namespace,),
+                ).fetchall()
+            else:
+                # Pre-privacy schema: `local_only` did not exist, so no row can be private.
+                rows = [
+                    (mid, 0)
+                    for (mid,) in conn.execute(
+                        "SELECT id FROM memories WHERE namespace = ?",
+                        (namespace,),
+                    ).fetchall()
+                ]
+            for mid, lo in rows:
                 out[str(mid)] = bool(lo)
         finally:
             conn.close()
-    except Exception:
-        pass
+    except Exception as exc:
+        raise RuntimeError(
+            f"Could not read existing namespace '{namespace}' before import; "
+            f"refusing to merge without the private-memory guard ({exc})."
+        ) from exc
     return out
 
 
@@ -227,6 +251,7 @@ def import_namespace(
     flush_all_telemetry()
     existing_privacy_map = _load_existing_id_privacy_map(namespace)
     seen_ids: set[str] = set(existing_privacy_map.keys())
+    file_seen_ids: set[str] = set()
 
     stats: dict[str, Any] = {
         "imported": 0,
@@ -264,11 +289,22 @@ def import_namespace(
             mem_copy["local_only"] = guard_res.local_only
             mem_copy["content"] = content
 
-            raw_id = str(mem_copy.get("id") or uuid.uuid4())
-            try:
-                mem_id = validate_memory_id(raw_id)
-            except ValueError:
-                mem_id = validate_memory_id(str(uuid.uuid4()))
+            raw_id = str(mem_copy.get("id") or "").strip()
+            mem_id: Optional[str] = None
+            if raw_id:
+                try:
+                    mem_id = validate_memory_id(raw_id)
+                except ValueError:
+                    mem_id = None
+            if mem_id is None:
+                # Deterministic fallback: re-importing the same file is idempotent
+                # (a random UUID would create duplicate rows on every run).
+                mem_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"mesh:{namespace}:{content}"))
+
+            if mem_id in file_seen_ids:
+                stats["skipped"] += 1
+                continue
+            file_seen_ids.add(mem_id)
 
             if clean_strategy == "skip_existing":
                 if mem_id in seen_ids:
@@ -276,7 +312,10 @@ def import_namespace(
                     continue
                 seen_ids.add(mem_id)
             elif clean_strategy == "overwrite":
-                if existing_privacy_map.get(mem_id, False) and not mem_copy.get("local_only"):
+                # A Mesh export can never contain a private memory (exports exclude
+                # them), so any file entry claiming an existing private ID is either
+                # hand-crafted or hostile. Never let an import overwrite private data.
+                if existing_privacy_map.get(mem_id, False):
                     stats["skipped"] += 1
                     continue
                 seen_ids.add(mem_id)
@@ -325,7 +364,18 @@ def import_namespace(
         except Exception as e:
             from . import ui
 
-            ui.warn(f"Couldn't embed the imported memories ({e})", "They'll be imported with fallback embeddings and fixed up later.")
+            ui.warn(f"Couldn't embed the imported memories ({e})", "They'll be imported with hash-384 fallback embeddings and fixed up later.")
+
+        # The promise above must hold for *every* item: a failed batch, a short
+        # return, or a malformed vector falls back to the deterministic hash-384
+        # embedding instead of rejecting the memory.
+        for item_idx in embed_owner_indices:
+            if item_idx not in computed_embeddings:
+                fallback_text = str(to_import[item_idx][1]["content"])
+                computed_embeddings[item_idx] = (
+                    _hash_embed_384(fallback_text).tolist(),
+                    "hash-384",
+                )
 
     now_iso = datetime.now(timezone.utc).isoformat()
     batch_items: list[tuple[str, str, list[float], dict[str, Any], bool]] = []
@@ -363,7 +413,7 @@ def import_namespace(
             raw_access = mem.get("access_count", 0)
             try:
                 access_val = int(float(raw_access))
-            except (ValueError, TypeError):
+            except (ValueError, TypeError, OverflowError):
                 access_val = 0
             access_count = max(0, access_val)
 
@@ -413,7 +463,12 @@ def import_namespace(
             stats["errors"] += 1
             from . import ui
 
-            ui.warn(f"Couldn't import \"{ui.truncate(str(mem.get('content', '')), 50)}\": {e}")
+            # Never echo private content into terminal/stderr output.
+            if mem.get("local_only"):
+                label = "a private memory"
+            else:
+                label = f'"{ui.truncate(str(mem.get("content", "")), 50)}"'
+            ui.warn(f"Couldn't import {label}: {e}")
 
     if batch_items:
         try:

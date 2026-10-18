@@ -32,7 +32,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
-from .audit import _get_audit_db_path, ensure_secure_mesh_dir, get_audit_log, validate_namespace
+from .audit import ensure_secure_mesh_dir, get_audit_log, validate_namespace
 from .daemon import get_or_create_auth_token, request_user_permission
 from .digest import generate_digest
 from .io import export_namespace
@@ -1528,11 +1528,13 @@ async function saveMemory() {
   const ttlRaw = document.getElementById('f-ttl').value.trim();
   const parsedTtl = ttlRaw ? parseFloat(ttlRaw) : null;
   const ttlChanged = parsedTtl !== editOrigTtl;
+  const confRaw = parseFloat(document.getElementById('f-conf').value);
 
   const payload = {
     content,
     memory_type: document.getElementById('f-type').value,
-    confidence: parseFloat(document.getElementById('f-conf').value) || 1.0,
+    // `|| 1.0` would silently turn a legitimate 0 confidence into 1.0.
+    confidence: Number.isFinite(confRaw) ? confRaw : 1.0,
     tags,
     local_only: document.getElementById('f-private').checked,
     namespace: ns
@@ -1613,11 +1615,16 @@ async function loadConflicts() {
 }
 
 async function resolveConflict(id) {
-  await fetch(`/api/contradictions/${encodeURIComponent(id)}/resolve?namespace=${encodeURIComponent(ns)}`, {
+  const res = await fetch(`/api/contradictions/${encodeURIComponent(id)}/resolve?namespace=${encodeURIComponent(ns)}`, {
     method: 'POST',
     credentials: 'same-origin',
     headers: authHeaders()
   });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '');
+    notify(`Could not resolve conflict (HTTP ${res.status})${detail ? ': ' + detail : ''}`);
+    return;
+  }
   notify('Conflict resolved');
   loadConflicts();
   refreshAll();
@@ -1717,11 +1724,16 @@ async function exportNs(targetNs) {
 
 async function deleteNs(targetNs) {
   if (!confirm(`Delete namespace '${targetNs}' and all its memories?`)) return;
-  await fetch(`/api/namespaces/${encodeURIComponent(targetNs)}`, {
+  const res = await fetch(`/api/namespaces/${encodeURIComponent(targetNs)}`, {
     method: 'DELETE',
     credentials: 'same-origin',
     headers: authHeaders()
   });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '');
+    notify(`Could not delete ${targetNs} (HTTP ${res.status})${detail ? ': ' + detail : ''}`);
+    return;
+  }
   if (targetNs === ns) {
     ns = '';
     searchResults = null;

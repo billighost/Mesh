@@ -89,8 +89,50 @@ _LAZY_EXPORTS: dict[str, tuple[str, str]] = {
     "get_or_create_auth_token": (".daemon", "get_or_create_auth_token"),
 }
 
+# Written as a literal (rather than derived from `_LAZY_EXPORTS`) so static
+# analysers and IDEs can see the public surface that `__getattr__` provides.
+# `tests/test_remediation.py` asserts the two stay in sync.
 __all__ = [
-    *list(_LAZY_EXPORTS.keys()),
+    # .memory
+    "Mesh",
+    "VALID_MEMORY_TYPES",
+    "ensure_model_downloaded",
+    "warmup_model",
+    "unload_model",
+    "get_engine_status",
+    "set_idle_unload_seconds",
+    # .io
+    "export_namespace",
+    "import_namespace",
+    # .namespaces
+    "list_namespaces",
+    "delete_namespace",
+    "rename_namespace",
+    "namespace_stats",
+    # .audit
+    "log_recall",
+    "log_learn",
+    "log_update",
+    "log_forget",
+    "purge_memory_from_audit",
+    "scrub_memory_update_from_audit",
+    "validate_namespace",
+    "get_audit_log",
+    "get_audit_stats",
+    # .store
+    "validate_memory_id",
+    "NamespaceNotFoundError",
+    # .context_builder
+    "build_context",
+    "build_context_bundle",
+    # .digest
+    "generate_digest",
+    # .passive
+    "extract_memories_from_log",
+    # .daemon
+    "request_user_permission",
+    "get_or_create_auth_token",
+    # module metadata
     "VERSION",
     "__version__",
 ]

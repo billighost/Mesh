@@ -15,8 +15,11 @@ from .passive import (
     _redact_secrets_for_cloud,
 )
 
-# Strip control characters (C0/C1) except newline (\n) and tab (\t)
-_CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
+# Strip control characters (C0/C1) except newline (\n) and tab (\t), plus
+# invisible zero-width / bidi formatting characters that can hide poison text.
+_CONTROL_CHAR_RE = re.compile(
+    r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f​-‏⁠﻿‪-‮⁦-⁩]"
+)
 
 
 class GuardResult(NamedTuple):

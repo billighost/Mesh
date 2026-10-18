@@ -35,6 +35,7 @@ from pydantic import BaseModel, Field
 from .audit import _get_audit_db_path, ensure_secure_mesh_dir, get_audit_log, validate_namespace
 from .context_builder import build_context_bundle
 from .daemon import get_or_create_auth_token, request_user_permission
+from .envutil import env_bool, env_float, env_int
 from .memory import (
     Mesh,
     _has_local_onnx_pair,
@@ -238,7 +239,8 @@ class RecallRequest(BaseModel):
     min_similarity: Optional[float] = 0.0
     min_confidence: Optional[float] = 0.0
     include_stale: Optional[bool] = True
-    include_private: Optional[bool] = False
+    # None means "not specified": the MESH_MCP_INCLUDE_PRIVATE default applies.
+    include_private: Optional[bool] = None
     include_other_possible: Optional[bool] = True
     max_other_possible: Optional[int] = 5
     namespace: Optional[str] = None
@@ -279,7 +281,8 @@ class ContextRequest(BaseModel):
     min_confidence: Optional[float] = 0.3
     memory_type: Optional[str] = None
     tags: Optional[list[str]] = None
-    include_private: Optional[bool] = False
+    # None means "not specified": the MESH_MCP_INCLUDE_PRIVATE default applies.
+    include_private: Optional[bool] = None
 
 
 class WarmupRequest(BaseModel):
@@ -291,6 +294,9 @@ class McpProxyRequest(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
     default_namespace: Optional[str] = None
     agent_id: Optional[str] = None
+    # Caller-environment semantics that must not silently fall back to the daemon's
+    # own env/cwd (private-memory defaults, ownership enforcement, workspace, sync).
+    context: dict[str, Any] = Field(default_factory=dict)
 
 
 # --- Endpoints (Synchronous `def` so FastAPI runs them in a worker threadpool) ---
@@ -379,6 +385,7 @@ def mcp_proxy(req: McpProxyRequest) -> dict[str, Any]:
             default_namespace=req.default_namespace,
             agent_id=req.agent_id,
             allow_daemon_proxy=False,
+            context=req.context,
         )
         return {"status": "ok", "payload": payload}
     except ValueError as e:
@@ -444,7 +451,11 @@ def recall(req: RecallRequest) -> dict[str, Any]:
             }
         limit_n = req.n if req.n is not None else (req.count or 5)
         max_other = (req.max_other_possible or 5) if req.include_other_possible is not False else 0
-        inc_priv = False if req.include_private is None else bool(req.include_private)
+        inc_priv = (
+            env_bool("MESH_MCP_INCLUDE_PRIVATE", False)
+            if req.include_private is None
+            else bool(req.include_private)
+        )
         bundle = mesh.recall_with_context(
             query=req.query,
             n=limit_n,
@@ -477,18 +488,39 @@ def recall(req: RecallRequest) -> dict[str, Any]:
 def update(req: UpdateRequest) -> dict[str, Any]:
     """Update an existing memory in-place by ID (supports clearing TTL via `clear_ttl=True`)."""
     try:
+        from .guards import guard_ingest
+
+        content = req.content
+        local_only = req.local_only
+        warnings: list[str] = []
+        if content is not None:
+            guard = guard_ingest(content, local_only=bool(req.local_only))
+            if guard.rejected:
+                reason_str = guard.reason or "Memory content rejected by ingestion guard."
+                return JSONResponse(
+                    status_code=400,
+                    content={"status": "rejected", "error": reason_str, "detail": reason_str},
+                )
+            content = guard.content
+            if guard.local_only:
+                local_only = True
+            warnings = guard.warnings
+
         mesh = get_mesh(req.namespace, req.agent_id, create=False)
         result = mesh.update(
             memory_id=req.memory_id,
-            content=req.content,
+            content=content,
             memory_type=req.memory_type,
             confidence=req.confidence,
             tags=req.tags,
             ttl_days=req.ttl_days,
             clear_ttl=bool(req.clear_ttl),
-            local_only=req.local_only,
+            local_only=local_only,
         )
-        return {"status": "ok", "result": result}
+        payload: dict[str, Any] = {"status": "ok", "result": result}
+        if warnings:
+            payload["warnings"] = warnings
+        return payload
     except NamespaceNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
@@ -524,10 +556,15 @@ def inspect(
     limit: int = 50,
     memory_type: Optional[str] = None,
     tag: Optional[str] = None,
-    include_private: bool = False,
+    include_private: Optional[bool] = None,
 ) -> dict[str, Any]:
     """List memories in the namespace (excludes `local_only` private memories by default)."""
     try:
+        inc_priv = (
+            env_bool("MESH_MCP_INCLUDE_PRIVATE", False)
+            if include_private is None
+            else bool(include_private)
+        )
         raw_ns = (namespace or os.environ.get("MESH_NAMESPACE", "shared")).strip() or "shared"
         ns = validate_namespace(raw_ns)
         try:
@@ -545,7 +582,7 @@ def inspect(
             limit=limit,
             memory_type=memory_type,
             tag=tag,
-            include_private=include_private,
+            include_private=inc_priv,
         )
         return {
             "status": "ok",
@@ -563,7 +600,7 @@ def inspect(
 @app.get("/patterns", dependencies=[Depends(verify_request_auth)])
 def patterns(
     namespace: Optional[str] = None,
-    include_private: bool = False,
+    include_private: Optional[bool] = None,
 ) -> dict[str, Any]:
     """Return pattern analysis: top queries, memory gaps, unused and stale memories."""
     try:
@@ -584,7 +621,12 @@ def patterns(
                     "stale_memories": [],
                 },
             }
-        result = mesh.patterns(include_private=include_private)
+        inc_priv = (
+            env_bool("MESH_MCP_INCLUDE_PRIVATE", False)
+            if include_private is None
+            else bool(include_private)
+        )
+        result = mesh.patterns(include_private=inc_priv)
         return {
             "status": "ok",
             "namespace": ns,
@@ -678,7 +720,11 @@ def context(req: ContextRequest) -> dict[str, Any]:
             min_confidence=req.min_confidence if req.min_confidence is not None else 0.3,
             memory_type=req.memory_type,
             tags=req.tags,
-            include_private=bool(req.include_private),
+            include_private=(
+                env_bool("MESH_MCP_INCLUDE_PRIVATE", False)
+                if req.include_private is None
+                else bool(req.include_private)
+            ),
             mesh_instance=mesh,
         )
         return {
@@ -731,13 +777,13 @@ def start(host: Optional[str] = None, port: Optional[int] = None) -> None:
     parser.add_argument(
         "--port",
         type=int,
-        default=int(os.environ.get("MESH_HTTP_PORT", 7701)),
+        default=env_int("MESH_HTTP_PORT", 7701, minimum=1, maximum=65535),
         help="Port to listen on (default: 7701)",
     )
     parser.add_argument(
         "--idle-timeout",
         type=float,
-        default=float(os.environ.get("MESH_IDLE_UNLOAD_SECONDS", "180")),
+        default=env_float("MESH_IDLE_UNLOAD_SECONDS", 180.0, minimum=0.0),
         help="Seconds of inactivity before unloading the neural model from RAM (0 = never unload)",
     )
     parser.add_argument(

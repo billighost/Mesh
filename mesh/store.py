@@ -36,9 +36,7 @@ from typing import Any, Iterator, Optional
 import numpy as np
 
 from .audit import (
-    MESH_DIR,
     REDACTED_CONTENT_PLACEHOLDER,
-    UPDATED_CONTENT_PLACEHOLDER,
     ensure_secure_mesh_dir,
     get_mesh_dir,
     purge_memory_from_audit,
@@ -602,7 +600,8 @@ def _compute_row_effective_confidence(
     try:
         ttl = float(ttl_raw)
         if ttl <= 0.0:
-            return 0.0, True
+            # Unified semantics: `ttl_days <= 0` means no TTL (permanent), not "expired".
+            return round(stored_conf, 4), stored_conf < STALE_THRESHOLD
         decay_start = row.get("decay_start_at") or row.get("created_at")
         start_dt = _parse_iso_utc(decay_start)
         if start_dt is None:
@@ -1008,6 +1007,7 @@ def _flush_telemetry_for_db_path(db_path: Path) -> None:
             _QUERY_WRITE_COUNTS[resolved] = q_writes
             with store._connect() as conn:
                 conn.execute("BEGIN IMMEDIATE")
+                current_cv: Optional[int] = None
                 try:
                     for mid, (delta, accessed_at) in inc_items:
                         conn.execute(
@@ -1032,19 +1032,57 @@ def _flush_telemetry_for_db_path(db_path: Path) -> None:
                             _QUERY_WRITE_COUNTS[resolved] = 0
                             _prune_queries_table_locked(conn, ns, _max_query_rows())
                     conn.commit()
+                    current_cv = store._read_content_version_locked(conn)
                 except Exception:
                     if conn.in_transaction:
                         conn.rollback()
                     raise
-            # Refresh local stamps WITHOUT bumping content_version
+            # Refresh local stamps WITHOUT bumping content_version — but only if the
+            # cache still matches the on-disk content_version. Stamping a stale cache
+            # here would make another process's writes/deletes invisible forever.
             cached = _VECTOR_CACHE.get(resolved)
-            if cached is not None:
+            if (
+                cached is not None
+                and current_cv is not None
+                and cached.content_version is not None
+                and cached.content_version == current_cv
+            ):
                 stamp = _get_db_stamp(resolved)
                 if stamp is not None:
                     _INITIALIZED_DBS[resolved] = stamp
                     cached.update_stamp(stamp, data_version=store._get_data_version_locked())
     except Exception:
         pass
+
+
+def _scrub_contradictions_in_tx(
+    conn: sqlite3.Connection, namespace: str, memory_id: str, replacement_text: str
+) -> None:
+    """Replace any contradiction text that quotes `memory_id` with `replacement_text`."""
+    conn.execute(
+        "UPDATE contradictions SET new_content = ? WHERE namespace = ? AND new_memory_id = ?",
+        (replacement_text, namespace, memory_id),
+    )
+    conn.execute(
+        "UPDATE contradictions SET existing_content = ? WHERE namespace = ? AND existing_memory_id = ?",
+        (replacement_text, namespace, memory_id),
+    )
+
+
+def _scrub_queries_in_tx(conn: sqlite3.Connection, namespace: str, content: str) -> None:
+    """Delete recall-telemetry rows that reproduce a memory's text verbatim.
+
+    Query text is stored truncated to 512 chars, so match both the full and the
+    truncated form — otherwise a long memory's text survives in the clear.
+    """
+    clean = (content or "").strip()
+    if not clean:
+        return
+    conn.execute(
+        "DELETE FROM queries WHERE namespace = ? "
+        "AND (LOWER(query_text) = LOWER(?) OR LOWER(query_text) = LOWER(?))",
+        (namespace, clean, clean[:512]),
+    )
 
 
 def close_store_connection(db_path: Path) -> None:
@@ -1216,6 +1254,7 @@ class _CollectionCompatShim:
             with _CACHE_LOCK:
                 synced_cache = self._store._is_cache_synced_locked()
                 in_place_ok = synced_cache is not None
+                pending_vectors: list[tuple[str, Optional[np.ndarray], dict[str, Any]]] = []
                 new_cv: Optional[int] = None
                 with self._store._connect() as conn:
                     conn.execute("BEGIN IMMEDIATE")
@@ -1246,6 +1285,10 @@ class _CollectionCompatShim:
                                 or ("onnx-minilm-l6-v2" if blob else "needs-reembed")
                             )
 
+                            old_row = conn.execute(
+                                "SELECT content, local_only FROM memories WHERE id = ? AND namespace = ?",
+                                (mid, self._store.namespace),
+                            ).fetchone()
                             old_rowid = self._store._get_memory_rowid(conn, mid)
                             conn.execute(
                                 """
@@ -1285,6 +1328,19 @@ class _CollectionCompatShim:
                                 old_rowid=old_rowid,
                                 new_rowid=new_rowid,
                             )
+                            if old_row is not None:
+                                old_content = str(old_row[0] or "")
+                                old_local = bool(old_row[1])
+                                if old_content != doc or (local_flag and not old_local):
+                                    _scrub_contradictions_in_tx(
+                                        conn,
+                                        self._store.namespace,
+                                        mid,
+                                        REDACTED_CONTENT_PLACEHOLDER
+                                        if local_flag
+                                        else doc,
+                                    )
+                                    _scrub_queries_in_tx(conn, self._store.namespace, old_content)
                             if in_place_ok and synced_cache is not None:
                                 row_meta = {
                                     "id": mid,
@@ -1304,14 +1360,18 @@ class _CollectionCompatShim:
                                     "local_only": bool(local_flag),
                                     "embedding_model": emb_model,
                                 }
-                                if not synced_cache.upsert_vector(mid, norm_vec, row_meta=row_meta):
-                                    in_place_ok = False
+                                pending_vectors.append((mid, norm_vec, row_meta))
                         new_cv = self._store._bump_content_version_in_tx(conn)
                         conn.commit()
                     except Exception:
                         if conn.in_transaction:
                             conn.rollback()
                         raise
+                if in_place_ok and synced_cache is not None:
+                    for mid, vec, meta in pending_vectors:
+                        if not synced_cache.upsert_vector(mid, vec, row_meta=meta):
+                            in_place_ok = False
+                            break
                 if in_place_ok and synced_cache is not None:
                     self._store._refresh_stamps_after_write_locked(synced_cache, content_version=new_cv)
                 else:
@@ -1833,9 +1893,9 @@ class MeshStore:
                     ):
                         if mid in prev_cache.lexical_by_id:
                             reused_lexical[mid] = prev_cache.lexical_by_id[mid]
-                        prev_idx = prev_cache.id_to_idx.get(mid)
-                        if prev_idx is not None and prev_cache._matrix_buf is not None:
-                            vec = prev_cache._matrix_buf[prev_idx]
+                        # Do NOT reuse the old vector: the text can be identical
+                        # while the embedding was re-computed (model upgrade or
+                        # healed hash-384 row). Always trust the BLOB on disk.
 
                 if vec is None:
                     if blob:
@@ -1967,6 +2027,10 @@ class MeshStore:
                 with self._connect() as conn:
                     conn.execute("BEGIN IMMEDIATE")
                     try:
+                        old_row = conn.execute(
+                            "SELECT content, local_only FROM memories WHERE id = ? AND namespace = ?",
+                            (memory_id, self.namespace),
+                        ).fetchone()
                         old_rowid = self._get_memory_rowid(conn, memory_id)
                         conn.execute(
                             """
@@ -2006,6 +2070,17 @@ class MeshStore:
                             old_rowid=old_rowid,
                             new_rowid=new_rowid,
                         )
+                        if old_row is not None:
+                            old_content = str(old_row[0] or "")
+                            old_local = bool(old_row[1])
+                            if old_content != content or (local_flag and not old_local):
+                                _scrub_contradictions_in_tx(
+                                    conn,
+                                    self.namespace,
+                                    memory_id,
+                                    REDACTED_CONTENT_PLACEHOLDER if local_flag else content,
+                                )
+                                _scrub_queries_in_tx(conn, self.namespace, old_content)
                         new_cv = self._bump_content_version_in_tx(conn)
                         conn.commit()
                     except Exception:
@@ -2037,6 +2112,7 @@ class MeshStore:
             with _CACHE_LOCK:
                 synced_cache = self._is_cache_synced_locked()
                 in_place_ok = synced_cache is not None
+                pending_vectors: list[tuple[str, Optional[np.ndarray], dict[str, Any]]] = []
                 new_cv: Optional[int] = None
                 with self._connect() as conn:
                     conn.execute("BEGIN IMMEDIATE")
@@ -2069,6 +2145,10 @@ class MeshStore:
                                 or ("hash-384" if np.all(norm_vec[368:] == 0.0) else "onnx-minilm-l6-v2")
                             )
 
+                            old_row = conn.execute(
+                                "SELECT content, local_only FROM memories WHERE id = ? AND namespace = ?",
+                                (memory_id, self.namespace),
+                            ).fetchone()
                             old_rowid = self._get_memory_rowid(conn, memory_id)
                             conn.execute(
                                 """
@@ -2108,6 +2188,17 @@ class MeshStore:
                                 old_rowid=old_rowid,
                                 new_rowid=new_rowid,
                             )
+                            if old_row is not None:
+                                old_content = str(old_row[0] or "")
+                                old_local = bool(old_row[1])
+                                if old_content != content or (local_flag and not old_local):
+                                    _scrub_contradictions_in_tx(
+                                        conn,
+                                        self.namespace,
+                                        memory_id,
+                                        REDACTED_CONTENT_PLACEHOLDER if local_flag else content,
+                                    )
+                                    _scrub_queries_in_tx(conn, self.namespace, old_content)
                             if in_place_ok and synced_cache is not None:
                                 row_meta = {
                                     "id": memory_id,
@@ -2127,8 +2218,7 @@ class MeshStore:
                                     "local_only": bool(local_flag),
                                     "embedding_model": emb_model,
                                 }
-                                if not synced_cache.upsert_vector(memory_id, norm_vec, row_meta=row_meta):
-                                    in_place_ok = False
+                                pending_vectors.append((memory_id, norm_vec, row_meta))
                         new_cv = self._bump_content_version_in_tx(conn)
                         conn.commit()
                     except Exception:
@@ -2137,14 +2227,20 @@ class MeshStore:
                         raise
 
                 if in_place_ok and synced_cache is not None:
+                    for memory_id, vec, meta in pending_vectors:
+                        if not synced_cache.upsert_vector(memory_id, vec, row_meta=meta):
+                            in_place_ok = False
+                            break
+                if in_place_ok and synced_cache is not None:
                     self._refresh_stamps_after_write_locked(synced_cache, content_version=new_cv)
                 else:
                     self._invalidate_cache()
 
     def resolve_id_prefix(self, prefix: str) -> Optional[str]:
         """
-        Resolve a full memory ID from a 4+ character short ID prefix in O(1) time
-        via the in-memory vector cache. Raises ValueError if ambiguous.
+        Resolve a full memory ID from a 4+ character short ID prefix via the
+        in-memory vector cache. Full-ID hits are O(1); prefix scans are O(N) over
+        the cached IDs but avoid any SQL round-trip. Raises ValueError if ambiguous.
         Never uses arbitrary substring matching.
         """
         clean_pref = (prefix or "").strip().lower()
@@ -2262,8 +2358,15 @@ class MeshStore:
                     new_ttl = None
                     new_decay_start = None
                 elif reset_ttl or ttl_days is not None:
-                    new_ttl = ttl_days
-                    new_decay_start = now if ttl_days is not None else None
+                    if ttl_days is not None:
+                        new_ttl = ttl_days
+                        new_decay_start = now if ttl_days is not None else None
+                    else:
+                        # reset_ttl=True without ttl_days restarts the existing TTL;
+                        # clearing a TTL is what `clear_ttl=True` is for.
+                        old_ttl = existing_meta["ttl_days"]
+                        new_ttl = old_ttl
+                        new_decay_start = now if old_ttl is not None else None
                 else:
                     new_ttl = existing_meta["ttl_days"]
                     new_decay_start = existing_meta["decay_start_at"]
@@ -2379,22 +2482,10 @@ class MeshStore:
                             replacement_text = (
                                 REDACTED_CONTENT_PLACEHOLDER if new_local_bool else new_content
                             )
-                            conn.execute(
-                                """
-                                UPDATE contradictions
-                                SET new_content = ?
-                                WHERE namespace = ? AND new_memory_id = ?
-                                """,
-                                (replacement_text, self.namespace, memory_id),
+                            _scrub_contradictions_in_tx(
+                                conn, self.namespace, memory_id, replacement_text
                             )
-                            conn.execute(
-                                """
-                                UPDATE contradictions
-                                SET existing_content = ?
-                                WHERE namespace = ? AND existing_memory_id = ?
-                                """,
-                                (replacement_text, self.namespace, memory_id),
-                            )
+                            _scrub_queries_in_tx(conn, self.namespace, old_content)
                         new_cv = self._bump_content_version_in_tx(conn)
                         conn.commit()
                     except Exception:
@@ -2653,7 +2744,6 @@ class MeshStore:
 
         lex = cached_lex if cached_lex is not None else _build_row_lexical_entry(doc_content, doc_tags)
         doc_norm = lex["doc_norm"]
-        doc_compact = lex["doc_compact"]
         doc_len = lex["doc_len"]
         tag_tokens = lex["tag_tokens"]
         tag_stems = lex["tag_stems"]
@@ -3233,10 +3323,7 @@ class MeshStore:
                                 (self.namespace, clean_id, clean_id),
                             )
                             if purged_content and purged_content.strip():
-                                conn.execute(
-                                    "DELETE FROM queries WHERE namespace = ? AND LOWER(query_text) = LOWER(?)",
-                                    (self.namespace, purged_content.strip()),
-                                )
+                                _scrub_queries_in_tx(conn, self.namespace, purged_content)
                             new_cv = self._bump_content_version_in_tx(conn)
                         conn.commit()
                     except Exception:
