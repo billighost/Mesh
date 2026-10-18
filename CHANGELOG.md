@@ -4,6 +4,13 @@ All notable changes to `mesh-context-layer` are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (pre-1.0: minor versions may include behavior changes).
 
+## [0.6.5] - 2026-10-18
+
+### Fixed
+
+- **Contradictions are detected under the `hash-384` fallback.** The subject-value check required a 0.70 cosine similarity even when both statements shared an identical subject and assigned different numbers to the same slot (`primary database is db1` vs `primary database is db2`). Hash embeddings score that pair at ~0.64, so conflict detection silently returned nothing whenever the ONNX model was unavailable — including a fresh install before the model download completes. Numeric slot conflicts are now structural and independent of embedding similarity; non-numeric value changes still require the similarity gate. Added a regression test that runs without the neural model.
+- Package version bumped to `0.6.5`.
+
 ## [0.6.4] - 2026-10-18
 
 ### Fixed
