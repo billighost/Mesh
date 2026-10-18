@@ -4,6 +4,40 @@ All notable changes to `mesh-context-layer` are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (pre-1.0: minor versions may include behavior changes).
 
+## [0.7.2] - 2026-10-19
+
+Second security and correctness audit round. Every fix is pinned by `tests/test_audit_round2.py` and `tests/test_deep_scan_regressions.py`.
+
+### Security
+
+- **Ingestion guards now live inside `Mesh.learn()` and `Mesh.update()`**, not only at the MCP/HTTP boundary. SDK callers and in-process code can no longer bypass credential redaction or prompt-injection rejection.
+- **Poison and credential checks resist Unicode and ReDoS bypasses.** NFKC fullwidth text, zero-width characters, and soft hyphens no longer split a blocked phrase past the regexes; oversized input is rejected before matching; credential detection is linear on long unbroken text. Credential detection also stops flagging ordinary prose while still redacting real secrets.
+- **`/mcp` hardened.** Context keys are whitelisted, security-context overrides from callers are rejected, and `agent_id` is bound by the server. Protocol errors now return JSON-RPC errors with `isError: true`.
+- **Consistent HTTP semantics.** Dashboard and API routes return 400/404/409/429/500 deliberately and redact internal details from 500 responses. `/identity` bounds nonce length (≤128) and charset. The local-origin regex accepts only genuine loopback origins.
+- **Ownership and privacy edges.** `resolve_contradiction` enforces `MESH_ENFORCE_AGENT_OWNERSHIP`; recall filters zero/orthogonal vectors; `mesh_inspect` totals respect filters and exclude private rows; the dashboard's default namespace no longer drifts with browse history, and launch nonces are bounded and pruned.
+- **Secrets in URLs** whose password contains `/` are redacted before any cloud upload.
+
+### Fixed
+
+- **Bounded caches.** Store, vector, and HTTP caches now share a namespace-level LRU with a total cap; exceeding it returns `429` instead of growing without limit.
+- **Sync correctness.** Log watermarks are lock-protected, advance transactionally only on success, and reset on rotation/truncation; foreground `mesh_sync` seeds at EOF unless `include_history=True`; background sync records and exposes `last_sync_error`; results report `captured_count`, `stored_count`, `deduplicated_count`, and `error`.
+- **Strict booleans.** `"false"`, `"0"`, and `"no"` now parse as false everywhere instead of falling through Python truthiness.
+- **Cache and vector integrity.** Case-variant namespaces no longer share cached rows; a stale cached `Mesh(create=False)` is revalidated after out-of-band deletion; similarity snapshots are copies, not live matrix views; deleting a vector keeps the index consistent; `list_all` sorts by confidence before applying the limit.
+- **Telemetry loss.** Failed flushes requeue events, flushes requeue when the database is missing, and delete scrubs pending query telemetry for the deleted content.
+- **FTS resilience.** A transient FTS error no longer permanently disables FTS; `clear_namespace` scopes its FTS cleanup correctly.
+- **Audit scrubbing on collection upserts**, matching the behavior of `update()`.
+- **Version parsing** no longer misreads `rc` or local labels, and `is_version_compatible` compares them correctly.
+- **Digest accuracy.** A missing namespace is reported as missing instead of as an empty one; searches and stored counts are read from the correct stats source.
+- **Auth token durability.** A corrupt token file is repaired on disk atomically; concurrent creation or repair never overwrites the winner; `start_daemon` keeps `daemon.pid` when identity verification times out but the process is alive.
+- **Model downloads outlive the CLI.** Downloads now run in a detached helper process (`mesh._model_download`), so `mesh setup` / `mesh daemon start` no longer lose the download when the short-lived command exits.
+- **Passive capture** no longer reinterprets already-resolved log text as a path, and JSONL chat formats are extracted correctly.
+- Pydantic request models bound their inputs; tags receive a `tag+semantic` match reason.
+- Package version bumped to `0.7.2`.
+
+### Documentation
+
+- `SKILL.md` clarifies that ingestion guards are enforced inside `Mesh.learn()` / `Mesh.update()` for every caller, and documents the `tag+semantic` match reason.
+
 ## [0.7.1] - 2026-10-18
 
 A remediation release from a full audit of the 0.7.x tree: privacy leaks, import safety, TTL semantics, namespace and daemon edge cases, and defensive environment parsing. All are covered by the new `tests/test_remediation.py` regression suite.

@@ -17,15 +17,16 @@ Performance & Security Architecture:
 """
 from __future__ import annotations
 
+import contextvars
 import difflib
 import gc
-import contextvars
 import hashlib
 import json
 import math
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -63,6 +64,7 @@ from .store import (
     expand_query_tokens,
     namespace_write_lock,
 )
+from .version import VERSION
 
 _MODEL_LOCK = threading.RLock()
 _WARNED_MESSAGES: set[str] = set()
@@ -89,13 +91,18 @@ _ONNX_MODEL_DIR = _get_onnx_model_dir()
 _GCS_TARBALL_MIRRORS = [
     "https://storage.googleapis.com/qdrant-fastembed/sentence-transformers-all-MiniLM-L6-v2.tar.gz",
 ]
+# Pinned HuggingFace revision for the model repo. Pinning the revision (in
+# addition to the SHA-256 allowlist) means an upstream force-push to `main`
+# cannot change which bytes we attempt to fetch; a checksum mismatch becomes a
+# clear download failure instead of a silent model swap.
+_HF_MODEL_REVISION = "1110a243fdf4706b3f48f1d95db1a4f5529b4d41"
 _TOKENIZER_MIRRORS = [
-    "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer.json",
-    "https://hf-mirror.com/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer.json",
+    f"https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/{_HF_MODEL_REVISION}/tokenizer.json",
+    f"https://hf-mirror.com/sentence-transformers/all-MiniLM-L6-v2/resolve/{_HF_MODEL_REVISION}/tokenizer.json",
 ]
 _ONNX_MODEL_MIRRORS = [
-    "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/onnx/model.onnx",
-    "https://hf-mirror.com/sentence-transformers/all-MiniLM-L6-v2/resolve/main/onnx/model.onnx",
+    f"https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/{_HF_MODEL_REVISION}/onnx/model.onnx",
+    f"https://hf-mirror.com/sentence-transformers/all-MiniLM-L6-v2/resolve/{_HF_MODEL_REVISION}/onnx/model.onnx",
 ]
 
 # Verified 64-hex-char SHA-256 digests for sentence-transformers/all-MiniLM-L6-v2 & Qdrant FastEmbed ONNX
@@ -204,6 +211,11 @@ CONTRADICTION_THRESHOLD = 0.82
 
 # Similarity threshold above which identical/near-identical facts are deduplicated
 DEDUP_THRESHOLD = 0.985
+
+# Absolute minimum similarity floor when min_similarity is not explicitly set (> 0).
+# Prevents orthogonal/zero vectors and weak feature-hash collisions from returning as matches.
+RECALL_ABSOLUTE_SIMILARITY_FLOOR = 0.05
+HASH_SEMANTIC_ONLY_FLOOR = 0.18
 
 # Unified set of valid memory types across MCP, CLI, HTTP, Passive Capture, and Dashboard
 VALID_MEMORY_TYPES = {
@@ -515,12 +527,18 @@ def _request_model_download_permission(assume_yes: bool = False) -> bool:
     """
     global _download_permission_decided, _download_permission_granted
     if os.environ.get("MESH_NO_MODEL_DOWNLOAD", "").strip().lower() in ("1", "true", "yes"):
-        _record_model_status(
-            state="download_disabled",
-            backend="hash-fallback",
-            last_error="ONNX download disabled via MESH_NO_MODEL_DOWNLOAD=1",
-            hint="Unset MESH_NO_MODEL_DOWNLOAD and run mesh setup",
-        )
+        # Record the disabled state once per process. Re-recording on every
+        # call rewrote `model_status.json` (new `last_attempt`) for every
+        # embed/status request, making the status look continuously active.
+        if not _download_permission_decided:
+            _download_permission_decided = True
+            _download_permission_granted = False
+            _record_model_status(
+                state="download_disabled",
+                backend="hash-fallback",
+                last_error="ONNX download disabled via MESH_NO_MODEL_DOWNLOAD=1",
+                hint="Unset MESH_NO_MODEL_DOWNLOAD and run mesh setup",
+            )
         return False
     if assume_yes or os.environ.get("MESH_AUTO_APPROVE", "").strip().lower() in ("1", "true", "yes"):
         _download_permission_decided = True
@@ -871,7 +889,7 @@ def _download_file_from_mirrors(
             pass
 
     ensure_secure_mesh_dir(_get_onnx_model_dir())
-    headers = {"User-Agent": "mesh-context-layer/0.7.1"}
+    headers = {"User-Agent": f"mesh-context-layer/{VERSION}"}
     hf_token = (
         os.environ.get("HF_TOKEN")
         or os.environ.get("HUGGING_FACE_HUB_TOKEN")
@@ -1032,10 +1050,15 @@ def ensure_model_downloaded(
     timeout: float = 15.0,
     interactive_prompt: bool = True,
     assume_yes: bool = False,
+    detached: bool = False,
 ) -> Optional[tuple[Path, Path]]:
     """
     Ensure the `all-MiniLM-L6-v2` ONNX model and tokenizer are present on local disk.
     Asks the user for `y/n` permission before starting the download unless `assume_yes=True`.
+
+    `detached=True` runs the download in a separate process. Daemon threads are
+    killed when a short-lived CLI process exits, which silently aborted the
+    download for `mesh setup` / `mesh daemon start`; a detached child survives.
     """
     existing = _has_local_onnx_pair() or _discover_local_onnx_pair()
     if existing is not None:
@@ -1044,11 +1067,38 @@ def ensure_model_downloaded(
         return existing
     if interactive_prompt and not _request_model_download_permission(assume_yes=assume_yes):
         return None
+    if detached and not blocking:
+        if _spawn_detached_model_download():
+            return None
+        # Fall through to the in-process thread if the child could not start.
     _start_background_model_download()
     if not blocking:
         return None
     _download_complete_event.wait(timeout=timeout)
     return _has_local_onnx_pair()
+
+
+def _spawn_detached_model_download() -> bool:
+    """Launch `python -m mesh._model_download` as a detached background process."""
+    try:
+        kwargs: dict[str, Any] = {
+            "stdin": subprocess.DEVNULL,
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+            "close_fds": True,
+        }
+        if os.name == "nt":
+            kwargs["creationflags"] = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(
+                subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+            )
+        else:
+            kwargs["start_new_session"] = True
+        subprocess.Popen([sys.executable, "-m", "mesh._model_download"], **kwargs)
+        _record_model_status(state="downloading", backend=_model_backend or "onnx-warming")
+        return True
+    except Exception as exc:  # pragma: no cover - platform/environment dependent
+        _emit_warning(f"Could not start detached model download: {exc}")
+        return False
 
 
 def _background_download_worker() -> None:
@@ -1556,22 +1606,27 @@ def warmup_model(
     namespace: Optional[str] = None,
     blocking: bool = False,
     assume_yes: bool = False,
-) -> None:
+) -> dict[str, Any]:
     """
     Pre-load the embedding engine and (ONLY if the target namespace database already
     exists on disk) warm its vector cache and heal pending warm-up embeddings (Phase 3.4).
     Never creates an empty `mesh_shared.db` file on disk.
+    Returns a summary dict with `status`, `namespace`, and any `error`.
     """
+    ns = "shared"
     try:
+        ns = validate_namespace((namespace or os.environ.get("MESH_NAMESPACE", "shared")).strip() or "shared")
         ensure_model_downloaded(blocking=blocking, timeout=10.0, assume_yes=assume_yes)
         _embed_cached_with_tag("warmup")
-        ns = validate_namespace((namespace or os.environ.get("MESH_NAMESPACE", "shared")).strip() or "shared")
         db_file = ensure_secure_mesh_dir().resolve() / f"mesh_{ns}.db"
         if db_file.exists():
             mesh = Mesh(namespace=ns, agent_id="warmup", create=False)
+            mesh.store._get_vector_cache()
             mesh._heal_namespace_embeddings_if_needed()
-    except Exception:
-        pass
+            return {"status": "ok", "namespace": ns, "namespace_exists": True, "error": None}
+        return {"status": "ok", "namespace": ns, "namespace_exists": False, "error": None}
+    except Exception as exc:
+        return {"status": "error", "namespace": ns, "namespace_exists": False, "error": str(exc)}
 
 
 def _embed_cached_with_tag(cleaned_text: str) -> tuple[np.ndarray, str]:
@@ -2013,9 +2068,6 @@ def _resolve_sdk_include_private(include_private: Optional[bool]) -> bool:
     return True
 
 
-_OWNERSHIP_EXEMPT_AGENTS = frozenset({"human-cli", "dashboard", "cli"})
-
-
 _OWNERSHIP_ENFORCEMENT_OVERRIDE: contextvars.ContextVar[Optional[bool]] = contextvars.ContextVar(
     "mesh_ownership_enforcement_override", default=None
 )
@@ -2032,17 +2084,32 @@ def _ownership_enforced() -> bool:
     )
 
 
-def _can_modify_agent_memory(agent_id: str, existing_agent: Optional[str]) -> bool:
-    """Return True when `agent_id` may modify a memory owned by `existing_agent`."""
-    if not _ownership_enforced():
+def _can_modify_agent_memory(
+    agent_id: str,
+    existing_agent: Optional[str],
+    trusted_local: bool = False,
+) -> bool:
+    """
+    Return True when `agent_id` may modify a memory owned by `existing_agent`.
+
+    Exemption is granted by *provenance* (`trusted_local=True`, set only by the
+    local CLI/dashboard code paths), never by an agent choosing a reserved name.
+    Previously any caller that self-declared `agent_id="human-cli"` — including
+    an agent through an MCP/HTTP argument — bypassed ownership enforcement.
+    """
+    if not _ownership_enforced() or trusted_local:
         return True
     if not existing_agent or existing_agent == agent_id:
         return True
-    return agent_id in _OWNERSHIP_EXEMPT_AGENTS
+    return False
 
 
-def _check_agent_ownership(agent_id: str, existing_agent: Optional[str]) -> None:
-    if not _can_modify_agent_memory(agent_id, existing_agent):
+def _check_agent_ownership(
+    agent_id: str,
+    existing_agent: Optional[str],
+    trusted_local: bool = False,
+) -> None:
+    if not _can_modify_agent_memory(agent_id, existing_agent, trusted_local):
         raise ValueError(
             f"Agent '{agent_id}' is not authorized to modify memory owned by '{existing_agent}'."
         )
@@ -2074,6 +2141,7 @@ class Mesh:
         namespace: Optional[str] = None,
         agent_id: Optional[str] = None,
         create: bool = True,
+        trusted_local: bool = False,
     ):
         raw_ns = (namespace or os.environ.get("MESH_NAMESPACE", "shared")).strip() or "shared"
         self.namespace = validate_namespace(raw_ns)
@@ -2084,6 +2152,9 @@ class Mesh:
         )
         clean_agent = re.sub(r"[\x00-\x1f\x7f]+", "", str(resolved_agent)).strip()[:64]
         self.agent_id = clean_agent or "agent"
+        # Only in-process local callers (CLI, dashboard) opt out of cross-agent
+        # ownership checks. Remote tool arguments can never set this.
+        self.trusted_local = bool(trusted_local)
         db_file = ensure_secure_mesh_dir().resolve() / f"mesh_{self.namespace}.db"
         self._ns_existed_before = db_file.exists()
         self.store = MeshStore(self.namespace, create=create)
@@ -2177,6 +2248,25 @@ class Mesh:
     ) -> dict[str, Any]:
         if not content or not content.strip():
             raise ValueError("content cannot be empty")
+
+        # Central ingestion guard. Every write path (MCP tool, HTTP API, Python
+        # SDK, passive capture, import) funnels through this method, so policy
+        # cannot be bypassed by a caller that forgets to call `guard_ingest()`
+        # itself. Imported lazily because guards -> passive -> memory.
+        from .guards import guard_ingest
+
+        # The guard can force `local_only` for secret-bearing content. Keep the
+        # caller's requested visibility separately: the dedup privacy check must
+        # use the request, otherwise a public learn whose content merely *looks*
+        # like a credential becomes eligible to merge into someone's private row
+        # (the dedup-oracle leak).
+        requested_local_only = bool(local_only)
+
+        guarded = guard_ingest(content, local_only=requested_local_only)
+        if guarded.rejected:
+            raise ValueError(guarded.reason or "Memory content rejected by ingestion guard.")
+        content = guarded.content
+        local_only = guarded.local_only
         clean_content = content.strip()
         if len(clean_content) > MAX_CONTENT_LENGTH:
             raise ValueError(
@@ -2230,10 +2320,10 @@ class Mesh:
                         similarity = round(1.0 - float(distances[i]), 4)
                         existing_id = ids[i] if ids and i < len(ids) else None
                         existing_is_priv = bool(meta.get("local_only"))
-                        if existing_is_priv and not local_only:
+                        if existing_is_priv and not requested_local_only:
                             continue
                         if existing_id and not _can_modify_agent_memory(
-                            self.agent_id, meta.get("source_agent")
+                            self.agent_id, meta.get("source_agent"), self.trusted_local
                         ):
                             # Never mutate a memory owned by another agent through the
                             # dedup path when ownership enforcement is active; store a
@@ -2408,10 +2498,19 @@ class Mesh:
         )
 
         memories: list[dict[str, Any]] = []
-        best_similarity: Optional[float] = None
+        best_similarity: Optional[float] = (
+            max((float(r.get("similarity", 0.0)) for r in candidates), default=None)
+            if candidates
+            else None
+        )
         max_lexical_in_candidates = max(
             (float(r.get("lexical_score", 0.0)) for r in candidates),
             default=0.0,
+        )
+        effective_min_similarity = (
+            float(min_similarity)
+            if min_similarity > 0.0
+            else RECALL_ABSOLUTE_SIMILARITY_FLOOR
         )
 
         for row in candidates:
@@ -2419,19 +2518,27 @@ class Mesh:
             sem_sim = float(row.get("semantic_similarity", similarity))
             lex_score = float(row.get("lexical_score", 0.0))
 
-            if best_similarity is None or similarity > best_similarity:
-                best_similarity = similarity
-            if similarity < min_similarity:
+            if similarity < effective_min_similarity:
                 continue
 
-            if (
-                min_similarity <= 0.0
-                and max_lexical_in_candidates >= 0.55
-                and lex_score <= 0.05
-                and sem_sim < 0.35
-                and similarity < (best_similarity or 0.0) * 0.42
-            ):
-                continue
+            if min_similarity <= 0.0:
+                row_emb_model = str(row.get("embedding_model") or "")
+                if (
+                    (query_model_tag == "hash-384" or row_emb_model == "hash-384")
+                    and lex_score <= 0.05
+                    and sem_sim < HASH_SEMANTIC_ONLY_FLOOR
+                ):
+                    continue
+                if (
+                    max_lexical_in_candidates >= 0.55
+                    and lex_score <= 0.05
+                    and sem_sim < 0.35
+                    and similarity < max(
+                        RECALL_ABSOLUTE_SIMILARITY_FLOOR,
+                        (best_similarity or 0.0) * 0.42,
+                    )
+                ):
+                    continue
 
             stored_confidence = float(row.get("confidence", 1.0))
             ttl_days_raw = row.get("ttl_days")
@@ -2595,7 +2702,7 @@ class Mesh:
             "query": clean_query,
             "namespace": self.namespace,
             "count": len(results),
-            "total_in_namespace": self.count(),
+            "total_in_namespace": self.store.count_matching(include_private=actual_include_private),
             "stale_count": sum(1 for m in results if m.get("is_stale")),
             "results": results,
             "other_possible_memories": other_possible,
@@ -2627,7 +2734,7 @@ class Mesh:
         existing = self.store.get(resolved_id)
         if not existing:
             raise ValueError(f"Memory '{resolved_id}' not found in namespace '{self.namespace}'")
-        _check_agent_ownership(self.agent_id, existing.get("source_agent"))
+        _check_agent_ownership(self.agent_id, existing.get("source_agent"), self.trusted_local)
         old_content = str(existing.get("content", ""))
 
         new_embedding: Optional[list[float]] = None
@@ -2636,6 +2743,16 @@ class Mesh:
         if content is not None:
             if not content.strip():
                 raise ValueError("content cannot be empty")
+            # Same central guard as learn(): sanitize, reject poison, redact
+            # credentials, and force private storage for secret-bearing edits.
+            from .guards import guard_ingest
+
+            guarded = guard_ingest(content, local_only=bool(local_only))
+            if guarded.rejected:
+                raise ValueError(guarded.reason or "Memory content rejected by ingestion guard.")
+            content = guarded.content
+            if guarded.local_only:
+                local_only = True
             clean_content = content.strip()
             if len(clean_content) > MAX_CONTENT_LENGTH:
                 raise ValueError(
@@ -2740,7 +2857,7 @@ class Mesh:
         resolved_id = self.store.resolve_id_prefix(memory_id) or memory_id
         existing = self.store.get(resolved_id)
         if existing:
-            _check_agent_ownership(self.agent_id, existing.get("source_agent"))
+            _check_agent_ownership(self.agent_id, existing.get("source_agent"), self.trusted_local)
         purged_content = existing.get("content") if existing else None
         deleted = self.store.delete(resolved_id)
         if deleted:
@@ -2759,6 +2876,45 @@ class Mesh:
         return self.store.get_contradictions(resolved=resolved)
 
     def resolve_contradiction(self, contradiction_id: str) -> bool:
+        clean_pref = (contradiction_id or "").strip().lower()
+        if not clean_pref:
+            raise ValueError("contradiction_id cannot be empty")
+        if _ownership_enforced() and not self.trusted_local and self.store.db_path.exists():
+            all_records = [
+                *self.store.get_contradictions(resolved=False),
+                *self.store.get_contradictions(resolved=True),
+            ]
+            matched: Optional[dict[str, Any]] = None
+            for rec in all_records:
+                cid = str(rec.get("id") or "").lower()
+                if cid == clean_pref:
+                    matched = rec
+                    break
+            if matched is None and len(clean_pref) >= 4:
+                pref_matches = [
+                    rec
+                    for rec in all_records
+                    if str(rec.get("id") or "").lower().startswith(clean_pref)
+                ]
+                if len(pref_matches) == 1:
+                    matched = pref_matches[0]
+            if matched is not None:
+                existing_mid = str(matched.get("existing_memory_id") or "").strip()
+                new_mid = str(matched.get("new_memory_id") or "").strip()
+                existing_row = self.store.get(existing_mid) if existing_mid else None
+                new_row = self.store.get(new_mid) if new_mid else None
+                if existing_row is not None:
+                    _check_agent_ownership(
+                        self.agent_id,
+                        existing_row.get("source_agent"),
+                        self.trusted_local,
+                    )
+                elif new_row is not None:
+                    _check_agent_ownership(
+                        self.agent_id,
+                        new_row.get("source_agent"),
+                        self.trusted_local,
+                    )
         return self.store.resolve_contradiction(contradiction_id)
 
     def inspect(
@@ -2770,6 +2926,7 @@ class Mesh:
         include_private: Optional[bool] = None,
         include_stale: bool = True,
         min_confidence: float = 0.0,
+        order_by: str = "accessed",
     ) -> list[dict[str, Any]]:
         actual_include_private = _resolve_sdk_include_private(include_private)
         rows = self.store.list_all(
@@ -2780,9 +2937,27 @@ class Mesh:
             include_private=actual_include_private,
             include_stale=include_stale,
             min_confidence=min_confidence,
+            order_by=order_by,
         )
         now = _utc_now()
         return [self._enrich_memory_row(r, now=now) for r in rows]
+
+    def count_matching(
+        self,
+        memory_type: Optional[str] = None,
+        tag: Optional[str] = None,
+        tags: Optional[list[str]] = None,
+        include_private: Optional[bool] = None,
+        source_agent: Optional[str] = None,
+    ) -> int:
+        actual_include_private = _resolve_sdk_include_private(include_private)
+        return self.store.count_matching(
+            memory_type=memory_type,
+            tag=tag,
+            tags=tags,
+            include_private=actual_include_private,
+            source_agent=source_agent,
+        )
 
     def clear(self) -> None:
         self.store.clear_namespace()

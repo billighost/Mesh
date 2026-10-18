@@ -23,6 +23,7 @@ from xml.sax.saxutils import escape as xml_escape
 
 from .audit import validate_namespace
 from .memory import Mesh, _parse_tags, suggest_did_you_mean_namespaces
+from .passive import _INVISIBLE_CHAR_CLASS
 from .store import NamespaceNotFoundError
 
 _CONTEXT_MESH_LOCK = threading.Lock()
@@ -31,7 +32,10 @@ _CONTEXT_MESH_CACHE: OrderedDict[tuple[str, str], Mesh] = OrderedDict()
 
 # Matches complete or incomplete `<mesh_context...` / `</mesh_context...` sequences (case-insensitive)
 _BREAKOUT_TAG_RE = re.compile(r"</?\s*mesh_context\b[^>]*>?", re.IGNORECASE)
-_ZERO_WIDTH_RE = re.compile(r"[\u200b-\u200f\u202a-\u202e\u2060-\u2064\ufeff]")
+# Shared with passive.py/guards.py: soft hyphen, zero-width joiners, bidi
+# controls and other invisible format characters are stripped before rendering
+# memory content into a prompt, so they cannot hide a breakout sequence.
+_ZERO_WIDTH_RE = re.compile(f"[{_INVISIBLE_CHAR_CLASS}]")
 _LINE_BREAK_RE = re.compile(r"[\r\n\u2028\u2029\x0b\x0c\x85]+")
 _CONTROL_WS_RE = re.compile(r"[\r\n\t\x00-\x1f\x7f-\x9f\u2028\u2029]+")
 _CONTROL_STRIP_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
@@ -194,19 +198,15 @@ def build_context_bundle(
         )
     else:
         raw_mems = mesh.inspect(
-            limit=max(limit_count * 4, 100),
+            limit=limit_count,
             memory_type=memory_type,
             tags=tags,
             include_private=include_private,
             min_confidence=min_confidence,
-        )
-        raw_mems.sort(
-            key=lambda x: (
-                float(x.get("effective_confidence", x.get("confidence", 1.0))),
-                int(x.get("access_count", 0)),
-                str(x.get("created_at", "")),
-            ),
-            reverse=True,
+            # Order in the store, before the LIMIT: sorting after fetching an
+            # access-time-ranked slice skipped the most confident memories
+            # outside that slice entirely.
+            order_by="confidence",
         )
         memories = raw_mems[:limit_count]
 

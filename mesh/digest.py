@@ -70,8 +70,13 @@ def generate_digest(
     new_memories: list[dict[str, Any]] = []
     stale_memories: list[dict[str, Any]] = []
     unparseable_count = 0
+    # A missing namespace, or an unreadable/corrupt database, used to produce an
+    # empty digest indistinguishable from "nothing happened", and the CLI then
+    # printed "All clear". Track both so callers can tell the difference.
+    namespace_exists = db_path.exists()
+    read_errors: list[str] = []
 
-    if db_path.exists():
+    if namespace_exists:
         conn = sqlite3.connect(db_path, timeout=5.0)
         conn.row_factory = sqlite3.Row
         try:
@@ -135,8 +140,8 @@ def generate_digest(
                                 "local_only": is_priv,
                             }
                         )
-        except sqlite3.Error:
-            pass
+        except sqlite3.Error as exc:
+            read_errors.append(f"memory database: {exc}")
         finally:
             conn.close()
 
@@ -183,8 +188,8 @@ def generate_digest(
                         )
                 cursor.close()
                 agents_active = sorted(active_set)
-        except sqlite3.Error:
-            pass
+        except sqlite3.Error as exc:
+            read_errors.append(f"audit log: {exc}")
         finally:
             conn.close()
 
@@ -201,6 +206,8 @@ def generate_digest(
         "stale_count": len(stale_memories),
         "total_recalls": recalls,
         "agents_active": agents_active,
+        "namespace_exists": namespace_exists,
+        "read_errors": read_errors,
     }
 
 
@@ -219,6 +226,19 @@ def print_digest(digest: dict[str, Any]) -> None:
     width = ui.term_width()
 
     ui.header("Digest", ns, window)
+
+    if not digest.get("namespace_exists", True) and not (
+        digest["new_count"]
+        or digest["contradiction_count"]
+        or digest["stale_count"]
+        or digest["total_recalls"]
+    ):
+        # Do not claim "All clear" for a namespace that does not exist at all:
+        # a typo in the namespace name would otherwise look like a healthy,
+        # quiet project.
+        ui.hint(f"Namespace '{ns}' has no memories yet.", stream=sys.stdout)
+        print()
+        return
 
     # ── What's new ──
     ui.section(f"New  {ui.sym('dot')}  {digest['new_count']}")
@@ -300,7 +320,22 @@ def print_digest(digest: dict[str, Any]) -> None:
             ]
         )
 
-    if digest["new_count"] == 0 and digest["contradiction_count"] == 0 and digest["stale_count"] == 0:
+    read_errors = digest.get("read_errors") or []
+    if read_errors:
+        ui.warn(
+            "Some Mesh data could not be read; this digest may be incomplete",
+            "\n".join(str(err) for err in read_errors),
+            stdout=True,
+        )
+
+    if (
+        digest.get("namespace_exists", True)
+        and not read_errors
+        and digest["new_count"] == 0
+        and digest["contradiction_count"] == 0
+        and digest["stale_count"] == 0
+        and int(digest.get("unparseable_count") or 0) == 0
+    ):
         print()
         ui.success("All clear — Mesh is up to date")
     print()

@@ -17,6 +17,7 @@ import json
 import os
 import re
 import sys
+import unicodedata
 from pathlib import Path
 from typing import Any, Optional
 
@@ -88,7 +89,9 @@ _CLOUD_REDACTION_RULES: list[tuple[re.Pattern[str], str]] = [
         # URL userinfo. Empty usernames (`redis://:pass@host`) and passwords that
         # contain `@` (`postgres://user:p@ss@host/db`) must both be fully redacted:
         # the password group is greedy so it ends at the *last* `@` before the host.
-        re.compile(r"([a-zA-Z0-9+.-]+://[^/\s:@]*:)([^\s/]*)(@[^@\s/]+)"),
+        # `[^\s]` (rather than `[^\s/]`) also catches unescaped `/` in a pasted
+        # password, matching the detection rule below.
+        re.compile(r"([a-zA-Z0-9+.-]{1,30}://[^/\s:@]*:)([^\s]*)(@[^@\s/]+)"),
         r"\1[REDACTED_PASSWORD]\3",
     ),
     (
@@ -114,7 +117,12 @@ def _redact_secrets_for_cloud(text: str) -> str:
     Scrub API keys, tokens, URI passwords, and secret assignments from `text`
     before sending it to any external LLM API (OpenAI, Anthropic, Groq, etc.).
     """
-    redacted = text
+    # Compatibility characters (full-width letters, mathematical alphanumerics,
+    # etc.) would otherwise smuggle a key past ASCII regexes while an LLM still
+    # reads it normally. Invisible separators are removed first: they are
+    # preserved by NFKC and would otherwise split the secret across a regex.
+    redacted = _ZERO_WIDTH_RE.sub("", text)
+    redacted = unicodedata.normalize("NFKC", redacted)
     for pattern, replacement in _CLOUD_REDACTION_RULES:
         redacted = pattern.sub(replacement, redacted)
     return redacted
@@ -173,6 +181,30 @@ def _resolve_log_input(log_input: str, max_chars: int = 16000) -> str:
     return stripped
 
 
+def _jsonl_record_text(value: Any) -> str:
+    """
+    Extract readable text from a JSONL record.
+
+    Chat exports nest the text differently: OpenAI-style
+    `{"message": {"content": "..."}}`, Anthropic-style
+    `{"message": {"content": [{"type": "text", "text": "..."}]}}`, and simple
+    `{"content": "..."}` / `{"text": "..."}` records. Returning "" for an object
+    or list (the old behaviour) silently dropped entire session logs.
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts = [_jsonl_record_text(item) for item in value]
+        return "\n".join(part for part in parts if part.strip())
+    if isinstance(value, dict):
+        for key in ("text", "content", "message"):
+            if key in value:
+                text = _jsonl_record_text(value[key])
+                if text.strip():
+                    return text
+    return ""
+
+
 def _read_log_file(path: Path, max_chars: int = 16000) -> str:
     """Read text from a log or JSONL file, keeping the tail if the file is very large."""
     try:
@@ -190,16 +222,18 @@ def _read_log_file(path: Path, max_chars: int = 16000) -> str:
                 try:
                     obj = json.loads(line)
                     if isinstance(obj, dict):
-                        text = (
-                            obj.get("content")
-                            or obj.get("message")
-                            or obj.get("text")
-                            or ""
-                        )
-                        if isinstance(text, str) and text.strip():
+                        text = _jsonl_record_text(obj)
+                        if text.strip():
                             extracted_lines.append(text.strip())
+                            continue
+                    elif isinstance(obj, str) and obj.strip():
+                        extracted_lines.append(obj.strip())
+                        continue
                 except Exception:
-                    extracted_lines.append(line)
+                    pass
+                # Unknown structure: keep the raw line rather than silently
+                # dropping a record that may contain the only useful fact.
+                extracted_lines.append(line)
             return "\n".join(extracted_lines)[-max_chars:]
         return raw[-max_chars:]
     except OSError:
@@ -459,19 +493,33 @@ _SIGNAL_PATTERNS = [
     r"\bsecret\b",
 ]
 _CREDENTIAL_PATTERNS = [
-    r"\bpassword\b",
-    r"\bapi[_\s-]?key\b",
-    r"\bsecret\b",
-    r"\btoken\b",
-    r"\bcredential\b",
-    r"\bprivate[_\s-]?key\b",
-    r"sk-[a-zA-Z0-9_-]{6,}",
-    r"Bearer\s+\S{8,}",
-    # URL-embedded credentials, including empty usernames (`redis://:pass@host`)
-    r"[a-zA-Z][a-zA-Z0-9+.-]*://[^/\s:@]*:[^@\s]+@",
+    # Keyword + explicit assignment. A bare mention of "token" or "password"
+    # (e.g. "rotate the token before Friday") is *not* a secret; only a
+    # value-bearing assignment is. `$VAR` / `{...}` references are exempt so
+    # configuration notes such as `token=$GITHUB_TOKEN` stay usable.
+    r"(?i)\b(?:password|passwd|pwd|secret|api[_\s-]?key|access[_\s-]?token|"
+    r"auth[_\s-]?token|refresh[_\s-]?token|private[_\s-]?key|client[_\s-]?secret|"
+    r"aws_secret_access_key|aws_session_token|token)\b"
+    r"['\"]?\s*[:=]\s*['\"]?(?!\$|\{)[^\s,'\"`;\[]{4,}",
+    # Natural-language assignment ("the API key is sk-live-..."). Requiring 12
+    # non-space characters keeps prose like "the token is stored in .env" out.
+    r"(?i)\b(?:password|passwd|secret|api[_\s-]?key|private[_\s-]?key|token)\b"
+    r"\s+(?:is|was)\s+['\"]?[A-Za-z0-9_\-./+=:@]{12,}",
+    # Well-known credential shapes.
+    r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----",
+    r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b",
+    r"\b(?:sk-ant-[a-zA-Z0-9_-]{8,}|sk-[a-zA-Z0-9_-]{6,}|gh[pousr]_[a-zA-Z0-9]{12,}|"
+    r"github_pat_[a-zA-Z0-9_]{16,}|glpat-[a-zA-Z0-9_-]{12,}|hf_[a-zA-Z0-9]{16,}|"
+    r"AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|xox[baprs]-[a-zA-Z0-9-]{10,}|"
+    r"AIza[0-9A-Za-z_-]{20,}|rk_live_[0-9a-zA-Z]{16,}|sk_live_[0-9a-zA-Z]{16,})\b",
+    r"(?i)\bBearer\s+[^\s\"'`]{8,}",
+    # URL-embedded credentials, including empty usernames (`redis://:pass@host`).
+    # The scheme length is bounded so a long unbroken token without `://` cannot
+    # trigger quadratic backtracking (`[a-zA-Z0-9+.-]*` retried at every offset).
+    r"[a-zA-Z][a-zA-Z0-9+.-]{0,30}://[^/\s:@]*:[^@\s]+@",
     # Authorization headers (`Authorization: Basic ...`, `authorization=bearer ...`)
     r"(?i)\bauthorization\s*[:=]\s*(?:basic|bearer|token)\b",
-    r"\[REDACTED_(?:SECRET|API_KEY|TOKEN|PASSWORD|JWT|PRIVATE_KEY|EMAIL)\]",
+    r"\[REDACTED_(?:SECRET\vert{}API_KEY\vert{}TOKEN\vert{}PASSWORD\vert{}JWT\vert{}PRIVATE_KEY)\]",
 ]
 _NOISE_PATTERNS = [
     r"^\s*(yes|no|ok|okay|sure|thanks|thank you|great|got it|understood|sounds good)\s*[.!]?\s*$",
@@ -493,10 +541,29 @@ _POISON_PATTERNS = [
     r"(?i)\bsystem\s*prompt\s*:",
 ]
 
-# Invisible formatting characters (zero-width spaces/joiners, BOM, bidi controls)
-# can split a poison phrase so the regex misses it while the prompt sanitizer
-# later rejoins it. Normalize them away before matching.
-_ZERO_WIDTH_RE = re.compile(r"[​-‏⁠﻿‪-‮⁦-⁩]")
+# Invisible formatting characters (zero-width spaces/joiners, BOM, bidi controls,
+# soft hyphen, tag characters) can split a poison phrase or a credential so the
+# regex misses it while the reader (or a downstream prompt renderer) sees it
+# normally. Normalize them away before matching or redacting. Escapes are used
+# so no editor can silently turn them back into invisible source bytes.
+_INVISIBLE_CHAR_CLASS = (
+    r"\u00ad"                  # SOFT HYPHEN
+    r"\u034f"                  # COMBINING GRAPHEME JOINER
+    r"\u061c"                  # ARABIC LETTER MARK
+    r"\u115f\u1160"            # Hangul fillers
+    r"\u17b4\u17b5"            # Khmer inherent vowels
+    r"\u180b-\u180f"           # Mongolian FVS + vowel separator
+    r"\u200b-\u200f"           # zero-width space .. right-to-left mark
+    r"\u202a-\u202e"           # bidi embeddings / overrides
+    r"\u2060-\u2064"           # word joiner .. invisible plus
+    r"\u2066-\u2069"           # bidi isolates
+    r"\ufeff"                  # BOM / zero-width no-break space
+    r"\ufe00-\ufe0f"           # variation selectors
+    r"\uffa0"                  # halfwidth Hangul filler
+    r"\U000e0000-\U000e007f"   # tag characters
+    r"\U000e0100-\U000e01ef"   # variation selectors supplement
+)
+_ZERO_WIDTH_RE = re.compile(f"[{_INVISIBLE_CHAR_CLASS}]")
 
 _compiled_signals = [re.compile(p, re.IGNORECASE) for p in _SIGNAL_PATTERNS]
 _compiled_credentials = [re.compile(p, re.IGNORECASE) for p in _CREDENTIAL_PATTERNS]
@@ -505,7 +572,9 @@ _compiled_poison = [re.compile(p) for p in _POISON_PATTERNS]
 
 
 def _is_credential(sentence: str) -> bool:
-    return any(p.search(sentence) for p in _compiled_credentials)
+    normalized = _ZERO_WIDTH_RE.sub("", sentence)
+    normalized = unicodedata.normalize("NFKC", normalized)
+    return any(p.search(normalized) for p in _compiled_credentials)
 
 
 def _is_noise(sentence: str) -> bool:
@@ -513,7 +582,11 @@ def _is_noise(sentence: str) -> bool:
 
 
 def _is_poison_attempt(sentence: str) -> bool:
+    # Strip invisible separators, then apply NFKC: full-width / compatibility
+    # characters render as their ASCII equivalents downstream, so matching on
+    # the raw string would let them split an instruction phrase.
     normalized = _ZERO_WIDTH_RE.sub("", sentence)
+    normalized = unicodedata.normalize("NFKC", normalized)
     return any(p.search(normalized) for p in _compiled_poison)
 
 
@@ -597,19 +670,27 @@ def extract_memories_from_log(
     verbose: bool = False,
     force_local: bool = False,
     assume_yes: bool = False,
+    default_local_only: bool = False,
+    resolve_input: bool = True,
 ) -> dict[str, Any]:
     """
     Extract and store memories from a session log (or file/directory path).
     Asks the user for `y/n` permission before uploading redacted logs to external LLM providers.
+
+    Reports `captured_count`, `stored_count` (new rows only), `deduplicated_count`,
+    `skipped_count`, and `error` separately (Issue M5).
     """
     clean_ns = validate_namespace(namespace)
-    resolved_text = _resolve_log_input(log_text)
+    resolved_text = _resolve_log_input(log_text) if resolve_input else str(log_text or "")
     if not resolved_text.strip():
         return {
+            "captured_count": 0,
             "stored_count": 0,
+            "deduplicated_count": 0,
             "skipped_count": 0,
             "provider_used": "none",
             "memories": [],
+            "error": None,
         }
 
     if len(resolved_text) > 8000:
@@ -674,7 +755,9 @@ def extract_memories_from_log(
             if verbose:
                 ui.error(f"Local fallback also failed: {fallback_err}")
             return {
+                "captured_count": 0,
                 "stored_count": 0,
+                "deduplicated_count": 0,
                 "skipped_count": 0,
                 "provider_used": "none",
                 "memories": [],
@@ -685,10 +768,13 @@ def extract_memories_from_log(
         if verbose:
             ui.info("Nothing worth remembering was found in that log")
         return {
+            "captured_count": 0,
             "stored_count": 0,
+            "deduplicated_count": 0,
             "skipped_count": 0,
             "provider_used": provider_used,
             "memories": [],
+            "error": extraction_error,
         }
 
     if dry_run:
@@ -696,20 +782,31 @@ def extract_memories_from_log(
         ui.kv([("Would store", ui.plural(len(extracted), "memory", "memories")), ("Provider", str(provider_used))])
         print()
         for mem in extracted:
-            private = "  " + ui.badge("private", "accent") if mem.get("private") else ""
+            preview_content = str(mem.get("content", ""))
+            private = (
+                default_local_only
+                or bool(mem.get("private"))
+                or _is_credential(preview_content)
+            )
+            private_flag = "  " + ui.badge("private", "accent") if private else ""
             mtype = _normalize_memory_type(mem.get("type"))
-            print(f"{ui.IND}{ui.style(ui.sym('bullet'), 'muted')} {ui.style(mtype, 'info')}{private}  {' '.join(str(mem.get('content', '')).split())}")
+            print(f"{ui.IND}{ui.style(ui.sym('bullet'), 'muted')} {ui.style(mtype, 'info')}{private_flag}  {' '.join(str(mem.get('content', '')).split())}")
         print()
         ui.hint("Nothing was written. Re-run without --dry-run to store these.", stream=sys.stdout)
         return {
+            "captured_count": len(extracted),
             "stored_count": 0,
+            "deduplicated_count": 0,
             "skipped_count": len(extracted),
             "provider_used": provider_used,
             "memories": extracted,
+            "error": extraction_error,
         }
 
     mesh = Mesh(namespace=clean_ns, agent_id=agent_id)
+    captured = 0
     stored = 0
+    deduplicated = 0
     skipped = 0
     for mem in extracted:
         content = str(mem.get("content") or "").strip()
@@ -727,30 +824,48 @@ def extract_memories_from_log(
             if not isinstance(raw_tags, list):
                 raw_tags = [str(raw_tags)]
             tags = list(dict.fromkeys([*(str(t) for t in raw_tags), "auto-captured"]))
-            is_private = bool(mem.get("private", False)) or _is_credential(content)
-            if is_private:
+            has_credential = _is_credential(content)
+            is_private = (
+                default_local_only
+                or bool(mem.get("private", False))
+                or has_credential
+            )
+            # Redact only content that actually carries a credential. Redacting
+            # every private fact (the old behaviour when `default_local_only`
+            # was set) destroyed useful data — emails became [REDACTED_EMAIL]
+            # even though the row never leaves the local database.
+            if has_credential:
                 content = _redact_secrets_for_cloud(content)
-            mesh.learn(
+            learn_res = mesh.learn(
                 content=content,
                 memory_type=mtype,
                 tags=tags,
                 local_only=is_private,
                 confidence=0.8,
             )
-            stored += 1
+            captured += 1
+            if learn_res.get("deduplicated"):
+                deduplicated += 1
+            else:
+                stored += 1
             if verbose:
                 private_flag = "  " + ui.badge("private", "accent") if is_private else ""
                 ui.success(f"{ui.truncate(content, 80)}{private_flag}")
         except Exception as e:
             skipped += 1
+            if extraction_error is None:
+                extraction_error = str(e)
             if verbose:
                 ui.error(f"Couldn't store \"{ui.truncate(content, 60)}\": {e}")
 
     return {
+        "captured_count": captured,
         "stored_count": stored,
+        "deduplicated_count": deduplicated,
         "skipped_count": skipped,
         "provider_used": provider_used,
         "memories": extracted,
+        "error": extraction_error,
     }
 
 
@@ -831,15 +946,24 @@ def capture_cmd() -> None:
         verbose=args.verbose,
         force_local=args.local_only,
         assume_yes=args.yes,
+        # Both branches above already read the file/stdin; re-resolving would
+        # treat log *content* that looks like a path as another file to read.
+        resolve_input=False,
     )
     if not args.dry_run:
         provider_label = result.get("provider_used", "unknown")
+        dedup_cnt = int(result.get("deduplicated_count", 0))
+        detail_parts = [f"{result['skipped_count']} skipped"]
+        if dedup_cnt:
+            detail_parts.append(f"{dedup_cnt} deduplicated")
+        detail_parts.append(f"provider: {provider_label}")
+        detail_str = f"  {ui.sym('dot')}  ".join(detail_parts)
         print()
-        if result["stored_count"]:
+        if result["stored_count"] or dedup_cnt:
             ui.success(
-                f"Captured {ui.plural(result['stored_count'], 'memory', 'memories')} into {ns}",
-                f"{result['skipped_count']} skipped  {ui.sym('dot')}  provider: {provider_label}",
+                f"Captured {ui.plural(result['stored_count'], 'new memory', 'new memories')} into {ns}",
+                detail_str,
             )
             ui.hint("See them with `mesh inspect`", stream=sys.stdout)
         else:
-            ui.info("Nothing was stored", f"{result['skipped_count']} skipped  {ui.sym('dot')}  provider: {provider_label}")
+            ui.info("Nothing was stored", detail_str)

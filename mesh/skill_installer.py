@@ -217,7 +217,9 @@ def install_skill(
 
     if dst_exists and not force and _is_already_up_to_date(dst):
         if dry_run:
-            return f"would install to {dst} (already up to date v{VERSION})", True
+            # A dry run changed nothing. Reporting True here made callers (and
+            # `mesh setup`) claim a write that never happened.
+            return f"would install to {dst} (already up to date v{VERSION})", False
         return f"already up to date (v{VERSION}) at {dst}", False
 
     if dry_run:

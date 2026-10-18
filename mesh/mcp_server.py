@@ -33,11 +33,13 @@ import contextlib
 import glob
 import http.client
 import json
+import logging
 import os
 import select
 import sys
 import threading
 import time
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
@@ -45,10 +47,10 @@ from mcp import types
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 
-from .audit import validate_namespace
+from .audit import ensure_secure_mesh_dir, get_mesh_dir, secure_file_permissions, validate_namespace
 from .context_builder import build_context_bundle
 from .daemon import get_auth_headers, request_user_permission
-from .envutil import env_int
+from .envutil import env_bool, env_int, parse_strict_bool
 from .guards import guard_ingest
 from .memory import (
     VALID_MEMORY_TYPES,
@@ -58,7 +60,10 @@ from .memory import (
     suggest_did_you_mean_namespaces,
     warmup_model,
 )
-from .store import NamespaceNotFoundError
+from .namespaces import _evict_namespace_caches
+from .store import NamespaceNotFoundError, _utc_now_iso
+
+logger = logging.getLogger(__name__)
 
 
 def _get_default_namespace() -> str:
@@ -74,18 +79,26 @@ def _get_default_include_private() -> bool:
 
 
 def _env_flag(name: str) -> bool:
-    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes")
+    return env_bool(name, False)
 
 
 def _ctx_default_include_private(context: Optional[dict[str, Any]]) -> bool:
     """Resolve the include-private default from the *calling* process, not the daemon's env."""
-    value = (context or {}).get("default_include_private")
-    return _get_default_include_private() if value is None else bool(value)
+    if not isinstance(context, dict) or "default_include_private" not in context:
+        return _get_default_include_private()
+    value = context.get("default_include_private")
+    if value is None:
+        return _get_default_include_private()
+    return parse_strict_bool(value, default=False, raise_on_invalid=False)
 
 
 def _ctx_flag(context: Optional[dict[str, Any]], key: str, default: bool) -> bool:
-    value = (context or {}).get(key)
-    return default if value is None else bool(value)
+    if not isinstance(context, dict) or key not in context:
+        return default
+    value = context.get(key)
+    if value is None:
+        return default
+    return parse_strict_bool(value, default=False, raise_on_invalid=False)
 
 
 def _ctx_workspace_root(context: Optional[dict[str, Any]]) -> Optional[Path]:
@@ -105,7 +118,10 @@ _DEFAULT_INCLUDE_PRIVATE = _get_default_include_private()
 
 app = Server("mesh")
 _MESH_LOCK = threading.RLock()
-_MESH_INSTANCES: dict[tuple[str, str], Mesh] = {}
+_MESH_INSTANCES: OrderedDict[tuple[str, str], Mesh] = OrderedDict()
+# agent_id/namespace come from tool arguments; cap the cache so a client cannot
+# grow it without bound (each entry pins a Mesh and its SQLite handles).
+_MESH_INSTANCES_MAX = 64
 _mesh: Optional[Mesh] = None
 
 # Thread-safe reference-counted stdout redirection for MCP stdio safety
@@ -126,8 +142,131 @@ _DAEMON_LAST_USE_TS = 0.0
 _DAEMON_AVAILABLE = False
 _DAEMON_CONN: Optional[http.client.HTTPConnection] = None
 
-# Tracks (mtime_ns, byte_offset) per log file so passive sync only reads new log output
-_LOG_WATERMARKS: dict[str, tuple[int, int]] = {}
+# Tracks (st_dev, st_ino, mtime_ns, byte_offset) per log file so passive sync only reads new log output.
+# Guarded by _LOG_WATERMARKS_LOCK and persisted atomically to ~/.mesh/log_watermarks.json.
+_LOG_WATERMARKS_LOCK = threading.RLock()
+_LOG_WATERMARKS: dict[str, tuple[int, ...]] = {}
+_LOG_WATERMARKS_LOADED_DIR: Optional[Path] = None
+# Log directories can contain thousands of rotating files; bound the map so a
+# long-lived server does not accumulate an entry per file ever seen.
+_LOG_WATERMARKS_MAX = 2048
+
+# Background sync error tracking (Issue M2)
+_SYNC_STATUS_LOCK = threading.Lock()
+_LAST_SYNC_ERROR: Optional[str] = None
+_LAST_SYNC_ERROR_AT: Optional[str] = None
+
+
+def _record_sync_error(err_msg: str) -> None:
+    global _LAST_SYNC_ERROR, _LAST_SYNC_ERROR_AT
+    with _SYNC_STATUS_LOCK:
+        _LAST_SYNC_ERROR = str(err_msg)
+        _LAST_SYNC_ERROR_AT = _utc_now_iso()
+
+
+def get_sync_status() -> dict[str, Any]:
+    """Return the last background/foreground log sync error and timestamp."""
+    with _SYNC_STATUS_LOCK:
+        last_err = _LAST_SYNC_ERROR
+        last_at = _LAST_SYNC_ERROR_AT
+    with _LOG_WATERMARKS_LOCK:
+        wm_count = len(_LOG_WATERMARKS)
+    return {
+        "last_error": last_err,
+        "last_error_at": last_at,
+        "watermarks_count": wm_count,
+    }
+
+
+def _watermarks_state_path() -> Path:
+    return ensure_secure_mesh_dir().resolve() / "log_watermarks.json"
+
+
+def _load_persisted_watermarks_locked() -> None:
+    """Load persisted log watermarks from `~/.mesh/log_watermarks.json` when MESH_HOME initializes or changes."""
+    global _LOG_WATERMARKS_LOADED_DIR
+    try:
+        mesh_dir = get_mesh_dir().resolve()
+    except OSError:
+        return
+    if _LOG_WATERMARKS_LOADED_DIR != mesh_dir:
+        _LOG_WATERMARKS_LOADED_DIR = mesh_dir
+        state_file = mesh_dir / "log_watermarks.json"
+        if not state_file.exists():
+            return
+        try:
+            raw = json.loads(state_file.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                for k, v in raw.items():
+                    if isinstance(k, str) and isinstance(v, list) and len(v) in (2, 4):
+                        if k not in _LOG_WATERMARKS:
+                            _remember_log_watermark_locked(
+                                k, tuple(int(x) for x in v), only_if_absent=True
+                            )
+        except Exception:
+            pass
+
+
+def _persist_watermarks_locked() -> None:
+    """Atomically persist `_LOG_WATERMARKS` to `~/.mesh/log_watermarks.json`."""
+    global _LOG_WATERMARKS_LOADED_DIR
+    try:
+        state_file = _watermarks_state_path()
+        _LOG_WATERMARKS_LOADED_DIR = state_file.parent
+        tmp_file = state_file.with_suffix(f".tmp.{os.getpid()}.{threading.get_ident()}")
+        serializable = {k: list(v) for k, v in _LOG_WATERMARKS.items()}
+        tmp_file.write_text(json.dumps(serializable), encoding="utf-8")
+        secure_file_permissions(tmp_file)
+        os.replace(tmp_file, state_file)
+        secure_file_permissions(state_file)
+    except OSError:
+        pass
+
+
+def _unpack_watermark(
+    entry: Optional[tuple[int, ...]],
+    current_dev: int = 0,
+    current_ino: int = 0,
+) -> tuple[int, int, int, int]:
+    """Normalize a 2-tuple `(mtime_ns, offset)` or 4-tuple `(dev, ino, mtime_ns, offset)` watermark."""
+    if not entry:
+        return (0, 0, 0, 0)
+    if len(entry) == 2:
+        return (current_dev, current_ino, int(entry[0]), int(entry[1]))
+    if len(entry) >= 4:
+        return (int(entry[0]), int(entry[1]), int(entry[2]), int(entry[3]))
+    return (0, 0, 0, 0)
+
+
+def _remember_log_watermark_locked(
+    key: str, value: tuple[int, ...], *, only_if_absent: bool = False
+) -> None:
+    if only_if_absent and key in _LOG_WATERMARKS:
+        return
+    if key not in _LOG_WATERMARKS and len(_LOG_WATERMARKS) >= _LOG_WATERMARKS_MAX:
+        _LOG_WATERMARKS.pop(next(iter(_LOG_WATERMARKS)), None)
+    _LOG_WATERMARKS[key] = value
+
+
+def _remember_log_watermark(
+    key: str, value: tuple[int, ...], *, only_if_absent: bool = False
+) -> None:
+    with _LOG_WATERMARKS_LOCK:
+        _load_persisted_watermarks_locked()
+        _remember_log_watermark_locked(key, value, only_if_absent=only_if_absent)
+        _persist_watermarks_locked()
+
+
+def _commit_log_watermarks(pending: dict[str, tuple[int, ...]]) -> None:
+    if not pending:
+        return
+    with _LOG_WATERMARKS_LOCK:
+        _load_persisted_watermarks_locked()
+        for k, v in pending.items():
+            _remember_log_watermark_locked(k, v, only_if_absent=False)
+        _persist_watermarks_locked()
+
+
 _ALLOWED_LOG_EXTENSIONS = {".log", ".txt", ".jsonl", ".md"}
 
 _SORTED_MEMORY_TYPES = sorted(VALID_MEMORY_TYPES)
@@ -273,16 +412,8 @@ def _try_proxy_via_daemon(name: str, arguments: dict[str, Any]) -> Optional[dict
             "arguments": arguments,
             "default_namespace": _get_default_namespace(),
             "agent_id": _get_default_agent_id(),
-            # The daemon has its own environment/cwd. Everything that changes a
-            # tool's semantics must travel with the request or it silently
-            # diverges from what this MCP client would have done locally.
             "context": {
-                "default_include_private": _get_default_include_private(),
-                "enforce_agent_ownership": _env_flag("MESH_ENFORCE_AGENT_OWNERSHIP"),
                 "workspace_root": os.getcwd(),
-                "allow_log_sync": _env_flag("MESH_ENABLE_AUTO_SYNC")
-                or _env_flag("MESH_ALLOW_LOG_SYNC"),
-                "allow_cloud_sync": _env_flag("MESH_ALLOW_CLOUD_SYNC"),
             },
         }
     ).encode("utf-8")
@@ -326,10 +457,20 @@ def _try_proxy_via_daemon(name: str, arguments: dict[str, Any]) -> Optional[dict
                     data = json.loads(raw_body.decode("utf-8"))
                     if isinstance(data, dict) and "payload" in data:
                         return data["payload"]
+                    if isinstance(data, dict) and "error" in data and isinstance(data["error"], dict):
+                        return {
+                            "error": str(data["error"].get("message") or data["error"]),
+                            "status": "error",
+                        }
                 else:
                     try:
                         err_json = json.loads(raw_body.decode("utf-8"))
-                        detail = err_json.get("detail") if isinstance(err_json, dict) else str(err_json)
+                        if isinstance(err_json, dict) and isinstance(err_json.get("error"), dict):
+                            detail = err_json["error"].get("message") or str(err_json["error"])
+                        elif isinstance(err_json, dict):
+                            detail = err_json.get("detail") or err_json.get("error") or str(err_json)
+                        else:
+                            detail = str(err_json)
                     except Exception:
                         detail = f"Daemon HTTP error {resp.status}"
                     return {"error": str(detail), "status": "error"}
@@ -368,8 +509,8 @@ def get_mesh(
 ) -> Mesh:
     """
     Return a cached `Mesh` instance for the requested namespace and agent_id.
-    When `create=False` and the namespace database does not exist on disk, raises
-    `NamespaceNotFoundError` without creating any `.db` file (Phase 3.4).
+    Revalidates that `db_path.exists()` on lookup so out-of-band deletions are
+    detected and recreated according to `create` (Issue H7).
     """
     global _mesh
     raw_ns = (namespace or _get_default_namespace()).strip() or "shared"
@@ -379,15 +520,24 @@ def get_mesh(
     with _MESH_LOCK:
         instance = _MESH_INSTANCES.get(key)
         if instance is not None:
-            if not create and not instance.store.db_path.exists():
+            if not instance.store.db_path.exists():
                 _MESH_INSTANCES.pop(key, None)
-                raise NamespaceNotFoundError(f"Namespace '{ns}' does not exist.")
-            _mesh = instance
-            return instance
+                if _mesh is instance:
+                    _mesh = None
+                _evict_namespace_caches(ns, instance.store.db_path)
+                if not create:
+                    raise NamespaceNotFoundError(f"Namespace '{ns}' does not exist.")
+            else:
+                _MESH_INSTANCES.move_to_end(key)
+                _mesh = instance
+                return instance
 
         instance = Mesh(namespace=ns, agent_id=aid, create=create)
         if instance.store.db_path.exists() or create:
+            while len(_MESH_INSTANCES) >= _MESH_INSTANCES_MAX:
+                _MESH_INSTANCES.popitem(last=False)
             _MESH_INSTANCES[key] = instance
+            _MESH_INSTANCES.move_to_end(key)
             _mesh = instance
         return instance
 
@@ -477,101 +627,223 @@ def detect_agent_logs() -> list[str]:
     return [p for p in paths if os.path.isdir(p)]
 
 
-def _seed_log_watermarks(paths: list[str]) -> None:
-    """
-    Record current (mtime_ns, st_size) watermarks for existing log files on startup
-    so the background worker only ingests newly appended log lines.
-    """
+def _iter_log_files(paths: list[str]) -> list[Path]:
+    """Enumerate valid log files from a list of file/directory paths, isolating per-path errors."""
+    found: list[Path] = []
     for raw_path in paths:
-        p = Path(raw_path).expanduser()
-        if not p.exists():
-            continue
-        if p.is_file():
-            try:
-                st = p.stat()
-                _LOG_WATERMARKS.setdefault(str(p), (st.st_mtime_ns, st.st_size))
-            except OSError:
-                pass
-        elif p.is_dir():
-            try:
-                for child in p.rglob("*"):
-                    if child.is_file() and child.suffix.lower() in _ALLOWED_LOG_EXTENSIONS:
-                        try:
-                            st = child.stat()
-                            _LOG_WATERMARKS.setdefault(str(child), (st.st_mtime_ns, st.st_size))
-                        except OSError:
-                            continue
-            except OSError:
+        try:
+            p = Path(raw_path).expanduser()
+            if not p.exists():
                 continue
+            if p.is_file():
+                found.append(p)
+            elif p.is_dir():
+                for child in p.rglob("*"):
+                    try:
+                        if child.is_file() and child.suffix.lower() in _ALLOWED_LOG_EXTENSIONS:
+                            found.append(child)
+                    except OSError as exc:
+                        logger.warning("Skipping unreadable log entry '%s': %s", child, exc)
+                        continue
+        except OSError as exc:
+            logger.warning("Skipping unreadable log path '%s': %s", raw_path, exc)
+            continue
+    return found
+
+
+def _seed_log_watermarks(paths: list[str], *, include_history: bool = False) -> None:
+    """
+    Shared watermark seeding routine for both foreground `mesh_sync` and `background_sync_worker`.
+    Seeds unrecorded log files at current end-of-file `(st_dev, st_ino, st_mtime_ns, st_size)`
+    unless `include_history=True` is explicitly requested, and persists seeds to the state store.
+    """
+    with _LOG_WATERMARKS_LOCK:
+        _load_persisted_watermarks_locked()
+        if include_history:
+            return
+        changed = False
+        for file_path in _iter_log_files(paths):
+            key = str(file_path)
+            if key in _LOG_WATERMARKS:
+                continue
+            try:
+                st = file_path.stat()
+                dev = int(getattr(st, "st_dev", 0) or 0)
+                ino = int(getattr(st, "st_ino", 0) or 0)
+                _remember_log_watermark_locked(
+                    key,
+                    (dev, ino, int(st.st_mtime_ns), int(st.st_size)),
+                    only_if_absent=True,
+                )
+                changed = True
+            except OSError as exc:
+                logger.warning("Failed seeding watermark for '%s': %s", file_path, exc)
+                continue
+        if changed:
+            _persist_watermarks_locked()
+
+
+def _collect_incremental_logs_pending(
+    paths: list[str],
+    max_files: int = 10,
+    max_bytes_per_file: int = 16384,
+    *,
+    include_history: bool = False,
+) -> tuple[str, dict[str, tuple[int, int, int, int]]]:
+    """
+    Read newly appended content from log files inside `paths` without advancing
+    `_LOG_WATERMARKS` yet. Returns `(combined_text, pending_watermarks)` so callers
+    only commit and persist watermarks after ingestion succeeds (Issue M1).
+    Detects file rotation `(st_dev, st_ino)` and truncation (`size < prev_offset`)
+    and resets the read offset to 0.
+    """
+    with _LOG_WATERMARKS_LOCK:
+        _load_persisted_watermarks_locked()
+        candidate_files: list[tuple[int, int, int, int, Path]] = []
+        for file_path in _iter_log_files(paths):
+            key = str(file_path)
+            try:
+                st = file_path.stat()
+                dev = int(getattr(st, "st_dev", 0) or 0)
+                ino = int(getattr(st, "st_ino", 0) or 0)
+                mtime_ns = int(st.st_mtime_ns)
+                size = int(st.st_size)
+                prev = _LOG_WATERMARKS.get(key)
+                if not include_history and prev is not None:
+                    p_dev, p_ino, p_mtime, p_size = _unpack_watermark(prev, dev, ino)
+                    if (p_dev, p_ino) == (dev, ino) and p_mtime == mtime_ns and p_size == size:
+                        continue
+                candidate_files.append((mtime_ns, size, dev, ino, file_path))
+            except OSError as exc:
+                logger.warning("Failed stat on log file '%s': %s", file_path, exc)
+                _record_sync_error(f"Failed reading log file '{file_path}': {exc}")
+                continue
+
+        if not candidate_files:
+            return "", {}
+
+        candidate_files.sort(key=lambda item: item[0], reverse=True)
+        chunks: list[str] = []
+        pending_watermarks: dict[str, tuple[int, int, int, int]] = {}
+
+        for mtime_ns, size, dev, ino, file_path in candidate_files[:max_files]:
+            key = str(file_path)
+            try:
+                raw_prev = _LOG_WATERMARKS.get(key)
+                prev_dev, prev_ino, prev_mtime, prev_offset = _unpack_watermark(raw_prev, dev, ino)
+
+                if include_history:
+                    start_offset = 0
+                else:
+                    if (
+                        raw_prev is not None
+                        and (prev_dev, prev_ino) == (dev, ino)
+                        and mtime_ns == prev_mtime
+                        and size == prev_offset
+                    ):
+                        continue
+                    # Reset to 0 if the file was rotated (different dev/ino), truncated (size < prev_offset),
+                    # or rewritten in-place to the exact same size (mtime changed while size == prev_offset).
+                    rotated = (
+                        raw_prev is not None
+                        and (prev_dev, prev_ino) != (0, 0)
+                        and (dev, ino) != (0, 0)
+                        and (prev_dev, prev_ino) != (dev, ino)
+                    )
+                    truncated_or_rewritten = (
+                        size < prev_offset
+                        or (raw_prev is not None and size == prev_offset and mtime_ns != prev_mtime)
+                    )
+                    if rotated or truncated_or_rewritten:
+                        start_offset = 0
+                    else:
+                        start_offset = prev_offset
+
+                truncated_mid_file = False
+                if size - start_offset > max_bytes_per_file:
+                    start_offset = max(0, size - max_bytes_per_file)
+                    truncated_mid_file = start_offset > 0
+                with open(file_path, "rb") as f:
+                    f.seek(start_offset)
+                    raw_bytes = f.read(max_bytes_per_file)
+                new_offset = start_offset + len(raw_bytes)
+                pending_watermarks[key] = (dev, ino, mtime_ns, new_offset)
+                text = raw_bytes.decode("utf-8", errors="ignore")
+                if truncated_mid_file and "\n" in text:
+                    text = text.split("\n", 1)[1]
+                text = text.strip()
+                if text:
+                    chunks.append(text)
+            except OSError as exc:
+                logger.warning("Failed reading incremental log '%s': %s", file_path, exc)
+                _record_sync_error(f"Failed reading log file '{file_path}': {exc}")
+                continue
+
+        return "\n\n".join(chunks), pending_watermarks
 
 
 def _collect_incremental_logs(
     paths: list[str],
     max_files: int = 10,
     max_bytes_per_file: int = 16384,
+    *,
+    commit_watermarks: bool = True,
+    include_history: bool = False,
 ) -> str:
     """
     Read newly appended content from log files inside `paths`, discarding any partial
     leading line when seeking into a large file.
     """
-    candidate_files: list[tuple[int, int, Path]] = []
-    for raw_path in paths:
-        p = Path(raw_path).expanduser()
-        if not p.exists():
-            continue
-        if p.is_file():
-            try:
-                st = p.stat()
-                if _LOG_WATERMARKS.get(str(p)) != (st.st_mtime_ns, st.st_size):
-                    candidate_files.append((st.st_mtime_ns, st.st_size, p))
-            except OSError:
-                pass
-        elif p.is_dir():
-            try:
-                for child in p.rglob("*"):
-                    if (
-                        child.is_file()
-                        and child.suffix.lower() in _ALLOWED_LOG_EXTENSIONS
-                    ):
-                        try:
-                            st = child.stat()
-                            if _LOG_WATERMARKS.get(str(child)) != (st.st_mtime_ns, st.st_size):
-                                candidate_files.append((st.st_mtime_ns, st.st_size, child))
-                        except OSError:
-                            continue
-            except OSError:
-                continue
+    text, pending = _collect_incremental_logs_pending(
+        paths,
+        max_files=max_files,
+        max_bytes_per_file=max_bytes_per_file,
+        include_history=include_history,
+    )
+    if commit_watermarks and pending:
+        _commit_log_watermarks(pending)
+    return text
 
-    if not candidate_files:
-        return ""
 
-    candidate_files.sort(key=lambda item: item[0], reverse=True)
-    chunks: list[str] = []
-    for mtime_ns, size, file_path in candidate_files[:max_files]:
-        key = str(file_path)
-        try:
-            prev_mtime, prev_offset = _LOG_WATERMARKS.get(key, (0, 0))
-            if mtime_ns == prev_mtime and size == prev_offset:
-                continue
-            start_offset = prev_offset if size >= prev_offset else 0
-            truncated_mid_file = False
-            if size - start_offset > max_bytes_per_file:
-                start_offset = max(0, size - max_bytes_per_file)
-                truncated_mid_file = start_offset > 0
-            with open(file_path, "rb") as f:
-                f.seek(start_offset)
-                raw_bytes = f.read(max_bytes_per_file)
-            _LOG_WATERMARKS[key] = (mtime_ns, size)
-            text = raw_bytes.decode("utf-8", errors="ignore")
-            if truncated_mid_file and "\n" in text:
-                text = text.split("\n", 1)[1]
-            text = text.strip()
-            if text:
-                chunks.append(text)
-        except OSError:
-            continue
+def _run_background_sync_once(ws_root: Optional[Path] = None) -> dict[str, Any]:
+    """Run a single iteration of background log capture, logging and recording any errors."""
+    from .passive import extract_memories_from_log
 
-    return "\n\n".join(chunks)
+    try:
+        log_dirs = detect_agent_logs()
+        if not log_dirs or _is_foreground_busy(cooldown_seconds=10.0):
+            return {"status": "skipped", "stored_count": 0}
+        _seed_log_watermarks(log_dirs, include_history=False)
+        log_text, pending_wm = _collect_incremental_logs_pending(
+            log_dirs, max_files=4, max_bytes_per_file=8192, include_history=False
+        )
+        log_text = _filter_log_text_to_workspace(log_text, ws_root)
+        if not log_text:
+            if pending_wm:
+                _commit_log_watermarks(pending_wm)
+            return {"status": "empty", "stored_count": 0}
+        if _is_foreground_busy(cooldown_seconds=10.0):
+            return {"status": "busy", "stored_count": 0}
+        with _safe_redirect_stdout_to_stderr():
+            res = extract_memories_from_log(
+                log_text,
+                namespace=_get_default_namespace(),
+                agent_id="auto-sync-worker",
+                force_local=True,
+                default_local_only=True,
+                resolve_input=False,
+            )
+        if res.get("error"):
+            err_msg = f"Background log extraction error: {res['error']}"
+            logger.error(err_msg)
+            _record_sync_error(err_msg)
+            return res
+        _commit_log_watermarks(pending_wm)
+        return res
+    except Exception as exc:
+        logger.exception("Background sync iteration failed: %s", exc)
+        _record_sync_error(str(exc))
+        return {"status": "error", "error": str(exc), "stored_count": 0}
 
 
 def background_sync_worker() -> None:
@@ -580,14 +852,13 @@ def background_sync_worker() -> None:
     `MESH_ENABLE_AUTO_SYNC=1`) periodically runs local passive capture on newly
     appended agent logs when idle. Never creates an empty namespace DB on warmup.
     """
-    from .passive import extract_memories_from_log
-
     try:
         log_dirs = detect_agent_logs()
         if log_dirs:
-            _seed_log_watermarks(log_dirs)
-    except Exception:
-        pass
+            _seed_log_watermarks(log_dirs, include_history=False)
+    except Exception as exc:
+        logger.exception("Failed seeding log watermarks on startup: %s", exc)
+        _record_sync_error(str(exc))
 
     time.sleep(0.15)
     with _safe_redirect_stdout_to_stderr():
@@ -595,14 +866,11 @@ def background_sync_worker() -> None:
             try:
                 def_ns = _get_default_namespace()
                 warmup_model(def_ns, assume_yes=False)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.exception("Background warmup failed: %s", exc)
+                _record_sync_error(str(exc))
 
-    auto_sync_enabled = os.environ.get("MESH_ENABLE_AUTO_SYNC", "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-    )
+    auto_sync_enabled = _env_flag("MESH_ENABLE_AUTO_SYNC")
     if not auto_sync_enabled:
         return
 
@@ -611,21 +879,7 @@ def background_sync_worker() -> None:
         time.sleep(120)
         if _is_foreground_busy(cooldown_seconds=10.0):
             continue
-        try:
-            log_dirs = detect_agent_logs()
-            if log_dirs and not _is_foreground_busy(cooldown_seconds=10.0):
-                log_text = _collect_incremental_logs(log_dirs, max_files=4, max_bytes_per_file=8192)
-                log_text = _filter_log_text_to_workspace(log_text, ws_root)
-                if log_text and not _is_foreground_busy(cooldown_seconds=10.0):
-                    with _safe_redirect_stdout_to_stderr():
-                        extract_memories_from_log(
-                            log_text,
-                            namespace=_get_default_namespace(),
-                            agent_id="auto-sync-worker",
-                            force_local=True,
-                        )
-        except Exception:
-            pass
+        _run_background_sync_once(ws_root)
 
 
 _MCP_TOOLS: list[types.Tool] = [
@@ -804,7 +1058,8 @@ _MCP_TOOLS: list[types.Tool] = [
                     "type": "number",
                     "minimum": 0.0,
                     "maximum": 1.0,
-                    "description": "Updated confidence score.",                 },
+                    "description": "Updated confidence score.",
+                },
                 "tags": {
                     "type": "array",
                     "items": {"type": "string"},
@@ -1017,6 +1272,11 @@ _MCP_TOOLS: list[types.Tool] = [
                     "type": "string",
                     "description": "A brief summary of discoveries or work completed in this turn.",
                 },
+                "include_history": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Set true to ingest historical log tails when no prior watermark exists.",
+                },
                 "namespace": {
                     "type": "string",
                     "description": "Optional namespace override.",
@@ -1030,6 +1290,16 @@ _MCP_TOOLS: list[types.Tool] = [
 @app.list_tools()
 async def list_tools() -> list[types.Tool]:
     return _MCP_TOOLS
+
+
+def _parse_arg_bool(
+    arguments: dict[str, Any],
+    key: str,
+    default: Optional[bool] = False,
+) -> Optional[bool]:
+    if key not in arguments or arguments[key] is None:
+        return default
+    return parse_strict_bool(arguments[key], default=bool(default), raise_on_invalid=True)
 
 
 def _execute_tool_sync_impl(
@@ -1054,304 +1324,12 @@ def _execute_tool_sync_impl(
             if proxied is not None:
                 return proxied
 
-        with _safe_redirect_stdout_to_stderr():
-            if name == "mesh_learn":
-                content_raw = arguments["content"]
-                guard_res = guard_ingest(content_raw, local_only=bool(arguments.get("local_only", False)))
-                if guard_res.rejected:
-                    return {
-                        "status": "rejected",
-                        "error": f"Memory rejected: {guard_res.reason}",
-                        "namespace": validated_ns,
-                    }
-                mesh = get_mesh(namespace=validated_ns, agent_id=agent_id, create=True)
-                result = mesh.learn(
-                    content=guard_res.content,
-                    memory_type=arguments.get("memory_type", "fact"),
-                    confidence=float(arguments.get("confidence", 1.0)),
-                    tags=arguments.get("tags", []),
-                    ttl_days=arguments.get("ttl_days"),
-                    local_only=guard_res.local_only,
-                )
-                eng = get_engine_status()
-                response: dict[str, Any] = {
-                    "status": result["status"],
-                    "memory_id": result["memory_id"],
-                    "deduplicated": result.get("deduplicated", False),
-                    "namespace": mesh.namespace,
-                    "total_memories": mesh.count(),
-                    "embedding_backend": result.get("embedding_backend", eng.get("backend", "unloaded")),
-                    "embedding_degraded": bool(result.get("embedding_degraded", eng.get("embedding_degraded", False))),
-                }
-                if result.get("namespace_created"):
-                    response["namespace_created"] = True
-                    response["similar_existing"] = result.get("similar_existing", [])
-                if guard_res.warnings:
-                    response["warnings"] = guard_res.warnings
-                if result.get("conflict"):
-                    response["conflict_warning"] = (
-                        "A potentially contradictory memory already exists. "
-                        "Review and delete or update the old one if this new memory supersedes it."
-                    )
-                    response["conflict"] = result["conflict"]
-                return response
-
-            elif name == "mesh_recall":
-                limit_n = int(arguments.get("n") or arguments.get("count") or 5)
-                include_other = bool(arguments.get("include_other_possible", True))
-                max_other = int(arguments.get("max_other_possible", 5)) if include_other else 0
-                inc_priv = (
-                    bool(arguments["include_private"])
-                    if "include_private" in arguments and arguments["include_private"] is not None
-                    else _ctx_default_include_private(context)
-                )
-                try:
-                    mesh = get_mesh(namespace=validated_ns, agent_id=agent_id, create=False)
-                except NamespaceNotFoundError:
-                    eng = get_engine_status()
-                    return {
-                        "query": str(arguments.get("query", "")).strip(),
-                        "namespace": validated_ns,
-                        "namespace_exists": False,
-                        "did_you_mean": suggest_did_you_mean_namespaces(validated_ns),
-                        "count": 0,
-                        "total_in_namespace": 0,
-                        "stale_count": 0,
-                        "results": [],
-                        "other_possible_memories": [],
-                        "filter_hint": None,
-                        "embedding_backend": eng.get("backend", "unloaded"),
-                        "embedding_degraded": bool(eng.get("embedding_degraded", False)),
-                        "untrusted_reference_data": True,
-                        "notice": _UNTRUSTED_NOTICE,
-                    }
-
-                res = mesh.recall_with_context(
-                    query=arguments["query"],
-                    n=limit_n,
-                    min_similarity=float(arguments.get("min_similarity", 0.0)),
-                    min_confidence=float(arguments.get("min_confidence", 0.0)),
-                    include_stale=bool(arguments.get("include_stale", True)),
-                    memory_type=arguments.get("memory_type"),
-                    tags=arguments.get("tags"),
-                    source_agent=arguments.get("source_agent"),
-                    max_other_possible=max_other,
-                    include_private=inc_priv,
-                )
-                res["namespace_exists"] = True
-                res["untrusted_reference_data"] = True
-                res["notice"] = _UNTRUSTED_NOTICE
-                return res
-
-            elif name == "mesh_update":
-                guard_res = None
-                if arguments.get("content") is not None:
-                    guard_res = guard_ingest(
-                        str(arguments.get("content")),
-                        local_only=bool(arguments.get("local_only", False)),
-                    )
-                    if guard_res.rejected:
-                        return {
-                            "status": "rejected",
-                            "error": f"Memory rejected: {guard_res.reason}",
-                            "namespace": validated_ns,
-                        }
-                try:
-                    mesh = get_mesh(namespace=validated_ns, agent_id=agent_id, create=False)
-                except NamespaceNotFoundError:
-                    return {
-                        "status": "error",
-                        "error": f"Namespace '{validated_ns}' does not exist.",
-                        "namespace_exists": False,
-                        "did_you_mean": suggest_did_you_mean_namespaces(validated_ns),
-                    }
-                updated = mesh.update(
-                    memory_id=arguments["memory_id"],
-                    content=guard_res.content if guard_res else arguments.get("content"),
-                    memory_type=arguments.get("memory_type"),
-                    confidence=arguments.get("confidence"),
-                    tags=arguments.get("tags"),
-                    ttl_days=arguments.get("ttl_days"),
-                    clear_ttl=bool(arguments.get("clear_ttl", False)),
-                    local_only=(
-                        True
-                        if guard_res is not None and guard_res.local_only
-                        else arguments.get("local_only")
-                    ),
-                )
-                update_resp: dict[str, Any] = {
-                    "status": "updated",
-                    "memory_id": updated["memory_id"],
-                    "namespace": mesh.namespace,
-                    "memory": updated["memory"],
-                }
-                if guard_res is not None and guard_res.warnings:
-                    update_resp["warnings"] = guard_res.warnings
-                return update_resp
-
-            elif name == "mesh_forget":
-                try:
-                    mesh = get_mesh(namespace=validated_ns, agent_id=agent_id, create=False)
-                except NamespaceNotFoundError:
-                    return {
-                        "status": "not_found",
-                        "memory_id": arguments["memory_id"],
-                        "namespace": validated_ns,
-                        "namespace_exists": False,
-                        "did_you_mean": suggest_did_you_mean_namespaces(validated_ns),
-                        "remaining": 0,
-                    }
-                deleted = mesh.forget(arguments["memory_id"])
-                return {
-                    "status": "deleted" if deleted else "not_found",
-                    "memory_id": arguments["memory_id"],
-                    "remaining": mesh.count(),
-                }
-
-            elif name == "mesh_inspect":
-                inc_priv = (
-                    bool(arguments["include_private"])
-                    if "include_private" in arguments and arguments["include_private"] is not None
-                    else _ctx_default_include_private(context)
-                )
-                try:
-                    mesh = get_mesh(namespace=validated_ns, agent_id=agent_id, create=False)
-                except NamespaceNotFoundError:
-                    return {
-                        "namespace": validated_ns,
-                        "namespace_exists": False,
-                        "did_you_mean": suggest_did_you_mean_namespaces(validated_ns),
-                        "total": 0,
-                        "memories": [],
-                        "untrusted_reference_data": True,
-                        "notice": _UNTRUSTED_NOTICE,
-                    }
-                memories = mesh.inspect(
-                    limit=int(arguments.get("limit", 10)),
-                    memory_type=arguments.get("memory_type"),
-                    tag=arguments.get("tag"),
-                    include_private=inc_priv,
-                )
-                return {
-                    "namespace": mesh.namespace,
-                    "namespace_exists": True,
-                    "total": mesh.count(),
-                    "memories": memories,
-                    "untrusted_reference_data": True,
-                    "notice": _UNTRUSTED_NOTICE,
-                }
-
-            elif name == "mesh_context":
-                try:
-                    mesh = get_mesh(namespace=validated_ns, agent_id=agent_id, create=False)
-                except NamespaceNotFoundError:
-                    return {
-                        "namespace": validated_ns,
-                        "namespace_exists": False,
-                        "did_you_mean": suggest_did_you_mean_namespaces(validated_ns),
-                        "format": arguments.get("format", "markdown"),
-                        "context": "",
-                    }
-                bundle = build_context_bundle(
-                    query=arguments.get("query"),
-                    namespace=mesh.namespace,
-                    count=int(arguments.get("count") or 10),
-                    max_memories=arguments.get("max_memories"),
-                    n=arguments.get("n"),
-                    format=arguments.get("format", "markdown"),
-                    min_confidence=float(arguments.get("min_confidence", 0.3)),
-                    memory_type=arguments.get("memory_type"),
-                    tags=arguments.get("tags"),
-                    include_private=(
-                        bool(arguments["include_private"])
-                        if arguments.get("include_private") is not None
-                        else _ctx_default_include_private(context)
-                    ),
-                    mesh_instance=mesh,
-                )
-                out_ctx: dict[str, Any] = {
-                    "namespace": bundle["namespace"],
-                    "namespace_exists": bundle.get("namespace_exists", True),
-                    "format": bundle["format"],
-                    "context": bundle["context"],
-                }
-                if "did_you_mean" in bundle:
-                    out_ctx["did_you_mean"] = bundle["did_you_mean"]
-                return out_ctx
-
-            elif name == "mesh_patterns":
-                inc_priv = (
-                    bool(arguments["include_private"])
-                    if "include_private" in arguments and arguments["include_private"] is not None
-                    else _ctx_default_include_private(context)
-                )
-                try:
-                    mesh = get_mesh(namespace=validated_ns, agent_id=agent_id, create=False)
-                except NamespaceNotFoundError:
-                    return {
-                        "namespace": validated_ns,
-                        "namespace_exists": False,
-                        "did_you_mean": suggest_did_you_mean_namespaces(validated_ns),
-                        "untrusted_reference_data": True,
-                        "notice": _UNTRUSTED_NOTICE,
-                        "top_topics": [],
-                        "memory_gaps": [],
-                        "unused_memories": [],
-                        "stale_memories": [],
-                    }
-                patterns = mesh.patterns(include_private=inc_priv)
-                return {
-                    "namespace": mesh.namespace,
-                    "namespace_exists": True,
-                    "untrusted_reference_data": True,
-                    "notice": _UNTRUSTED_NOTICE,
-                    **patterns,
-                }
-
-            elif name == "mesh_contradictions":
-                resolved = bool(arguments.get("resolved", False))
-                try:
-                    mesh = get_mesh(namespace=validated_ns, agent_id=agent_id, create=False)
-                except NamespaceNotFoundError:
-                    return {
-                        "namespace": validated_ns,
-                        "namespace_exists": False,
-                        "did_you_mean": suggest_did_you_mean_namespaces(validated_ns),
-                        "resolved": resolved,
-                        "count": 0,
-                        "contradictions": [],
-                    }
-                conflicts = mesh.contradictions(resolved=resolved)
-                return {
-                    "namespace": mesh.namespace,
-                    "namespace_exists": True,
-                    "resolved": resolved,
-                    "count": len(conflicts),
-                    "contradictions": conflicts,
-                }
-
-            elif name == "mesh_resolve_contradiction":
-                try:
-                    mesh = get_mesh(namespace=validated_ns, agent_id=agent_id, create=False)
-                except NamespaceNotFoundError:
-                    return {
-                        "status": "error",
-                        "error": f"Namespace '{validated_ns}' does not exist.",
-                        "namespace_exists": False,
-                        "did_you_mean": suggest_did_you_mean_namespaces(validated_ns),
-                    }
-                mesh.resolve_contradiction(arguments["contradiction_id"])
-                return {
-                    "status": "resolved",
-                    "contradiction_id": arguments["contradiction_id"],
-                    "namespace": mesh.namespace,
-                }
-
-            elif name == "mesh_sync":
-                summary_text = (arguments.get("summary") or "").strip()
-                mesh: Optional[Mesh] = None
-                if summary_text:
-                    guard_res = guard_ingest(summary_text, local_only=False)
+        try:
+            with _safe_redirect_stdout_to_stderr():
+                if name == "mesh_learn":
+                    content_raw = arguments["content"]
+                    req_local_only = bool(_parse_arg_bool(arguments, "local_only", False))
+                    guard_res = guard_ingest(content_raw, local_only=req_local_only)
                     if guard_res.rejected:
                         return {
                             "status": "rejected",
@@ -1359,19 +1337,415 @@ def _execute_tool_sync_impl(
                             "namespace": validated_ns,
                         }
                     mesh = get_mesh(namespace=validated_ns, agent_id=agent_id, create=True)
-                    mesh.learn(
+                    result = mesh.learn(
                         content=guard_res.content,
-                        memory_type="result",
-                        tags=["session-sync"],
+                        memory_type=arguments.get("memory_type", "fact"),
+                        confidence=float(arguments.get("confidence", 1.0)),
+                        tags=arguments.get("tags", []),
+                        ttl_days=arguments.get("ttl_days"),
                         local_only=guard_res.local_only,
                     )
+                    eng = get_engine_status()
+                    response: dict[str, Any] = {
+                        "status": result["status"],
+                        "memory_id": result["memory_id"],
+                        "deduplicated": result.get("deduplicated", False),
+                        "namespace": mesh.namespace,
+                        "total_memories": mesh.count(),
+                        "embedding_backend": result.get("embedding_backend", eng.get("backend", "unloaded")),
+                        "embedding_degraded": bool(result.get("embedding_degraded", eng.get("embedding_degraded", False))),
+                    }
+                    if result.get("namespace_created"):
+                        response["namespace_created"] = True
+                        response["similar_existing"] = result.get("similar_existing", [])
+                    if guard_res.warnings:
+                        response["warnings"] = guard_res.warnings
+                    if result.get("conflict"):
+                        response["conflict_warning"] = (
+                            "A potentially contradictory memory already exists. "
+                            "Review and delete or update the old one if this new memory supersedes it."
+                        )
+                        response["conflict"] = result["conflict"]
+                    return response
 
-                allow_log_sync = _ctx_flag(
-                    context,
-                    "allow_log_sync",
-                    _env_flag("MESH_ENABLE_AUTO_SYNC") or _env_flag("MESH_ALLOW_LOG_SYNC"),
-                )
-                if not allow_log_sync:
+                elif name == "mesh_recall":
+                    limit_n = int(arguments.get("n") or arguments.get("count") or 5)
+                    include_other = bool(_parse_arg_bool(arguments, "include_other_possible", True))
+                    include_stale = bool(_parse_arg_bool(arguments, "include_stale", True))
+                    max_other = int(arguments.get("max_other_possible", 5)) if include_other else 0
+                    inc_priv_arg = _parse_arg_bool(arguments, "include_private", None)
+                    inc_priv = (
+                        inc_priv_arg
+                        if inc_priv_arg is not None
+                        else _ctx_default_include_private(context)
+                    )
+                    try:
+                        mesh = get_mesh(namespace=validated_ns, agent_id=agent_id, create=False)
+                    except NamespaceNotFoundError:
+                        eng = get_engine_status()
+                        return {
+                            "query": str(arguments.get("query", "")).strip(),
+                            "namespace": validated_ns,
+                            "namespace_exists": False,
+                            "did_you_mean": suggest_did_you_mean_namespaces(validated_ns),
+                            "count": 0,
+                            "total_in_namespace": 0,
+                            "stale_count": 0,
+                            "results": [],
+                            "other_possible_memories": [],
+                            "filter_hint": None,
+                            "embedding_backend": eng.get("backend", "unloaded"),
+                            "embedding_degraded": bool(eng.get("embedding_degraded", False)),
+                            "untrusted_reference_data": True,
+                            "notice": _UNTRUSTED_NOTICE,
+                        }
+
+                    res = mesh.recall_with_context(
+                        query=arguments["query"],
+                        n=limit_n,
+                        min_similarity=float(arguments.get("min_similarity", 0.0)),
+                        min_confidence=float(arguments.get("min_confidence", 0.0)),
+                        include_stale=include_stale,
+                        memory_type=arguments.get("memory_type"),
+                        tags=arguments.get("tags"),
+                        source_agent=arguments.get("source_agent"),
+                        max_other_possible=max_other,
+                        include_private=inc_priv,
+                    )
+                    res["namespace_exists"] = True
+                    res["untrusted_reference_data"] = True
+                    res["notice"] = _UNTRUSTED_NOTICE
+                    return res
+
+                elif name == "mesh_update":
+                    req_local_only = _parse_arg_bool(arguments, "local_only", None)
+                    req_clear_ttl = bool(_parse_arg_bool(arguments, "clear_ttl", False))
+                    guard_res = None
+                    if arguments.get("content") is not None:
+                        guard_res = guard_ingest(
+                            str(arguments.get("content")),
+                            local_only=bool(req_local_only),
+                        )
+                        if guard_res.rejected:
+                            return {
+                                "status": "rejected",
+                                "error": f"Memory rejected: {guard_res.reason}",
+                                "namespace": validated_ns,
+                            }
+                    try:
+                        mesh = get_mesh(namespace=validated_ns, agent_id=agent_id, create=False)
+                    except NamespaceNotFoundError:
+                        return {
+                            "status": "error",
+                            "error": f"Namespace '{validated_ns}' does not exist.",
+                            "namespace_exists": False,
+                            "did_you_mean": suggest_did_you_mean_namespaces(validated_ns),
+                        }
+                    updated = mesh.update(
+                        memory_id=arguments["memory_id"],
+                        content=guard_res.content if guard_res else arguments.get("content"),
+                        memory_type=arguments.get("memory_type"),
+                        confidence=arguments.get("confidence"),
+                        tags=arguments.get("tags"),
+                        ttl_days=arguments.get("ttl_days"),
+                        clear_ttl=req_clear_ttl,
+                        local_only=(
+                            True
+                            if guard_res is not None and guard_res.local_only
+                            else req_local_only
+                        ),
+                    )
+                    update_resp: dict[str, Any] = {
+                        "status": "updated",
+                        "memory_id": updated["memory_id"],
+                        "namespace": mesh.namespace,
+                        "memory": updated["memory"],
+                    }
+                    if guard_res is not None and guard_res.warnings:
+                        update_resp["warnings"] = guard_res.warnings
+                    return update_resp
+
+                elif name == "mesh_forget":
+                    try:
+                        mesh = get_mesh(namespace=validated_ns, agent_id=agent_id, create=False)
+                    except NamespaceNotFoundError:
+                        return {
+                            "status": "not_found",
+                            "memory_id": arguments["memory_id"],
+                            "namespace": validated_ns,
+                            "namespace_exists": False,
+                            "did_you_mean": suggest_did_you_mean_namespaces(validated_ns),
+                            "remaining": 0,
+                        }
+                    deleted = mesh.forget(arguments["memory_id"])
+                    return {
+                        "status": "deleted" if deleted else "not_found",
+                        "memory_id": arguments["memory_id"],
+                        "remaining": mesh.count(),
+                    }
+
+                elif name == "mesh_inspect":
+                    inc_priv_arg = _parse_arg_bool(arguments, "include_private", None)
+                    inc_priv = (
+                        inc_priv_arg
+                        if inc_priv_arg is not None
+                        else _ctx_default_include_private(context)
+                    )
+                    try:
+                        mesh = get_mesh(namespace=validated_ns, agent_id=agent_id, create=False)
+                    except NamespaceNotFoundError:
+                        return {
+                            "namespace": validated_ns,
+                            "namespace_exists": False,
+                            "did_you_mean": suggest_did_you_mean_namespaces(validated_ns),
+                            "total": 0,
+                            "memories": [],
+                            "untrusted_reference_data": True,
+                            "notice": _UNTRUSTED_NOTICE,
+                        }
+                    mem_type = arguments.get("memory_type")
+                    tag_filter = arguments.get("tag")
+                    tags_filter = arguments.get("tags")
+                    memories = mesh.inspect(
+                        limit=int(arguments.get("limit", 10)),
+                        memory_type=mem_type,
+                        tag=tag_filter,
+                        tags=tags_filter,
+                        include_private=inc_priv,
+                    )
+                    total_matching = mesh.count_matching(
+                        memory_type=mem_type,
+                        tag=tag_filter,
+                        tags=tags_filter,
+                        include_private=inc_priv,
+                    )
+                    return {
+                        "namespace": mesh.namespace,
+                        "namespace_exists": True,
+                        "total": total_matching,
+                        "memories": memories,
+                        "untrusted_reference_data": True,
+                        "notice": _UNTRUSTED_NOTICE,
+                    }
+
+                elif name == "mesh_context":
+                    inc_priv_arg = _parse_arg_bool(arguments, "include_private", None)
+                    inc_priv = (
+                        inc_priv_arg
+                        if inc_priv_arg is not None
+                        else _ctx_default_include_private(context)
+                    )
+                    try:
+                        mesh = get_mesh(namespace=validated_ns, agent_id=agent_id, create=False)
+                    except NamespaceNotFoundError:
+                        return {
+                            "namespace": validated_ns,
+                            "namespace_exists": False,
+                            "did_you_mean": suggest_did_you_mean_namespaces(validated_ns),
+                            "format": arguments.get("format", "markdown"),
+                            "context": "",
+                        }
+                    bundle = build_context_bundle(
+                        query=arguments.get("query"),
+                        namespace=mesh.namespace,
+                        count=int(arguments.get("count") or 10),
+                        max_memories=arguments.get("max_memories"),
+                        n=arguments.get("n"),
+                        format=arguments.get("format", "markdown"),
+                        min_confidence=float(arguments.get("min_confidence", 0.3)),
+                        memory_type=arguments.get("memory_type"),
+                        tags=arguments.get("tags"),
+                        include_private=inc_priv,
+                        mesh_instance=mesh,
+                    )
+                    out_ctx: dict[str, Any] = {
+                        "namespace": bundle["namespace"],
+                        "namespace_exists": bundle.get("namespace_exists", True),
+                        "format": bundle["format"],
+                        "context": bundle["context"],
+                    }
+                    if "did_you_mean" in bundle:
+                        out_ctx["did_you_mean"] = bundle["did_you_mean"]
+                    return out_ctx
+
+                elif name == "mesh_patterns":
+                    inc_priv_arg = _parse_arg_bool(arguments, "include_private", None)
+                    inc_priv = (
+                        inc_priv_arg
+                        if inc_priv_arg is not None
+                        else _ctx_default_include_private(context)
+                    )
+                    try:
+                        mesh = get_mesh(namespace=validated_ns, agent_id=agent_id, create=False)
+                    except NamespaceNotFoundError:
+                        return {
+                            "namespace": validated_ns,
+                            "namespace_exists": False,
+                            "did_you_mean": suggest_did_you_mean_namespaces(validated_ns),
+                            "untrusted_reference_data": True,
+                            "notice": _UNTRUSTED_NOTICE,
+                            "top_topics": [],
+                            "memory_gaps": [],
+                            "unused_memories": [],
+                            "stale_memories": [],
+                        }
+                    patterns = mesh.patterns(include_private=inc_priv)
+                    return {
+                        "namespace": mesh.namespace,
+                        "namespace_exists": True,
+                        "untrusted_reference_data": True,
+                        "notice": _UNTRUSTED_NOTICE,
+                        **patterns,
+                    }
+
+                elif name == "mesh_contradictions":
+                    resolved = bool(_parse_arg_bool(arguments, "resolved", False))
+                    try:
+                        mesh = get_mesh(namespace=validated_ns, agent_id=agent_id, create=False)
+                    except NamespaceNotFoundError:
+                        return {
+                            "namespace": validated_ns,
+                            "namespace_exists": False,
+                            "did_you_mean": suggest_did_you_mean_namespaces(validated_ns),
+                            "resolved": resolved,
+                            "count": 0,
+                            "contradictions": [],
+                        }
+                    conflicts = mesh.contradictions(resolved=resolved)
+                    return {
+                        "namespace": mesh.namespace,
+                        "namespace_exists": True,
+                        "resolved": resolved,
+                        "count": len(conflicts),
+                        "contradictions": conflicts,
+                    }
+
+                elif name == "mesh_resolve_contradiction":
+                    try:
+                        mesh = get_mesh(namespace=validated_ns, agent_id=agent_id, create=False)
+                    except NamespaceNotFoundError:
+                        return {
+                            "status": "error",
+                            "error": f"Namespace '{validated_ns}' does not exist.",
+                            "namespace_exists": False,
+                            "did_you_mean": suggest_did_you_mean_namespaces(validated_ns),
+                        }
+                    mesh.resolve_contradiction(arguments["contradiction_id"])
+                    return {
+                        "status": "resolved",
+                        "contradiction_id": arguments["contradiction_id"],
+                        "namespace": mesh.namespace,
+                    }
+
+                elif name == "mesh_sync":
+                    summary_text = (arguments.get("summary") or "").strip()
+                    include_history = bool(
+                        _parse_arg_bool(arguments, "include_history", False)
+                        or _parse_arg_bool(arguments, "all", False)
+                    )
+                    mesh: Optional[Mesh] = None
+                    if summary_text:
+                        guard_res = guard_ingest(summary_text, local_only=False)
+                        if guard_res.rejected:
+                            return {
+                                "status": "rejected",
+                                "error": f"Memory rejected: {guard_res.reason}",
+                                "namespace": validated_ns,
+                            }
+                        mesh = get_mesh(namespace=validated_ns, agent_id=agent_id, create=True)
+                        mesh.learn(
+                            content=guard_res.content,
+                            memory_type="result",
+                            tags=["session-sync"],
+                            local_only=guard_res.local_only,
+                        )
+
+                    allow_log_sync = _ctx_flag(
+                        context,
+                        "allow_log_sync",
+                        _env_flag("MESH_ENABLE_AUTO_SYNC") or _env_flag("MESH_ALLOW_LOG_SYNC"),
+                    )
+                    sync_status = get_sync_status()
+                    if not allow_log_sync:
+                        if mesh is None:
+                            try:
+                                mesh = get_mesh(namespace=validated_ns, agent_id=agent_id, create=False)
+                                total_mems = mesh.count()
+                            except NamespaceNotFoundError:
+                                total_mems = 0
+                        else:
+                            total_mems = mesh.count()
+                        return {
+                            "status": "synchronized",
+                            "namespace": validated_ns,
+                            "manual_summary": summary_text or "none",
+                            "log_capture": "disabled",
+                            "hint": "Set MESH_ALLOW_LOG_SYNC=1 to enable",
+                            "passive_memories_captured": 0,
+                            "captured_count": 0,
+                            "stored_count": 0,
+                            "deduplicated_count": 0,
+                            "error": None,
+                            "last_sync_error": sync_status["last_error"],
+                            "last_sync_error_at": sync_status["last_error_at"],
+                            "total_memories": total_mems,
+                        }
+
+                    from .passive import extract_memories_from_log
+
+                    log_dirs = detect_agent_logs()
+                    if log_dirs and not include_history:
+                        _seed_log_watermarks(log_dirs, include_history=False)
+
+                    log_text, pending_wm = (
+                        _collect_incremental_logs_pending(
+                            log_dirs, include_history=include_history
+                        )
+                        if log_dirs
+                        else ("", {})
+                    )
+                    ws_root = _ctx_workspace_root(context)
+                    log_text = _filter_log_text_to_workspace(log_text, ws_root)
+
+                    captured_count = 0
+                    stored_count = 0
+                    deduplicated_count = 0
+                    extraction_err: Optional[str] = None
+
+                    if log_text:
+                        if mesh is None:
+                            mesh = get_mesh(namespace=validated_ns, agent_id=agent_id, create=True)
+                        allow_cloud = _ctx_flag(
+                            context, "allow_cloud_sync", _env_flag("MESH_ALLOW_CLOUD_SYNC")
+                        )
+                        try:
+                            capture_res = extract_memories_from_log(
+                                log_text,
+                                namespace=validated_ns,
+                                agent_id=mesh.agent_id,
+                                force_local=not allow_cloud,
+                                assume_yes=allow_cloud,
+                                default_local_only=not allow_cloud,
+                                resolve_input=False,
+                            )
+                            stored_count = int(capture_res.get("stored_count", 0))
+                            deduplicated_count = int(capture_res.get("deduplicated_count", 0))
+                            if "captured_count" in capture_res:
+                                captured_count = int(capture_res["captured_count"])
+                            else:
+                                captured_count = stored_count + deduplicated_count
+                            extraction_err = capture_res.get("error")
+                            if extraction_err:
+                                _record_sync_error(str(extraction_err))
+                            else:
+                                _commit_log_watermarks(pending_wm)
+                        except Exception as exc:
+                            extraction_err = str(exc)
+                            logger.exception("Foreground mesh_sync log extraction failed: %s", exc)
+                            _record_sync_error(extraction_err)
+                    elif pending_wm:
+                        _commit_log_watermarks(pending_wm)
+
                     if mesh is None:
                         try:
                             mesh = get_mesh(namespace=validated_ns, agent_id=agent_id, create=False)
@@ -1380,58 +1754,27 @@ def _execute_tool_sync_impl(
                             total_mems = 0
                     else:
                         total_mems = mesh.count()
+
+                    sync_status = get_sync_status()
                     return {
                         "status": "synchronized",
                         "namespace": validated_ns,
                         "manual_summary": summary_text or "none",
-                        "log_capture": "disabled",
-                        "hint": "Set MESH_ALLOW_LOG_SYNC=1 to enable",
-                        "passive_memories_captured": 0,
+                        "log_capture": "enabled",
+                        "passive_memories_captured": captured_count,
+                        "captured_count": captured_count,
+                        "stored_count": stored_count,
+                        "deduplicated_count": deduplicated_count,
+                        "error": extraction_err,
+                        "last_sync_error": sync_status["last_error"],
+                        "last_sync_error_at": sync_status["last_error_at"],
                         "total_memories": total_mems,
                     }
 
-                from .passive import extract_memories_from_log
-
-                log_dirs = detect_agent_logs()
-                log_text = _collect_incremental_logs(log_dirs) if log_dirs else ""
-                ws_root = _ctx_workspace_root(context)
-                log_text = _filter_log_text_to_workspace(log_text, ws_root)
-                captured_count = 0
-                if log_text:
-                    if mesh is None:
-                        mesh = get_mesh(namespace=validated_ns, agent_id=agent_id, create=True)
-                    allow_cloud = _ctx_flag(
-                        context, "allow_cloud_sync", _env_flag("MESH_ALLOW_CLOUD_SYNC")
-                    )
-                    capture_res = extract_memories_from_log(
-                        log_text,
-                        namespace=validated_ns,
-                        agent_id=mesh.agent_id,
-                        force_local=not allow_cloud,
-                        assume_yes=allow_cloud,
-                    )
-                    captured_count = int(capture_res.get("stored_count", 0))
-
-                if mesh is None:
-                    try:
-                        mesh = get_mesh(namespace=validated_ns, agent_id=agent_id, create=False)
-                        total_mems = mesh.count()
-                    except NamespaceNotFoundError:
-                        total_mems = 0
                 else:
-                    total_mems = mesh.count()
-
-                return {
-                    "status": "synchronized",
-                    "namespace": validated_ns,
-                    "manual_summary": summary_text or "none",
-                    "log_capture": "enabled",
-                    "passive_memories_captured": captured_count,
-                    "total_memories": total_mems,
-                }
-
-            else:
-                return {"error": f"Unknown tool: {name}", "status": "error"}
+                    return {"error": f"Unknown tool: {name}", "status": "error"}
+        except ValueError as exc:
+            return {"error": str(exc), "status": "error"}
 
 
 def _execute_tool_sync(
@@ -1442,12 +1785,13 @@ def _execute_tool_sync(
     allow_daemon_proxy: bool = True,
     context: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
-    """Run a tool, honoring caller-supplied context (used when executing inside the daemon)."""
-    token = None
-    if context is not None and context.get("enforce_agent_ownership") is not None:
-        token = _OWNERSHIP_ENFORCEMENT_OVERRIDE.set(
-            bool(context["enforce_agent_ownership"])
-        )
+    """
+    Run a tool, deriving ownership enforcement from server configuration (`MESH_ENFORCE_AGENT_OWNERSHIP`).
+    A caller-supplied `context` can never weaken server ownership enforcement (Issue H4).
+    """
+    server_enforced = _env_flag("MESH_ENFORCE_AGENT_OWNERSHIP")
+    ctx_enforced = _ctx_flag(context, "enforce_agent_ownership", False) if context else False
+    token = _OWNERSHIP_ENFORCEMENT_OVERRIDE.set(bool(server_enforced or ctx_enforced))
     try:
         return _execute_tool_sync_impl(
             name=name,
@@ -1482,7 +1826,9 @@ async def call_tool(name: str, arguments: Optional[dict[str, Any]]) -> MeshCallT
         payload = await asyncio.to_thread(_execute_tool_sync, name, args)
         is_error = False
         if isinstance(payload, dict):
-            if payload.get("status") in ("rejected", "error") or "error" in payload:
+            if payload.get("status") in ("rejected", "error") or (
+                payload.get("error") is not None and payload.get("status") != "synchronized"
+            ):
                 is_error = True
         return MeshCallToolResult(
             isError=is_error,
@@ -1516,7 +1862,7 @@ async def _run() -> None:
 
 def run() -> None:
     """Entry point for: mesh-server"""
-    auto_sync = os.environ.get("MESH_ENABLE_AUTO_SYNC", "").strip().lower() in ("1", "true", "yes")
+    auto_sync = _env_flag("MESH_ENABLE_AUTO_SYNC")
     if auto_sync:
         threading.Thread(target=background_sync_worker, daemon=True).start()
     elif request_user_permission("start the background MCP cache warmup worker"):

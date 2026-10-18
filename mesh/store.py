@@ -22,13 +22,16 @@ from __future__ import annotations
 import atexit
 import contextlib
 import json
+import logging
 import os
 import re
 import sqlite3
 import stat
+import sys
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator, Optional
@@ -38,17 +41,28 @@ import numpy as np
 from .audit import (
     REDACTED_CONTENT_PLACEHOLDER,
     ensure_secure_mesh_dir,
+    evict_audit_cache,
     get_mesh_dir,
     purge_memory_from_audit,
     scrub_memory_update_from_audit,
     secure_file_permissions,
     validate_namespace,
 )
+from .envutil import env_int
 
 EMBEDDING_DIM = 384
 STALE_THRESHOLD = 0.3
 GAP_MIN_QUERIES = 2
 DEFAULT_MAX_QUERY_ROWS = 10000
+DEFAULT_MAX_POOL_SIZE = 64
+DEFAULT_MAX_VECTOR_CACHE_SIZE = 64
+DEFAULT_MAX_NAMESPACES = 256
+
+_MAX_POOL_SIZE = DEFAULT_MAX_POOL_SIZE
+_MAX_VECTOR_CACHE_SIZE = DEFAULT_MAX_VECTOR_CACHE_SIZE
+_MAX_NAMESPACES = DEFAULT_MAX_NAMESPACES
+
+logger = logging.getLogger(__name__)
 
 # Pre-mask candidate cut threshold (Phase 2.4)
 PREMASK_SKIP_CUT_THRESHOLD = 400
@@ -110,6 +124,114 @@ class NamespaceNotFoundError(ValueError):
     is instantiated for a namespace whose SQLite database file does not exist on disk.
     Inherits from `ValueError` for backwards compatibility with existing callers.
     """
+
+
+class NamespaceLimitExceededError(ValueError):
+    """
+    Raised when creating a new namespace would exceed the configured namespace cap
+    (`MESH_MAX_NAMESPACES`, default 256).
+    """
+
+
+def _get_max_pool_size() -> int:
+    if os.environ.get("MESH_MAX_POOL_SIZE"):
+        return env_int("MESH_MAX_POOL_SIZE", _MAX_POOL_SIZE, minimum=2)
+    if os.environ.get("MESH_MAX_OPEN_NAMESPACES"):
+        return env_int("MESH_MAX_OPEN_NAMESPACES", _MAX_POOL_SIZE, minimum=2)
+    return max(2, int(_MAX_POOL_SIZE))
+
+
+def _get_max_vector_cache_size() -> int:
+    if os.environ.get("MESH_MAX_VECTOR_CACHE_SIZE"):
+        return env_int("MESH_MAX_VECTOR_CACHE_SIZE", _MAX_VECTOR_CACHE_SIZE, minimum=2)
+    if os.environ.get("MESH_MAX_OPEN_NAMESPACES"):
+        return env_int("MESH_MAX_OPEN_NAMESPACES", _MAX_VECTOR_CACHE_SIZE, minimum=2)
+    return max(2, int(_MAX_VECTOR_CACHE_SIZE))
+
+
+def _get_max_namespaces() -> int:
+    if os.environ.get("MESH_MAX_NAMESPACES"):
+        return env_int("MESH_MAX_NAMESPACES", _MAX_NAMESPACES, minimum=1)
+    return max(1, int(_MAX_NAMESPACES))
+
+
+def _check_namespace_creation_limit(base_dir: Path, namespace: str) -> None:
+    """Enforce a cap on total tracked namespaces before creating a new `.db` file."""
+    target_db = (base_dir / f"mesh_{namespace}.db").resolve()
+    if target_db.exists():
+        return
+    max_ns = _get_max_namespaces()
+    if not base_dir.exists():
+        return
+    existing_count = 0
+    for p in base_dir.glob("mesh_*.db"):
+        if p.is_file() and not p.name.endswith(("-wal", "-shm")):
+            existing_count += 1
+            if existing_count >= max_ns:
+                raise NamespaceLimitExceededError(
+                    f"Maximum number of tracked namespaces ({max_ns}) exceeded; "
+                    f"refusing to create namespace '{namespace}'."
+                )
+
+
+def _evict_external_namespace_caches(namespace: str) -> None:
+    """Evict cached state for `namespace` in audit, write-lock, context_builder, HTTP, MCP, and Dashboard."""
+    evict_namespace_write_lock(namespace)
+    evict_audit_cache(namespace)
+
+    ctx_mod = sys.modules.get("mesh.context_builder")
+    if ctx_mod is not None and hasattr(ctx_mod, "evict_context_mesh_cache"):
+        try:
+            ctx_mod.evict_context_mesh_cache(namespace)
+        except Exception:
+            pass
+
+    http_mod = sys.modules.get("mesh.http_server")
+    if http_mod is not None and hasattr(http_mod, "evict_http_mesh_cache"):
+        try:
+            http_mod.evict_http_mesh_cache(namespace)
+        except Exception:
+            pass
+
+    mcp_mod = sys.modules.get("mesh.mcp_server")
+    if mcp_mod is not None and hasattr(mcp_mod, "evict_mcp_mesh_cache"):
+        try:
+            mcp_mod.evict_mcp_mesh_cache(namespace)
+        except Exception:
+            pass
+
+    dash_mod = sys.modules.get("mesh.dashboard")
+    if dash_mod is not None and hasattr(dash_mod, "evict_dashboard_mesh_cache"):
+        try:
+            dash_mod.evict_dashboard_mesh_cache(namespace)
+        except Exception:
+            pass
+
+
+def _finalize_evicted_resources(
+    evicted: list[tuple[Path, Optional["_PooledConnection"], Optional[str]]]
+) -> None:
+    """
+    Flush telemetry, close pooled connections, and evict upper-layer caches for
+    LRU-evicted namespaces AFTER releasing `_CACHE_LOCK`.
+    """
+    for db_path, conn, ns in evicted:
+        try:
+            _flush_telemetry_for_db_path(db_path)
+        except Exception:
+            pass
+        if conn is not None:
+            conn.close_pooled()
+        # If telemetry flush re-opened a connection or stamp for the evicted DB, close it now.
+        with _CACHE_LOCK:
+            _QUERY_WRITE_COUNTS.pop(db_path, None)
+            dict.pop(_INITIALIZED_DBS, db_path, None)
+            extra_conn = _CONNECTION_POOL.pop(db_path, None)
+            if extra_conn is not None:
+                extra_conn.close_pooled()
+            _evict_vector_cache_for_db_path(db_path)
+        if ns:
+            _evict_external_namespace_caches(ns)
 
 
 def validate_memory_id(memory_id: str) -> str:
@@ -293,7 +415,13 @@ def namespace_write_lock(namespace: str, timeout: float = 15.0) -> Iterator[None
 
 
 def evict_namespace_write_lock(namespace: str) -> None:
-    """Evict lock registry entry and delete `~/.mesh/.mesh_<ns>.lock` on namespace delete/rename."""
+    """Evict the in-process lock registry entry for a namespace.
+
+    The `.lock` *file* is deliberately left on disk. Unlinking it splits the
+    lock: a process that already opened the old inode keeps locking that inode
+    while a later process creates a fresh file at the same path, so both can
+    hold "the" namespace lock at once. An orphaned empty lock file is harmless.
+    """
     try:
         clean_ns = validate_namespace(namespace)
     except ValueError:
@@ -301,15 +429,25 @@ def evict_namespace_write_lock(namespace: str) -> None:
     mesh_dir = get_mesh_dir().resolve()
     key = (mesh_dir, clean_ns)
     with _NS_LOCK_REGISTRY_MUTEX:
-        state = _NS_LOCK_REGISTRY.pop(key, None)
-        if state is not None and state.fd is not None:
-            _release_os_file_lock(state.fd)
-            state.fd = None
-    lock_file = mesh_dir / f".mesh_{clean_ns}.lock"
-    try:
-        lock_file.unlink(missing_ok=True)
-    except OSError:
-        pass
+        state = _NS_LOCK_REGISTRY.get(key)
+        if state is None:
+            return
+        # Never drop a state that a thread is holding or waiting on. Releasing
+        # its OS fd while `depth > 0` would let another thread acquire a fresh
+        # file lock on the same path, so two writers could hold "the" namespace
+        # lock at once during the hand-off.
+        acquired = state.rlock.acquire(timeout=0.05)
+        if not acquired:
+            return
+        try:
+            if state.depth > 0:
+                return
+            _NS_LOCK_REGISTRY.pop(key, None)
+            if state.fd is not None:
+                _release_os_file_lock(state.fd)
+                state.fd = None
+        finally:
+            state.rlock.release()
 
 
 def _clean_possessives(text: str) -> str:
@@ -826,9 +964,15 @@ class _VectorCacheEntry:
 
     def snapshot(
         self,
-        copy_matrix: bool = False,
+        copy_matrix: bool = True,
     ) -> tuple[list[str], Optional[np.ndarray], dict[str, dict[str, Any]]]:
-        """Return a thread-safe snapshot of (ids, matrix_view, rows_by_id)."""
+        """Return a snapshot of (ids, matrix, rows_by_id).
+
+        The matrix is copied by default because the returned array is used after
+        the cache lock is released, while `upsert_vector`/`delete_vector` mutate
+        `_matrix_buf` in place (swap-with-last). Callers that only use the rows
+        may pass `copy_matrix=False` to avoid the N×dim copy.
+        """
         with _CACHE_LOCK:
             ids_copy = list(self.ids)
             if self._matrix_buf is not None and ids_copy:
@@ -838,6 +982,26 @@ class _VectorCacheEntry:
                 mat_view = None
             rows_copy = dict(self.rows_by_id)
             return ids_copy, mat_view, rows_copy
+
+    def similarity_snapshot(
+        self,
+        query_vec: np.ndarray,
+    ) -> tuple[list[str], Optional[np.ndarray], dict[str, dict[str, Any]]]:
+        """Compute `matrix @ query_vec` while holding the cache lock, then release it.
+
+        This avoids both hazards of a plain `snapshot()`: a caller matmulling a
+        live view after the lock is released races concurrent in-place row
+        swaps, and copying the whole matrix on every query is needlessly
+        expensive. Only the resulting 1-D similarity array escapes.
+        """
+        with _CACHE_LOCK:
+            ids_copy = list(self.ids)
+            if self._matrix_buf is None or not ids_copy:
+                return ids_copy, None, dict(self.rows_by_id)
+            mat_slice = self._matrix_buf[: len(ids_copy)]
+            if query_vec.ndim != 1 or query_vec.shape[0] != mat_slice.shape[1]:
+                return ids_copy, None, dict(self.rows_by_id)
+            return ids_copy, mat_slice @ query_vec, dict(self.rows_by_id)
 
     def update_stamp(
         self,
@@ -920,24 +1084,43 @@ class _VectorCacheEntry:
         idx = self.id_to_idx.pop(memory_id, None)
         if idx is None:
             return
-        n_before = len(self.ids)
-        self.ids.pop(idx)
-        for i in range(idx, len(self.ids)):
-            self.id_to_idx[self.ids[i]] = i
-        if not self.ids or self._matrix_buf is None or n_before <= 1:
+        # Swap the last row into the hole instead of shifting every following
+        # row and copying the whole N×384 matrix on each delete (O(N) copying
+        # per delete made bulk deletes O(N²)). Order is irrelevant to search.
+        last_idx = len(self.ids) - 1
+        if idx != last_idx:
+            last_id = self.ids[last_idx]
+            self.ids[idx] = last_id
+            self.id_to_idx[last_id] = idx
+            if self._matrix_buf is not None:
+                self._matrix_buf[idx] = self._matrix_buf[last_idx]
+        self.ids.pop()
+        if not self.ids or self._matrix_buf is None:
             self._matrix_buf = None
             self.dim = 0
-        else:
-            if idx < n_before - 1:
-                new_buf = self._matrix_buf.copy()
-                new_buf[idx : n_before - 1] = self._matrix_buf[idx + 1 : n_before]
-                self._matrix_buf = new_buf
 
 
 # Process-wide caches protected by a re-entrant lock
 _CACHE_LOCK = threading.RLock()
-_CONNECTION_POOL: dict[Path, _PooledConnection] = {}
-_VECTOR_CACHE: dict[Path, _VectorCacheEntry] = {}
+_CONNECTION_POOL: OrderedDict[Path, _PooledConnection] = OrderedDict()
+_DB_PATH_NAMESPACES: dict[Path, str] = {}
+# Keyed by (db_path, namespace), NOT by path alone: on Windows and macOS
+# `Path.resolve()` canonicalizes case, so `Mesh("Team")` and `Mesh("team")`
+# resolve to the same file. A path-only key let the second spelling reuse the
+# first spelling's entry, and the fast stamp check then returned its rows.
+_VECTOR_CACHE: OrderedDict[tuple[Path, str], _VectorCacheEntry] = OrderedDict()
+
+
+def _evict_vector_cache_for_db_path(db_path: Path) -> None:
+    """Drop every namespace's cached vector entry for `db_path`.
+
+    Deletion/rename must clear all spellings that share a file; a namespace-level
+    eviction would leave a case-variant entry pointing at removed content.
+    """
+    for key in [k for k in _VECTOR_CACHE if k[0] == db_path]:
+        _VECTOR_CACHE.pop(key, None)
+
+
 _QUERY_WRITE_COUNTS: dict[Path, int] = {}
 # Retained as empty dict for backward-compatibility with namespaces.py imports; never populated on SQLite writes
 _TRANSIENT_EMBEDDINGS: dict[tuple[str, str], np.ndarray] = {}
@@ -984,7 +1167,47 @@ def flush_all_telemetry() -> None:
     with _TELEMETRY_LOCK:
         paths = list(_TELEMETRY_BUFFERS.keys())
     for p in paths:
-        _flush_telemetry_for_db_path(p)
+        try:
+            _flush_telemetry_for_db_path(p)
+        except Exception:
+            # One namespace with a corrupt/locked database must not prevent the
+            # remaining namespaces from flushing their buffered telemetry.
+            continue
+
+
+def _requeue_telemetry(
+    resolved: Path,
+    namespace: str,
+    inc_items: list[tuple[str, tuple[int, str]]],
+    q_rows: list[tuple],
+) -> None:
+    """Merge unflushed telemetry back into the buffer after a write failure.
+
+    The old code popped the buffer before writing and dropped it on any error,
+    silently losing recall counts and query history (including on transient
+    `database is locked` contention).
+    """
+    with _TELEMETRY_LOCK:
+        buf = _TELEMETRY_BUFFERS.get(resolved)
+        if buf is None:
+            buf = _TelemetryBuffer(db_path=resolved, namespace=namespace)
+            _TELEMETRY_BUFFERS[resolved] = buf
+        for mid, (delta, accessed_at) in inc_items:
+            prev = buf.access_increments.get(mid)
+            if prev is None:
+                buf.access_increments[mid] = (delta, accessed_at)
+            else:
+                # Keep the most recent access timestamp even when merging out
+                # of order (the new buffer may already hold later events).
+                buf.access_increments[mid] = (
+                    prev[0] + delta,
+                    max(prev[1], accessed_at),
+                )
+        if q_rows:
+            buf.query_rows.extend(q_rows)
+        buf.event_count += len(inc_items) + len(q_rows)
+        if buf.event_count == len(inc_items) + len(q_rows):
+            buf.first_event_ts = time.monotonic()
 
 
 def _flush_telemetry_for_db_path(db_path: Path) -> None:
@@ -998,6 +1221,10 @@ def _flush_telemetry_for_db_path(db_path: Path) -> None:
         ns = buf.namespace
 
     if not resolved.exists():
+        # The DB can briefly disappear during a namespace rename/delete in
+        # another process. Requeue instead of dropping the popped events; the
+        # old early return silently lost this buffer.
+        _requeue_telemetry(resolved, ns, inc_items, q_rows)
         return
 
     try:
@@ -1040,19 +1267,28 @@ def _flush_telemetry_for_db_path(db_path: Path) -> None:
             # Refresh local stamps WITHOUT bumping content_version — but only if the
             # cache still matches the on-disk content_version. Stamping a stale cache
             # here would make another process's writes/deletes invisible forever.
-            cached = _VECTOR_CACHE.get(resolved)
+            cached = _VECTOR_CACHE.get((resolved, ns))
             if (
                 cached is not None
                 and current_cv is not None
                 and cached.content_version is not None
                 and cached.content_version == current_cv
             ):
+                # Snap the file stamp BEFORE re-reading content_version. If a
+                # content write lands between the two, `cv_after` differs and we
+                # skip the stamp update. The reverse order (cv, then stamp) could
+                # adopt a stamp that postdates a write whose content is not in
+                # this cache, making the stale snapshot look fresh forever.
                 stamp = _get_db_stamp(resolved)
-                if stamp is not None:
+                cv_after = store._read_content_version_locked()
+                if stamp is not None and cv_after == current_cv:
                     _INITIALIZED_DBS[resolved] = stamp
                     cached.update_stamp(stamp, data_version=store._get_data_version_locked())
     except Exception:
-        pass
+        # Never silently drop buffered telemetry: put the popped items back so a
+        # later flush can retry (e.g. transient SQLITE_BUSY or a database that
+        # was mid-rename). The old code lost the events permanently.
+        _requeue_telemetry(resolved, ns, inc_items, q_rows)
 
 
 def _scrub_contradictions_in_tx(
@@ -1085,6 +1321,54 @@ def _scrub_queries_in_tx(conn: sqlite3.Connection, namespace: str, content: str)
     )
 
 
+def _scrub_pending_query_telemetry(namespace: str, content: Optional[str]) -> None:
+    """Drop buffered recall queries that reproduce content being deleted or redacted.
+
+    `delete`/`update` scrub the `queries` table, but recall telemetry is written
+    in batches. A query already sitting in `_TELEMETRY_BUFFERS` would be flushed
+    *after* the scrub and resurrect the deleted text, so remove matching rows
+    from the pending buffers at the same time.
+    """
+    clean = (content or "").strip()
+    if not clean:
+        return
+    candidates = {clean.lower(), clean[:512].lower()}
+    with _TELEMETRY_LOCK:
+        for buf in _TELEMETRY_BUFFERS.values():
+            if buf.namespace != namespace or not buf.query_rows:
+                continue
+            kept = [
+                row
+                for row in buf.query_rows
+                if str(row[2] or "").strip().lower() not in candidates
+            ]
+            dropped = len(buf.query_rows) - len(kept)
+            if dropped:
+                buf.event_count = max(0, buf.event_count - dropped)
+                buf.query_rows = kept
+
+
+_FTS_PERMANENT_ERROR_MARKERS = (
+    "no such table",
+    "no such module",
+    "not a database",
+    "malformed",
+    "corrupt",
+    "vtable constructor failed",
+)
+
+
+def _is_permanent_fts_error(exc: BaseException) -> bool:
+    """True when an FTS5 error means the module/table cannot work on this DB.
+
+    Transient errors (`database is locked`, `disk I/O error`, `interrupted`)
+    must NOT disable FTS for the lifetime of the process; the row can simply be
+    re-indexed later.
+    """
+    message = str(exc).lower()
+    return any(marker in message for marker in _FTS_PERMANENT_ERROR_MARKERS)
+
+
 def close_store_connection(db_path: Path) -> None:
     """Flush telemetry, close, and remove any pooled SQLite connection for `db_path`."""
     try:
@@ -1093,6 +1377,7 @@ def close_store_connection(db_path: Path) -> None:
         pass
     with _CACHE_LOCK:
         _QUERY_WRITE_COUNTS.pop(db_path, None)
+        _DB_PATH_NAMESPACES.pop(db_path, None)
         conn = _CONNECTION_POOL.pop(db_path, None)
         if conn is not None:
             conn.close_pooled()
@@ -1127,6 +1412,7 @@ def _close_all_pooled_connections() -> None:
         for conn in list(_CONNECTION_POOL.values()):
             conn.close_pooled()
         _CONNECTION_POOL.clear()
+        _DB_PATH_NAMESPACES.clear()
 
 
 def _max_query_rows() -> int:
@@ -1256,6 +1542,7 @@ class _CollectionCompatShim:
                 in_place_ok = synced_cache is not None
                 pending_vectors: list[tuple[str, Optional[np.ndarray], dict[str, Any]]] = []
                 new_cv: Optional[int] = None
+                audit_scrubs: list[tuple[str, str, bool]] = []
                 with self._store._connect() as conn:
                     conn.execute("BEGIN IMMEDIATE")
                     try:
@@ -1341,6 +1628,8 @@ class _CollectionCompatShim:
                                         else doc,
                                     )
                                     _scrub_queries_in_tx(conn, self._store.namespace, old_content)
+                                    _scrub_pending_query_telemetry(self._store.namespace, old_content)
+                                    audit_scrubs.append((mid, old_content, bool(local_flag)))
                             if in_place_ok and synced_cache is not None:
                                 row_meta = {
                                     "id": mid,
@@ -1377,6 +1666,14 @@ class _CollectionCompatShim:
                 else:
                     self._store._invalidate_cache()
 
+        for scrubbed_id, scrubbed_old_content, scrubbed_local in audit_scrubs:
+            scrub_memory_update_from_audit(
+                namespace=self._store.namespace,
+                memory_id=scrubbed_id,
+                old_content=scrubbed_old_content,
+                local_only=scrubbed_local,
+            )
+
     def query(
         self,
         query_embeddings: list[list[float]],
@@ -1408,8 +1705,14 @@ class MeshStore:
             raise ValueError(f"Invalid namespace path resolution for '{namespace}'.")
         self.db_path = resolved_db
         self._fts_enabled = True
+        # Set when an FTS write failed for a transient reason (lock, I/O); the
+        # next `_ensure_initialized` rebuilds the index instead of leaving the
+        # namespace permanently without lexical search.
+        self._fts_dirty = False
         if not self.create and not self.db_path.exists():
             raise NamespaceNotFoundError(f"Namespace '{self.namespace}' does not exist.")
+        if self.create and not self.db_path.exists():
+            _check_namespace_creation_limit(base_dir, self.namespace)
         if self.db_path.exists() or self.create:
             self._ensure_initialized()
         self.collection = _CollectionCompatShim(self)
@@ -1418,15 +1721,21 @@ class MeshStore:
 
     def _connect(self) -> _PooledConnection:
         """Return a persistent, concurrency-safe SQLite WAL connection for `self.db_path`."""
+        evicted: list[tuple[Path, Optional[_PooledConnection], Optional[str]]] = []
         with _CACHE_LOCK:
             if not self.create and not self.db_path.exists():
                 raise NamespaceNotFoundError(f"Namespace '{self.namespace}' does not exist.")
             conn = _CONNECTION_POOL.get(self.db_path)
             if conn is not None and self.db_path.exists():
+                _CONNECTION_POOL.move_to_end(self.db_path)
+                _DB_PATH_NAMESPACES[self.db_path] = self.namespace
                 return conn
             if conn is not None:
                 conn.close_pooled()
                 _CONNECTION_POOL.pop(self.db_path, None)
+                _DB_PATH_NAMESPACES.pop(self.db_path, None)
+            if not self.db_path.exists():
+                _check_namespace_creation_limit(self.db_path.parent, self.namespace)
             ensure_secure_mesh_dir(self.db_path.parent)
             conn = sqlite3.connect(
                 self.db_path,
@@ -1448,7 +1757,28 @@ class MeshStore:
                 pass
             secure_file_permissions(self.db_path)
             _CONNECTION_POOL[self.db_path] = conn
-            return conn
+            _CONNECTION_POOL.move_to_end(self.db_path)
+            _DB_PATH_NAMESPACES[self.db_path] = self.namespace
+
+            max_pool = _get_max_pool_size()
+            while len(_CONNECTION_POOL) > max_pool:
+                victim_path: Optional[Path] = None
+                for cand_path in _CONNECTION_POOL:
+                    if cand_path != self.db_path:
+                        victim_path = cand_path
+                        break
+                if victim_path is None:
+                    break
+                victim_conn = _CONNECTION_POOL.pop(victim_path, None)
+                victim_ns = _DB_PATH_NAMESPACES.pop(victim_path, None)
+                _QUERY_WRITE_COUNTS.pop(victim_path, None)
+                dict.pop(_INITIALIZED_DBS, victim_path, None)
+                _evict_vector_cache_for_db_path(victim_path)
+                evicted.append((victim_path, victim_conn, victim_ns))
+
+        if evicted:
+            _finalize_evicted_resources(evicted)
+        return conn
 
     def _get_data_version_locked(self) -> int:
         conn = _CONNECTION_POOL.get(self.db_path)
@@ -1493,7 +1823,8 @@ class MeshStore:
           without rebuilding the matrix!
         - Fallback: if `mesh_meta` is unreadable, falls back to `stamp` and `data_version`.
         """
-        cached = _VECTOR_CACHE.get(self.db_path)
+        key = (self.db_path, self.namespace)
+        cached = _VECTOR_CACHE.get(key)
         if cached is None:
             return None
         stamp = _get_db_stamp(self.db_path)
@@ -1501,6 +1832,9 @@ class MeshStore:
             return None
         dv = self._get_data_version_locked()
         if cached.stamp == stamp and (dv == 0 or cached.data_version == 0 or dv == cached.data_version):
+            _VECTOR_CACHE.move_to_end(key)
+            if self.db_path in _CONNECTION_POOL:
+                _CONNECTION_POOL.move_to_end(self.db_path)
             return cached
 
         # Stamp or data_version changed — check content_version in mesh_meta
@@ -1516,6 +1850,9 @@ class MeshStore:
                 if db_count == len(cached.all_ids):
                     cached.update_stamp(stamp, data_version=dv, content_version=cv)
                     _INITIALIZED_DBS[self.db_path] = stamp
+                    _VECTOR_CACHE.move_to_end(key)
+                    if self.db_path in _CONNECTION_POOL:
+                        _CONNECTION_POOL.move_to_end(self.db_path)
                     return cached
         except Exception:
             pass
@@ -1533,7 +1870,7 @@ class MeshStore:
         stamp = _get_db_stamp(self.db_path)
         if stamp is None:
             _INITIALIZED_DBS.pop(self.db_path, None)
-            _VECTOR_CACHE.pop(self.db_path, None)
+            _evict_vector_cache_for_db_path(self.db_path)
             return
         _INITIALIZED_DBS[self.db_path] = stamp
         if synced_cache is not None:
@@ -1547,7 +1884,14 @@ class MeshStore:
             raise NamespaceNotFoundError(f"Namespace '{self.namespace}' does not exist.")
         with _CACHE_LOCK:
             stamp = _get_db_stamp(self.db_path)
-            if stamp is not None and stamp[1] > 0 and _INITIALIZED_DBS.get(self.db_path) == stamp:
+            if (
+                stamp is not None
+                and stamp[1] > 0
+                and _INITIALIZED_DBS.get(self.db_path) == stamp
+                and not self._fts_dirty
+            ):
+                if self.db_path in _CONNECTION_POOL:
+                    _CONNECTION_POOL.move_to_end(self.db_path)
                 return
             self._init_db()
             new_stamp = _get_db_stamp(self.db_path)
@@ -1556,6 +1900,8 @@ class MeshStore:
 
     def _init_db(self) -> None:
         mem_count = 0
+        total_table_mem_count = 0
+        evicted: list[tuple[Path, Optional[_PooledConnection], Optional[str]]] = []
         with _CACHE_LOCK:
             with self._connect() as conn:
                 conn.execute("PRAGMA journal_mode=WAL")
@@ -1666,6 +2012,9 @@ class MeshStore:
                         "SELECT COUNT(*) FROM memories WHERE namespace = ?", (self.namespace,)
                     ).fetchone()[0]
                 )
+                total_table_mem_count = int(
+                    conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+                )
 
                 # Full-Text Search (FTS5) table synchronized with `memories.rowid` for O(log N) deletes
                 try:
@@ -1681,7 +2030,7 @@ class MeshStore:
                         )
                         """
                     )
-                    if mem_count > 0:
+                    if total_table_mem_count > 0:
                         fts_count = int(conn.execute("SELECT COUNT(*) FROM memories_fts").fetchone()[0])
                         misaligned = conn.execute(
                             """
@@ -1691,7 +2040,7 @@ class MeshStore:
                             LIMIT 1
                             """
                         ).fetchone()
-                        if fts_count != mem_count or misaligned is not None:
+                        if fts_count != total_table_mem_count or misaligned is not None:
                             conn.execute("DELETE FROM memories_fts")
                             conn.execute(
                                 """
@@ -1699,17 +2048,26 @@ class MeshStore:
                                 SELECT rowid, id, content, tags, memory_type, source_agent FROM memories
                                 """
                             )
-                except sqlite3.OperationalError:
-                    self._fts_enabled = False
+                    self._fts_enabled = True
+                    self._fts_dirty = False
+                except sqlite3.OperationalError as exc:
+                    if _is_permanent_fts_error(exc):
+                        self._fts_enabled = False
+                    else:
+                        # Transient (busy/locked). Keep FTS enabled and retry the
+                        # full reconciliation on the next initialization.
+                        self._fts_dirty = True
+                    logger.warning("FTS5 synchronization deferred for %s: %s", self.db_path, exc)
 
                 if conn.in_transaction:
                     conn.commit()
             secure_file_permissions(self.db_path)
 
-            if mem_count == 0 and self.db_path not in _VECTOR_CACHE:
+            if mem_count == 0 and (self.db_path, self.namespace) not in _VECTOR_CACHE:
                 stamp = _get_db_stamp(self.db_path)
                 if stamp is not None:
-                    _VECTOR_CACHE[self.db_path] = _VectorCacheEntry(
+                    key = (self.db_path, self.namespace)
+                    _VECTOR_CACHE[key] = _VectorCacheEntry(
                         stamp=stamp,
                         ids=[],
                         matrix=None,
@@ -1719,13 +2077,45 @@ class MeshStore:
                         content_version=self._read_content_version_locked() or 1,
                         needs_healing_ids=set(),
                     )
+                    _VECTOR_CACHE.move_to_end(key)
                     # Do not count initial empty schema creation as a matrix rebuild
                     global _CACHE_REBUILD_COUNT
                     _CACHE_REBUILD_COUNT = max(0, _CACHE_REBUILD_COUNT - 1)
                     _VectorCacheEntry.build_count = max(0, _VectorCacheEntry.build_count - 1)
+                    evicted.extend(self._trim_vector_cache_locked())
 
             if mem_count > 0:
                 self._migrate_from_chroma_if_needed()
+
+        if evicted:
+            _finalize_evicted_resources(evicted)
+
+    def _trim_vector_cache_locked(
+        self,
+    ) -> list[tuple[Path, Optional[_PooledConnection], Optional[str]]]:
+        """Evict least-recently-used `_VECTOR_CACHE` entries other than `self.namespace`."""
+        evicted: list[tuple[Path, Optional[_PooledConnection], Optional[str]]] = []
+        max_vec = _get_max_vector_cache_size()
+        active_key = (self.db_path, self.namespace)
+        while len(_VECTOR_CACHE) > max_vec:
+            victim_key: Optional[tuple[Path, str]] = None
+            for cand_key in _VECTOR_CACHE:
+                if cand_key != active_key and cand_key[1] != self.namespace:
+                    victim_key = cand_key
+                    break
+            if victim_key is None:
+                break
+            _VECTOR_CACHE.pop(victim_key, None)
+            v_path, v_ns = victim_key
+            still_used = any(k[0] == v_path for k in _VECTOR_CACHE)
+            v_conn: Optional[_PooledConnection] = None
+            if not still_used and v_path != self.db_path:
+                v_conn = _CONNECTION_POOL.pop(v_path, None)
+                _DB_PATH_NAMESPACES.pop(v_path, None)
+                _QUERY_WRITE_COUNTS.pop(v_path, None)
+                dict.pop(_INITIALIZED_DBS, v_path, None)
+            evicted.append((v_path, v_conn, v_ns))
+        return evicted
 
     def _migrate_from_chroma_if_needed(self) -> None:
         """
@@ -1806,8 +2196,14 @@ class MeshStore:
                     "INSERT INTO memories_fts (id, content, tags, memory_type, source_agent) VALUES (?, ?, ?, ?, ?)",
                     (memory_id, content, tags, memory_type, source_agent),
                 )
-        except sqlite3.OperationalError:
-            pass
+        except sqlite3.OperationalError as exc:
+            # A lock/busy error must not permanently disable lexical search for
+            # this store; mark the index dirty so `_ensure_initialized` rebuilds
+            # it. Only structural failures (missing module/table) disable FTS.
+            if _is_permanent_fts_error(exc):
+                self._fts_enabled = False
+            else:
+                self._fts_dirty = True
 
     def _delete_fts_row(
         self,
@@ -1822,14 +2218,17 @@ class MeshStore:
                 conn.execute("DELETE FROM memories_fts WHERE rowid = ?", (rowid,))
             else:
                 conn.execute("DELETE FROM memories_fts WHERE id = ?", (memory_id,))
-        except sqlite3.OperationalError:
-            pass
+        except sqlite3.OperationalError as exc:
+            if _is_permanent_fts_error(exc):
+                self._fts_enabled = False
+            else:
+                self._fts_dirty = True
 
     # --- In-Memory Vector & Metadata Matrix Cache ---
 
     def _invalidate_cache(self) -> None:
         with _CACHE_LOCK:
-            _VECTOR_CACHE.pop(self.db_path, None)
+            _evict_vector_cache_for_db_path(self.db_path)
             stamp = _get_db_stamp(self.db_path)
             if stamp is not None:
                 _INITIALIZED_DBS[self.db_path] = stamp
@@ -1841,6 +2240,7 @@ class MeshStore:
         Return the normalized 384-dim float32 embedding matrix, row metadata cache,
         and pre-computed lexical IDF cache for this namespace.
         """
+        evicted: list[tuple[Path, Optional[_PooledConnection], Optional[str]]] = []
         with _CACHE_LOCK:
             if not self.db_path.exists():
                 if not self.create:
@@ -1852,22 +2252,35 @@ class MeshStore:
                     _INITIALIZED_DBS[self.db_path] = synced.stamp
                     return synced
 
-            prev_cache = _VECTOR_CACHE.get(self.db_path)
+            prev_cache = _VECTOR_CACHE.get((self.db_path, self.namespace))
+
+            # Capture the disk stamp BEFORE reading content_version and rows.
+            # If another process commits a content write during the read, the
+            # cached stamp stays older than the disk, so the next access rebuilds
+            # instead of trusting a snapshot that may straddle the write.
+            # Reading content_version before the rows matters for the same
+            # reason: a write between the two then leaves the cached
+            # content_version *older* than the rows, which the slow-path check
+            # detects (`cv != cached.cv`), whereas the reverse order could pair
+            # new rows with a matching new cv and a torn snapshot would look synced.
+            stamp_before = _get_db_stamp(self.db_path)
 
             with self._connect() as conn:
                 conn.row_factory = sqlite3.Row
                 try:
+                    cv = self._read_content_version_locked(conn)
                     rows = conn.execute(
                         f"SELECT {_MEMORY_COLUMNS}, embedding FROM memories WHERE namespace = ?",
                         (self.namespace,),
                     ).fetchall()
                 except sqlite3.OperationalError:
                     self._init_db()
+                    stamp_before = _get_db_stamp(self.db_path)
+                    cv = self._read_content_version_locked(conn)
                     rows = conn.execute(
                         f"SELECT {_MEMORY_COLUMNS}, embedding FROM memories WHERE namespace = ?",
                         (self.namespace,),
                     ).fetchall()
-                cv = self._read_content_version_locked(conn)
 
             ids: list[str] = []
             all_ids: set[str] = set()
@@ -1938,7 +2351,7 @@ class MeshStore:
                     ids.append(mid)
                     vecs.append(vec)
 
-            stamp = _get_db_stamp(self.db_path) or (0, 0, 0, 0)
+            stamp = stamp_before or (0, 0, 0, 0)
             dv = self._get_data_version_locked()
             matrix = np.ascontiguousarray(np.vstack(vecs), dtype=np.float32) if vecs else None
             entry = _VectorCacheEntry(
@@ -1952,9 +2365,15 @@ class MeshStore:
                 needs_healing_ids=needs_healing_ids,
                 reused_lexical=reused_lexical,
             )
-            _VECTOR_CACHE[self.db_path] = entry
+            key = (self.db_path, self.namespace)
+            _VECTOR_CACHE[key] = entry
+            _VECTOR_CACHE.move_to_end(key)
             _INITIALIZED_DBS[self.db_path] = stamp
-            return entry
+            evicted = self._trim_vector_cache_locked()
+
+        if evicted:
+            _finalize_evicted_resources(evicted)
+        return entry
 
     # --- Core Memory CRUD Operations ---
 
@@ -2024,6 +2443,7 @@ class MeshStore:
             with _CACHE_LOCK:
                 synced_cache = self._is_cache_synced_locked()
                 new_cv: Optional[int] = None
+                audit_scrub_old_content: Optional[str] = None
                 with self._connect() as conn:
                     conn.execute("BEGIN IMMEDIATE")
                     try:
@@ -2081,6 +2501,10 @@ class MeshStore:
                                     REDACTED_CONTENT_PLACEHOLDER if local_flag else content,
                                 )
                                 _scrub_queries_in_tx(conn, self.namespace, old_content)
+                                _scrub_pending_query_telemetry(self.namespace, old_content)
+                                # The audit database is separate, so scrub it
+                                # after this transaction commits (see below).
+                                audit_scrub_old_content = old_content
                         new_cv = self._bump_content_version_in_tx(conn)
                         conn.commit()
                     except Exception:
@@ -2094,6 +2518,17 @@ class MeshStore:
                     self._refresh_stamps_after_write_locked(synced_cache, content_version=new_cv)
                 else:
                     self._invalidate_cache()
+
+        # `upsert` overwrites content exactly like `update`, so it must scrub the
+        # replaced text from the audit database too. The audit DB lives in a
+        # separate SQLite file, hence outside the memory transaction above.
+        if audit_scrub_old_content is not None:
+            scrub_memory_update_from_audit(
+                namespace=self.namespace,
+                memory_id=memory_id,
+                old_content=audit_scrub_old_content,
+                local_only=bool(local_flag),
+            )
 
     def upsert_batch(
         self,
@@ -2114,6 +2549,7 @@ class MeshStore:
                 in_place_ok = synced_cache is not None
                 pending_vectors: list[tuple[str, Optional[np.ndarray], dict[str, Any]]] = []
                 new_cv: Optional[int] = None
+                audit_scrubs: list[tuple[str, str, bool]] = []
                 with self._connect() as conn:
                     conn.execute("BEGIN IMMEDIATE")
                     try:
@@ -2199,6 +2635,8 @@ class MeshStore:
                                         REDACTED_CONTENT_PLACEHOLDER if local_flag else content,
                                     )
                                     _scrub_queries_in_tx(conn, self.namespace, old_content)
+                                    _scrub_pending_query_telemetry(self.namespace, old_content)
+                                    audit_scrubs.append((memory_id, old_content, bool(local_flag)))
                             if in_place_ok and synced_cache is not None:
                                 row_meta = {
                                     "id": memory_id,
@@ -2235,6 +2673,14 @@ class MeshStore:
                     self._refresh_stamps_after_write_locked(synced_cache, content_version=new_cv)
                 else:
                     self._invalidate_cache()
+
+        for scrubbed_id, scrubbed_old_content, scrubbed_local in audit_scrubs:
+            scrub_memory_update_from_audit(
+                namespace=self.namespace,
+                memory_id=scrubbed_id,
+                old_content=scrubbed_old_content,
+                local_only=scrubbed_local,
+            )
 
     def resolve_id_prefix(self, prefix: str) -> Optional[str]:
         """
@@ -2486,6 +2932,7 @@ class MeshStore:
                                 conn, self.namespace, memory_id, replacement_text
                             )
                             _scrub_queries_in_tx(conn, self.namespace, old_content)
+                            _scrub_pending_query_telemetry(self.namespace, old_content)
                         new_cv = self._bump_content_version_in_tx(conn)
                         conn.commit()
                     except Exception:
@@ -2556,15 +3003,13 @@ class MeshStore:
         if not self.db_path.exists():
             return {"documents": [[]], "distances": [[]], "metadatas": [[]], "ids": [[]]}
         cache = self._get_vector_cache()
-        ids_snap, mat, rows_snap = cache.snapshot(copy_matrix=False)
-        if mat is None or len(ids_snap) == 0 or n <= 0:
+        if n <= 0:
             return {"documents": [[]], "distances": [[]], "metadatas": [[]], "ids": [[]]}
 
         q_vec = _normalize_vector(embedding, enforce_dim=False)
-        if q_vec.shape[0] != mat.shape[1]:
+        ids_snap, sims, rows_snap = cache.similarity_snapshot(q_vec)
+        if sims is None or len(ids_snap) == 0:
             return {"documents": [[]], "distances": [[]], "metadatas": [[]], "ids": [[]]}
-
-        sims = mat @ q_vec
         if query_embedding_model is not None:
             valid_indices = [
                 idx
@@ -2619,7 +3064,7 @@ class MeshStore:
                     "ttl_days": row["ttl_days"],
                     "decay_start_at": row["decay_start_at"],
                     "local_only": 1 if row.get("local_only") else 0,
-                    "embedding_model": row.get("embedding_model", "onnx-minilm-l6-v2"),
+                    "embedding_model": row["embedding_model"],
                 }
             )
 
@@ -2879,23 +3324,23 @@ class MeshStore:
           4. Lexical Grounding Floor (`0.78 * exact_stem_cov`, exact/stem only) + Zero-Overlap Noise Suppression Gate.
           5. Match-reason tagging & snippet generation.
         """
-        if not self.db_path.exists():
+        if not self.db_path.exists() or n <= 0:
             return []
         self._maybe_lazy_flush_telemetry()
+        q_vec = _normalize_vector(embedding, enforce_dim=False)
         cache = self._get_vector_cache()
         with _CACHE_LOCK:
             ids_snap = list(cache.ids)
             mat = cache.matrix
+            if mat is None or len(ids_snap) == 0 or q_vec.ndim != 1 or q_vec.shape[0] != mat.shape[1]:
+                return []
+            # Compute similarity vector inside `_CACHE_LOCK` so concurrent
+            # in-place `delete_vector` / `upsert_vector` mutations on `_matrix_buf`
+            # never race with the matmul after the lock is released.
+            sims = mat @ q_vec
             rows_snap = dict(cache.rows_by_id)
             lex_snap = dict(cache.lexical_by_id)
             stem_df_snap = dict(cache.stem_df)
-
-        if mat is None or len(ids_snap) == 0 or n <= 0:
-            return []
-
-        q_vec = _normalize_vector(embedding, enforce_dim=False)
-        if q_vec.shape[0] != mat.shape[1]:
-            return []
 
         type_filter = memory_type.strip().lower() if memory_type else None
         filter_tags = {t.strip().lower() for t in (tags or []) if t.strip()}
@@ -2931,7 +3376,6 @@ class MeshStore:
         if not masked_indices:
             return []
 
-        sims = mat @ q_vec
         lexical_map = self._fts_lexical_scores(query_text, limit=max(len(masked_indices), 50))
 
         norm_q = _clean_possessives(query_text)
@@ -3176,9 +3620,11 @@ class MeshStore:
         include_private: bool = True,
         include_stale: bool = True,
         min_confidence: float = 0.0,
+        order_by: str = "accessed",
     ) -> list[dict[str, Any]]:
         """
-        Return memories in the namespace sorted by `accessed_at DESC`.
+        Return memories in the namespace sorted by `accessed_at DESC` (or by
+        effective confidence when `order_by="confidence"`).
         Flushes buffered telemetry and reads exact `access_count`/`accessed_at` from SQLite (Phase 2.3A).
         """
         if not self.db_path.exists() or limit <= 0:
@@ -3235,10 +3681,23 @@ class MeshStore:
                 row_copy["access_count"], row_copy["accessed_at"] = fresh_counts[mid]
             filtered.append(row_copy)
 
-        filtered.sort(
-            key=lambda r: (str(r.get("accessed_at") or ""), str(r.get("created_at") or "")),
-            reverse=True,
-        )
+        if order_by == "confidence":
+            # Sort *before* applying the limit. Callers that want the most
+            # confident memories cannot pre-truncate by access time and then
+            # re-sort, which only considered an arbitrary top-N slice.
+            filtered.sort(
+                key=lambda r: (
+                    _compute_row_effective_confidence(r, now=now)[0],
+                    int(r.get("access_count") or 0),
+                    str(r.get("created_at") or ""),
+                ),
+                reverse=True,
+            )
+        else:
+            filtered.sort(
+                key=lambda r: (str(r.get("accessed_at") or ""), str(r.get("created_at") or "")),
+                reverse=True,
+            )
         return filtered[:limit]
 
     def get_exportable_memories(self, include_embeddings: bool = True) -> list[dict[str, Any]]:
@@ -3324,6 +3783,7 @@ class MeshStore:
                             )
                             if purged_content and purged_content.strip():
                                 _scrub_queries_in_tx(conn, self.namespace, purged_content)
+                                _scrub_pending_query_telemetry(self.namespace, purged_content)
                             new_cv = self._bump_content_version_in_tx(conn)
                         conn.commit()
                     except Exception:
@@ -3360,22 +3820,98 @@ class MeshStore:
         with _CACHE_LOCK:
             return len(cache.all_ids)
 
+    def count_matching(
+        self,
+        memory_type: Optional[str] = None,
+        tag: Optional[str] = None,
+        tags: Optional[list[str]] = None,
+        include_private: bool = True,
+        source_agent: Optional[str] = None,
+    ) -> int:
+        """
+        Compute the number of matching memories via a SQL `SELECT COUNT(*)` with the same
+        WHERE filters as `list_all()` (including `local_only = 0` unless `include_private=True`),
+        without fetching all rows.
+        """
+        if not self.db_path.exists():
+            return 0
+        self._maybe_lazy_flush_telemetry()
+        clauses: list[str] = ["namespace = ?"]
+        params: list[Any] = [self.namespace]
+
+        if not include_private:
+            clauses.append("COALESCE(local_only, 0) = 0")
+        if memory_type and str(memory_type).strip():
+            clauses.append("LOWER(memory_type) = ?")
+            params.append(str(memory_type).strip().lower())
+        if source_agent and str(source_agent).strip():
+            clauses.append("source_agent = ?")
+            params.append(str(source_agent).strip())
+
+        req_tags: list[str] = []
+        if tag and str(tag).strip():
+            req_tags.append(str(tag).strip().lower())
+        if tags:
+            for t in tags:
+                if str(t).strip():
+                    t_clean = str(t).strip().lower()
+                    if t_clean not in req_tags:
+                        req_tags.append(t_clean)
+
+        with _CACHE_LOCK:
+            with self._connect() as conn:
+                if req_tags:
+                    json_clauses = list(clauses)
+                    json_params = list(params)
+                    for req_tag in req_tags:
+                        json_clauses.append(
+                            "EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(memories.tags) "
+                            "THEN memories.tags ELSE '[]' END) WHERE LOWER(CAST(value AS TEXT)) = ?)"
+                        )
+                        json_params.append(req_tag)
+                    try:
+                        sql = f"SELECT COUNT(*) FROM memories WHERE {' AND '.join(json_clauses)}"
+                        row = conn.execute(sql, tuple(json_params)).fetchone()
+                        return int(row[0] or 0) if row is not None else 0
+                    except sqlite3.OperationalError:
+                        like_clauses = list(clauses)
+                        like_params = list(params)
+                        for req_tag in req_tags:
+                            like_clauses.append("LOWER(tags) LIKE ?")
+                            like_params.append(f'%"{req_tag}"%')
+                        sql = f"SELECT COUNT(*) FROM memories WHERE {' AND '.join(like_clauses)}"
+                        row = conn.execute(sql, tuple(like_params)).fetchone()
+                        return int(row[0] or 0) if row is not None else 0
+
+                sql = f"SELECT COUNT(*) FROM memories WHERE {' AND '.join(clauses)}"
+                row = conn.execute(sql, tuple(params)).fetchone()
+                return int(row[0] or 0) if row is not None else 0
+
     def clear_namespace(self) -> None:
         """Delete all memories, FTS entries, queries, and contradictions in this namespace."""
         if not self.db_path.exists():
             return
         self.flush_telemetry()
         with namespace_write_lock(self.namespace):
+            with _TELEMETRY_LOCK:
+                resolved = self.db_path.resolve()
+                buf = _TELEMETRY_BUFFERS.get(resolved)
+                if buf is not None and buf.namespace == self.namespace:
+                    _TELEMETRY_BUFFERS.pop(resolved, None)
             with _CACHE_LOCK:
                 with self._connect() as conn:
                     conn.execute("BEGIN IMMEDIATE")
                     try:
-                        conn.execute("DELETE FROM memories WHERE namespace = ?", (self.namespace,))
                         if self._fts_enabled:
                             try:
-                                conn.execute("DELETE FROM memories_fts")
+                                conn.execute(
+                                    "DELETE FROM memories_fts WHERE rowid IN "
+                                    "(SELECT rowid FROM memories WHERE namespace = ?)",
+                                    (self.namespace,),
+                                )
                             except sqlite3.OperationalError:
                                 pass
+                        conn.execute("DELETE FROM memories WHERE namespace = ?", (self.namespace,))
                         conn.execute("DELETE FROM queries WHERE namespace = ?", (self.namespace,))
                         conn.execute("DELETE FROM contradictions WHERE namespace = ?", (self.namespace,))
                         self._bump_content_version_in_tx(conn)
@@ -3477,7 +4013,7 @@ class MeshStore:
         resolved = self.db_path.resolve()
 
         with _CACHE_LOCK:
-            cached = _VECTOR_CACHE.get(self.db_path)
+            cached = _VECTOR_CACHE.get((self.db_path, self.namespace))
             if cached is not None:
                 for mid in valid_ids:
                     rm = cached.rows_by_id.get(mid)
@@ -3488,9 +4024,15 @@ class MeshStore:
                             "accessed_at": now,
                         }
 
+        overflow_path: Optional[Path] = None
         with _TELEMETRY_LOCK:
             buf = _TELEMETRY_BUFFERS.get(resolved)
             if buf is None:
+                if len(_TELEMETRY_BUFFERS) >= _get_max_pool_size():
+                    for cand_p in _TELEMETRY_BUFFERS:
+                        if cand_p != resolved:
+                            overflow_path = cand_p
+                            break
                 buf = _TelemetryBuffer(resolved, self.namespace)
                 _TELEMETRY_BUFFERS[resolved] = buf
             if buf.event_count == 0:
@@ -3513,6 +4055,11 @@ class MeshStore:
                     )
                 )
 
+        if overflow_path is not None:
+            try:
+                _flush_telemetry_for_db_path(overflow_path)
+            except Exception:
+                pass
         self._maybe_lazy_flush_telemetry()
 
     def log_contradiction(

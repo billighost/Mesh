@@ -36,6 +36,7 @@ from xml.sax.saxutils import escape as xml_escape
 
 from .audit import ensure_secure_mesh_dir, get_mesh_dir, secure_file_permissions
 from .envutil import env_float, env_int
+from .store import _acquire_os_file_lock, _release_os_file_lock
 
 
 def _pid_file() -> Path:
@@ -140,11 +141,65 @@ def _open_private_log_append(path: Path) -> Any:
     return os.fdopen(fd, "a", encoding="utf-8")
 
 
+def _read_valid_token_file(token_file: Path) -> Optional[str]:
+    """Read and return the token from `token_file` if it exists and is at least 16 chars."""
+    if not token_file.exists():
+        return None
+    try:
+        secure_file_permissions(token_file)
+        existing = token_file.read_text(encoding="utf-8").strip()
+        if len(existing) >= 16:
+            return existing
+    except OSError:
+        pass
+    return None
+
+
+def _try_atomic_create_token_file(token_file: Path, token: str) -> bool:
+    """
+    Attempt to create `token_file` atomically with `O_CREAT | O_EXCL` (mode 0600).
+    Returns True if this call created the file, or False if the file already exists.
+    """
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    mode = stat.S_IRUSR | stat.S_IWUSR if os.name != "nt" else 0o600
+    try:
+        fd = os.open(str(token_file), flags, mode)
+    except FileExistsError:
+        return False
+    except OSError:
+        if token_file.exists():
+            return False
+        raise
+    try:
+        if os.name != "nt":
+            try:
+                os.fchmod(fd, stat.S_IRUSR | stat.S_IWUSR)
+            except (AttributeError, OSError):
+                pass
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(token)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except OSError:
+                pass
+        secure_file_permissions(token_file)
+        return True
+    except Exception:
+        try:
+            token_file.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
 def get_or_create_auth_token() -> str:
     """
     Return the local Mesh authentication token stored in `~/.mesh/auth_token` (mode 0600).
     Supports `MESH_AUTH_TOKEN` (and `MESH_TOKEN` alias) environment variable override.
-    Generates a new 256-bit token if none exists yet.
+    Uses atomic `O_CREAT | O_EXCL` creation across all platforms and a cross-process
+    lock when repairing a corrupt/short token file so concurrent callers never overwrite
+    a valid token (Observation D).
     """
     global _CACHED_TOKEN, _CACHED_TOKEN_PATH
     env_tok = (os.environ.get("MESH_AUTH_TOKEN") or os.environ.get("MESH_TOKEN") or "").strip()
@@ -159,61 +214,76 @@ def get_or_create_auth_token() -> str:
         if _CACHED_TOKEN and _CACHED_TOKEN_PATH == token_file and token_file.exists():
             return _CACHED_TOKEN
         ensure_secure_mesh_dir(token_file.parent)
-        if token_file.exists():
-            try:
-                secure_file_permissions(token_file)
-                existing = token_file.read_text(encoding="utf-8").strip()
-                if len(existing) >= 16:
-                    _CACHED_TOKEN = existing
-                    _CACHED_TOKEN_PATH = token_file
-                    return existing
-            except OSError:
-                pass
+
+        existing = _read_valid_token_file(token_file)
+        if existing is not None:
+            _CACHED_TOKEN = existing
+            _CACHED_TOKEN_PATH = token_file
+            return existing
 
         token = secrets.token_urlsafe(32)
-        if os.name != "nt":
-            try:
-                fd = os.open(
-                    str(token_file),
-                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-                    stat.S_IRUSR | stat.S_IWUSR,
-                )
-                try:
-                    os.fchmod(fd, stat.S_IRUSR | stat.S_IWUSR)
-                except (AttributeError, OSError):
-                    pass
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    f.write(token)
-                secure_file_permissions(token_file)
+        try:
+            if _try_atomic_create_token_file(token_file, token):
                 _CACHED_TOKEN = token
                 _CACHED_TOKEN_PATH = token_file
                 return token
-            except FileExistsError:
-                try:
-                    secure_file_permissions(token_file)
-                    existing = token_file.read_text(encoding="utf-8").strip()
-                    if len(existing) >= 16:
-                        _CACHED_TOKEN = existing
-                        _CACHED_TOKEN_PATH = token_file
-                        return existing
-                except OSError:
-                    pass
-            except OSError:
-                pass
-        else:
+        except OSError:
+            pass
+
+        # Another process/thread created the file or a pre-existing file is present.
+        # Wait briefly in case the winner just opened the file and is flushing bytes.
+        for attempt in range(6):
+            existing = _read_valid_token_file(token_file)
+            if existing is not None:
+                _CACHED_TOKEN = existing
+                _CACHED_TOKEN_PATH = token_file
+                return existing
+            if attempt < 5:
+                time.sleep(0.005 * (attempt + 1))
+
+        # The file on disk is genuinely corrupt/empty/short. Serialize repair across
+        # processes with an advisory lock and re-check before replacing so only one
+        # process repairs the file and later arrivals read the winner's token.
+        repair_lock_path = token_file.with_name(".auth_token.lock")
+        lock_fd: Optional[int] = None
+        try:
+            lock_fd = _acquire_os_file_lock(repair_lock_path, timeout=5.0)
+            existing = _read_valid_token_file(token_file)
+            if existing is not None:
+                _CACHED_TOKEN = existing
+                _CACHED_TOKEN_PATH = token_file
+                return existing
+
             try:
-                _write_private_file(token_file, token)
+                token_file.unlink(missing_ok=True)
             except OSError:
                 pass
-            if token_file.exists():
-                try:
-                    existing = token_file.read_text(encoding="utf-8").strip()
-                    if len(existing) >= 16:
-                        _CACHED_TOKEN = existing
-                        _CACHED_TOKEN_PATH = token_file
-                        return existing
-                except OSError:
-                    pass
+
+            try:
+                if _try_atomic_create_token_file(token_file, token):
+                    _CACHED_TOKEN = token
+                    _CACHED_TOKEN_PATH = token_file
+                    return token
+            except OSError:
+                pass
+
+            existing = _read_valid_token_file(token_file)
+            if existing is not None:
+                _CACHED_TOKEN = existing
+                _CACHED_TOKEN_PATH = token_file
+                return existing
+
+            _write_private_file(token_file, token)
+            persisted = _read_valid_token_file(token_file)
+            if persisted is not None:
+                token = persisted
+        except OSError:
+            persisted = _read_valid_token_file(token_file)
+            if persisted is not None:
+                token = persisted
+        finally:
+            if lock_fd is not None:
+                _release_os_file_lock(lock_fd)
 
         _CACHED_TOKEN = token
         _CACHED_TOKEN_PATH = token_file
@@ -633,7 +703,13 @@ def start_daemon(
     interactive_prompt: bool = False,
     assume_yes: bool = False,
 ) -> dict[str, Any]:
-    """Start the Mesh background HTTP daemon if not already running and verified."""
+    """
+    Start the Mesh background HTTP daemon if not already running and verified.
+    Only removes or overwrites `daemon.pid` when the process is confirmed dead
+    (`poll() is not None` or stale PID file). On identity-verification timeout while
+    the child process is still alive, leaves `daemon.pid` intact and returns a
+    retryable status instead of spawning duplicate daemons (Observation C).
+    """
     existing_ident = verify_daemon_identity(
         host=host,
         port=port,
@@ -651,6 +727,43 @@ def start_daemon(
             "port": port,
             "health": existing_ident,
         }
+
+    # Check if an existing PID file belongs to a live Mesh daemon that is still starting up.
+    existing_pid = _read_pid_file()
+    if existing_pid is not None:
+        if _is_pid_alive(existing_pid) and _is_mesh_daemon_process(existing_pid):
+            if wait:
+                for i in range(40):
+                    if not _is_pid_alive(existing_pid):
+                        break
+                    time.sleep(0.04 if i < 10 else 0.12)
+                    verified_existing = verify_daemon_identity(host=host, port=port, timeout=0.35)
+                    if verified_existing is not None:
+                        return {
+                            "running": True,
+                            "already_running": True,
+                            "pid": existing_pid,
+                            "host": host,
+                            "port": port,
+                            "health": verified_existing,
+                        }
+            if _is_pid_alive(existing_pid):
+                return {
+                    "running": False,
+                    "already_running": False,
+                    "spawning": True,
+                    "retryable": True,
+                    "pid": existing_pid,
+                    "host": host,
+                    "port": port,
+                    "health": None,
+                    "error": (
+                        f"Mesh daemon (PID {existing_pid}) is still starting up; "
+                        "identity verification timed out. Retry shortly."
+                    ),
+                }
+        # Existing PID file demonstrably belongs to a dead or non-Mesh process.
+        _remove_pid_file()
 
     if interactive_prompt and not request_user_permission(
         f"start the background Mesh HTTP daemon on {host}:{port}",
@@ -713,11 +826,14 @@ def start_daemon(
     finally:
         log_handle.close()
 
-    _write_pid_file(proc.pid)
+    if proc.poll() is None:
+        _write_pid_file(proc.pid)
 
     if not wait:
         time.sleep(0.05)
         alive = proc.poll() is None
+        if not alive and _read_pid_file() == proc.pid:
+            _remove_pid_file()
         return {
             "running": alive,
             "already_running": False,
@@ -737,16 +853,49 @@ def start_daemon(
         if verified is not None:
             break
 
-    if verified is None:
-        _remove_pid_file()
+    if verified is not None:
+        _write_pid_file(proc.pid)
+        return {
+            "running": True,
+            "already_running": False,
+            "pid": proc.pid,
+            "host": host,
+            "port": port,
+            "health": verified,
+        }
+
+    # Verification did not complete within the wait window. Only remove the PID file
+    # if the spawned process has actually exited; if it is still alive, leave state
+    # intact and report a retryable error.
+    proc_dead = proc.poll() is not None
+    if proc_dead:
+        if _read_pid_file() == proc.pid:
+            _remove_pid_file()
+        return {
+            "running": False,
+            "already_running": False,
+            "spawning": False,
+            "retryable": False,
+            "pid": None,
+            "host": host,
+            "port": port,
+            "health": None,
+            "error": "Daemon process exited before completing startup.",
+        }
 
     return {
-        "running": verified is not None,
+        "running": False,
         "already_running": False,
-        "pid": proc.pid if verified is not None else None,
+        "spawning": True,
+        "retryable": True,
+        "pid": proc.pid,
         "host": host,
         "port": port,
-        "health": verified,
+        "health": None,
+        "error": (
+            f"Daemon process (PID {proc.pid}) is still starting up after identity verification timeout; "
+            "retry shortly."
+        ),
     }
 
 
@@ -1013,7 +1162,7 @@ def daemon_cmd() -> None:
             "download the ONNX embedding model in the background",
             assume_yes=args.yes,
         ):
-            ensure_model_downloaded(blocking=False, assume_yes=True)
+            ensure_model_downloaded(blocking=False, assume_yes=True, detached=True)
         res = start_daemon(
             host=args.host,
             port=args.port,
