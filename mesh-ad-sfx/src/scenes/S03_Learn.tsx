@@ -71,9 +71,9 @@ export default function S03_Learn() {
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          gap: 60,
-          padding: "0 80px",
-          paddingTop: 60,
+          gap: 50,
+          padding: "0 60px",
+          paddingTop: 40,
         }}
       >
         {/* Left: terminal */}
@@ -88,7 +88,7 @@ export default function S03_Learn() {
             title="mesh / checkout-service"
             lines={codeLines}
             startFrame={30}
-            width={560}
+            width={840}
             speed={0.7}
           />
         </div>
@@ -110,14 +110,15 @@ export default function S03_Learn() {
               transform: `scale(${markScale})`,
               display: "flex",
               alignItems: "center",
-              gap: 10,
+              gap: 12,
               fontFamily: fonts.mono,
-              fontSize: 13,
+              fontSize: 20,
+              fontWeight: 600,
               color: colors.accent,
               letterSpacing: "0.06em",
             }}
           >
-            <svg width="24" height="24" viewBox="0 0 64 64" fill="none"
+            <svg width="32" height="32" viewBox="0 0 64 64" fill="none"
               stroke={colors.accent} strokeWidth="4.5" strokeLinecap="round">
               <path d="M27.6 21.1 L16.4 41.9" />
               <path d="M36.4 21.1 L47.6 41.9" />
@@ -140,7 +141,7 @@ export default function S03_Learn() {
             ]}
             entranceFrame={cardFrame}
             slideFrom="bottom"
-            width={400}
+            width={640}
           />
         </div>
       </AbsoluteFill>

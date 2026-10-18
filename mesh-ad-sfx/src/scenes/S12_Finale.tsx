@@ -6,7 +6,7 @@ import {
   useCurrentFrame,
   useVideoConfig,
 } from "remotion";
-import { colors, fonts } from "../lib/tokens";
+import { colors, fonts, radius } from "../lib/tokens";
 import MeshMark from "../components/MeshMark";
 import AgentChip from "../components/AgentChip";
 import NetworkLine from "../components/NetworkLine";
@@ -14,10 +14,10 @@ import GridField from "../components/GridField";
 import { useTypewriterLines } from "../hooks/useTypewriter";
 
 const agents = [
-  { name: "backend-agent",  x: 960,  y: 260 },
-  { name: "frontend-agent", x: 1300, y: 480 },
-  { name: "review-agent",   x: 960,  y: 700 },
-  { name: "deploy-agent",   x: 620,  y: 480 },
+  { name: "backend-agent",  x: 960,  y: 230 },
+  { name: "frontend-agent", x: 1420, y: 480 },
+  { name: "review-agent",   x: 960,  y: 730 },
+  { name: "deploy-agent",   x: 500,  y: 480 },
 ];
 const HUB = { x: 960, y: 480 };
 
@@ -40,7 +40,7 @@ export default function S12_Finale() {
     fps,
     config: { damping: 18, stiffness: 80, mass: 1.1 },
   });
-  const markSize = interpolate(markSpring, [0, 1], [60, 200]);
+  const markSize = interpolate(markSpring, [0, 1], [60, 220]);
   const markOpacity = interpolate(markSpring, [0, 1], [0, 1]);
 
   // Background blobs pulse in
@@ -49,7 +49,6 @@ export default function S12_Finale() {
     extrapolateRight: "clamp",
   });
 
-  // Network lines draw
   // Tagline
   const line1Opacity = interpolate(frame, [160, 200], [0, 1], {
     extrapolateLeft: "clamp",
@@ -123,7 +122,7 @@ export default function S12_Finale() {
             startFrame={40 + i * 14}
             duration={20}
             color={colors.accent}
-            strokeWidth={1.5}
+            strokeWidth={2.5}
             showPacket
             packetDelay={i * 12}
           />
@@ -169,8 +168,8 @@ export default function S12_Finale() {
           key={i}
           style={{
             position: "absolute",
-            left: agent.x - 75,
-            top: agent.y - 20,
+            left: agent.x - 110,
+            top: agent.y - 24,
           }}
         >
           <AgentChip
@@ -185,7 +184,7 @@ export default function S12_Finale() {
       <div
         style={{
           position: "absolute",
-          bottom: 160,
+          bottom: 110,
           left: 0,
           right: 0,
           textAlign: "center",
@@ -194,10 +193,10 @@ export default function S12_Finale() {
         <div
           style={{
             fontFamily: fonts.display,
-            fontWeight: 600,
-            fontSize: 52,
+            fontWeight: 700,
+            fontSize: 64,
             letterSpacing: "-0.045em",
-            lineHeight: 1.05,
+            lineHeight: 1.1,
             color: colors.ink,
             opacity: line1Opacity,
             transform: `translateY(${line1Y}px)`,
@@ -208,10 +207,10 @@ export default function S12_Finale() {
         <div
           style={{
             fontFamily: fonts.display,
-            fontWeight: 600,
-            fontSize: 52,
+            fontWeight: 700,
+            fontSize: 64,
             letterSpacing: "-0.045em",
-            lineHeight: 1.05,
+            lineHeight: 1.1,
             color: colors.accent,
             opacity: line2Opacity,
             transform: `translateY(${line2Y}px)`,
@@ -226,11 +225,11 @@ export default function S12_Finale() {
         style={{
           position: "absolute",
           left: HUB.x,
-          top: HUB.y + markSize / 2 + 24,
+          top: HUB.y + markSize / 2 + 18,
           transform: "translateX(-50%)",
           fontFamily: fonts.display,
-          fontWeight: 600,
-          fontSize: 32,
+          fontWeight: 700,
+          fontSize: 44,
           letterSpacing: "-0.045em",
           color: colors.ink,
           opacity: interpolate(frame, [100, 130], [0, 1], {
@@ -252,35 +251,108 @@ export default function S12_Finale() {
         }}
       />
 
-      {/* CTA terminal */}
+      {/* CTA terminal card */}
       <AbsoluteFill
         style={{
           display: "flex",
+          flexDirection: "column",
           alignItems: "center",
           justifyContent: "center",
+          gap: 24,
           opacity: ctaOpacity,
         }}
       >
         <div
           style={{
-            fontFamily: fonts.mono,
-            fontSize: 22,
-            color: colors.terminalDim,
-            lineHeight: 1.8,
-            textAlign: "center",
+            background: colors.terminalBg,
+            border: `1px solid ${colors.line}`,
+            borderRadius: radius.sm,
+            boxShadow: "6px 6px 0px #000",
+            overflow: "hidden",
+            minWidth: 760,
           }}
         >
-          {ctaTyped.map((line, i) => {
-            const isPrompt = line.startsWith("$");
-            return (
-              <div key={i} style={{ color: isPrompt ? colors.accent : colors.muted }}>
-                {line}
-                {i === ctaTyped.length - 1 && cursorVisible && (
-                  <span style={{ color: colors.accent }}>▌</span>
-                )}
-              </div>
-            );
-          })}
+          {/* Header */}
+          <div
+            style={{
+              padding: "12px 20px",
+              background: colors.surface2,
+              borderBottom: `1px solid ${colors.terminalLine}`,
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+            }}
+          >
+            {["#4A4A4A", "#4A4A4A", "#4A4A4A"].map((c, i) => (
+              <span
+                key={i}
+                style={{
+                  width: 10,
+                  height: 10,
+                  borderRadius: "50%",
+                  background: c,
+                  display: "inline-block",
+                }}
+              />
+            ))}
+            <span
+              style={{
+                marginLeft: 8,
+                color: colors.muted,
+                fontSize: 15,
+                letterSpacing: "0.08em",
+                fontFamily: fonts.mono,
+              }}
+            >
+              quickstart
+            </span>
+          </div>
+
+          {/* Body */}
+          <div
+            style={{
+              padding: "28px 36px",
+              fontFamily: fonts.mono,
+              fontSize: 26,
+              lineHeight: 1.8,
+              background: colors.terminalBg,
+            }}
+          >
+            {ctaTyped.map((line, i) => {
+              const isPrompt = line.startsWith("$");
+              return (
+                <div key={i} style={{ color: colors.ink }}>
+                  {isPrompt ? (
+                    <>
+                      <span style={{ color: colors.accent, fontWeight: 700 }}>$ </span>
+                      <span style={{ color: colors.ink, fontWeight: 700 }}>
+                        {line.replace(/^\$\s*/, "")}
+                      </span>
+                    </>
+                  ) : (
+                    <span style={{ color: colors.muted }}>{line}</span>
+                  )}
+                  {i === ctaTyped.length - 1 && cursorVisible && (
+                    <span style={{ color: colors.accent, fontWeight: 700 }}>▌</span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Sub-label */}
+        <div
+          style={{
+            fontFamily: fonts.mono,
+            fontSize: 18,
+            fontWeight: 500,
+            letterSpacing: "0.1em",
+            textTransform: "uppercase",
+            color: colors.muted,
+          }}
+        >
+          MIT Licensed · Python 3.10+ · Local-first
         </div>
       </AbsoluteFill>
     </AbsoluteFill>

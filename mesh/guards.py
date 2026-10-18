@@ -17,8 +17,10 @@ from .passive import (
 
 # Strip control characters (C0/C1) except newline (\n) and tab (\t), plus
 # invisible zero-width / bidi formatting characters that can hide poison text.
+# Written as escapes so the source cannot be altered by editors or copy/paste.
 _CONTROL_CHAR_RE = re.compile(
-    r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f​-‏⁠﻿‪-‮⁦-⁩]"
+    "[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f"
+    "​-‏‪-‮⁠-⁤﻿⁦-⁩]"
 )
 
 
@@ -27,7 +29,10 @@ class GuardResult(NamedTuple):
     local_only: bool
     rejected: bool
     reason: Optional[str] = None
-    warnings: list[str] = []
+    # `()` rather than `[]`: a mutable default on a NamedTuple is shared by every
+    # result that omits the field, so one caller appending a warning would leak
+    # it into all future results.
+    warnings: tuple[str, ...] = ()
 
 
 def guard_ingest(content: str, local_only: bool = False) -> GuardResult:
@@ -49,17 +54,20 @@ def guard_ingest(content: str, local_only: bool = False) -> GuardResult:
             local_only=local_only,
             rejected=True,
             reason="Memory content cannot be empty or solely control characters.",
-            warnings=[],
+            warnings=(),
         )
 
-    # 1. Prompt injection / poison check
+    # 1. Prompt injection / poison check. `_is_poison_attempt()` applies NFKC
+    # normalization internally so full-width / compatibility characters cannot
+    # hide an instruction phrase from the regex while the context renderer
+    # normalizes it back into one.
     if _is_poison_attempt(sanitized):
         return GuardResult(
             content=sanitized,
             local_only=local_only,
             rejected=True,
             reason="Prompt injection or adversarial instruction pattern detected in memory content.",
-            warnings=[],
+            warnings=(),
         )
 
     # 2. Credential / secret check

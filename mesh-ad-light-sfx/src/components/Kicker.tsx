@@ -17,12 +17,12 @@ export default function Kicker({ children, opacity = 1, style }: KickerProps) {
       style={{
         display: "inline-flex",
         alignItems: "center",
-        gap: 10,
+        gap: 14,
         fontFamily: fonts.mono,
-        fontSize: 13,
-        fontWeight: 500,
+        fontSize: 22,
+        fontWeight: 600,
         textTransform: "uppercase",
-        letterSpacing: "0.13em",
+        letterSpacing: "0.12em",
         color: colors.muted,
         opacity,
         ...style,
@@ -31,8 +31,8 @@ export default function Kicker({ children, opacity = 1, style }: KickerProps) {
       {/* The lime accent dash */}
       <span
         style={{
-          width: 18,
-          height: 1,
+          width: 28,
+          height: 3,
           background: colors.accentText,
           display: "block",
           flexShrink: 0,

@@ -8,8 +8,8 @@ import { Audio, Sequence, staticFile } from "remotion";
 export default function Soundscape() {
   return (
     <>
-      {/* 1. Master ElevenLabs Voiceover Track */}
-      <Audio src={staticFile("voiceover.mp3")} volume={1.0} />
+      {/* 1. Voiceover omitted per request — user will add voiceover manually */}
+      {/* <Audio src={staticFile("voiceover.mp3")} volume={1.0} /> */}
 
       {/* 2. Low-frequency Cinematic Ambient Drone bed */}
       <Audio src={staticFile("sfx/ambient_drone.wav")} volume={0.18} />

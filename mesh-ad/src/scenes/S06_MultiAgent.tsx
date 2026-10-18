@@ -8,10 +8,10 @@ import Kicker from "../components/Kicker";
 import MeshMark from "../components/MeshMark";
 
 const agents = [
-  { name: "backend-agent",  x: 960,  y: 300,  angle: 0 },
-  { name: "frontend-agent", x: 1340, y: 480,  angle: 1 },
-  { name: "review-agent",   x: 960,  y: 660,  angle: 2 },
-  { name: "deploy-agent",   x: 580,  y: 480,  angle: 3 },
+  { name: "backend-agent",  x: 960,  y: 240,  angle: 0 },
+  { name: "frontend-agent", x: 1420, y: 480,  angle: 1 },
+  { name: "review-agent",   x: 960,  y: 720,  angle: 2 },
+  { name: "deploy-agent",   x: 500,  y: 480,  angle: 3 },
 ];
 
 // Center (Mesh hub)
@@ -78,7 +78,7 @@ export default function S06_MultiAgent() {
             startFrame={50 + i * 20}
             duration={25}
             color={colors.accent}
-            strokeWidth={1.5}
+            strokeWidth={2.5}
             showPacket
             packetDelay={i * 15}
           />
@@ -89,10 +89,10 @@ export default function S06_MultiAgent() {
       <div
         style={{
           position: "absolute",
-          left: HUB.x - 40,
-          top: HUB.y - 40,
-          width: 80,
-          height: 80,
+          left: HUB.x - 60,
+          top: HUB.y - 60,
+          width: 120,
+          height: 120,
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
@@ -100,7 +100,7 @@ export default function S06_MultiAgent() {
           transform: `scale(${hubScale})`,
         }}
       >
-        <MeshMark size={60} color={colors.accent} animate startFrame={10} />
+        <MeshMark size={96} color={colors.accent} animate startFrame={10} />
       </div>
 
       {/* Agent chips */}
@@ -109,8 +109,8 @@ export default function S06_MultiAgent() {
           key={i}
           style={{
             position: "absolute",
-            left: agent.x - 80,
-            top: agent.y - 20,
+            left: agent.x - 110,
+            top: agent.y - 24,
           }}
         >
           <AgentChip
@@ -130,16 +130,16 @@ export default function S06_MultiAgent() {
           opacity: counterOpacity,
           textAlign: "right",
           fontFamily: fonts.mono,
-          fontSize: 13,
+          fontSize: 20,
           color: colors.muted,
           letterSpacing: "0.04em",
         }}
       >
-        <span style={{ color: colors.accent, fontSize: 24, fontFamily: fonts.display, fontWeight: 600 }}>
+        <span style={{ color: colors.accent, fontSize: 36, fontFamily: fonts.display, fontWeight: 700 }}>
           1
         </span>{" "}
         memory stored →{" "}
-        <span style={{ color: colors.accent, fontSize: 24, fontFamily: fonts.display, fontWeight: 600 }}>
+        <span style={{ color: colors.accent, fontSize: 36, fontFamily: fonts.display, fontWeight: 700 }}>
           {memCount}
         </span>{" "}
         agents informed
@@ -149,7 +149,7 @@ export default function S06_MultiAgent() {
       <div
         style={{
           position: "absolute",
-          bottom: 100,
+          bottom: 90,
           left: 0,
           right: 0,
           textAlign: "center",
@@ -159,8 +159,8 @@ export default function S06_MultiAgent() {
         <span
           style={{
             fontFamily: fonts.display,
-            fontWeight: 600,
-            fontSize: 32,
+            fontWeight: 700,
+            fontSize: 40,
             letterSpacing: "-0.035em",
             color: colors.ink,
           }}
