@@ -86,7 +86,7 @@ export default function Topbar() {
         <a className="brand" href="#top" aria-label="Mesh home">
           <Mark size={22} />
           <span className="brand__word">mesh</span>
-          <span className="brand__version">v0.7.1</span>
+          <span className="brand__version">v0.7.2</span>
         </a>
 
         <nav className="nav" aria-label="Primary">

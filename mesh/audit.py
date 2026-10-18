@@ -26,7 +26,6 @@ def get_mesh_dir() -> Path:
     return Path.home() / ".mesh"
 
 
-MESH_DIR = get_mesh_dir()
 _AUDIT_LOCK = threading.RLock()
 _INITIALIZED_AUDIT_DBS: dict[Path, tuple[int, int, int, int]] = {}
 _AUDIT_CONNECTION_POOL: OrderedDict[Path, "_ManagedAuditConnection"] = OrderedDict()
@@ -368,31 +367,6 @@ def log_learn(
         logged_content = REDACTED_CONTENT_PLACEHOLDER if is_private else content
         had_conflict = 1 if result.get("conflict") else 0
         now_ts = datetime.now(timezone.utc).isoformat()
-        if mem_id and not result.get("deduplicated"):
-            db_path = _get_audit_db_path(namespace)
-            with _AUDIT_LOCK:
-                if db_path.exists() and _get_audit_db_stamp(db_path) is not None:
-                    with _connect_audit(db_path) as conn:
-                        row = conn.execute(
-                            "SELECT id, action, memory_id FROM audit_log "
-                            "WHERE namespace = ? ORDER BY id DESC LIMIT 1",
-                            (namespace,),
-                        ).fetchone()
-                        if row and row[1] == "learn" and row[2] == mem_id:
-                            conn.execute(
-                                """
-                                UPDATE audit_log
-                                SET timestamp = ?, agent_id = ?, content = ?, had_conflict = ?
-                                WHERE id = ?
-                                """,
-                                (now_ts, agent_id, logged_content, had_conflict, row[0]),
-                            )
-                            conn.commit()
-                            secure_file_permissions(db_path)
-                            new_stamp = _get_audit_db_stamp(db_path)
-                            if new_stamp is not None:
-                                _INITIALIZED_AUDIT_DBS[db_path] = new_stamp
-                            return
 
         _write_audit_entry(
             namespace=namespace,

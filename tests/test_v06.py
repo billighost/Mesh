@@ -566,8 +566,16 @@ def test_mesh_enforce_agent_ownership(monkeypatch):
         with pytest.raises(ValueError, match="not authorized"):
             mesh_bob.forget(mid)
 
-        # Human CLI and dashboard are exempt
-        mesh_cli = Mesh(namespace=ns, agent_id="human-cli")
+        # A self-declared "human-cli" agent id is not trusted: renaming yourself
+        # must never bypass ownership enforcement (the old name allowlist was a
+        # trivial privilege escalation for any local process).
+        impostor = Mesh(namespace=ns, agent_id="human-cli")
+        with pytest.raises(ValueError, match="not authorized"):
+            impostor.update(mid, content="Impostor update")
+
+        # In-process trusted callers (the real CLI and dashboard) opt in via
+        # trusted_local=True; that flag is not settable from remote input.
+        mesh_cli = Mesh(namespace=ns, agent_id="human-cli", trusted_local=True)
         up = mesh_cli.update(mid, content="Human authorized update")
         assert up["memory"]["content"] == "Human authorized update"
         assert mesh_cli.forget(mid) is True
