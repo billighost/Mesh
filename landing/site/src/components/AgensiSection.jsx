@@ -4,6 +4,7 @@ import Button from "./ui/Button";
 import SectionHeader from "./ui/SectionHeader";
 import Terminal from "./ui/Terminal";
 
+
 const agensiLines = [
   '$ memory: "staging db moved to :5439"',
   "ok  updated db-cfg-92",
