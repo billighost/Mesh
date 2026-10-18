@@ -275,7 +275,20 @@ def request_user_permission(action_desc: str, assume_yes: bool = False) -> bool:
     Prompt the user with a `y/n` question before starting a background process,
     downloading model weights, modifying shell config files, or calling external cloud APIs.
     Returns True if approved, or False in non-interactive contexts.
+
+    Non-interactive and declined prompts explain why nothing happened and how to
+    approve explicitly (`--yes`), instead of skipping silently.
     """
+    try:
+        from . import ui
+
+        return ui.confirm(
+            f"Allow Mesh to {action_desc}?",
+            assume_yes=assume_yes,
+        )
+    except Exception:
+        # ui is presentation only; permission checks must still work without it.
+        pass
     if assume_yes or os.environ.get("MESH_AUTO_APPROVE", "").strip().lower() in ("1", "true", "yes"):
         return True
     if os.environ.get("MESH_NON_INTERACTIVE", "").strip().lower() in ("1", "true", "yes"):
@@ -1026,12 +1039,14 @@ def daemon_cmd() -> None:
     parser.add_argument("--yes", "-y", action="store_true", help="Skip interactive y/n permission prompts")
     args = parser.parse_args()
 
+    from . import ui
+
     if args.action == "start":
         if not request_user_permission(
             f"start the background Mesh HTTP daemon on {args.host}:{args.port}",
             assume_yes=args.yes,
         ):
-            print("Aborted starting background daemon.")
+            ui.step("Cancelled — daemon was not started")
             return
         from .memory import _has_local_onnx_pair, ensure_model_downloaded
 
@@ -1047,30 +1062,35 @@ def daemon_cmd() -> None:
             lazy=args.lazy,
         )
         if not res.get("running"):
-            print(
-                f"[ERROR] Failed to start Mesh daemon on http://{args.host}:{args.port}. "
-                f"Check {_log_file()} for details.",
-                file=sys.stderr,
+            ui.error(
+                "Failed to start Mesh daemon",
+                f"Check the log: {_log_file()}",
             )
             sys.exit(1)
         if res.get("already_running"):
-            print(f"[OK] Mesh daemon already running on http://{args.host}:{args.port} (PID: {res['pid']})")
+            ui.info(
+                "Mesh daemon already running",
+                f"http://{args.host}:{args.port}  {ui.sym('dot')}  pid {res['pid']}",
+            )
         else:
-            print(f"[OK] Started Mesh daemon on http://{args.host}:{args.port} (PID: {res['pid']})")
+            ui.success(
+                "Started Mesh daemon",
+                f"http://{args.host}:{args.port}  {ui.sym('dot')}  pid {res['pid']}",
+            )
 
     elif args.action == "warmup":
         if not request_user_permission(
             f"download the ONNX model and start the background Mesh daemon on {args.host}:{args.port}",
             assume_yes=args.yes,
         ):
-            print("Aborted warmup.")
+            ui.step("Cancelled — nothing was changed")
             return
         from .memory import ensure_model_downloaded, warmup_model
 
-        print("[Mesh] Ensuring local ONNX embedding model is downloaded...")
+        ui.info("Ensuring the local ONNX embedding model is downloaded…")
         pair = ensure_model_downloaded(blocking=True, timeout=60.0, assume_yes=True)
         if pair:
-            print(f"[OK] ONNX model cached at {pair[0].parent}")
+            ui.success("ONNX model cached", str(pair[0].parent))
         warmup_model(assume_yes=True)
         res = start_daemon(
             host=args.host,
@@ -1079,29 +1099,34 @@ def daemon_cmd() -> None:
             lazy=False,
         )
         if not res.get("running"):
-            print(
-                f"[ERROR] Failed to start Mesh daemon on http://{args.host}:{args.port}. "
-                f"Check {_log_file()} for details.",
-                file=sys.stderr,
+            ui.error(
+                "Failed to start Mesh daemon",
+                f"Check the log: {_log_file()}",
             )
             sys.exit(1)
-        print(f"[OK] Mesh daemon warm and running on http://{args.host}:{args.port} (PID: {res['pid']})")
+        ui.success(
+            "Mesh daemon warm and running",
+            f"http://{args.host}:{args.port}  {ui.sym('dot')}  pid {res['pid']}",
+        )
 
     elif args.action == "stop":
         res = stop_daemon(host=args.host, port=args.port)
         if res["stopped"]:
-            print(f"[OK] Stopped Mesh daemon (PID: {res['pid']})")
+            ui.success("Stopped Mesh daemon", f"pid {res['pid']}")
         elif res.get("reason") == "pid_not_mesh":
-            print(f"Removed stale PID file (PID {res['pid']} is not a Mesh daemon).")
+            ui.info(
+                "Removed stale PID file",
+                f"PID {res['pid']} is not a Mesh daemon",
+            )
         else:
-            print("Mesh daemon is not running.")
+            ui.info("Mesh daemon is not running")
 
     elif args.action == "restart":
         if not request_user_permission(
             f"restart the background Mesh HTTP daemon on {args.host}:{args.port}",
             assume_yes=args.yes,
         ):
-            print("Aborted restart.")
+            ui.step("Cancelled — daemon was not restarted")
             return
         stop_daemon(host=args.host, port=args.port)
         res = start_daemon(
@@ -1111,20 +1136,22 @@ def daemon_cmd() -> None:
             lazy=args.lazy,
         )
         if not res.get("running"):
-            print(
-                f"[ERROR] Failed to restart Mesh daemon on http://{args.host}:{args.port}. "
-                f"Check {_log_file()} for details.",
-                file=sys.stderr,
+            ui.error(
+                "Failed to restart Mesh daemon",
+                f"Check the log: {_log_file()}",
             )
             sys.exit(1)
-        print(f"[OK] Restarted Mesh daemon on http://{args.host}:{args.port} (PID: {res['pid']})")
+        ui.success(
+            "Restarted Mesh daemon",
+            f"http://{args.host}:{args.port}  {ui.sym('dot')}  pid {res['pid']}",
+        )
 
     elif args.action == "unload":
         res = trigger_daemon_unload(host=args.host, port=args.port)
         if res is None:
-            print("Mesh daemon is not running.")
+            ui.info("Mesh daemon is not running")
         else:
-            print("[OK] Unloaded neural model weights from RAM.")
+            ui.success("Unloaded neural model weights from RAM")
 
     elif args.action == "install-startup":
         info = install_startup(
@@ -1135,35 +1162,40 @@ def daemon_cmd() -> None:
             assume_yes=args.yes,
         )
         if info.get("declined"):
-            print("Aborted OS login auto-start registration.")
+            ui.step("Cancelled — login auto-start was not registered")
             return
         daemon_res = info.get("daemon") or {}
         if daemon_res.get("running"):
-            print(f"[OK] Registered Mesh daemon for OS login and started it immediately ({info['platform']})")
+            ui.success(
+                "Registered Mesh daemon for OS login and started it",
+                str(info["platform"]),
+            )
         else:
-            print(f"[OK] Registered Mesh daemon for OS login ({info['platform']})")
-        print(f"     Location: {info['location']}")
+            ui.success("Registered Mesh daemon for OS login", str(info["platform"]))
+        ui.kv([("Location", info["location"])])
 
     elif args.action == "remove-startup":
         info = remove_startup()
         if info["removed"]:
-            print(f"[OK] Removed login auto-start registration ({info['platform']})")
+            ui.success("Removed login auto-start registration", str(info["platform"]))
         else:
-            print("Login auto-start was not registered.")
+            ui.info("Login auto-start was not registered")
 
     elif args.action == "status":
         ident = verify_daemon_identity(host=args.host, port=args.port)
         auto_start = "enabled" if is_startup_installed() else "disabled"
         if not ident:
             health = get_daemon_health(host=args.host, port=args.port)
+            ui.header("Daemon", f"{args.host}:{args.port}")
             if health:
-                print(
-                    f"\nMesh Daemon: UNVERIFIED PROCESS on http://{args.host}:{args.port} "
-                    "(failed HMAC token challenge)"
+                ui.warn(
+                    "Unverified process is listening on this port",
+                    "The HMAC token challenge failed. Stop it before trusting this endpoint.",
                 )
             else:
-                print(f"\nMesh Daemon: STOPPED (http://{args.host}:{args.port})")
-            print(f"  Login auto-start: {auto_start}\n")
+                ui.step("Not running")
+            ui.kv([("Login auto-start", auto_start)])
+            print()
             return
         eng: dict[str, Any] = {}
         try:
@@ -1178,14 +1210,19 @@ def daemon_cmd() -> None:
                     eng = data.get("engine") or {}
         except Exception:
             invalidate_daemon_identity_cache(args.host, args.port)
-        loaded_str = "LOADED (warm)" if eng.get("model_loaded") else "SLEEPING (~0 MB model RAM)"
-        print(f"\nMesh Daemon: RUNNING on http://{args.host}:{args.port}")
-        print(f"  PID:              {ident.get('pid')}")
-        print(f"  Identity:         verified (HMAC-SHA256)")
-        print(f"  Model state:      {loaded_str}")
-        print(f"  Engine backend:   {eng.get('backend', 'unloaded')}")
-        print(f"  ONNX cached:      {eng.get('onnx_cached_on_disk', False)}")
-        print(f"  Login auto-start: {auto_start}\n")
+        loaded_str = "loaded (warm)" if eng.get("model_loaded") else "sleeping (~0 MB model RAM)"
+        ui.header("Daemon", f"{args.host}:{args.port}", "running")
+        ui.kv(
+            [
+                ("PID", ident.get("pid")),
+                ("Identity", "verified (HMAC-SHA256)"),
+                ("Model state", loaded_str),
+                ("Engine backend", eng.get("backend", "unloaded")),
+                ("ONNX cached", eng.get("onnx_cached_on_disk", False)),
+                ("Login auto-start", auto_start),
+            ]
+        )
+        print()
 
 
 if __name__ == "__main__":

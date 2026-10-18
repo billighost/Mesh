@@ -20,6 +20,7 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
+from . import ui
 from .audit import validate_namespace
 from .daemon import request_user_permission
 from .memory import VALID_MEMORY_TYPES, Mesh
@@ -602,17 +603,17 @@ def extract_memories_from_log(
             assume_yes=assume_yes,
         ):
             if verbose:
-                print("  [INFO] Cloud log extraction declined by user — falling back to local extraction.")
+                ui.info("Cloud extraction declined — using local keyword extraction instead")
             config = {"provider": "local", "available": True}
 
     if verbose:
         if config["provider"] == "local":
-            print("  [INFO] Using local keyword extraction (no cloud AI calls).")
+            ui.info("Using local keyword extraction", "No cloud AI calls are made.")
         else:
             provider_label = config["provider"]
             model_label = config.get("model", "")
             base_label = f" ({config['base_url']})" if config.get("base_url") else ""
-            print(f"  [INFO] Using provider: {provider_label} / {model_label}{base_label}")
+            ui.info(f"Using {provider_label} / {model_label}", base_label.strip(" ()") or None)
 
     extracted: list[dict[str, Any]] = []
     extraction_error: Optional[str] = None
@@ -630,14 +631,13 @@ def extract_memories_from_log(
     except Exception as e:
         extraction_error = str(e)
         if verbose:
-            print(f"  [WARN] AI extraction failed: {e}", file=sys.stderr)
-            print("  [INFO] Falling back to local keyword extraction.", file=sys.stderr)
+            ui.warn(f"AI extraction failed: {e}", "Falling back to local keyword extraction.")
         try:
             extracted = _extract_local(resolved_text)
             provider_used = "local-keyword-extractor (fallback)"
         except Exception as fallback_err:
             if verbose:
-                print(f"  [ERROR] Local fallback also failed: {fallback_err}", file=sys.stderr)
+                ui.error(f"Local fallback also failed: {fallback_err}")
             return {
                 "stored_count": 0,
                 "skipped_count": 0,
@@ -648,7 +648,7 @@ def extract_memories_from_log(
 
     if not extracted:
         if verbose:
-            print("  No memories worth extracting found in session log.")
+            ui.info("Nothing worth remembering was found in that log")
         return {
             "stored_count": 0,
             "skipped_count": 0,
@@ -657,12 +657,15 @@ def extract_memories_from_log(
         }
 
     if dry_run:
-        print(f"\n[DRY RUN] Would store {len(extracted)} memories into namespace '{clean_ns}'")
-        print(f"          Provider: {provider_used}\n")
+        ui.header("Capture preview", clean_ns, "dry run")
+        ui.kv([("Would store", ui.plural(len(extracted), "memory", "memories")), ("Provider", str(provider_used))])
+        print()
         for mem in extracted:
-            private = " [PRIVATE]" if mem.get("private") else ""
+            private = "  " + ui.badge("private", "accent") if mem.get("private") else ""
             mtype = _normalize_memory_type(mem.get("type"))
-            print(f"  [{mtype}]{private}  {mem.get('content', '')}")
+            print(f"{ui.IND}{ui.style(ui.sym('bullet'), 'muted')} {ui.style(mtype, 'info')}{private}  {' '.join(str(mem.get('content', '')).split())}")
+        print()
+        ui.hint("Nothing was written. Re-run without --dry-run to store these.", stream=sys.stdout)
         return {
             "stored_count": 0,
             "skipped_count": len(extracted),
@@ -681,7 +684,7 @@ def extract_memories_from_log(
         if _is_poison_attempt(content):
             skipped += 1
             if verbose:
-                print(f"  [WARN] Ignored poison/injection attempt: {content[:60]}", file=sys.stderr)
+                ui.warn(f"Ignored suspicious content: {ui.truncate(content, 60)}")
             continue
         try:
             mtype = _normalize_memory_type(mem.get("type", "general"))
@@ -701,12 +704,12 @@ def extract_memories_from_log(
             )
             stored += 1
             if verbose:
-                private_flag = " [PRIVATE]" if is_private else ""
-                print(f"  [OK]{private_flag} {content[:80]}")
+                private_flag = "  " + ui.badge("private", "accent") if is_private else ""
+                ui.success(f"{ui.truncate(content, 80)}{private_flag}")
         except Exception as e:
             skipped += 1
             if verbose:
-                print(f"  [FAIL] {content[:60]} — {e}", file=sys.stderr)
+                ui.error(f"Couldn't store \"{ui.truncate(content, 60)}\": {e}")
 
     return {
         "stored_count": stored,
@@ -755,17 +758,25 @@ def capture_cmd() -> None:
     if args.show_provider:
         config = detect_provider()
         if config["provider"] == "local":
-            print("Provider: local-keyword-extractor (no AI key found)")
-            print("Set ANTHROPIC_API_KEY, OPENAI_API_KEY, GROQ_API_KEY, or start Ollama for AI extraction.")
+            ui.header("Capture provider")
+            print()
+            ui.kv([("Provider", "local keyword extractor"), ("AI key", ui.style("none found", "muted"))])
+            ui.hint("For AI extraction set ANTHROPIC_API_KEY, OPENAI_API_KEY or GROQ_API_KEY, or start Ollama.", stream=sys.stdout)
         else:
-            print(f"Provider:  {config['provider']}")
-            print(f"Model:     {config.get('model', '')}")
-            if config.get("base_url"):
-                print(f"Base URL:  {config['base_url']}")
+            ui.header("Capture provider")
+            print()
+            ui.kv(
+                [
+                    ("Provider", str(config["provider"])),
+                    ("Model", str(config.get("model", "")) or None),
+                    ("Base URL", str(config["base_url"]) if config.get("base_url") else None),
+                ]
+            )
         return
 
     if not args.file and not args.stdin:
         parser.print_help()
+        ui.error("Tell Mesh where to read from", "Use --file <path> or pipe a log in with --stdin.")
         sys.exit(1)
 
     if args.stdin:
@@ -773,8 +784,7 @@ def capture_cmd() -> None:
     else:
         path = Path(args.file).expanduser()
         if not path.exists():
-            print(f"File not found: {args.file}", file=sys.stderr)
-            sys.exit(1)
+            ui.fail(f"File not found: {args.file}", "Check the path, or pipe the log in with --stdin.")
         log_text = _resolve_log_input(str(path))
 
     ns = validate_namespace(args.namespace or os.environ.get("MESH_NAMESPACE", "shared"))
@@ -788,9 +798,12 @@ def capture_cmd() -> None:
     )
     if not args.dry_run:
         provider_label = result.get("provider_used", "unknown")
-        print(
-            f"[OK] Passive capture complete — "
-            f"{result['stored_count']} stored, "
-            f"{result['skipped_count']} skipped "
-            f"(provider: {provider_label})"
-        )
+        print()
+        if result["stored_count"]:
+            ui.success(
+                f"Captured {ui.plural(result['stored_count'], 'memory', 'memories')} into {ns}",
+                f"{result['skipped_count']} skipped  {ui.sym('dot')}  provider: {provider_label}",
+            )
+            ui.hint("See them with `mesh inspect`", stream=sys.stdout)
+        else:
+            ui.info("Nothing was stored", f"{result['skipped_count']} skipped  {ui.sym('dot')}  provider: {provider_label}")

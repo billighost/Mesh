@@ -796,6 +796,9 @@ def start(host: Optional[str] = None, port: Optional[int] = None) -> None:
                 daemon=True,
             ).start()
 
+    from . import ui
+
+    ui.info(f"Mesh HTTP API listening on http://{actual_host}:{actual_port}", "Press Ctrl+C to stop.", stream=sys.stderr)
     uvicorn.run(app, host=actual_host, port=actual_port, log_level="warning")
 
 

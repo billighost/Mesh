@@ -221,6 +221,8 @@ mesh digest --hours 24            # UTC session summary
 mesh install-skills               # Install agent skill to all agent folders
 ```
 
+Every command prints examples in `--help`, and `mesh help <command>` is a shortcut for the same page. `ask`, `inspect`, `status`, `conflicts`, `patterns`, and `namespaces` accept `--json` for scripts. `mesh add` reads content from stdin when piped, and `mesh forget` asks for confirmation only in an interactive terminal (`-y` skips it). Ctrl+C and `| head` exit quietly. Set `NO_COLOR`, `FORCE_COLOR`, `MESH_ASCII=1`, or `MESH_NO_SPINNER=1` to change how output is rendered.
+
 ---
 
 ## Security, Privacy & Boundaries

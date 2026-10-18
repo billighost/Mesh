@@ -11,7 +11,7 @@ import threading
 import urllib.request
 from typing import Optional
 
-VERSION = "0.6.5"
+VERSION = "0.7.0"
 
 _PEP440_RE = re.compile(
     r"^\s*v?(?P<release>\d+(?:\.\d+)*)"
@@ -143,10 +143,19 @@ def check_for_updates(force: bool = False, blocking: bool = False) -> Optional[s
                     data = json.loads(resp.read().decode("utf-8"))
                     latest = str(data.get("info", {}).get("version", "")).strip()
                     if latest and parse_version_tuple(latest) > parse_version_tuple(VERSION):
-                        sys.stderr.write(
-                            f"[Mesh] Update available: v{VERSION} -> v{latest} "
-                            "(run `pip install -U mesh-context-layer`)\n"
-                        )
+                        try:
+                            from . import ui
+
+                            ui.hint(
+                                f"Update available: v{VERSION} → v{latest}. "
+                                "Run `pip install -U mesh-context-layer`.",
+                                stream=sys.stderr,
+                            )
+                        except Exception:
+                            sys.stderr.write(
+                                f"[Mesh] Update available: v{VERSION} -> v{latest} "
+                                "(run `pip install -U mesh-context-layer`)\n"
+                            )
                         return latest
         except Exception:
             pass

@@ -165,12 +165,15 @@ def export_namespace(
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(content_str)
         secure_file_permissions(path)
-        print(f"[OK] Exported {len(exportable)} memories to {path}", file=sys.stderr)
+        from . import ui
+
+        ui.success(
+            f"Exported {ui.plural(len(exportable), 'memory', 'memories')}",
+            ui.short_path(path),
+            stream=sys.stderr,
+        )
         if skipped_count > 0:
-            print(
-                f"  (Skipped {skipped_count} local_only memories — these are never exported)",
-                file=sys.stderr,
-            )
+            ui.note(f"{ui.plural(skipped_count, 'private memory', 'private memories')} left out — private memories are never exported.")
 
     return export_data
 
@@ -293,16 +296,20 @@ def import_namespace(
                 texts_to_embed.append(content)
         except Exception as e:
             stats["errors"] += 1
-            print(f"  Error preparing memory: {e}", file=sys.stderr)
+            from . import ui
+
+            ui.warn(f"Couldn't read one memory in the file: {e}")
 
     if dry_run:
         stats["would_import"] = len(to_import)
         stats["would_skip"] = stats["skipped"]
         stats["would_error"] = stats["errors"]
-        print(
-            f"[DRY RUN] Would import {stats['would_import']} memories into namespace '{namespace}' "
-            f"({stats['would_skip']} skipped, {stats['would_error']} errors, merge_strategy={clean_strategy})",
-            file=sys.stderr,
+        from . import ui
+
+        ui.info(
+            f"Dry run: would import {ui.plural(stats['would_import'], 'memory', 'memories')} into '{namespace}'",
+            f"{stats['would_skip']} would be skipped  {ui.sym('dot')}  {stats['would_error']} errors  {ui.sym('dot')}  strategy: {clean_strategy}\nNothing was written. Re-run without --dry-run to apply.",
+            stream=sys.stderr,
         )
         return stats
 
@@ -316,7 +323,9 @@ def import_namespace(
                 if len(vec) == EMBEDDING_DIM and all(math.isfinite(x) for x in vec):
                     computed_embeddings[item_idx] = (vec, actual_batch_tag)
         except Exception as e:
-            print(f"  Error batch-embedding imported memories: {e}", file=sys.stderr)
+            from . import ui
+
+            ui.warn(f"Couldn't embed the imported memories ({e})", "They'll be imported with fallback embeddings and fixed up later.")
 
     now_iso = datetime.now(timezone.utc).isoformat()
     batch_items: list[tuple[str, str, list[float], dict[str, Any], bool]] = []
@@ -402,10 +411,9 @@ def import_namespace(
                 hash_queued_items.append((mem_id, content))
         except Exception as e:
             stats["errors"] += 1
-            print(
-                f"  Error importing memory '{str(mem.get('content', ''))[:50]}': {e}",
-                file=sys.stderr,
-            )
+            from . import ui
+
+            ui.warn(f"Couldn't import \"{ui.truncate(str(mem.get('content', '')), 50)}\": {e}")
 
     if batch_items:
         try:
@@ -425,16 +433,20 @@ def import_namespace(
                     stats["imported"] += 1
                 except Exception as e:
                     stats["errors"] += 1
-                    print(f"  Error importing memory: {e}", file=sys.stderr)
+                    from . import ui
+
+                    ui.warn(f"Couldn't import a memory: {e}")
 
     if hash_queued_items:
         with _PENDING_REEMBED_LOCK:
             for mid, text in hash_queued_items:
                 _PENDING_REEMBED_QUEUE.put(namespace, mid, text)
 
-    print(
-        f"[OK] Import complete: {stats['imported']} imported, "
-        f"{stats['skipped']} skipped, {stats['errors']} errors",
-        file=sys.stderr,
-    )
+    from . import ui
+
+    _summary = f"{stats['skipped']} skipped (already present)  {ui.sym('dot')}  {stats['errors']} errors"
+    if stats["errors"]:
+        ui.warn(f"Imported {ui.plural(stats['imported'], 'memory', 'memories')} with problems", _summary)
+    else:
+        ui.success(f"Imported {ui.plural(stats['imported'], 'memory', 'memories')}", _summary, stream=sys.stderr)
     return stats

@@ -16,6 +16,7 @@ import argparse
 import json
 import os
 import sqlite3
+import sys
 from datetime import timedelta
 from typing import Any
 
@@ -210,66 +211,106 @@ def _one_line(text: Any, max_len: int = 75) -> str:
 
 def print_digest(digest: dict[str, Any]) -> None:
     """Print a human-readable digest to stdout."""
-    hours = int(digest["hours"])
-    window = f"last {hours}h"
-    ns = digest["namespace"]
-    print(f"\n{'='*50}")
-    print(f"  Mesh Digest — {window} — namespace: {ns}")
-    print(f"{'='*50}\n")
+    from . import ui
 
+    hours = int(digest["hours"])
+    window = f"last {hours}h" if hours != 24 else "last 24h"
+    ns = digest["namespace"]
+    width = ui.term_width()
+
+    ui.header("Digest", ns, window)
+
+    # ── What's new ──
+    ui.section(f"New  {ui.sym('dot')}  {digest['new_count']}")
     if digest["new_count"] == 0:
-        print(f"  [OK] No new memories stored in the {window}.")
+        ui.hint(f"Nothing stored in the {window}.", stream=sys.stdout)
     else:
-        print(f"  [INPUT] {digest['new_count']} new memor{'y' if digest['new_count'] == 1 else 'ies'} stored ({window}):\n")
+        print()
+        rows = []
         for mem in digest["new_memories"][:10]:
-            private = " [PRIVATE]" if mem.get("local_only") else ""
-            short_id = mem.get("short_id") or str(mem.get("id") or "")[:8]
-            id_label = f" (id: {short_id})" if short_id else ""
-            print(f"     [{mem['memory_type']}]{private}{id_label} {_one_line(mem.get('content'))}")
-            print(f"      -> from {mem.get('source_agent')} at {str(mem.get('created_at', ''))[:16]}")
+            flag = ("private", "accent") if mem.get("local_only") else ""
+            rows.append(
+                [
+                    mem.get("short_id") or str(mem.get("id") or "")[:8],
+                    (str(mem.get("memory_type", "fact")), "info"),
+                    (ui.relative_time(mem.get("created_at")), "muted"),
+                    (str(mem.get("source_agent", "unknown")), "muted"),
+                    flag,
+                    " ".join(str(mem.get("content") or "").split()),
+                ]
+            )
+        ui.table(["ID", "Type", "When", "By", "", "Memory"], rows, flex=5)
         if digest["new_count"] > 10:
-            print(f"     ... and {digest['new_count'] - 10} more")
-    print()
+            ui.hint(f"…and {digest['new_count'] - 10} more. Browse them with `mesh inspect`.", stream=sys.stdout)
 
     unparseable = int(digest.get("unparseable_count") or 0)
     if unparseable > 0:
-        print(f"  [NOTE] Skipped {unparseable} memor{'y' if unparseable == 1 else 'ies'} with unparseable created_at timestamps.\n")
+        ui.warn(
+            f"{ui.plural(unparseable, 'memory', 'memories')} skipped because the timestamp couldn't be read",
+            stdout=True,
+        )
 
+    # ── Activity ──
     if digest["total_recalls"] > 0:
         agents = ", ".join(digest["agents_active"]) if digest["agents_active"] else "unknown"
-        print(f"  [SEARCH] {digest['total_recalls']} memory reads by: {agents}")
-        print()
+        ui.section("Activity")
+        ui.kv(
+            [
+                ("Searches", f"{digest['total_recalls']}"),
+                ("Active agents", agents),
+            ],
+            indent=ui.IND + "  ",
+        )
 
+    # ── Contradictions ──
     if digest["contradiction_count"] > 0:
-        print(f"  [WARNING] {digest['contradiction_count']} contradiction(s) detected:\n")
+        ui.section(f"Contradictions  {ui.sym('dot')}  {digest['contradiction_count']}")
+        print()
         for c in digest["contradictions"]:
-            print(f"     \"{_one_line(c.get('content'))}\"")
-            print(f"      -> flagged by {c.get('agent_id')} at {str(c.get('timestamp', ''))[:16]}")
-        print()
+            ts = ui.relative_time(c.get("timestamp"))
+            lines = ui.wrap(_one_line(c.get("content"), 300), width - 6, max_lines=2)
+            print(f"{ui.IND}  {ui.style(ui.sym('warn'), 'warn', 'bold')} {lines[0]}")
+            for extra in lines[1:]:
+                print(f"{ui.IND}    {extra}")
+            print(f"{ui.IND}    {ui.style('flagged by ' + str(c.get('agent_id') or 'unknown') + (' ' + ui.sym('dot') + ' ' + ts if ts else ''), 'muted')}")
+        ui.hint("Resolve them with `mesh conflicts`", stream=sys.stdout)
 
+    # ── Stale ──
     if digest["stale_count"] > 0:
-        print(f"  [STALE] {digest['stale_count']} memor{'y' if digest['stale_count'] == 1 else 'ies'} going stale (all time):\n")
-        for mem in digest["stale_memories"][:5]:
-            short_id = mem.get("short_id") or str(mem.get("id") or "")[:8]
-            id_label = f" [id: {short_id}]" if short_id else ""
-            ttl_label = f"TTL was {mem['ttl_days']} days" if mem.get("ttl_days") is not None else "low confidence"
-            print(f"    {id_label} \"{_one_line(mem.get('content'))}\"")
-            print(f"      -> {ttl_label}, stored {str(mem.get('created_at', ''))[:10]}")
+        ui.section(f"Going stale  {ui.sym('dot')}  {digest['stale_count']}")
         print()
-        print("     Run 'mesh ask' to review and update these, or 'mesh forget' to remove them.")
+        rows = []
+        for mem in digest["stale_memories"][:5]:
+            why = f"TTL {mem['ttl_days']}d expired" if mem.get("ttl_days") is not None else "low confidence"
+            rows.append(
+                [
+                    mem.get("short_id") or str(mem.get("id") or "")[:8],
+                    (why, "warn"),
+                    (ui.relative_time(mem.get("created_at")), "muted"),
+                    " ".join(str(mem.get("content") or "").split()),
+                ]
+            )
+        ui.table(["ID", "Why", "Stored", "Memory"], rows, flex=3)
+        if digest["stale_count"] > 5:
+            ui.hint(f"…and {digest['stale_count'] - 5} more.", stream=sys.stdout)
+        ui.next_steps(
+            [
+                ("mesh update <id>", "refresh a memory that's still true"),
+                ("mesh forget <id>", "remove one that isn't"),
+            ]
+        )
 
-    if (
-        digest["new_count"] == 0
-        and digest["contradiction_count"] == 0
-        and digest["stale_count"] == 0
-    ):
-        print("  [OK] All clear. Mesh is up to date.")
+    if digest["new_count"] == 0 and digest["contradiction_count"] == 0 and digest["stale_count"] == 0:
+        print()
+        ui.success("All clear — Mesh is up to date")
     print()
 
 
 def digest_cmd() -> None:
     """Entry point for: mesh-digest / mesh digest"""
     parser = argparse.ArgumentParser(
+        prog="mesh digest",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
         description="Show a digest of recent Mesh activity.",
         epilog="""Examples:
   mesh digest                  # Last 24 hours

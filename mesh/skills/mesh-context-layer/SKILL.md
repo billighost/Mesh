@@ -9,7 +9,7 @@ description: >-
   manage persistent agent memory across sessions.
 ---
 
-# Mesh Context Layer — Full Agent Skill (v0.6.5)
+# Mesh Context Layer — Full Agent Skill (v0.7.0)
 
 > **Mesh** gives every AI agent persistent, shared memory. When one agent learns
 > something, every other agent can recall it — by meaning, keyword, or exact
@@ -616,6 +616,10 @@ concrete facts from recent agent session logs.
 | `MESH_NON_INTERACTIVE`         | Auto-decline all interactive y/n prompts                         | `0`                              |
 | `MESH_CHECK_UPDATES`           | Enable opt-in PyPI update checks                                 | `0`                              |
 | `MESH_NO_UPDATE_CHECK`         | Force-disable update checks                                      | `0`                              |
+| `NO_COLOR` / `MESH_NO_COLOR`   | Disable ANSI colour in CLI output (any non-empty value)          | Not set                          |
+| `FORCE_COLOR` / `MESH_FORCE_COLOR` | Force ANSI colour even when output is piped                  | Not set                          |
+| `MESH_ASCII`                   | Use ASCII symbols instead of Unicode box drawing/status glyphs   | `0`                              |
+| `MESH_NO_SPINNER`              | Disable animated spinners (spinners also stop off a terminal)    | `0`                              |
 | `MESH_ENABLE_AUTO_SYNC`        | Allow `mesh_sync` to capture facts from local agent logs         | `0`                              |
 | `MESH_ALLOW_LOG_SYNC`          | Explicit opt-in for local agent log scanning in `mesh_sync`      | `0`                              |
 | `MESH_ALLOW_CLOUD_SYNC`        | Let facts captured from logs be sync-exportable (else private)   | `0`                              |
@@ -659,7 +663,7 @@ mesh daemon unload                  # Release model weights from RAM
 mesh add "fact content" --type fact --tags tag1,tag2 [--private] [--ttl 30]
 mesh ask "natural language query" --n 5 [--no-private]
 mesh update <id> --content "new content" --clear-ttl [--private | --public]
-mesh forget <id>
+mesh forget <id> [-y]                      # Confirms only in a terminal; -y skips
 
 # Browsing & analysis
 mesh inspect [--limit 30] [--no-private]   # Browse recent memories
@@ -668,6 +672,14 @@ mesh conflicts [--resolve <id>]            # List / resolve contradictions
 mesh patterns [--include-private]          # Usage analytics
 mesh why <id-or-query>                     # Explain why a memory matched
 mesh digest [--hours 24]                   # Session activity summary
+
+# Machine-readable output (stable JSON on stdout)
+mesh ask "query" --json                    # recall results
+mesh inspect --json                        # memories list
+mesh status --json                         # engine/namespace/daemon state
+mesh conflicts --json                      # contradiction rows
+mesh patterns --json                       # query analytics and gaps
+mesh namespaces --json                     # namespace listing
 
 # Bulk operations
 mesh export backup.json [--no-embeddings]  # Export non-private memories

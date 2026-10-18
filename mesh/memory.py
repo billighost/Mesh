@@ -430,7 +430,7 @@ def _verify_sha256(
             f"SHA-256 checksum mismatch for '{path.name}'{src_info}: "
             f"expected one of {expected_list}, got '{actual}'"
         )
-        sys.stderr.write(f"[Mesh WARNING] {err_msg}\n")
+        _emit_warning(err_msg)
         _record_model_status(
             state="checksum_mismatch",
             backend=_model_backend or "hash-fallback",
@@ -441,7 +441,7 @@ def _verify_sha256(
         return False
     except OSError as exc:
         err_msg = f"Failed reading '{path}' for SHA-256 verification: {exc}"
-        sys.stderr.write(f"[Mesh WARNING] {err_msg}\n")
+        _emit_warning(err_msg)
         _record_model_status(
             state="io_error",
             backend=_model_backend or "hash-fallback",
@@ -817,7 +817,7 @@ def _download_file_from_mirrors(
             pass
 
     ensure_secure_mesh_dir(_get_onnx_model_dir())
-    headers = {"User-Agent": "mesh-context-layer/0.6.5"}
+    headers = {"User-Agent": "mesh-context-layer/0.7.0"}
     hf_token = (
         os.environ.get("HF_TOKEN")
         or os.environ.get("HUGGING_FACE_HUB_TOKEN")
@@ -837,7 +837,7 @@ def _download_file_from_mirrors(
                     with client.stream("GET", url) as resp:
                         if resp.status_code != 200:
                             err_msg = f"Download from {url} failed with HTTP status {resp.status_code}"
-                            sys.stderr.write(f"[Mesh WARNING] {err_msg}\n")
+                            _emit_warning(err_msg)
                             _record_model_status(
                                 state="download_http_error",
                                 backend=_model_backend or "hash-fallback",
@@ -863,7 +863,7 @@ def _download_file_from_mirrors(
                 else:
                     actual_sz = tmp_path.stat().st_size if tmp_path.exists() else 0
                     err_msg = f"Downloaded file from {url} was truncated ({actual_sz} bytes < {min_bytes} bytes)"
-                    sys.stderr.write(f"[Mesh WARNING] {err_msg}\n")
+                    _emit_warning(err_msg)
                     _record_model_status(
                         state="download_truncated",
                         backend=_model_backend or "hash-fallback",
@@ -871,7 +871,7 @@ def _download_file_from_mirrors(
                     )
             except Exception as exc:
                 err_msg = f"Download error from {url}: {exc}"
-                sys.stderr.write(f"[Mesh WARNING] {err_msg}\n")
+                _emit_warning(err_msg)
                 _record_model_status(
                     state="download_error",
                     backend=_model_backend or "hash-fallback",
@@ -884,7 +884,7 @@ def _download_file_from_mirrors(
                     pass
     except Exception as outer_exc:
         err_msg = f"HTTP client initialization failed during model download: {outer_exc}"
-        sys.stderr.write(f"[Mesh WARNING] {err_msg}\n")
+        _emit_warning(err_msg)
         _record_model_status(
             state="download_error",
             backend=_model_backend or "hash-fallback",
@@ -959,7 +959,7 @@ def _download_from_gcs_tarball() -> bool:
         return _has_local_onnx_pair() is not None
     except Exception as exc:
         err_msg = f"Failed extracting ONNX tarball: {exc}"
-        sys.stderr.write(f"[Mesh WARNING] {err_msg}\n")
+        _emit_warning(err_msg)
         _record_model_status(
             state="tar_extract_error",
             backend=_model_backend or "hash-fallback",
@@ -1039,7 +1039,7 @@ def _background_download_worker() -> None:
                 _backfill_pending_embeddings()
             except Exception as exc:
                 err_msg = f"ONNX session initialization failed: {exc}"
-                sys.stderr.write(f"[Mesh WARNING] {err_msg}\n")
+                _emit_warning(err_msg)
                 _record_model_status(state="onnx_init_failed", backend="hash-fallback", last_error=err_msg)
     finally:
         with _DOWNLOAD_LOCK:
@@ -1290,7 +1290,7 @@ def _get_model() -> tuple[Any, str]:
                     return _model, _model_backend
             except Exception as exc:
                 err_msg = f"Failed loading local ONNX model: {exc}"
-                sys.stderr.write(f"[Mesh WARNING] {err_msg}\n")
+                _emit_warning(err_msg)
                 _record_model_status(state="onnx_load_error", backend="hash-fallback", last_error=err_msg)
 
         force_fastembed = os.environ.get("MESH_FORCE_FASTEMBED", "").strip().lower() in ("1", "true", "yes")
@@ -2649,3 +2649,13 @@ class Mesh:
             f"agent_id='{self.agent_id}', "
             f"memories={self.count()})"
         )
+
+
+def _emit_warning(msg: Any) -> None:
+    """User-facing warning on stderr, styled like the rest of the CLI (plain fallback if ui fails)."""
+    try:
+        from . import ui
+
+        ui.warn(" ".join(str(msg).split()))
+    except Exception:
+        sys.stderr.write(f"[Mesh WARNING] {msg}\n")
