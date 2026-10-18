@@ -817,7 +817,7 @@ def _download_file_from_mirrors(
             pass
 
     ensure_secure_mesh_dir(_get_onnx_model_dir())
-    headers = {"User-Agent": "mesh-context-layer/0.6.4"}
+    headers = {"User-Agent": "mesh-context-layer/0.6.5"}
     hf_token = (
         os.environ.get("HF_TOKEN")
         or os.environ.get("HUGGING_FACE_HUB_TOKEN")
@@ -1862,15 +1862,19 @@ def _is_true_contradiction(new_text: str, existing_text: str, similarity: float)
     sv_new = _extract_subject_value_pair(norm_new)
     sv_old = _extract_subject_value_pair(norm_old)
     if sv_new is not None and sv_old is not None:
-        if sv_new[0] == sv_old[0] and sv_new[1] != sv_old[1] and similarity >= 0.70:
-            if neg_new != neg_old:
-                return True
+        if sv_new[0] == sv_old[0] and sv_new[1] != sv_old[1]:
+            # A shared subject that assigns different numbers to the same slot is
+            # structural evidence, so it must not depend on embedding similarity:
+            # the hash-384 fallback cannot produce the cosine the gate expects.
             if _has_numeric_slot_conflict(norm_new, norm_old):
                 return True
-            val_words_new = set(sv_new[1].split())
-            val_words_old = set(sv_old[1].split())
-            if not (val_words_new.issubset(val_words_old) or val_words_old.issubset(val_words_new)):
-                return True
+            if similarity >= 0.70:
+                if neg_new != neg_old:
+                    return True
+                val_words_new = set(sv_new[1].split())
+                val_words_old = set(sv_old[1].split())
+                if not (val_words_new.issubset(val_words_old) or val_words_old.issubset(val_words_new)):
+                    return True
 
     if similarity < CONTRADICTION_THRESHOLD:
         return False
