@@ -8,7 +8,7 @@ const specRows = [
   ["Fallback", "hash-384 feature-hash engine, <0.05 ms, auto-heals when ONNX arrives"],
   ["Retrieval", "dense + BM25 + IDF + synonyms + exact tokens"],
   ["Interfaces", "MCP (10 tools), HTTP REST, CLI, Python SDK, dashboard"],
-  ["Runtime", "Python 3.10+, MIT, v0.6.5"],
+  ["Runtime", "Python 3.10+, MIT, v0.7.0"],
   ["Network", "Local by default; cloud log sync and update checks are opt-in"],
 ];
 

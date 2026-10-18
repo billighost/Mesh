@@ -4,6 +4,31 @@ All notable changes to `mesh-context-layer` are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (pre-1.0: minor versions may include behavior changes).
 
+## [0.7.0] - 2026-10-18
+
+This release redesigns the command-line experience around a single design system. Commands, flags, and stored data are unchanged; the differences are in how results are presented and how scripted use behaves.
+
+### Added
+
+- **`mesh/ui.py`**, a stdlib-only presentation layer: a consistent colour policy, Unicode symbols with an automatic ASCII fallback, aligned tables, cards, key/value blocks, a spinner, and y/n/text prompts. No new dependencies.
+- **`--json` on `mesh ask`, `mesh inspect`, `mesh status`, `mesh conflicts`, `mesh patterns`, and `mesh namespaces`** for stable, machine-readable output.
+- **`mesh add` reads content from stdin when piped**, so `cat notes.txt | mesh add --tags notes` works.
+- **`mesh help <command>`**, a shortcut for `mesh <command> --help`. Every command now carries usage examples in its help text.
+- **Output environment variables:** `NO_COLOR` / `MESH_NO_COLOR` disable colour, `FORCE_COLOR` / `MESH_FORCE_COLOR` force it, `MESH_ASCII=1` selects ASCII symbols, and `MESH_NO_SPINNER=1` disables animation.
+
+### Changed
+
+- **`mesh update` with no changes is now an error** (`exit 1`) instead of a silent no-op.
+- **`mesh forget` asks for confirmation only in an interactive terminal.** `-y` skips the prompt; scripts and agents are unaffected and never block.
+- **Declined or non-interactive permission prompts explain what happened** and how to approve explicitly (`--yes`) instead of skipping silently.
+- **Presentation only:** `digest`, `io`, `passive` capture, `memory` warnings, `daemon` prompts and `mesh daemon *`, the update notice, and the dashboard/HTTP banners now use the shared design system. Behaviour and security rules are unchanged.
+- **Ctrl+C and `| head` exit quietly** (status 130 and 0 respectively) instead of printing a traceback or broken-pipe noise.
+
+### Fixed
+
+- The generated **PowerShell completion script** ended without a final newline, which produced a syntax error when appended to a profile.
+- Package version bumped to `0.7.0`.
+
 ## [0.6.5] - 2026-10-18
 
 ### Fixed

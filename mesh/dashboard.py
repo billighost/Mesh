@@ -1934,10 +1934,14 @@ def run(
     _LAUNCH_NONCES[nonce] = time.time()
     launch_url = f"http://localhost:{resolved_port}/?ns={clean_ns}&code={nonce}"
 
-    print("\n  Mesh Dashboard")
-    print(f"  {launch_url}")
-    print(f"  namespace: {clean_ns}")
-    print("  Press Ctrl+C to stop.\n")
+    from . import ui
+
+    ui.header("Dashboard", f"namespace {clean_ns}")
+    print()
+    ui.kv([("Open", ui.style(launch_url, "info")), ("Browser", "opening automatically" if not resolved_no_browser else "not opened (--no-browser)")])
+    print()
+    ui.hint("Press Ctrl+C to stop", stream=sys.stdout)
+    print()
 
     if not resolved_no_browser:
         def open_browser() -> None:
