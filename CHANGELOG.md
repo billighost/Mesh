@@ -4,9 +4,9 @@ All notable changes to `mesh-context-layer` are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (pre-1.0: minor versions may include behavior changes).
 
-## [0.8.0-dev] - 2026-10-19
+## [0.8.0] - 2026-10-19
 
-Agent Autonomous Adoption Release: First-class work items, token-budgeted briefs, automated multi-agent installer, progressive disclosure skill, and content-free audit telemetry.
+Agent Autonomous Adoption & Production Readiness Release: First-class work items, token-budgeted briefs, automated multi-agent installer, progressive disclosure skill, content-free audit telemetry, full-suite benchmarks, and hardened security gates.
 
 ### Added
 - **First-class Work Items and Event Log (`work_items`, `work_events`)**:

@@ -11,12 +11,12 @@ def write_wav(filename, samples, sample_rate=SAMPLE_RATE):
     os.makedirs(os.path.dirname(filename), exist_ok=True)
     is_stereo = isinstance(samples[0], (tuple, list))
     channels = 2 if is_stereo else 1
-    
+
     with wave.open(filename, 'w') as wf:
         wf.setnchannels(channels)
         wf.setsampwidth(2)
         wf.setframerate(sample_rate)
-        
+
         raw_data = bytearray()
         for s in samples:
             if is_stereo:
@@ -38,16 +38,16 @@ def make_ambient_drone(duration=94.0):
     """Deep, cinematic analog pad drone (A1 chord: 55Hz, 82.4Hz, 110Hz, 164.8Hz)."""
     n_samples = int(duration * SAMPLE_RATE)
     samples = []
-    
+
     for i in range(n_samples):
         t = i / SAMPLE_RATE
         # Envelope: 4s fade in, 4s fade out
         env = min(1.0, t / 4.0) * min(1.0, (duration - t) / 4.0)
-        
+
         # Subtle slow LFOs for organic movement
         lfo1 = math.sin(2 * math.pi * 0.15 * t)
         lfo2 = math.cos(2 * math.pi * 0.08 * t)
-        
+
         # Fundamental sub-bass + harmonics
         f0 = 55.0  # A1
         sub = 0.35 * math.sin(2 * math.pi * f0 * t)
@@ -55,10 +55,10 @@ def make_ambient_drone(duration=94.0):
         octave = 0.18 * math.sin(2 * math.pi * (f0 * 2.0) * t + lfo2 * 0.3)
         third = 0.12 * math.sin(2 * math.pi * (f0 * 2.5) * t)
         high = 0.06 * math.sin(2 * math.pi * (f0 * 4.0) * t)
-        
+
         # Subtle warm noise bed
         noise = (random.random() * 2 - 1) * 0.015
-        
+
         mono = (sub + fifth + octave + third + high + noise) * env * 0.45
         # Slight stereo separation
         left = mono * (0.9 + 0.1 * lfo1)
@@ -292,12 +292,12 @@ def generate_all(out_dir):
     write_wav(os.path.join(out_dir, "key_return.wav"), make_key_return(0.12))
     write_wav(os.path.join(out_dir, "crystallize.wav"), make_crystallize(0.85))
     write_wav(os.path.join(out_dir, "sonar_pulse.wav"), make_sonar_pulse(1.2))
-    
+
     # 5 pentatonic chimes for 5-stage search
     pentatonic = [523.25, 587.33, 659.25, 783.99, 880.00]
     for idx, f in enumerate(pentatonic, 1):
         write_wav(os.path.join(out_dir, f"stage_chime_{idx}.wav"), make_stage_chime(f, 0.7))
-        
+
     write_wav(os.path.join(out_dir, "packet_transmit.wav"), make_packet_transmit(0.25))
     write_wav(os.path.join(out_dir, "warn_buzz.wav"), make_warn_buzz(0.55))
     write_wav(os.path.join(out_dir, "resolved_bell.wav"), make_resolved_bell(0.9))

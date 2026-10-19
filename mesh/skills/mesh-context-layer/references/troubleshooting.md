@@ -1,4 +1,4 @@
-# Mesh Troubleshooting & Operations (v0.7.2)
+# Mesh Troubleshooting & Operations (v0.8.0)
 
 Guide to diagnosing issues and handling edge cases with Mesh.
 
