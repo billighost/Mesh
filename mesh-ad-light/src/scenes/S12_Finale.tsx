@@ -14,10 +14,10 @@ import GridField from "../components/GridField";
 import { useTypewriterLines } from "../hooks/useTypewriter";
 
 const agents = [
-  { name: "backend-agent",  x: 960,  y: 260 },
-  { name: "frontend-agent", x: 1300, y: 480 },
-  { name: "review-agent",   x: 960,  y: 700 },
-  { name: "deploy-agent",   x: 620,  y: 480 },
+  { name: "backend-agent",  x: 960,  y: 230 },
+  { name: "frontend-agent", x: 1420, y: 480 },
+  { name: "review-agent",   x: 960,  y: 730 },
+  { name: "deploy-agent",   x: 500,  y: 480 },
 ];
 const HUB = { x: 960, y: 480 };
 
@@ -40,7 +40,7 @@ export default function S12_Finale() {
     fps,
     config: { damping: 18, stiffness: 80, mass: 1.1 },
   });
-  const markSize = interpolate(markSpring, [0, 1], [60, 200]);
+  const markSize = interpolate(markSpring, [0, 1], [60, 220]);
   const markOpacity = interpolate(markSpring, [0, 1], [0, 1]);
 
   // Background blobs pulse in
@@ -49,7 +49,6 @@ export default function S12_Finale() {
     extrapolateRight: "clamp",
   });
 
-  // Network lines draw
   // Tagline
   const line1Opacity = interpolate(frame, [160, 200], [0, 1], {
     extrapolateLeft: "clamp",
@@ -122,8 +121,8 @@ export default function S12_Finale() {
             y2={agent.y}
             startFrame={40 + i * 14}
             duration={20}
-            color={colors.accent}
-            strokeWidth={1.5}
+            color={colors.accentText}
+            strokeWidth={2.5}
             showPacket
             packetDelay={i * 12}
           />
@@ -169,8 +168,8 @@ export default function S12_Finale() {
           key={i}
           style={{
             position: "absolute",
-            left: agent.x - 75,
-            top: agent.y - 20,
+            left: agent.x - 110,
+            top: agent.y - 24,
           }}
         >
           <AgentChip
@@ -185,7 +184,7 @@ export default function S12_Finale() {
       <div
         style={{
           position: "absolute",
-          bottom: 160,
+          bottom: 110,
           left: 0,
           right: 0,
           textAlign: "center",
@@ -194,10 +193,10 @@ export default function S12_Finale() {
         <div
           style={{
             fontFamily: fonts.display,
-            fontWeight: 600,
-            fontSize: 52,
+            fontWeight: 700,
+            fontSize: 64,
             letterSpacing: "-0.045em",
-            lineHeight: 1.05,
+            lineHeight: 1.1,
             color: colors.ink,
             opacity: line1Opacity,
             transform: `translateY(${line1Y}px)`,
@@ -208,10 +207,10 @@ export default function S12_Finale() {
         <div
           style={{
             fontFamily: fonts.display,
-            fontWeight: 600,
-            fontSize: 52,
+            fontWeight: 700,
+            fontSize: 64,
             letterSpacing: "-0.045em",
-            lineHeight: 1.05,
+            lineHeight: 1.1,
             color: colors.accentText,
             opacity: line2Opacity,
             transform: `translateY(${line2Y}px)`,
@@ -226,11 +225,11 @@ export default function S12_Finale() {
         style={{
           position: "absolute",
           left: HUB.x,
-          top: HUB.y + markSize / 2 + 24,
+          top: HUB.y + markSize / 2 + 18,
           transform: "translateX(-50%)",
           fontFamily: fonts.display,
-          fontWeight: 600,
-          fontSize: 32,
+          fontWeight: 700,
+          fontSize: 44,
           letterSpacing: "-0.045em",
           color: colors.ink,
           opacity: interpolate(frame, [100, 130], [0, 1], {
@@ -268,28 +267,28 @@ export default function S12_Finale() {
             background: colors.surface,
             border: `1px solid ${colors.line}`,
             borderRadius: radius.sm,
-            boxShadow: `4px 4px 0px ${colors.ink}`,
+            boxShadow: `6px 6px 0px rgba(0,0,0,0.08)`,
             overflow: "hidden",
-            minWidth: 580,
+            minWidth: 760,
           }}
         >
           {/* Header */}
           <div
             style={{
-              padding: "10px 16px",
+              padding: "12px 20px",
               background: colors.surface2,
               borderBottom: `1px solid ${colors.line}`,
               display: "flex",
               alignItems: "center",
-              gap: 8,
+              gap: 10,
             }}
           >
-            {["#C5CBB9", "#C5CBB9", "#C5CBB9"].map((c, i) => (
+            {["#B0B8A2", "#B0B8A2", "#B0B8A2"].map((c, i) => (
               <span
                 key={i}
                 style={{
-                  width: 8,
-                  height: 8,
+                  width: 10,
+                  height: 10,
                   borderRadius: "50%",
                   background: c,
                   display: "inline-block",
@@ -300,7 +299,7 @@ export default function S12_Finale() {
               style={{
                 marginLeft: 8,
                 color: colors.muted,
-                fontSize: 11,
+                fontSize: 15,
                 letterSpacing: "0.08em",
                 fontFamily: fonts.mono,
               }}
@@ -312,9 +311,9 @@ export default function S12_Finale() {
           {/* Body */}
           <div
             style={{
-              padding: "24px 32px",
+              padding: "28px 36px",
               fontFamily: fonts.mono,
-              fontSize: 22,
+              fontSize: 26,
               lineHeight: 1.8,
               background: colors.surface,
             }}
@@ -346,8 +345,9 @@ export default function S12_Finale() {
         <div
           style={{
             fontFamily: fonts.mono,
-            fontSize: 12,
-            letterSpacing: "0.12em",
+            fontSize: 18,
+            fontWeight: 500,
+            letterSpacing: "0.1em",
             textTransform: "uppercase",
             color: colors.muted,
           }}

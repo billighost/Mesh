@@ -1,0 +1,23 @@
+{
+  "name": "mesh-ad-light-sfx",
+  "version": "1.0.0",
+  "description": "Mesh — Motion graphics ad video with Sound Effects & Voiceover (Light Mode)",
+  "private": true,
+  "scripts": {
+    "start": "remotion studio",
+    "build": "remotion render MeshAd out/mesh-ad-light-sfx.mp4 --codec=h264",
+    "render": "remotion render MeshAd out/mesh-ad-light-sfx.mp4 --codec=h264"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.291",
+    "@remotion/player": "4.0.291",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "remotion": "4.0.291"
+  },
+  "devDependencies": {
+    "@types/react": "18.3.1",
+    "@types/react-dom": "18.3.1",
+    "typescript": "5.5.4"
+  }
+}

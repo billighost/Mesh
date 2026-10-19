@@ -112,7 +112,7 @@ export default function S02_HeroReveal() {
             transform: `scale(${logoScale})`,
           }}
         >
-          <MeshLogo size={96} startFrame={8} />
+          <MeshLogo size={140} startFrame={8} />
         </div>
 
         {/* Tagline */}
@@ -121,9 +121,10 @@ export default function S02_HeroReveal() {
             display: "flex",
             flexWrap: "wrap",
             justifyContent: "center",
-            gap: 12,
-            maxWidth: 800,
+            gap: 14,
+            maxWidth: 1000,
             textAlign: "center",
+            lineHeight: 1.25,
           }}
         >
           {taglineWords.map((word, i) => {
@@ -133,11 +134,12 @@ export default function S02_HeroReveal() {
                 key={i}
                 style={{
                   fontFamily: fonts.body,
-                  fontSize: 28,
-                  color: colors.muted,
+                  fontSize: 42,
+                  fontWeight: 600,
+                  color: colors.ink,
                   opacity: visible ? 1 : 0,
                   transform: `translateY(${visible ? 0 : 8}px)`,
-                  letterSpacing: "-0.015em",
+                  letterSpacing: "-0.02em",
                 }}
               >
                 {word}
@@ -150,12 +152,13 @@ export default function S02_HeroReveal() {
         <div
           style={{
             display: "flex",
-            gap: 20,
+            gap: 24,
             fontFamily: fonts.mono,
-            fontSize: 12,
+            fontSize: 20,
+            fontWeight: 500,
             color: colors.muted,
             letterSpacing: "0.06em",
-            opacity: interpolate(frame, [200, 240], [0, 0.7], {
+            opacity: interpolate(frame, [200, 240], [0, 0.75], {
               extrapolateLeft: "clamp",
               extrapolateRight: "clamp",
             }),

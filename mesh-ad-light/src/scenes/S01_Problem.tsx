@@ -76,12 +76,12 @@ export default function S01_Problem() {
       <div
         style={{
           position: "absolute",
-          top: 160,
+          top: 140,
           left: 0,
           right: 0,
           display: "flex",
           justifyContent: "center",
-          gap: 28,
+          gap: 32,
           opacity: crumpleOpacity,
           transform: `scale(${crumpleScale})`,
         }}
@@ -97,7 +97,7 @@ export default function S01_Problem() {
               style={{
                 opacity,
                 transform: `translateY(${ty}px)`,
-                width: 280,
+                width: 380,
                 background: colors.surface,
                 border: `1px solid ${colors.line}`,
                 borderRadius: radius.sm,
@@ -109,21 +109,21 @@ export default function S01_Problem() {
               {/* Title bar */}
               <div
                 style={{
-                  padding: "10px 14px",
+                  padding: "12px 18px",
                   borderBottom: `1px solid ${colors.line}`,
-                  fontSize: 10,
+                  fontSize: 15,
                   color: colors.muted,
                   letterSpacing: "0.08em",
                   display: "flex",
                   alignItems: "center",
-                  gap: 8,
+                  gap: 10,
                   background: colors.surface2,
                 }}
               >
                 <span
                   style={{
-                    width: 6,
-                    height: 6,
+                    width: 9,
+                    height: 9,
                     borderRadius: "50%",
                     background: colors.line,
                     display: "inline-block",
@@ -134,11 +134,12 @@ export default function S01_Problem() {
               {/* Terminal content */}
               <div
                 style={{
-                  padding: "14px 16px",
-                  fontSize: 12,
+                  padding: "18px 20px",
+                  fontSize: 18,
                   color: colors.ink,
                   background: colors.surface,
-                  minHeight: 100,
+                  minHeight: 120,
+                  lineHeight: 1.6,
                 }}
               >
                 <span style={{ color: colors.accentText }}>$ </span>
@@ -155,20 +156,20 @@ export default function S01_Problem() {
       >
         {/* Line from agent 0 to agent 2 */}
         <line
-          x1={540}
-          y1={260}
-          x2={1380}
-          y2={260}
+          x1={480}
+          y1={255}
+          x2={1440}
+          y2={255}
           stroke={failFlash > 0 ? colors.warn : colors.muted}
-          strokeWidth={1.5}
-          strokeDasharray={`${840 * lineProgress} 9999`}
+          strokeWidth={2.5}
+          strokeDasharray={`${960 * lineProgress} 9999`}
           opacity={Math.max(lineProgress * 0.6, failFlash * 0.9)}
           strokeLinecap="round"
         />
         {/* Fail X mark */}
         {failFlash > 0 && (
           <g opacity={failFlash}>
-            <text x={955} y={248} textAnchor="middle" fill={colors.warn} fontSize={18} fontFamily={fonts.mono}>
+            <text x={960} y={242} textAnchor="middle" fill={colors.warn} fontSize={28} fontFamily={fonts.mono} fontWeight={700}>
               ×
             </text>
           </g>
@@ -179,27 +180,27 @@ export default function S01_Problem() {
       <div
         style={{
           position: "absolute",
-          bottom: 200,
+          bottom: 150,
           left: 0,
           right: 0,
           textAlign: "center",
-          padding: "0 80px",
+          padding: "0 60px",
         }}
       >
         {/* Line 1 */}
         <div
           style={{
             fontFamily: fonts.display,
-            fontWeight: 600,
-            fontSize: 72,
+            fontWeight: 700,
+            fontSize: 88,
             lineHeight: 1.05,
             letterSpacing: "-0.045em",
             color: colors.ink,
             display: "flex",
             justifyContent: "center",
-            gap: 16,
+            gap: 18,
             flexWrap: "wrap",
-            marginBottom: 8,
+            marginBottom: 10,
           }}
         >
           {line1Words.map((word, i) => {
@@ -224,13 +225,13 @@ export default function S01_Problem() {
         <div
           style={{
             fontFamily: fonts.display,
-            fontWeight: 600,
-            fontSize: 72,
+            fontWeight: 700,
+            fontSize: 88,
             lineHeight: 1.05,
             letterSpacing: "-0.045em",
             display: "flex",
             justifyContent: "center",
-            gap: 16,
+            gap: 18,
             flexWrap: "wrap",
           }}
         >
@@ -255,12 +256,17 @@ export default function S01_Problem() {
         {/* Sub-text */}
         <p
           style={{
-            marginTop: 28,
+            marginTop: 32,
             fontFamily: fonts.body,
-            fontSize: 20,
+            fontSize: 32,
+            fontWeight: 500,
+            lineHeight: 1.35,
             color: colors.muted,
             opacity: subOpacity,
-            letterSpacing: "-0.01em",
+            letterSpacing: "-0.015em",
+            maxWidth: 1100,
+            marginLeft: "auto",
+            marginRight: "auto",
           }}
         >
           Claude doesn't know what Cursor discovered. Repeat work. Every. Single. Session.

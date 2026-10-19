@@ -67,8 +67,8 @@ export default function S09_Privacy() {
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          gap: 80,
-          paddingTop: 60,
+          gap: 60,
+          paddingTop: 40,
         }}
       >
         {/* Left: local_only memory card + shield */}
@@ -77,25 +77,25 @@ export default function S09_Privacy() {
           <svg
             style={{
               position: "absolute",
-              inset: -24,
+              inset: -20,
               pointerEvents: "none",
               overflow: "visible",
             }}
-            width={448 + 48}
-            height={200 + 48}
-            viewBox={`-24 -24 ${448 + 48} ${200 + 48}`}
+            width={560 + 40}
+            height={240 + 40}
+            viewBox={`-20 -20 ${560 + 40} ${240 + 40}`}
           >
             <rect
               x={0}
               y={0}
-              width={448}
-              height={200}
-              rx={2}
+              width={560}
+              height={240}
+              rx={4}
               fill="none"
-              stroke={colors.accent}
-              strokeWidth={2}
-              strokeDasharray={`${(448 * 2 + 200 * 2) * shieldProgress} 9999`}
-              opacity={shieldProgress > 0 ? 0.7 : 0}
+              stroke={colors.accentText}
+              strokeWidth={3}
+              strokeDasharray={`${(560 * 2 + 240 * 2) * shieldProgress} 9999`}
+              opacity={shieldProgress > 0 ? 0.8 : 0}
             />
           </svg>
 
@@ -106,22 +106,23 @@ export default function S09_Privacy() {
             tags={[{ label: "local_only", variant: "accent" }, { label: "private" }]}
             entranceFrame={20}
             slideFrom="bottom"
-            width={448}
+            width={560}
           />
 
           {/* local_only badge */}
           <div
             style={{
               position: "absolute",
-              top: -14,
-              right: 12,
+              top: -16,
+              right: 16,
               fontFamily: fonts.mono,
-              fontSize: 10,
-              letterSpacing: "0.1em",
+              fontSize: 14,
+              fontWeight: 700,
+              letterSpacing: "0.08em",
               textTransform: "uppercase",
               color: colors.accentInk,
               background: colors.accent,
-              padding: "2px 8px",
+              padding: "4px 12px",
               borderRadius: radius.sm,
               opacity: shieldProgress,
             }}
@@ -136,6 +137,7 @@ export default function S09_Privacy() {
             display: "flex",
             flexDirection: "column",
             gap: 24,
+            width: 520,
           }}
         >
           {/* Export blocked */}
@@ -144,11 +146,11 @@ export default function S09_Privacy() {
               background: colors.surface,
               border: `1px solid ${colors.line}`,
               borderRadius: radius.sm,
-              padding: "14px 20px",
+              padding: "20px 26px",
               fontFamily: fonts.mono,
-              fontSize: 13,
+              fontSize: 18,
               color: colors.muted,
-              boxShadow: "4px 4px 0 #000",
+              boxShadow: "4px 4px 0 rgba(0,0,0,0.06)",
               position: "relative",
               overflow: "hidden",
               opacity: interpolate(frame, [60, 80], [0, 1], {
@@ -158,9 +160,9 @@ export default function S09_Privacy() {
             }}
           >
             <span style={{ color: colors.terminalDim }}>$ </span>
-            <span>mesh export backup.json</span>
+            <span style={{ color: colors.ink, fontWeight: 600 }}>mesh export backup.json</span>
             <br />
-            <span style={{ color: colors.muted }}>
+            <span style={{ color: colors.muted, fontSize: 16, marginTop: 6, display: "inline-block" }}>
               skipped 1 private memory · local_only
             </span>
           </div>
@@ -171,31 +173,33 @@ export default function S09_Privacy() {
               background: colors.surface,
               border: `1px solid ${colors.line}`,
               borderRadius: radius.sm,
-              padding: "14px 20px",
+              padding: "20px 26px",
               fontFamily: fonts.mono,
-              fontSize: 13,
-              boxShadow: "4px 4px 0 #000",
+              fontSize: 18,
+              boxShadow: "4px 4px 0 rgba(0,0,0,0.06)",
               opacity: interpolate(frame, [180, 210], [0, 1], {
                 extrapolateLeft: "clamp",
                 extrapolateRight: "clamp",
               }),
             }}
           >
-            <div style={{ color: colors.muted, fontSize: 10, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 8 }}>
+            <div style={{ color: colors.muted, fontSize: 14, fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 8 }}>
               Auto-redaction
             </div>
             <div style={{ color: colors.terminalDim }}>
               {showRedacted ? (
                 <span style={{ opacity: redactOpacity }}>
-                  <span style={{ color: colors.accent }}>API_KEY=</span>
-                  <span style={{ color: colors.warn }}>sk-••••••</span>
+                  <span style={{ color: colors.accentText, fontWeight: 600 }}>API_KEY=</span>
+                  <span style={{ color: colors.warn, fontWeight: 600 }}>sk-••••••</span>
                   {"  "}
                   <span
                     style={{
-                      fontSize: 10,
-                      color: colors.accent,
+                      fontSize: 13,
+                      fontWeight: 600,
+                      color: colors.accentText,
                       border: `1px solid ${colors.accent}`,
-                      padding: "1px 5px",
+                      background: colors.accentSoft,
+                      padding: "2px 8px",
                       borderRadius: radius.sm,
                     }}
                   >
@@ -203,7 +207,7 @@ export default function S09_Privacy() {
                   </span>
                 </span>
               ) : (
-                <span>API_KEY=sk-abc123xyz789…</span>
+                <span style={{ color: colors.ink }}>API_KEY=sk-abc123xyz789…</span>
               )}
             </div>
           </div>
@@ -216,14 +220,14 @@ export default function S09_Privacy() {
       >
         {arrowOpacity > 0 && (
           <g opacity={arrowOpacity}>
-            <text x={arrowX} y={480} textAnchor="middle" fill={colors.muted} fontSize={20} fontFamily={fonts.mono}>
+            <text x={arrowX} y={480} textAnchor="middle" fill={colors.muted} fontSize={28} fontFamily={fonts.mono}>
               →
             </text>
           </g>
         )}
         {bounceOpacity > 0 && (
           <g opacity={bounceOpacity}>
-            <text x={870} y={480} textAnchor="middle" fill={colors.warn} fontSize={22} fontFamily={fonts.mono}>
+            <text x={900} y={480} textAnchor="middle" fill={colors.warn} fontSize={32} fontFamily={fonts.mono} fontWeight={700}>
               ×
             </text>
           </g>
@@ -234,7 +238,7 @@ export default function S09_Privacy() {
       <div
         style={{
           position: "absolute",
-          bottom: 100,
+          bottom: 90,
           left: 0,
           right: 0,
           textAlign: "center",
@@ -244,8 +248,8 @@ export default function S09_Privacy() {
         <span
           style={{
             fontFamily: fonts.display,
-            fontWeight: 600,
-            fontSize: 28,
+            fontWeight: 700,
+            fontSize: 40,
             letterSpacing: "-0.03em",
             color: colors.ink,
           }}

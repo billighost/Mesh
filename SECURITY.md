@@ -35,8 +35,8 @@ Only the latest release receive security patches and backports:
 
 | Version | Supported |
 | :--- | :--- |
-| **v0.7.x** | ✅ Yes (Current active release line) |
-| < v0.7.0 | ❌ No (Please upgrade to the latest release) |
+| **v0.8.x** | ✅ Yes (Current active release line) |
+| < v0.8.0 | ❌ No (Please upgrade to the latest release) |
 
 ---
 
