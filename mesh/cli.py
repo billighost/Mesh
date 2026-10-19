@@ -2,8 +2,7 @@
 mesh/cli.py — Command-Line Interface for Mesh.
 
 Everything a human sees is rendered through `mesh.ui` so the whole CLI shares one
-visual language (see ui.py). Behaviour, security rules and daemon semantics are
-unchanged from earlier versions:
+visual language (see ui.py). Behaviour, security rules and daemon semantics:
 
   - Zero-overhead lazy command routing (never imports FastAPI, Uvicorn, or MCP on CLI operations)
   - Interactive permission prompts before starting background processes, modifying OS startup,
@@ -14,11 +13,8 @@ unchanged from earlier versions:
   - Multi-shell autocompletion (`bash`, `zsh`, `fish`, `powershell`) with idempotent `--install`
   - `mesh doctor` diagnostics (SQLite WAL/FTS5, permissions, ONNX SHA-256, degraded state, daemon, MCP)
   - Non-recursive interactive REPL (`mesh shell` / `mesh i`) with namespace switching
-
-UX conventions
-  - Results -> stdout, status/errors/notes -> stderr, so `mesh ask ... | jq` and `mesh context` stay clean
-  - `--json` on ask / inspect / status / conflicts / patterns / namespaces for scripting
-  - Colour and Unicode degrade gracefully (NO_COLOR, MESH_ASCII=1, non-TTY)
+  - First-class secret handling (`mesh add --vault`, `mesh add --secret-ref`, `mesh run`),
+    at-rest encryption (`mesh encrypt-db`, `mesh export --encrypt`), and quarantine review (`mesh approve`)
 """
 from __future__ import annotations
 
@@ -27,7 +23,9 @@ import difflib
 import json
 import os
 import platform
+import re
 import shlex
+import shutil
 import socket
 import sqlite3
 import stat
@@ -41,7 +39,7 @@ from typing import Any, Callable, Optional
 
 from . import ui
 from .audit import validate_namespace
-from .envutil import env_int
+from .envutil import env_bool, env_int
 from .version import VERSION, check_for_updates
 
 # Ensure Windows cp1252 / legacy consoles never crash on Unicode output
@@ -64,6 +62,7 @@ _TYPE_COLORS = {
     "result": "brand",
     "process": "info",
     "context": "muted",
+    "secret_ref": "warn",
     "general": "muted",
 }
 
@@ -187,8 +186,6 @@ def _daemon_request(
                 try:
                     parsed = json.loads(raw_body)
                 except ValueError:
-                    # The daemon answered, so the write (if any) already happened;
-                    # report it as ambiguous instead of triggering a local retry.
                     return {
                         "_daemon_lost": True,
                         "detail": f"Daemon returned an unreadable response for {path}.",
@@ -220,8 +217,6 @@ def _daemon_request(
                 "_timeout": True,
                 "detail": f"Daemon timed out after {timeout}s while processing {path}: {e}",
             }
-        # The socket probe and identity check already succeeded, so the request was
-        # almost certainly transmitted before the connection failed.
         return {
             "_daemon_lost": True,
             "detail": f"Lost the daemon connection while processing {path}: {e}",
@@ -329,6 +324,8 @@ _COMMAND_ALIASES = {
     "conflict": "conflicts",
     "repl": "shell",
     "i": "shell",
+    "exec": "run",
+    "encrypt": "encrypt-db",
 }
 
 
@@ -383,14 +380,24 @@ def _render_memory_card(index: int, mem: dict[str, Any], width: int) -> None:
     meta.append(ui.style(short_id, "bold"))
     if mem.get("source_agent"):
         meta.append(ui.style(f"by {mem['source_agent']}", "muted"))
+    if mem.get("trust_tier") and mem.get("trust_tier") != "user":
+        meta.append(ui.style(f"trust:{mem['trust_tier']}", "muted"))
     age = ui.relative_time(mem.get("created_at"))
     if age:
         meta.append(ui.style(age, "muted"))
     if mem.get("local_only"):
         meta.append(ui.badge("private", "accent"))
+    if mem.get("quarantined"):
+        meta.append(ui.badge("quarantined", "warn"))
     if mem.get("is_stale"):
         meta.append(ui.badge("stale", "warn"))
     print(f"{ui.IND}    {_muted_join(meta)}")
+
+    if mem.get("secret_ref") and isinstance(mem.get("secret_ref"), dict):
+        sref = mem["secret_ref"]
+        print(
+            f"{ui.IND}    {ui.style('locator: ' + str(sref.get('uri', '')), 'warn')}"
+        )
 
     tags = mem.get("tags") or mem.get("tags_list") or []
     if tags:
@@ -596,8 +603,172 @@ def install_skills_cmd() -> None:
         sys.exit(1)
 
 
+def install_cmd() -> None:
+    """Wire up Mesh: MCP server + skill + always-on rules across AI coding agents."""
+    parser = _parser("install", "Install Mesh MCP server, agent skill, and always-on rules.")
+    parser.add_argument("--agents", default="all", help="Comma-separated agent names or 'all' (default: all)")
+    parser.add_argument("--scope", default="user", choices=["user", "project"], help="Install scope: user or project (default: user)")
+    parser.add_argument("--dir", default=None, help="Target project directory for project scope (default: current directory)")
+    parser.add_argument("--namespace", default=None, help="Explicit namespace to bind for project scope")
+    parser.add_argument("--dry-run", action="store_true", help="Preview plan and diffs without modifying files")
+    parser.add_argument("--json", action="store_true", help="Output plan or results as JSON")
+    parser.add_argument("--apply", action="store_true", help="Authorize applying changes without interactive prompts")
+    parser.add_argument("--yes", "-y", action="store_true", help="Alias for --apply")
+    parser.add_argument("--force", action="store_true", help="Force reinstallation even if already up to date")
+    args = parser.parse_args()
+
+    from .installer import (
+        apply_installation,
+        plan_installation,
+    )
+
+    agents_list = None
+    if args.agents and args.agents.strip().lower() != "all":
+        agents_list = [a.strip().lower() for a in args.agents.split(",") if a.strip()]
+
+    project_dir = Path(args.dir).resolve() if args.dir else Path.cwd().resolve()
+    plan = plan_installation(
+        agents=agents_list,
+        scope=args.scope,
+        project_dir=project_dir,
+        namespace=args.namespace,
+    )
+
+    if args.dry_run or args.json:
+        if args.json:
+            ui.json_out({"status": "ok", "mode": "dry_run" if args.dry_run else "plan", "plan": plan})
+            return
+        ui.header("Mesh Installation Plan", f"Scope: {args.scope}", f"Agents: {args.agents}")
+        print()
+        for item in plan:
+            print(f"{ui.IND}Agent: {ui.style(item['display_name'], 'brand', 'bold')}")
+            for comp in ("mcp", "skill", "rules"):
+                info = item.get(comp)
+                if not info:
+                    continue
+                if info.get("error"):
+                    print(f"{ui.IND}  {comp.upper()}: {ui.style('ERROR: ' + str(info['error']), 'error')}")
+                elif info.get("changed"):
+                    print(f"{ui.IND}  {comp.upper()}: {ui.style('Would update ' + str(info['path']), 'info')}")
+                    if info.get("diff"):
+                        for line in info["diff"].splitlines()[:15]:
+                            print(f"{ui.IND}    {line}")
+                else:
+                    print(f"{ui.IND}  {comp.upper()}: {ui.style('Already configured / up to date', 'muted')}")
+            print()
+        ui.note("Dry run complete. No files were modified. Re-run with --apply to execute.")
+        return
+
+    is_authorized = args.apply or args.yes
+    if not is_authorized:
+        if not sys.stdin.isatty():
+            ui.error(
+                "Non-interactive run requires --apply or --dry-run",
+                "Mesh will not modify local configuration files without explicit consent.",
+            )
+            sys.exit(2)
+        prompt = f"Apply Mesh configuration for {len(plan)} agent(s) ({args.scope} scope)?"
+        if not ui.confirm(prompt, default=True):
+            ui.info("Installation cancelled by user.")
+            sys.exit(0)
+
+    results = apply_installation(plan, dry_run=False)
+    has_errors = any(
+        (r.get("mcp") and r["mcp"].get("error")) or
+        (r.get("skill") and r["skill"].get("error")) or
+        (r.get("rules") and r["rules"].get("error"))
+        for r in results
+    )
+
+    if args.json:
+        ui.json_out({"status": "error" if has_errors else "ok", "results": results})
+        if has_errors:
+            sys.exit(1)
+        return
+
+    ui.header("Mesh Installation Results", f"Scope: {args.scope}")
+    print()
+    for r in results:
+        print(f"{ui.IND}Agent: {ui.style(r['display_name'], 'brand', 'bold')}")
+        for comp in ("mcp", "skill", "rules"):
+            info = r.get(comp)
+            if not info:
+                continue
+            if info.get("error"):
+                print(f"{ui.IND}  {comp.upper()}: {ui.style('FAIL: ' + str(info['error']), 'error')}")
+            elif info.get("changed"):
+                bak_msg = f" (backup: {info.get('backup')})" if info.get("backup") else ""
+                print(f"{ui.IND}  {comp.upper()}: {ui.style(info.get('status', 'updated') + bak_msg, 'brand')}")
+            else:
+                print(f"{ui.IND}  {comp.upper()}: {ui.style(info.get('status', 'unchanged'), 'muted')}")
+        print()
+
+    if has_errors:
+        ui.warn("Installation finished with errors.")
+        sys.exit(1)
+    else:
+        ui.success("Mesh successfully wired into target agents.")
+
+
+def uninstall_cmd() -> None:
+    """Safely uninstall Mesh MCP server, rules, and skills from agents."""
+    parser = _parser("uninstall", "Uninstall Mesh MCP configuration, rules, and skills.")
+    parser.add_argument("--agents", default="all", help="Comma-separated agent names or 'all' (default: all)")
+    parser.add_argument("--scope", default="user", choices=["user", "project"], help="Scope: user or project (default: user)")
+    parser.add_argument("--dir", default=None, help="Target project directory for project scope (default: current directory)")
+    parser.add_argument("--dry-run", action="store_true", help="Preview uninstall without modifying files")
+    parser.add_argument("--json", action="store_true", help="Output results as JSON")
+    parser.add_argument("--apply", action="store_true", help="Authorize applying changes without interactive prompts")
+    parser.add_argument("--yes", "-y", action="store_true", help="Alias for --apply")
+    args = parser.parse_args()
+
+    from .installer import uninstall_mesh_agent
+
+    agents_list = None
+    if args.agents and args.agents.strip().lower() != "all":
+        agents_list = [a.strip().lower() for a in args.agents.split(",") if a.strip()]
+
+    project_dir = Path(args.dir).resolve() if args.dir else Path.cwd().resolve()
+
+    if not (args.dry_run or args.apply or args.yes):
+        if not sys.stdin.isatty():
+            ui.error("Non-interactive run requires --apply or --dry-run.")
+            sys.exit(2)
+        if not ui.confirm(f"Uninstall Mesh from agents ({args.scope} scope)?", default=False):
+            ui.info("Uninstall cancelled by user.")
+            sys.exit(0)
+
+    results = uninstall_mesh_agent(
+        agents=agents_list,
+        scope=args.scope,
+        project_dir=project_dir,
+        dry_run=args.dry_run,
+    )
+
+    if args.json:
+        ui.json_out({"status": "ok", "mode": "dry_run" if args.dry_run else "applied", "results": results})
+        return
+
+    ui.header("Mesh Uninstall", f"Scope: {args.scope}")
+    print()
+    for r in results:
+        print(f"{ui.IND}Agent: {ui.style(r['display_name'], 'brand', 'bold')}")
+        for comp in ("mcp", "skill", "rules"):
+            info = r.get(comp)
+            if not info:
+                continue
+            status_text = info.get("status") or ("removed" if info.get("changed") else "not present")
+            color = "brand" if info.get("changed") else "muted"
+            print(f"{ui.IND}  {comp.upper()}: {ui.style(status_text, color)}")
+        print()
+    if args.dry_run:
+        ui.note("Dry run complete. No files were removed.")
+    else:
+        ui.success("Uninstall complete.")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
-# add / ask / inspect / update / forget
+# add / ask / inspect / update / forget / approve / run / encrypt-db
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -606,11 +777,12 @@ def add_cmd() -> None:
 
     parser = _parser(
         "add",
-        "Store a memory.",
+        "Store a memory (or a secret_ref locator).",
         [
             ('mesh add "We deploy with Fly.io"', "quick fact"),
             ('mesh add "Prefer tabs over spaces" --type preference', "typed memory"),
-            ('mesh add "Staging DB is read-only" --tags db,staging --ttl 30', "tagged, expires in 30 days"),
+            ('mesh add "Stripe key" --secret-ref env://STRIPE_SECRET_KEY', "store a secret locator"),
+            ('mesh add "db_password = hunter2" --vault', "vault secret in keyring and save pointer"),
             ("echo 'note from a script' | mesh add", "read from a pipe"),
         ],
     )
@@ -623,6 +795,19 @@ def add_cmd() -> None:
         action="store_true",
         default=False,
         help="Force memory to be public even if credentials detected (interactive TTY only)",
+    )
+    parser.add_argument(
+        "--secret-ref",
+        dest="secret_ref",
+        default=None,
+        metavar="URI",
+        help="Store a secret locator URI (e.g. env://VAR, keyring://mesh/ns/KEY, op://Vault/Item/field)",
+    )
+    parser.add_argument(
+        "--vault",
+        action="store_true",
+        default=False,
+        help="Vault detected secret values in the OS keyring and store a secret_ref pointer instead of redacting",
     )
     parser.add_argument("--namespace", default=None, metavar="NAME", help="Namespace to use (default: $MESH_NAMESPACE or 'shared')")
     parser.add_argument("--confidence", type=float, default=1.0, help="0.0–1.0 (default 1.0)")
@@ -642,41 +827,78 @@ def add_cmd() -> None:
         if not content:
             ui.fail("Nothing to store — the content was empty.", 'Try: mesh add "We deploy with Fly.io"')
 
-    from .guards import guard_ingest
+    ns = _resolve_namespace(args.namespace)
+    tags = _split_tags(args.tags)
+    memory_type = args.memory_type
+    secret_ref_dict: Optional[dict[str, str]] = None
+
+    from .guards import guard_ingest, guard_tags
+    from .secrets import convert_text_secrets_to_refs, is_credential, normalize_secret_ref
+
+    if args.secret_ref:
+        try:
+            secret_ref_dict = normalize_secret_ref(args.secret_ref, default_namespace=ns)
+            if memory_type == "fact":
+                memory_type = "secret_ref"
+        except ValueError as e:
+            ui.fail(str(e))
+
+    # Finding S1 (2b): Convert-instead-of-destroy flow when `--vault` or `MESH_VAULT_SECRETS=1` is active
+    should_vault = bool(args.vault or env_bool("MESH_VAULT_SECRETS", False))
+    if should_vault and is_credential(content):
+        content, locators = convert_text_secrets_to_refs(content, namespace=ns)
+        if locators:
+            if secret_ref_dict is None:
+                secret_ref_dict = locators[0].to_dict()
+            memory_type = "secret_ref"
+            ui.info(
+                f"Vaulted secret in keyring ({locators[0].uri})",
+                "Stored a safe secret_ref locator instead of raw secret text.",
+            )
 
     guard = guard_ingest(content, local_only=args.private)
     if guard.rejected:
         ui.fail(guard.reason or "Rejected by the ingestion guard.")
 
+    try:
+        clean_tags, tags_priv, _ = guard_tags(tags, local_only=guard.local_only)
+    except ValueError as e:
+        ui.fail(str(e))
+
     final_content = guard.content
-    final_private = guard.local_only
-    if guard.local_only and not args.private:
+    final_private = bool(guard.local_only or tags_priv)
+    allow_redacted_pub = False
+
+    if final_private and not args.private:
         if args.force_public and hasattr(sys.stdin, "isatty") and sys.stdin.isatty():
             final_private = False
-            ui.warn("Credential detected, but --force-public was given — saving as a public memory")
+            allow_redacted_pub = True
+            ui.warn("Credential detected, but --force-public was given — saving redacted memory as public")
         else:
             final_private = True
             ui.warn(
                 "That looks like a credential — the secret was redacted and the memory saved as private",
-                "Use --force-public on a terminal to override.",
+                "Use --vault to store it in the OS keyring as a secret_ref, or --force-public on a terminal to override.",
             )
 
-    ns = _resolve_namespace(args.namespace)
-    tags = _split_tags(args.tags)
-
     with ui.spinner("Storing memory…"):
-        raw_proxied = _daemon_request(
-            "/learn",
-            payload={
-                "content": final_content,
-                "memory_type": args.memory_type,
-                "confidence": args.confidence,
-                "tags": tags,
-                "local_only": final_private,
-                "ttl_days": args.ttl,
-                "namespace": ns,
-                "agent_id": "human-cli",
-            },
+        raw_proxied = (
+            None
+            if allow_redacted_pub
+            else _daemon_request(
+                "/learn",
+                payload={
+                    "content": final_content,
+                    "memory_type": memory_type,
+                    "confidence": args.confidence,
+                    "tags": clean_tags,
+                    "local_only": final_private,
+                    "ttl_days": args.ttl,
+                    "namespace": ns,
+                    "agent_id": "human-cli",
+                    "secret_ref": secret_ref_dict,
+                },
+            )
         )
         proxied = _check_daemon_write_response(raw_proxied, "mesh add")
         if proxied is not None:
@@ -691,11 +913,14 @@ def add_cmd() -> None:
             try:
                 result = mesh.learn(
                     content=final_content,
-                    memory_type=args.memory_type,
+                    memory_type=memory_type,
                     confidence=args.confidence,
-                    tags=tags,
+                    tags=clean_tags,
                     local_only=final_private,
                     ttl_days=args.ttl,
+                    secret_ref=secret_ref_dict,
+                    trust_tier="user",
+                    allow_redacted_public=allow_redacted_pub,
                 )
             except ValueError as e:
                 ui.fail(str(e))
@@ -705,13 +930,15 @@ def add_cmd() -> None:
     ui.success(f"{verb} in {ui.style(ns, 'bold')}")
     for line in ui.wrap(final_content, ui.term_width() - 6, max_lines=3):
         print(f"{ui.IND}  {ui.style(line, 'muted')}")
-    meta = [_type_text(args.memory_type)]
+    meta = [_type_text(memory_type)]
     if final_private:
         meta.append(ui.badge("private", "accent"))
+    if secret_ref_dict:
+        meta.append(ui.style(secret_ref_dict["uri"], "warn"))
     if args.ttl:
         meta.append(ui.style(f"expires in {int(args.ttl) if args.ttl == int(args.ttl) else args.ttl}d", "muted"))
-    if tags:
-        meta.append(ui.style(" ".join("#" + t for t in tags), "muted"))
+    if clean_tags:
+        meta.append(ui.style(" ".join("#" + t for t in clean_tags), "muted"))
     if result.get("memory_id"):
         meta.append(ui.style(f"id {str(result['memory_id'])[:8]}", "muted"))
     print(f"{ui.IND}  {_muted_join(meta)}")
@@ -754,6 +981,7 @@ def ask_cmd() -> None:
     parser.add_argument("--no-stale", action="store_true", help="Hide stale memories")
     parser.add_argument("--no-other", action="store_true", help="Hide peripheral 'related' snippets")
     parser.add_argument("--no-private", action="store_true", help="Exclude local_only private memories")
+    parser.add_argument("--include-quarantined", action="store_true", help="Include unapproved quarantined memories")
     parser.add_argument("--json", action="store_true", help="Machine-readable output")
     args = parser.parse_args()
 
@@ -786,6 +1014,7 @@ def ask_cmd() -> None:
                 "min_confidence": args.min_confidence,
                 "include_stale": not args.no_stale,
                 "include_private": not args.no_private,
+                "include_quarantined": bool(args.include_quarantined),
                 "include_other_possible": not args.no_other,
                 "memory_type": args.memory_type,
                 "tags": tags,
@@ -819,6 +1048,7 @@ def ask_cmd() -> None:
                     min_confidence=args.min_confidence,
                     include_stale=not args.no_stale,
                     include_private=not args.no_private,
+                    include_quarantined=bool(args.include_quarantined),
                     memory_type=args.memory_type,
                     tags=tags,
                 )
@@ -833,6 +1063,7 @@ def ask_cmd() -> None:
                     min_confidence=args.min_confidence,
                     include_stale=not args.no_stale,
                     include_private=not args.no_private,
+                    include_quarantined=bool(args.include_quarantined),
                     memory_type=args.memory_type,
                     tags=tags,
                 )
@@ -891,13 +1122,14 @@ def inspect_cmd() -> None:
         [
             ("mesh inspect", "latest 30 memories"),
             ("mesh inspect --type decision --limit 100", "only decisions"),
-            ("mesh inspect --tag billing --no-private", "filter by tag"),
+            ("mesh inspect --quarantined", "only quarantined memories awaiting approval"),
         ],
     )
     parser.add_argument("--limit", type=int, default=30)
     parser.add_argument("--type", dest="memory_type", choices=sorted(VALID_MEMORY_TYPES), metavar="TYPE", help=_type_help(VALID_MEMORY_TYPES), default=None)
     parser.add_argument("--tag", default=None)
     parser.add_argument("--no-private", action="store_true", help="Exclude local_only private memories")
+    parser.add_argument("--quarantined", action="store_true", help="Show only quarantined memories")
     parser.add_argument("--namespace", default=None, metavar="NAME", help="Namespace to use (default: $MESH_NAMESPACE or 'shared')")
     parser.add_argument("--json", action="store_true", help="Machine-readable output")
     args = parser.parse_args()
@@ -907,6 +1139,7 @@ def inspect_cmd() -> None:
         "namespace": ns,
         "limit": args.limit,
         "include_private": "false" if args.no_private else "true",
+        "quarantined_only": "true" if args.quarantined else "false",
     }
     if args.memory_type:
         query_params["memory_type"] = args.memory_type
@@ -933,13 +1166,18 @@ def inspect_cmd() -> None:
             memory_type=args.memory_type,
             tag=args.tag,
             include_private=not args.no_private,
+            quarantined_only=bool(args.quarantined),
         )
 
     if args.json:
         ui.json_out({"namespace": ns, "count": len(mems), "memories": mems})
         return
 
-    filters = [f"type={args.memory_type}" if args.memory_type else "", f"tag={args.tag}" if args.tag else ""]
+    filters = [
+        f"type={args.memory_type}" if args.memory_type else "",
+        f"tag={args.tag}" if args.tag else "",
+        "quarantined" if args.quarantined else "",
+    ]
     filter_s = ", ".join(f for f in filters if f)
     if not mems:
         ui.header("Memories", ns)
@@ -951,14 +1189,22 @@ def inspect_cmd() -> None:
     ui.header("Memories", ns, f"{len(mems)} shown", filter_s)
     print()
 
-    any_flags = any(m.get("local_only") or m.get("is_stale") for m in mems)
+    any_flags = any(m.get("local_only") or m.get("is_stale") or m.get("quarantined") for m in mems)
     headers = ["ID", "Type", "Conf", "Reads", "Age"] + (["Flags"] if any_flags else []) + ["Memory"]
     aligns = ["l", "l", "r", "r", "l"] + (["l"] if any_flags else []) + ["l"]
     rows: list[list[Any]] = []
     for m in mems:
         mtype = str(m.get("memory_type", "fact"))
         conf = float(m.get("effective_confidence", m.get("confidence", 1.0)))
-        flags = [f for f, on in (("private", m.get("local_only")), ("stale", m.get("is_stale"))) if on]
+        flags = [
+            f
+            for f, on in (
+                ("private", m.get("local_only")),
+                ("quarantined", m.get("quarantined")),
+                ("stale", m.get("is_stale")),
+            )
+            if on
+        ]
         row: list[Any] = [
             str(m.get("id", ""))[:8],
             (mtype, _TYPE_COLORS.get(mtype, "muted")),
@@ -967,7 +1213,8 @@ def inspect_cmd() -> None:
             (ui.relative_time(m.get("created_at")), "muted"),
         ]
         if any_flags:
-            row.append((" ".join(flags), "warn" if "stale" in flags else "accent") if flags else "")
+            flag_color = "warn" if ("stale" in flags or "quarantined" in flags) else "accent"
+            row.append((" ".join(flags), flag_color) if flags else "")
         row.append(" ".join(str(m.get("content", "")).split()))
         rows.append(row)
     ui.table(headers, rows, aligns=aligns, flex=len(headers) - 1)
@@ -1002,13 +1249,11 @@ def update_cmd() -> None:
     tags = _split_tags(args.tags) if args.tags is not None else None
     should_clear_ttl = bool(args.clear_ttl) or (args.ttl is not None and args.ttl <= 0)
 
-    # Every ingestion surface must run the same guard; otherwise `mesh update`
-    # would be a way to bypass prompt-injection/credential handling.
+    from .guards import guard_ingest, guard_tags
+
     content = args.content
     local_only = args.local_only
     if content is not None:
-        from .guards import guard_ingest
-
         guard = guard_ingest(content, local_only=bool(args.local_only))
         if guard.rejected:
             ui.fail(guard.reason or "Rejected by the ingestion guard.")
@@ -1018,6 +1263,13 @@ def update_cmd() -> None:
             ui.warn(
                 "That looks like a credential — the secret was redacted and the memory saved as private"
             )
+    if tags is not None:
+        try:
+            tags, tags_priv, _ = guard_tags(tags, local_only=bool(local_only))
+            if tags_priv:
+                local_only = True
+        except ValueError as e:
+            ui.fail(str(e))
 
     changed = [
         name
@@ -1084,6 +1336,140 @@ def update_cmd() -> None:
         ui.fail(str(e), "Find the right ID with `mesh inspect` or `mesh ask`.")
 
 
+def approve_cmd() -> None:
+    """Approve one or all quarantined memories in a namespace (Finding S8)."""
+    from .memory import Mesh
+    from .store import NamespaceNotFoundError
+
+    parser = _parser(
+        "approve",
+        "Approve quarantined memories so they can be recalled and included in context blocks.",
+        [
+            ("mesh approve a1b2c3d4", "approve a single memory by ID or short ID"),
+            ("mesh approve --all", "approve all quarantined memories in the active namespace"),
+        ],
+    )
+    parser.add_argument("memory_id", nargs="?", default=None, help="Full UUID or 4+ char short ID")
+    parser.add_argument("--all", action="store_true", help="Approve all quarantined memories in the namespace")
+    parser.add_argument("--namespace", default=None, metavar="NAME", help="Namespace to use (default: $MESH_NAMESPACE or 'shared')")
+    args = parser.parse_args()
+
+    ns = _resolve_namespace(args.namespace)
+    if not args.memory_id and not args.all:
+        ui.fail("Specify a memory ID or pass --all.", "Usage: mesh approve <id>  or  mesh approve --all")
+
+    try:
+        mesh = Mesh(namespace=ns, agent_id="human-cli", create=False, trusted_local=True)
+    except NamespaceNotFoundError:
+        _handle_missing_namespace_cli(ns)
+        sys.exit(1)
+
+    if args.all:
+        quarantined_rows = mesh.inspect(limit=1000, quarantined_only=True)
+        if not quarantined_rows:
+            ui.info(f"No quarantined memories in '{ns}'")
+            return
+        for row in quarantined_rows:
+            mesh.approve(str(row["id"]))
+        print()
+        ui.success(f"Approved {ui.plural(len(quarantined_rows), 'quarantined memory', 'quarantined memories')} in {ui.style(ns, 'bold')}")
+        return
+
+    try:
+        res = mesh.approve(str(args.memory_id))
+        print()
+        ui.success(f"Approved memory {ui.style(str(res['memory_id'])[:8], 'bold')} in {ui.style(ns, 'bold')}")
+    except ValueError as e:
+        ui.fail(str(e), "List quarantined memories with `mesh inspect --quarantined`.")
+
+
+def run_cmd() -> None:
+    """
+    Execute a command with secrets resolved from `secret_ref` locators injected into
+    the child process environment without exposing values to agent context (Finding S1).
+    """
+    parser = _parser(
+        "run",
+        "Run a command with secrets injected from Mesh secret_ref locators.",
+        [
+            ("mesh run -- pytest", "inject all secret_ref locators in the active namespace"),
+            ("mesh run --env STRIPE_KEY=keyring://mesh/shared/STRIPE_KEY -- ./deploy.sh", "inject specific secret"),
+        ],
+    )
+    parser.add_argument("--namespace", default=None, metavar="NAME", help="Namespace to use (default: $MESH_NAMESPACE or 'shared')")
+    parser.add_argument("--env", "-e", action="append", default=[], metavar="KEY[=URI]", help="Secret key_name or ENV=URI mapping to inject")
+    parser.add_argument("cmd", nargs=argparse.REMAINDER, help="Command and arguments to execute (after --)")
+    args = parser.parse_args()
+
+    cmd_list = list(args.cmd or [])
+    if cmd_list and cmd_list[0] == "--":
+        cmd_list = cmd_list[1:]
+    if not cmd_list:
+        ui.fail("No command specified to run.", "Usage: mesh run [--env KEY] -- <command> [args...]")
+
+    ns = _resolve_namespace(args.namespace)
+    from .secrets import run_with_secrets
+
+    try:
+        rc = run_with_secrets(command=cmd_list, namespace=ns, env_specs=args.env or None)
+    except Exception as e:
+        ui.fail(f"Could not resolve secrets for `mesh run`: {e}")
+    sys.exit(rc)
+
+
+def encrypt_db_cmd() -> None:
+    """Migrate existing plaintext SQLite databases to encrypted-at-rest storage (Finding S5)."""
+    from .crypto import encrypt_namespace_db
+    from .namespaces import list_namespaces
+    from .store import NamespaceNotFoundError
+
+    parser = _parser(
+        "encrypt-db",
+        "Encrypt a namespace's SQLite memory and audit databases at rest (with automatic backup and VACUUM).",
+        [
+            ("mesh encrypt-db", "encrypt the active namespace using OS keyring / master key"),
+            ("mesh encrypt-db --all", "encrypt every namespace"),
+        ],
+    )
+    parser.add_argument("--namespace", default=None, metavar="NAME", help="Namespace to encrypt (default: $MESH_NAMESPACE or 'shared')")
+    parser.add_argument("--all", action="store_true", help="Encrypt all existing namespaces")
+    parser.add_argument("--passphrase", default=None, help="Optional passphrase (or set MESH_PASSPHRASE)")
+    parser.add_argument("--no-backup", action="store_true", help="Remove the backup copy immediately after verification")
+    args = parser.parse_args()
+
+    targets: list[str] = []
+    if args.all:
+        targets = [n["namespace"] for n in list_namespaces()]
+        if not targets:
+            ui.info("No namespaces exist yet — encryption at rest has been enabled for future namespaces.")
+            from .crypto import enable_encryption_at_rest
+
+            enable_encryption_at_rest(passphrase=args.passphrase)
+            return
+    else:
+        targets = [_resolve_namespace(args.namespace)]
+
+    for target_ns in targets:
+        try:
+            with ui.spinner(f"Encrypting namespace '{target_ns}' at rest…"):
+                res = encrypt_namespace_db(
+                    namespace=target_ns,
+                    passphrase=args.passphrase,
+                    keep_backup=not args.no_backup,
+                )
+            ui.success(
+                f"Encrypted namespace {ui.style(target_ns, 'bold')} at rest",
+                f"{res['encrypted_memories']} memories · {res['encrypted_queries']} queries · {res['encrypted_audits']} audit entries",
+            )
+        except NamespaceNotFoundError:
+            from .crypto import enable_encryption_at_rest
+
+            enable_encryption_at_rest(passphrase=args.passphrase)
+            ui.info(f"Enabled encryption at rest (namespace '{target_ns}' will be encrypted when created)")
+        except Exception as e:
+            ui.fail(f"Failed encrypting '{target_ns}': {e}")
+
+
 def forget_cmd() -> None:
     parser = _parser(
         "forget",
@@ -1097,7 +1483,6 @@ def forget_cmd() -> None:
 
     ns = _resolve_namespace(args.namespace)
 
-    # Only prompt when a human is at the keyboard; scripts and agents are never blocked.
     if not args.yes and ui.interactive():
         if not ui.confirm(f"Permanently forget memory {args.memory_id[:8]} from '{ns}'?"):
             ui.info("Cancelled — nothing was deleted")
@@ -1403,8 +1788,6 @@ def doctor_cmd() -> None:
 
     row("skip", "Embedding engine", f"{backend_str}  {ui.sym('dot')}  {model_tag_str}" + ("  (fallback active)" if eng.get("embedding_degraded") else ""))
     if last_err:
-        # When the model simply isn't installed the row above already explains it; only a
-        # failure *despite* an installed model is a separate problem worth a warning.
         row("warn" if pair is not None else "skip", "Last error", str(last_err))
 
     # 5. MCP config discovery
@@ -1425,6 +1808,45 @@ def doctor_cmd() -> None:
         row("ok", "MCP configs", f"{len(found_mcp)} found  ({ui.short_path(found_mcp[0])})")
     else:
         row("skip", "MCP configs", "none found in the default Claude / Cursor / Windsurf locations")
+
+    # 5b. Agent Wiring & Integration Checks
+    from .installer import ADAPTER_MAP, _RULES_MARKER_REGEX, _SKILL_NAME
+    from .mcp_server import _MCP_TOOLS
+
+    row("ok", "MCP Server tools", f"{len(_MCP_TOOLS)} tools defined in schema")
+
+    for agent_id, adapter in ADAPTER_MAP.items():
+        mcp_cfg = adapter.get_mcp_config_path("user")
+        if mcp_cfg and mcp_cfg.exists():
+            try:
+                data = json.loads(mcp_cfg.read_text(encoding="utf-8"))
+                if "mesh" in data.get("mcpServers", {}):
+                    cmd_entry = data["mcpServers"]["mesh"].get("command", "")
+                    cmd_res = shutil.which(cmd_entry) or Path(cmd_entry).exists()
+                    if cmd_res:
+                        row("ok", f"{adapter.display_name} MCP", f"registered ({cmd_entry})")
+                    else:
+                        row("fail", f"{adapter.display_name} MCP", f"command does not resolve: {cmd_entry}")
+            except Exception as e:
+                row("warn", f"{adapter.display_name} MCP", f"config read error: {e}")
+
+        skill_r = adapter.get_skill_root_path("user")
+        if skill_r and (skill_r / _SKILL_NAME).is_dir():
+            ver_file = skill_r / _SKILL_NAME / ".mesh-skill-version"
+            installed_v = ver_file.read_text(encoding="utf-8").strip() if ver_file.exists() else "unknown"
+            if installed_v == VERSION:
+                row("ok", f"{adapter.display_name} skill", f"v{installed_v} (up to date)")
+            else:
+                row("warn", f"{adapter.display_name} skill", f"v{installed_v} (outdated, current v{VERSION})", "mesh install --force")
+
+        rules_f = adapter.get_rules_path("user")
+        if rules_f and rules_f.exists():
+            try:
+                r_text = rules_f.read_text(encoding="utf-8")
+                if _RULES_MARKER_REGEX.search(r_text):
+                    row("ok", f"{adapter.display_name} rules", f"always-on protocol active in {ui.short_path(rules_f)}")
+            except Exception:
+                pass
 
     # 6. Namespaces
     ns_list = list_namespaces()
@@ -1466,11 +1888,8 @@ def doctor_cmd() -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 _SHELL_FORWARD_NS = {
-    # Deliberately excludes `import`: the export file normally names its own
-    # namespace, and injecting the shell's active `--namespace` silently
-    # redirected every restore into the wrong namespace.
-    "add", "ask", "inspect", "update", "forget", "status", "why", "context",
-    "conflicts", "patterns", "digest", "export", "capture",
+    "add", "ask", "inspect", "update", "forget", "approve", "run", "encrypt-db",
+    "status", "why", "context", "conflicts", "patterns", "digest", "export", "capture",
 }
 
 
@@ -1559,7 +1978,7 @@ def shell_cmd() -> None:
 
 
 _COMMAND_LIST = (
-    "add ask inspect update forget status why context setup install-skills daemon server "
+    "add ask inspect update forget approve run encrypt-db status why context setup install-skills daemon server "
     "dashboard http namespaces export import capture digest conflicts patterns doctor shell completion help version"
 )
 
@@ -1569,7 +1988,7 @@ _mesh_completion() {
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
     local commands="%(commands)s"
-    local types="fact preference context result instruction process decision error general"
+    local types="fact preference context result instruction process decision error secret_ref general"
     if [[ ${COMP_CWORD} -eq 1 ]]; then
         COMPREPLY=( $(compgen -W "${commands}" -- "${cur}") )
         return 0
@@ -1596,7 +2015,7 @@ _ZSH_COMPLETION_SCRIPT = """# Added by Mesh
 _mesh_zsh_completion() {
     local -a commands types
     commands=(%(commands)s)
-    types=(fact preference context result instruction process decision error general)
+    types=(fact preference context result instruction process decision error secret_ref general)
     if (( CURRENT == 2 )); then
         _describe 'command' commands
         return
@@ -1615,7 +2034,7 @@ compdef _mesh_zsh_completion mesh
 _FISH_COMPLETION_SCRIPT = """# Added by Mesh
 complete -c mesh -f
 complete -c mesh -n "__fish_use_subcommand" -a "%(commands)s"
-complete -c mesh -l type -a "fact preference context result instruction process decision error general"
+complete -c mesh -l type -a "fact preference context result instruction process decision error secret_ref general"
 """ % {"commands": _COMMAND_LIST}
 
 _POWERSHELL_COMPLETION_SCRIPT = """# Added by Mesh
@@ -1697,18 +2116,30 @@ def export_cmd() -> None:
     parser = _parser(
         "export",
         "Back up a namespace to a JSON file (private memories are never exported).",
-        [("mesh export backup.json", "export the active namespace"), ("mesh export work.json --namespace work --no-embeddings", "smaller file")],
+        [
+            ("mesh export backup.json", "export the active namespace"),
+            ("mesh export work.json --namespace work --no-embeddings", "smaller file"),
+            ("mesh export backup.enc.json --encrypt", "authenticated encrypted export"),
+        ],
     )
     parser.add_argument("output", help="Destination .json path")
     parser.add_argument("--namespace", default=None, metavar="NAME", help="Namespace to use (default: $MESH_NAMESPACE or 'shared')")
     parser.add_argument("--no-embeddings", action="store_true", help="Omit vectors (smaller, re-embedded on import)")
+    parser.add_argument("--encrypt", action="store_true", help="Encrypt the exported JSON file (Finding S5)")
+    parser.add_argument("--passphrase", default=None, help="Passphrase for --encrypt (or set MESH_PASSPHRASE)")
     args = parser.parse_args()
     ns = _resolve_namespace(args.namespace)
     from .io import export_namespace
 
     try:
         with ui.spinner(f"Exporting {ns}…"):
-            export_namespace(namespace=ns, output_path=args.output, include_embeddings=not args.no_embeddings)
+            export_namespace(
+                namespace=ns,
+                output_path=args.output,
+                include_embeddings=not args.no_embeddings,
+                encrypt=bool(args.encrypt),
+                passphrase=args.passphrase,
+            )
     except NamespaceNotFoundError:
         _handle_missing_namespace_cli(ns)
         sys.exit(1)
@@ -1719,13 +2150,14 @@ def export_cmd() -> None:
 def import_cmd() -> None:
     parser = _parser(
         "import",
-        "Restore memories from an exported JSON file.",
+        "Restore memories from an exported JSON file (supports encrypted exports).",
         [("mesh import backup.json --dry-run", "preview first"), ("mesh import backup.json --namespace restored", "import into another namespace")],
     )
     parser.add_argument("input", help="Exported .json file")
     parser.add_argument("--namespace", default=None, metavar="NAME", help="Target namespace (default: the one in the file)")
     parser.add_argument("--overwrite", action="store_true", help="Replace memories that already exist")
     parser.add_argument("--dry-run", action="store_true", help="Show what would happen without writing")
+    parser.add_argument("--passphrase", default=None, help="Passphrase if importing an encrypted export")
     args = parser.parse_args()
     from .io import import_namespace
 
@@ -1737,6 +2169,7 @@ def import_cmd() -> None:
                 target_namespace=target_ns,
                 merge_strategy="overwrite" if args.overwrite else "skip_existing",
                 dry_run=args.dry_run,
+                passphrase=args.passphrase,
             )
     except (FileNotFoundError, ValueError) as e:
         ui.fail(str(e))
@@ -2000,14 +2433,36 @@ def status_cmd() -> None:
     except ValueError:
         st, h_cnt, r_cnt = None, 0, 0
 
+    from .memory import Mesh
+    work_stats: dict[str, Any] = {
+        "total": 0,
+        "by_kind": {"goal": 0, "task": 0},
+        "by_status": {"todo": 0, "in_progress": 0, "blocked": 0, "done": 0, "cancelled": 0},
+    }
+    schema_ver = "3"
+    try:
+        m = Mesh(namespace=ns, agent_id="cli", create=False, trusted_local=True)
+        work_stats = m.store.get_work_item_stats()
+        with m.store._connect() as conn:
+            v_row = conn.execute("SELECT value FROM mesh_meta WHERE key = 'schema_version'").fetchone()
+            if v_row:
+                schema_ver = str(v_row[0])
+    except Exception:
+        pass
+
     if args.json:
         ui.json_out(
             {
                 "version": VERSION,
+                "schema_version": schema_ver,
                 "namespace": ns,
                 "namespace_exists": st is not None,
                 "stats": st,
                 "embedding": {"backend": backend_str, "model_tag": model_tag, "degraded": degraded, "last_error": last_err},
+                "embedding_mode": model_tag,
+                "memory_counts": st.get("memory_count", 0) if st else 0,
+                "memory_counts_by_type": st.get("type_breakdown", {}) if st else {},
+                "work_items_count": work_stats,
                 "pending_reembed": {"hash_384": h_cnt, "needs_reembed": r_cnt},
                 "daemon_port_open": port,
             }
@@ -2027,6 +2482,15 @@ def status_cmd() -> None:
         rows.append(("Searches", str(st.get("total_searches", 0))))
     else:
         rows.append(("Memories", ui.style("namespace doesn't exist yet", "muted")))
+
+    if work_stats.get("total", 0) > 0:
+        w_bits = [
+            f"{work_stats['total']} total",
+            f"{work_stats['by_status']['todo']} todo",
+            f"{work_stats['by_status']['in_progress']} in progress",
+            f"{work_stats['by_status']['done']} done",
+        ]
+        rows.append(("Work items", _muted_join(w_bits)))
     rows.append(
         (
             "Embeddings",
@@ -2057,11 +2521,21 @@ _HELP_SECTIONS: list[tuple[str, list[tuple[str, str, str]]]] = [
     (
         "Remember & recall",
         [
-            ("add <text>", "Store a memory", "learn, save"),
+            ("add <text>", "Store a memory (or --secret-ref / --vault)", "learn, save"),
             ("ask <query>", "Search by meaning and keywords", "search, find"),
             ("inspect", "Browse and filter memories", "ls"),
             ("update <id>", "Edit a memory", "edit"),
             ("forget <id>", "Delete a memory", "rm"),
+            ("approve <id>", "Approve a quarantined memory", ""),
+            ("run -- <cmd>", "Run a command with secret_ref env vars injected", "exec"),
+        ],
+    ),
+    (
+        "Projects, tasks & changelog",
+        [
+            ("brief", "Session-start brief within token budget", ""),
+            ("task <action>", "add · list · start · done · block · cancel · reopen · show", "tasks"),
+            ("log", "Generate project changelog from tasks and decisions", ""),
         ],
     ),
     (
@@ -2079,8 +2553,12 @@ _HELP_SECTIONS: list[tuple[str, list[tuple[str, str, str]]]] = [
         "Set up & maintain",
         [
             ("setup", "One-time setup: daemon, model, agent skills", ""),
+            ("install", "Configure MCP, skill, and rules for agents", ""),
+            ("uninstall", "Safely remove agent configuration", ""),
             ("doctor", "Diagnose problems and suggest fixes", ""),
-            ("daemon <action>", "start · stop · restart · status · warmup", ""),
+            ("encrypt-db", "Encrypt databases at rest (with backup & VACUUM)", "encrypt"),
+            ("daemon <action>", "start · stop · restart · status · warmup · rotate-token", ""),
+            ("audit export", "Export content-free audit telemetry as JSON", ""),
             ("install-skills", "Teach your AI coding agents to use Mesh", ""),
             ("completion", "Tab-completion for your shell", ""),
         ],
@@ -2089,7 +2567,7 @@ _HELP_SECTIONS: list[tuple[str, list[tuple[str, str, str]]]] = [
         "Data & integrations",
         [
             ("namespaces", "List, inspect, rename, delete namespaces", ""),
-            ("export / import", "Back up or restore as JSON", ""),
+            ("export / import", "Back up or restore as JSON (supports --encrypt)", ""),
             ("capture", "Extract memories from session logs", ""),
             ("shell", "Interactive Mesh shell", "i"),
             ("dashboard", "Open the web UI (localhost:7433)", ""),
@@ -2167,6 +2645,342 @@ def _lazy_capture_cmd() -> None:
     capture_cmd()
 
 
+def brief_cmd() -> None:
+    """Print the project brief (session-start context within a token budget)."""
+    parser = _parser("brief", "Session-start brief: health, open goals and tasks, and key facts within a token budget.")
+    parser.add_argument("--namespace", default=None, metavar="NAME", help="Namespace to use (default: $MESH_NAMESPACE or 'shared')")
+    parser.add_argument("--max-tokens", type=int, default=500, help="Maximum token budget (default 500)")
+    parser.add_argument("--format", choices=["plain", "markdown", "json"], default="markdown", help="Output format")
+    parser.add_argument("--no-private", action="store_true", help="Exclude private memories and tasks")
+    args = parser.parse_args()
+
+    t0 = time.perf_counter()
+    ns = _resolve_namespace(args.namespace)
+    from .audit import log_audit_event
+    from .memory import Mesh
+    from .store import NamespaceNotFoundError
+
+    try:
+        mesh = Mesh(namespace=ns, agent_id="cli", create=False, trusted_local=True)
+        brief = mesh.project_brief(
+            max_tokens=args.max_tokens,
+            include_work_items=True,
+            include_private=not args.no_private,
+        )
+    except NamespaceNotFoundError:
+        brief = {
+            "namespace": ns,
+            "namespace_state": "new",
+            "total_memories": 0,
+            "open_tasks_count": 0,
+            "completed_recent_count": 0,
+            "pending_contradictions": 0,
+            "brief_markdown": (
+                f"# Project Brief: {ns}\n\n"
+                f"*Namespace state:* `new` (empty)\n"
+                f"No memories, goals, or tasks exist yet in this namespace. "
+                f"Use `mesh add` or `mesh learn` to record facts and `mesh task add` to track tasks."
+            ),
+            "estimated_tokens": 25,
+        }
+
+    dur_ms = (time.perf_counter() - t0) * 1000.0
+    payload_len = len(json.dumps(brief))
+    log_audit_event(
+        surface="cli",
+        tool_or_command="mesh brief",
+        namespace=ns,
+        duration_ms=dur_ms,
+        status_code="ok",
+        agent_id="cli",
+        payload_size_bytes=payload_len,
+        result_count=brief.get("open_tasks_count", 0),
+    )
+
+    if args.format == "json":
+        ui.json_out(brief)
+    elif args.format == "plain":
+        plain_lines = []
+        for line in brief.get("brief_markdown", "").splitlines():
+            line = re.sub(r"^#+\s*", "", line)
+            line = re.sub(r"^[-*]\s*", "", line)
+            line = re.sub(r"\*\*([^*]+)\*\*", r"\1", line)
+            line = re.sub(r"\*([^*]+)\*", r"\1", line)
+            plain_lines.append(line)
+        print("\n".join(plain_lines).strip())
+    else:
+        print(brief.get("brief_markdown", ""))
+
+
+def task_cmd() -> None:
+    """Manage first-class goals and tasks."""
+    parser = _parser(
+        "task",
+        "Manage goals and tasks in the namespace.",
+        [
+            ('mesh task add "Set up authentication" --kind goal', "create a goal"),
+            ('mesh task add "Configure JWT tokens" --parent goal-1 --priority high', "create subtask"),
+            ("mesh task list", "list open work items"),
+            ("mesh task start task-1", "start working on a task"),
+            ('mesh task done task-1 --summary "Configured JWT auth with RSA keys" --evidence src/auth.py', "complete a task"),
+            ('mesh task block task-1 --note "Waiting for API keys"', "mark blocked"),
+            ("mesh task reopen task-1", "reopen completed/cancelled task"),
+            ("mesh task show task-1", "view task details and event history"),
+        ],
+    )
+    sub = parser.add_subparsers(dest="subcommand", metavar="ACTION")
+
+    p_add = sub.add_parser("add", help="Create a task or goal")
+    p_add.add_argument("title", help="Task or goal title")
+    p_add.add_argument("--kind", choices=["task", "goal"], default="task", help="Item kind (default: task)")
+    p_add.add_argument("--parent", default=None, help="Parent goal ID or short ID")
+    p_add.add_argument("--priority", choices=["low", "medium", "high", "critical"], default="medium")
+    p_add.add_argument("--desc", "--description", dest="description", default="", help="Detailed description")
+    p_add.add_argument("--tags", default="", help="Comma-separated tags")
+    p_add.add_argument("--private", action="store_true", help="Store as private (local only)")
+    p_add.add_argument("--namespace", default=None, metavar="NAME")
+
+    p_list = sub.add_parser("list", help="List work items")
+    p_list.add_argument("--status", choices=["open", "closed", "all", "todo", "in_progress", "blocked", "done", "cancelled"], default="open")
+    p_list.add_argument("--kind", choices=["task", "goal"], default=None)
+    p_list.add_argument("--parent", default=None)
+    p_list.add_argument("--limit", type=int, default=50)
+    p_list.add_argument("--no-private", action="store_true")
+    p_list.add_argument("--json", action="store_true")
+    p_list.add_argument("--namespace", default=None, metavar="NAME")
+
+    p_start = sub.add_parser("start", help="Mark item in_progress")
+    p_start.add_argument("item_id", help="UUID or short ID")
+    p_start.add_argument("--namespace", default=None, metavar="NAME")
+
+    p_done = sub.add_parser("done", help="Complete an item with a summary")
+    p_done.add_argument("item_id", help="UUID or short ID")
+    p_done.add_argument("--summary", "-s", required=True, help="Detailed summary of completed work")
+    p_done.add_argument("--evidence", "-e", default="", help="Comma-separated files or commit SHAs")
+    p_done.add_argument("--namespace", default=None, metavar="NAME")
+
+    p_block = sub.add_parser("block", help="Mark item blocked")
+    p_block.add_argument("item_id", help="UUID or short ID")
+    p_block.add_argument("--note", "-n", default="", help="Reason for blocker")
+    p_block.add_argument("--namespace", default=None, metavar="NAME")
+
+    p_cancel = sub.add_parser("cancel", help="Cancel an item")
+    p_cancel.add_argument("item_id", help="UUID or short ID")
+    p_cancel.add_argument("--note", "-n", default="", help="Reason for cancellation")
+    p_cancel.add_argument("--namespace", default=None, metavar="NAME")
+
+    p_reopen = sub.add_parser("reopen", help="Reopen an item")
+    p_reopen.add_argument("item_id", help="UUID or short ID")
+    p_reopen.add_argument("--note", "-n", default="", help="Note on reopening")
+    p_reopen.add_argument("--namespace", default=None, metavar="NAME")
+
+    p_show = sub.add_parser("show", help="View item details and history")
+    p_show.add_argument("item_id", help="UUID or short ID")
+    p_show.add_argument("--json", action="store_true")
+    p_show.add_argument("--namespace", default=None, metavar="NAME")
+
+    args = parser.parse_args()
+    if not args.subcommand:
+        parser.print_help()
+        return
+
+    t0 = time.perf_counter()
+    ns = _resolve_namespace(args.namespace)
+    from .audit import log_audit_event
+    from .memory import Mesh
+
+    mesh = Mesh(namespace=ns, agent_id="cli", create=(args.subcommand == "add"), trusted_local=True)
+
+    if args.subcommand == "add":
+        tags = _split_tags(args.tags)
+        item = mesh.create_work_item(
+            title=args.title,
+            kind=args.kind,
+            parent_id=args.parent,
+            description=args.description,
+            priority=args.priority,
+            tags=tags,
+            local_only=args.private,
+        )
+        print()
+        ui.success(f"Created {item['kind']} {ui.style(item['short_id'], 'bold')}", f"'{item['title']}' ({item['priority']})")
+        log_audit_event("cli", "mesh task add", ns, (time.perf_counter() - t0) * 1000.0, "ok", "cli", len(str(item)), 1)
+        return
+
+    elif args.subcommand == "list":
+        status_arg = None if args.status == "all" else args.status
+        items = mesh.list_work_items(
+            status=status_arg,
+            kind=args.kind,
+            parent_id=args.parent,
+            include_private=not args.no_private,
+            limit=args.limit,
+        )
+        log_audit_event("cli", "mesh task list", ns, (time.perf_counter() - t0) * 1000.0, "ok", "cli", len(json.dumps(items)), len(items))
+        if args.json:
+            ui.json_out({"namespace": ns, "count": len(items), "items": items})
+            return
+        ui.header("Work items", ns, f"{len(items)} shown", f"status={args.status}")
+        print()
+        if not items:
+            ui.info(f"No {args.status} work items in '{ns}'")
+            ui.hint('Create one with: mesh task add "..."', stream=sys.stdout)
+            return
+        headers = ["ID", "Kind", "Pri", "Status", "Age", "Title"]
+        aligns = ["l", "l", "l", "l", "l", "l"]
+        rows = []
+        for it in items:
+            p_color = {"critical": "error", "high": "warn", "medium": "info", "low": "muted"}.get(it["priority"], "muted")
+            s_color = {"todo": "muted", "in_progress": "brand", "blocked": "error", "done": "accent", "cancelled": "muted"}.get(it["status"], "muted")
+            rows.append([
+                it["short_id"],
+                it["kind"],
+                (it["priority"], p_color),
+                (it["status"], s_color),
+                (ui.relative_time(it["created_at"]), "muted"),
+                it["title"],
+            ])
+        ui.table(headers, rows, aligns=aligns, flex=5)
+        return
+
+    elif args.subcommand == "start":
+        updated = mesh.update_work_item(item_id=args.item_id, status="in_progress")
+        print()
+        ui.success(f"Started {updated['short_id']}", "Status changed to in_progress")
+        log_audit_event("cli", "mesh task start", ns, (time.perf_counter() - t0) * 1000.0, "ok", "cli", len(str(updated)), 1)
+        return
+
+    elif args.subcommand == "done":
+        ev_list = [x.strip() for x in args.evidence.split(",") if x.strip()] if args.evidence else None
+        completed = mesh.complete_work_item(item_id=args.item_id, summary=args.summary, evidence=ev_list)
+        print()
+        ui.success(f"Completed {completed['short_id']}", completed["title"])
+        log_audit_event("cli", "mesh task done", ns, (time.perf_counter() - t0) * 1000.0, "ok", "cli", len(str(completed)), 1)
+        return
+
+    elif args.subcommand == "block":
+        updated = mesh.update_work_item(item_id=args.item_id, status="blocked", note=args.note or None)
+        print()
+        ui.warn(f"Blocked {updated['short_id']}" + (f": {args.note}" if args.note else ""))
+        log_audit_event("cli", "mesh task block", ns, (time.perf_counter() - t0) * 1000.0, "ok", "cli", len(str(updated)), 1)
+        return
+
+    elif args.subcommand == "cancel":
+        updated = mesh.update_work_item(item_id=args.item_id, status="cancelled", note=args.note or None)
+        print()
+        ui.info(f"Cancelled {updated['short_id']}" + (f": {args.note}" if args.note else ""))
+        log_audit_event("cli", "mesh task cancel", ns, (time.perf_counter() - t0) * 1000.0, "ok", "cli", len(str(updated)), 1)
+        return
+
+    elif args.subcommand == "reopen":
+        updated = mesh.update_work_item(item_id=args.item_id, status="todo", note=args.note or None)
+        print()
+        ui.success(f"Reopened {updated['short_id']}", "Status set to todo")
+        log_audit_event("cli", "mesh task reopen", ns, (time.perf_counter() - t0) * 1000.0, "ok", "cli", len(str(updated)), 1)
+        return
+
+    elif args.subcommand == "show":
+        item = mesh.get_work_item(args.item_id, include_private=True)
+        if not item:
+            ui.fail(f"Work item '{args.item_id}' not found in namespace '{ns}'.")
+        events = mesh.get_work_events(item_id=item["id"], limit=20)
+        log_audit_event("cli", "mesh task show", ns, (time.perf_counter() - t0) * 1000.0, "ok", "cli", len(str(item)), 1)
+        if args.json:
+            ui.json_out({"item": item, "events": events})
+            return
+        ui.header(f"{item['kind'].capitalize()} {item['short_id']}", item["title"], f"status: {item['status']}")
+        print()
+        fields = [
+            ("ID", item["id"]),
+            ("Kind", item["kind"]),
+            ("Priority", item["priority"]),
+            ("Status", item["status"]),
+            ("Created by", f"{item['created_by']} ({ui.relative_time(item['created_at'])})"),
+        ]
+        if item.get("started_at"):
+            fields.append(("Started at", item["started_at"][:19]))
+        if item.get("completed_at"):
+            fields.append(("Completed at", f"{item['completed_at'][:19]} by {item.get('completed_by')}"))
+        if item.get("summary"):
+            fields.append(("Summary", item["summary"]))
+        if item.get("evidence"):
+            fields.append(("Evidence", ", ".join(item["evidence"])))
+        if item.get("tags"):
+            fields.append(("Tags", ", ".join(item["tags"])))
+        ui.kv(fields)
+        if events:
+            ui.section("Activity Log")
+            for ev in events:
+                note_str = f" — {ev['note']}" if ev.get("note") else ""
+                print(f"{ui.IND}  {ui.style(ev['timestamp'][:16].replace('T', ' '), 'muted')} [{ev['event_type']}] ({ev['agent_id']}){note_str}")
+        return
+
+
+def log_cmd() -> None:
+    """Show project changelog of completed work and architectural decisions."""
+    parser = _parser("log", "Project changelog: completed work items and decisions over a time window.")
+    parser.add_argument("--since", default="7d", help="Time window (default: 7d, e.g. 24h, 14d, or ISO date)")
+    parser.add_argument("--format", choices=["markdown", "json"], default="markdown", help="Output format")
+    parser.add_argument("--no-private", action="store_true", help="Exclude private work items")
+    parser.add_argument("--namespace", default=None, metavar="NAME")
+    args = parser.parse_args()
+
+    t0 = time.perf_counter()
+    ns = _resolve_namespace(args.namespace)
+    from .audit import log_audit_event
+    from .memory import Mesh
+    from .store import NamespaceNotFoundError
+
+    try:
+        mesh = Mesh(namespace=ns, agent_id="cli", create=False, trusted_local=True)
+        changelog_res = mesh.changelog(since=args.since, format=args.format, include_private=not args.no_private)
+    except NamespaceNotFoundError:
+        if args.format == "json":
+            changelog_res = {"namespace": ns, "since": args.since, "completed_items": [], "decisions": []}
+        else:
+            changelog_res = {
+                "changelog_markdown": f"# Project Changelog: {ns}\n\nNamespace does not exist yet. No work items or decisions recorded.",
+                "completed_count": 0,
+                "decisions_count": 0,
+            }
+
+    dur_ms = (time.perf_counter() - t0) * 1000.0
+    log_audit_event("cli", "mesh log", ns, dur_ms, "ok", "cli", len(json.dumps(changelog_res)), changelog_res.get("completed_count", 0))
+
+    if args.format == "json":
+        ui.json_out(changelog_res)
+    else:
+        print(changelog_res.get("changelog_markdown", ""))
+
+
+def audit_cmd() -> None:
+    """Inspect and export content-free operational telemetry."""
+    parser = _parser("audit", "Content-free operational telemetry and metrics (timing, tool names, NEVER memory text).")
+    sub = parser.add_subparsers(dest="subcommand", metavar="ACTION")
+
+    p_export = sub.add_parser("export", help="Export content-free audit events as JSON")
+    p_export.add_argument("--json", action="store_true", default=True, help="Output as JSON (default)")
+    p_export.add_argument("--since", default=None, help="Time cutoff (e.g. 24h, 7d, or ISO timestamp)")
+    p_export.add_argument("--surface", choices=["mcp", "cli", "http", "sdk"], default=None, help="Filter by surface")
+    p_export.add_argument("--namespace", default=None, help="Filter by namespace (default: all namespaces)")
+    p_export.add_argument("--limit", type=int, default=1000, help="Max records to return (default 1000)")
+
+    args = parser.parse_args()
+    if args.subcommand != "export":
+        parser.print_help()
+        return
+
+    from .audit import export_content_free_audit
+
+    events = export_content_free_audit(
+        namespace=args.namespace,
+        since=args.since,
+        surface=args.surface,
+        limit=args.limit,
+    )
+    ui.json_out({"count": len(events), "events": events})
+
+
 def _get_command_mapping() -> dict[str, Callable[[], None]]:
     return {
         "setup": setup_cmd,
@@ -2176,9 +2990,17 @@ def _get_command_mapping() -> dict[str, Callable[[], None]]:
         "inspect": inspect_cmd,
         "update": update_cmd,
         "forget": forget_cmd,
+        "approve": approve_cmd,
+        "run": run_cmd,
+        "encrypt-db": encrypt_db_cmd,
         "status": status_cmd,
         "why": why_cmd,
         "context": context_cmd,
+        "brief": brief_cmd,
+        "task": task_cmd,
+        "tasks": task_cmd,
+        "log": log_cmd,
+        "audit": audit_cmd,
         "help": help_cmd,
         "export": export_cmd,
         "import": import_cmd,
@@ -2194,12 +3016,14 @@ def _get_command_mapping() -> dict[str, Callable[[], None]]:
         "doctor": doctor_cmd,
         "shell": shell_cmd,
         "completion": completion_cmd,
+        "install": install_cmd,
+        "uninstall": uninstall_cmd,
         "install-skills": install_skills_cmd,
     }
 
 
 # Commands whose stdout is data (or a long-running server): never add decorative spacing.
-_RAW_OUTPUT_CMDS = {"context", "completion", "server", "http", "dashboard", "shell"}
+_RAW_OUTPUT_CMDS = {"context", "completion", "server", "http", "dashboard", "shell", "run", "brief", "log"}
 
 
 def _silence_broken_pipe() -> None:

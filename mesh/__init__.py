@@ -15,6 +15,7 @@ __version__ = VERSION
 
 if TYPE_CHECKING:
     from .audit import (
+        clear_audit_log,
         get_audit_log,
         get_audit_stats,
         log_forget,
@@ -22,12 +23,24 @@ if TYPE_CHECKING:
         log_recall,
         log_update,
         purge_memory_from_audit,
+        reject_symlink,
         scrub_memory_update_from_audit,
         validate_namespace,
     )
     from .context_builder import build_context, build_context_bundle
-    from .daemon import get_or_create_auth_token, request_user_permission
+    from .crypto import (
+        disable_encryption_at_rest,
+        enable_encryption_at_rest,
+        encrypt_namespace_db,
+        is_encryption_enabled,
+    )
+    from .daemon import (
+        get_or_create_auth_token,
+        request_user_permission,
+        rotate_auth_token,
+    )
     from .digest import generate_digest
+    from .guards import GuardResult, guard_ingest, guard_tags
     from .io import export_namespace, import_namespace
     from .memory import (
         VALID_MEMORY_TYPES,
@@ -45,7 +58,14 @@ if TYPE_CHECKING:
         rename_namespace,
     )
     from .passive import extract_memories_from_log
-    from .store import NamespaceNotFoundError, validate_memory_id
+    from .secrets import (
+        SecretLocator,
+        SecretResolver,
+        get_secret_from_keyring,
+        run_with_secrets,
+        store_secret_in_keyring,
+    )
+    from .store import VALID_TRUST_TIERS, NamespaceNotFoundError, validate_memory_id
 
 _LAZY_EXPORTS: dict[str, tuple[str, str]] = {
     # .memory
@@ -71,12 +91,15 @@ _LAZY_EXPORTS: dict[str, tuple[str, str]] = {
     "log_forget": (".audit", "log_forget"),
     "purge_memory_from_audit": (".audit", "purge_memory_from_audit"),
     "scrub_memory_update_from_audit": (".audit", "scrub_memory_update_from_audit"),
+    "clear_audit_log": (".audit", "clear_audit_log"),
+    "reject_symlink": (".audit", "reject_symlink"),
     "validate_namespace": (".audit", "validate_namespace"),
     "get_audit_log": (".audit", "get_audit_log"),
     "get_audit_stats": (".audit", "get_audit_stats"),
     # .store
     "validate_memory_id": (".store", "validate_memory_id"),
     "NamespaceNotFoundError": (".store", "NamespaceNotFoundError"),
+    "VALID_TRUST_TIERS": (".store", "VALID_TRUST_TIERS"),
     # .context_builder
     "build_context": (".context_builder", "build_context"),
     "build_context_bundle": (".context_builder", "build_context_bundle"),
@@ -87,11 +110,27 @@ _LAZY_EXPORTS: dict[str, tuple[str, str]] = {
     # .daemon
     "request_user_permission": (".daemon", "request_user_permission"),
     "get_or_create_auth_token": (".daemon", "get_or_create_auth_token"),
+    "rotate_auth_token": (".daemon", "rotate_auth_token"),
+    # .guards
+    "GuardResult": (".guards", "GuardResult"),
+    "guard_ingest": (".guards", "guard_ingest"),
+    "guard_tags": (".guards", "guard_tags"),
+    # .secrets
+    "SecretLocator": (".secrets", "SecretLocator"),
+    "SecretResolver": (".secrets", "SecretResolver"),
+    "store_secret_in_keyring": (".secrets", "store_secret_in_keyring"),
+    "get_secret_from_keyring": (".secrets", "get_secret_from_keyring"),
+    "run_with_secrets": (".secrets", "run_with_secrets"),
+    # .crypto
+    "is_encryption_enabled": (".crypto", "is_encryption_enabled"),
+    "enable_encryption_at_rest": (".crypto", "enable_encryption_at_rest"),
+    "disable_encryption_at_rest": (".crypto", "disable_encryption_at_rest"),
+    "encrypt_namespace_db": (".crypto", "encrypt_namespace_db"),
 }
 
 # Written as a literal (rather than derived from `_LAZY_EXPORTS`) so static
 # analysers and IDEs can see the public surface that `__getattr__` provides.
-# `tests/test_remediation.py` asserts the two stay in sync.
+# `tests/test_remediation.py` asserts `set(__all__) == set(_LAZY_EXPORTS) | {"VERSION", "__version__"}`.
 __all__ = [
     # .memory
     "Mesh",
@@ -116,12 +155,15 @@ __all__ = [
     "log_forget",
     "purge_memory_from_audit",
     "scrub_memory_update_from_audit",
+    "clear_audit_log",
+    "reject_symlink",
     "validate_namespace",
     "get_audit_log",
     "get_audit_stats",
     # .store
     "validate_memory_id",
     "NamespaceNotFoundError",
+    "VALID_TRUST_TIERS",
     # .context_builder
     "build_context",
     "build_context_bundle",
@@ -132,6 +174,22 @@ __all__ = [
     # .daemon
     "request_user_permission",
     "get_or_create_auth_token",
+    "rotate_auth_token",
+    # .guards
+    "GuardResult",
+    "guard_ingest",
+    "guard_tags",
+    # .secrets
+    "SecretLocator",
+    "SecretResolver",
+    "store_secret_in_keyring",
+    "get_secret_from_keyring",
+    "run_with_secrets",
+    # .crypto
+    "is_encryption_enabled",
+    "enable_encryption_at_rest",
+    "disable_encryption_at_rest",
+    "encrypt_namespace_db",
     # module metadata
     "VERSION",
     "__version__",

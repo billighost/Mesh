@@ -1,17 +1,15 @@
 """
 mesh/io.py — High-speed export and import for Mesh memory stores.
 
-Security & Integrity:
-  - Validates target namespaces against path traversal (`validate_namespace`)
-  - Uses `create=False` on `export_namespace` and `import_namespace(..., dry_run=True)` so read/preview
-    paths never create empty `.db` files on disk
-  - Validates `merge_strategy` (`"skip_existing"` or `"overwrite"`) upfront
-  - Applies `guard_ingest()` to every imported memory (rejecting prompt poison, redacting credentials,
-    and forcing `local_only=True`)
-  - Validates 384-dimensional vectors (rejecting all-zero vectors, norms outside `0.5..1.5`, unknown
-    `embedding_model` tags, or fake `onnx-minilm-l6-v2` tags on `hash-384` watermarked vectors),
-    re-embedding with `_embed_batch_with_tag` and storing the actual returned tag
-  - Writes all status messages to `sys.stderr` so MCP stdio channels are never polluted
+Addresses Findings:
+  - S1: Preserves and validates `secret_ref` locator metadata across export and import
+  - S5: Supports authenticated encrypted exports (`encrypt=True`, `passphrase=...`) and
+        automatic decryption on `import_namespace()` via `mesh.crypto`
+  - S8: Excludes `quarantined=True` memories from exports by default (`include_quarantined=False`)
+        and preserves `trust_tier` / `quarantined` metadata on import
+  - S11: Applies both `guard_ingest()` (on content) and `guard_tags()` (on tags) to every
+         imported memory
+  - N6: Rejects symlinked `output_path` and `input_path` via `reject_symlink()` and `O_NOFOLLOW`
 """
 from __future__ import annotations
 
@@ -26,8 +24,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from .audit import ensure_secure_mesh_dir, secure_file_permissions, validate_namespace
-from .guards import guard_ingest
+from .audit import (
+    ensure_secure_mesh_dir,
+    reject_symlink,
+    secure_file_permissions,
+    validate_namespace,
+)
+from .crypto import decrypt_export_payload, encrypt_export_payload
+from .guards import guard_ingest, guard_tags
 from .memory import (
     MAX_CONTENT_LENGTH,
     VALID_MEMORY_TYPES,
@@ -38,9 +42,11 @@ from .memory import (
     _parse_tags,
 )
 from .passive import _normalize_memory_type
+from .secrets import normalize_secret_ref
 from .store import (
     EMBEDDING_DIM,
     MeshStore,
+    _normalize_trust_tier,
     _parse_iso_utc,
     flush_all_telemetry,
     validate_memory_id,
@@ -96,6 +102,7 @@ def _load_existing_id_privacy_map(namespace: str) -> dict[str, bool]:
     db_path = ensure_secure_mesh_dir().resolve() / f"mesh_{namespace}.db"
     if not db_path.exists():
         return {}
+    reject_symlink(db_path)
     out: dict[str, bool] = {}
     try:
         conn = sqlite3.connect(db_path, timeout=5.0)
@@ -133,20 +140,29 @@ def export_namespace(
     namespace: str = "shared",
     output_path: Optional[str] = None,
     include_embeddings: bool = True,
+    encrypt: bool = False,
+    passphrase: Optional[str] = None,
+    include_quarantined: bool = False,
 ) -> dict[str, Any]:
     """
-    Export all non-private memories from an existing namespace to a JSON file.
+    Export all non-private (and by default non-quarantined) memories from an existing
+    namespace to a JSON file, optionally encrypting the export payload (Findings S5, S8, N6).
     Raises `NamespaceNotFoundError` (a `ValueError` subclass) if the namespace does not exist.
     """
     clean_ns = validate_namespace(namespace)
     flush_all_telemetry()
     store = MeshStore(namespace=clean_ns, create=False)
     total_count = store.count()
-    raw_exportable = store.get_exportable_memories(include_embeddings=include_embeddings)
+    raw_exportable = store.get_exportable_memories(
+        include_embeddings=include_embeddings,
+        include_quarantined=include_quarantined,
+    )
 
     exportable: list[dict[str, Any]] = []
     for mem in raw_exportable:
         if mem.get("local_only"):
+            continue
+        if not include_quarantined and mem.get("quarantined"):
             continue
         mid = mem["id"]
         entry: dict[str, Any] = {
@@ -157,15 +173,23 @@ def export_namespace(
             "source_agent": mem.get("source_agent", "unknown"),
             "tags": _parse_tags(mem.get("tags", "[]")),
             "local_only": False,
+            "trust_tier": _normalize_trust_tier(mem.get("trust_tier"), default="user"),
+            "quarantined": bool(mem.get("quarantined", False)),
             "created_at": mem.get("created_at", ""),
             "ttl_days": mem.get("ttl_days"),
             "decay_start_at": mem.get("decay_start_at"),
             "access_count": max(0, int(mem.get("access_count") or 0)),
             "embedding_model": mem.get("embedding_model", "onnx-minilm-l6-v2"),
         }
+        if mem.get("secret_ref"):
+            entry["secret_ref"] = mem["secret_ref"]
         if include_embeddings:
             entry["embedding"] = mem.get("embedding")
         exportable.append(entry)
+
+    exportable_work_items, exportable_work_events, total_work_items, skipped_private_work_items = (
+        store.get_exportable_work_items(include_private=False)
+    )
 
     skipped_count = max(0, total_count - len(exportable))
     export_data: dict[str, Any] = {
@@ -175,17 +199,34 @@ def export_namespace(
         "memory_count": len(exportable),
         "skipped_local_only": skipped_count,
         "memories": exportable,
+        "work_items_count": len(exportable_work_items),
+        "skipped_local_only_work_items": skipped_private_work_items,
+        "work_items": exportable_work_items,
+        "work_events": exportable_work_events,
     }
+
+    payload_to_write = (
+        encrypt_export_payload(export_data, passphrase=passphrase)
+        if (encrypt or (passphrase is not None and passphrase.strip()))
+        else export_data
+    )
 
     if output_path:
         path = Path(output_path)
+        # Finding N6: Refuse to write to a symlinked output file or symlinked parent directory
+        reject_symlink(path)
+        if path.parent.exists():
+            reject_symlink(path.parent)
         path.parent.mkdir(parents=True, exist_ok=True)
-        content_str = json.dumps(export_data, indent=2, ensure_ascii=False)
+        content_str = json.dumps(payload_to_write, indent=2, ensure_ascii=False)
         if os.name == "nt":
             with open(path, "w", encoding="utf-8") as f:
                 f.write(content_str)
         else:
-            fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            fd = os.open(str(path), flags, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(content_str)
         secure_file_permissions(path)
@@ -199,7 +240,7 @@ def export_namespace(
         if skipped_count > 0:
             ui.note(f"{ui.plural(skipped_count, 'private memory', 'private memories')} left out — private memories are never exported.")
 
-    return export_data
+    return payload_to_write
 
 
 def import_namespace(
@@ -207,9 +248,10 @@ def import_namespace(
     target_namespace: Optional[str] = None,
     merge_strategy: str = "skip_existing",
     dry_run: bool = False,
+    passphrase: Optional[str] = None,
 ) -> dict[str, Any]:
     """
-    Import memories from a JSON export file into a validated namespace.
+    Import memories from a JSON export file (plaintext or encrypted) into a validated namespace.
 
     Args:
         input_path: Path to the JSON export file.
@@ -217,6 +259,7 @@ def import_namespace(
         merge_strategy: "skip_existing" or "overwrite" (raises ValueError otherwise).
         dry_run: If True, compute real preview stats (`would_import`, `would_skip`, `would_error`)
                  using the exact same validation without creating or writing to any database.
+        passphrase: Optional passphrase to decrypt a `mesh_encrypted_export` file.
 
     Returns:
         Dict with import stats: `imported`, `skipped`, `errors`, `flagged`, `namespace`
@@ -229,11 +272,17 @@ def import_namespace(
         )
 
     path = Path(input_path)
+    reject_symlink(path)
     if not path.exists():
         raise FileNotFoundError(f"Export file not found: {input_path}")
 
     with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
+        raw_data = json.load(f)
+
+    if isinstance(raw_data, dict) and raw_data.get("mesh_encrypted_export"):
+        data = decrypt_export_payload(raw_data, passphrase=passphrase)
+    else:
+        data = raw_data
 
     if not isinstance(data, dict) or "memories" not in data or not isinstance(data["memories"], list):
         raise ValueError("Invalid Mesh export file format.")
@@ -281,13 +330,23 @@ def import_namespace(
                 stats["errors"] += 1
                 continue
 
-            if guard_res.local_only and not orig_local_only:
+            # Finding S11: Validate tags through `guard_tags` on import
+            raw_tags = _parse_tags(mem.get("tags", []))
+            try:
+                clean_tags, tags_priv, _ = guard_tags(raw_tags, local_only=guard_res.local_only)
+            except ValueError:
+                stats["errors"] += 1
+                continue
+
+            final_local = bool(guard_res.local_only or tags_priv)
+            if final_local and not orig_local_only:
                 stats["flagged"] += 1
 
             content = guard_res.content
             mem_copy = dict(mem)
-            mem_copy["local_only"] = guard_res.local_only
+            mem_copy["local_only"] = final_local
             mem_copy["content"] = content
+            mem_copy["tags"] = clean_tags
 
             raw_id = str(mem_copy.get("id") or "").strip()
             mem_id: Optional[str] = None
@@ -297,8 +356,6 @@ def import_namespace(
                 except ValueError:
                     mem_id = None
             if mem_id is None:
-                # Deterministic fallback: re-importing the same file is idempotent
-                # (a random UUID would create duplicate rows on every run).
                 mem_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"mesh:{namespace}:{content}"))
 
             if mem_id in file_seen_ids:
@@ -312,9 +369,6 @@ def import_namespace(
                     continue
                 seen_ids.add(mem_id)
             elif clean_strategy == "overwrite":
-                # A Mesh export can never contain a private memory (exports exclude
-                # them), so any file entry claiming an existing private ID is either
-                # hand-crafted or hostile. Never let an import overwrite private data.
                 if existing_privacy_map.get(mem_id, False):
                     stats["skipped"] += 1
                     continue
@@ -339,10 +393,14 @@ def import_namespace(
 
             ui.warn(f"Couldn't read one memory in the file: {e}")
 
+    file_work_items = data.get("work_items") or []
+    file_work_events = data.get("work_events") or []
+
     if dry_run:
         stats["would_import"] = len(to_import)
         stats["would_skip"] = stats["skipped"]
         stats["would_error"] = stats["errors"]
+        stats["would_import_work_items"] = len(file_work_items)
         from . import ui
 
         ui.info(
@@ -366,9 +424,6 @@ def import_namespace(
 
             ui.warn(f"Couldn't embed the imported memories ({e})", "They'll be imported with hash-384 fallback embeddings and fixed up later.")
 
-        # The promise above must hold for *every* item: a failed batch, a short
-        # return, or a malformed vector falls back to the deterministic hash-384
-        # embedding instead of rejecting the memory.
         for item_idx in embed_owner_indices:
             if item_idx not in computed_embeddings:
                 fallback_text = str(to_import[item_idx][1]["content"])
@@ -441,6 +496,10 @@ def import_namespace(
                 else (created_at if ttl_days is not None else None)
             )
 
+            trust_tier = _normalize_trust_tier(mem.get("trust_tier"), default="user")
+            quarantined_bool = bool(mem.get("quarantined", False))
+            norm_ref = normalize_secret_ref(mem.get("secret_ref"), default_namespace=namespace)
+
             metadata = {
                 "memory_type": mem_type,
                 "confidence": confidence,
@@ -453,6 +512,9 @@ def import_namespace(
                 "ttl_days": ttl_days,
                 "decay_start_at": decay_start_at,
                 "embedding_model": emb_tag,
+                "trust_tier": trust_tier,
+                "quarantined": quarantined_bool,
+                "secret_ref": norm_ref,
             }
             batch_items.append(
                 (mem_id, content, embedding, metadata, bool(mem.get("local_only", False)))
@@ -463,7 +525,6 @@ def import_namespace(
             stats["errors"] += 1
             from . import ui
 
-            # Never echo private content into terminal/stderr output.
             if mem.get("local_only"):
                 label = "a private memory"
             else:
@@ -496,6 +557,13 @@ def import_namespace(
         with _PENDING_REEMBED_LOCK:
             for mid, text in hash_queued_items:
                 _PENDING_REEMBED_QUEUE.put(namespace, mid, text)
+
+    if file_work_items:
+        w_stats = store.import_work_items(file_work_items, file_work_events, merge_strategy=clean_strategy)
+        stats["imported_work_items"] = w_stats["imported_items"]
+        stats["skipped_work_items"] = w_stats["skipped_items"]
+        stats["imported_work_events"] = w_stats["imported_events"]
+        stats["errors"] += w_stats["errors"]
 
     from . import ui
 

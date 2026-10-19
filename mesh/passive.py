@@ -4,11 +4,16 @@ mesh/passive.py — Passive memory capture from agent session logs.
 Reads a conversation log (raw text, file path, directory path, or JSONL)
 and extracts facts worth storing in Mesh.
 
-Security & Privacy Hardening:
-  - Automatically redacts API keys, bearer tokens, passwords, and secrets via
-    `_redact_secrets_for_cloud()` BEFORE sending any log text to external LLM providers.
-  - Asks the user for explicit `y/n` permission before uploading logs to cloud LLM APIs.
-  - Marks any locally extracted credential-bearing sentences as `local_only=True`.
+Addresses Findings:
+  - S2, S3, S4, S10, N2: Delegates credential detection, local redaction, cloud redaction, and
+                         poison detection to `mesh.secrets` and `mesh.guards`
+  - S7: Never implicitly uploads session logs to cloud providers merely because `MESH_AUTO_APPROVE=1`
+        and an ambient API key are present; requires explicit cloud provider opt-in or dedicated
+        per-invocation consent (`MESH_ALLOW_CLOUD_CAPTURE=1` or interactive terminal confirmation)
+  - S8: Tags passively captured memories with `trust_tier="log_captured"` and supports automatic
+        quarantine (`quarantine=True` when `MESH_QUARANTINE_CAPTURE=1` or `quarantine=True` is passed)
+  - N1: Confines `_resolve_log_input` to non-symlinked `.log`/`.txt`/`.jsonl`/`.md` files and
+        bounded directory scans (skipping hidden/dot directories like `.ssh`, `.aws`, `.gnupg`)
 """
 from __future__ import annotations
 
@@ -17,14 +22,31 @@ import json
 import os
 import re
 import sys
-import unicodedata
 from pathlib import Path
 from typing import Any, Optional
 
 from . import ui
-from .audit import validate_namespace
-from .daemon import request_user_permission
+from .audit import reject_symlink, validate_namespace
+from .envutil import env_bool
+from .guards import (
+    INVISIBLE_CHAR_CLASS,
+    ZERO_WIDTH_RE,
+    is_poison_attempt,
+)
 from .memory import VALID_MEMORY_TYPES, Mesh
+from .secrets import (
+    is_credential,
+    redact_secrets_for_cloud,
+    redact_secrets_local,
+)
+
+# Backwards-compatible aliases for internal callers and existing test suites
+_INVISIBLE_CHAR_CLASS = INVISIBLE_CHAR_CLASS
+_ZERO_WIDTH_RE = ZERO_WIDTH_RE
+_is_credential = is_credential
+_is_poison_attempt = is_poison_attempt
+_redact_secrets_for_cloud = redact_secrets_for_cloud
+_redact_secrets_local = redact_secrets_local
 
 EXTRACTION_PROMPT = """You are a memory extraction assistant for Mesh, a shared agent memory system.
 Given a conversation or session log between a human and an AI agent, extract facts, decisions,
@@ -63,69 +85,14 @@ _TYPE_ALIASES = {
 }
 
 _LOG_FILE_EXTENSIONS = {".log", ".txt", ".jsonl", ".md"}
-
-# Redaction patterns applied BEFORE sending any log text to external LLM providers
-_CLOUD_REDACTION_RULES: list[tuple[re.Pattern[str], str]] = [
-    (
-        re.compile(
-            r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----"
-        ),
-        "[REDACTED_PRIVATE_KEY]",
-    ),
-    (
-        re.compile(
-            r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"
-        ),
-        "[REDACTED_JWT]",
-    ),
-    (
-        re.compile(
-            r"\b(?:sk-ant-[a-zA-Z0-9_-]{8,}|sk-[a-zA-Z0-9_-]{6,}|gh[pousr]_[a-zA-Z0-9]{12,}|github_pat_[a-zA-Z0-9_]{16,}|glpat-[a-zA-Z0-9_-]{12,}|hf_[a-zA-Z0-9]{16,}|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|xox[baprs]-[a-zA-Z0-9-]{10,}|AIza[0-9A-Za-z_-]{20,}|rk_live_[0-9a-zA-Z]{16,}|sk_live_[0-9a-zA-Z]{16,})\b"
-        ),
-        "[REDACTED_API_KEY]",
-    ),
-    (re.compile(r"(?i)\b(Bearer\s+)[^\s\"'`]{8,}"), r"\1[REDACTED_TOKEN]"),
-    (
-        # URL userinfo. Empty usernames (`redis://:pass@host`) and passwords that
-        # contain `@` (`postgres://user:p@ss@host/db`) must both be fully redacted:
-        # the password group is greedy so it ends at the *last* `@` before the host.
-        # `[^\s]` (rather than `[^\s/]`) also catches unescaped `/` in a pasted
-        # password, matching the detection rule below.
-        re.compile(r"([a-zA-Z0-9+.-]{1,30}://[^/\s:@]*:)([^\s]*)(@[^@\s/]+)"),
-        r"\1[REDACTED_PASSWORD]\3",
-    ),
-    (
-        re.compile(
-            r"(?i)\b(password|passwd|pwd|secret|api[_\s-]?key|access[_\s-]?token|auth[_\s-]?token|refresh[_\s-]?token|private[_\s-]?key|client[_\s-]?secret|aws_secret_access_key|aws_session_token|token)"
-            r"(['\"]?\s*(?:is|=|:)\s*['\"]?)([^\s,'\"`;\n[]{3,})"
-        ),
-        r"\1\2[REDACTED_SECRET]",
-    ),
-    (
-        re.compile(r"(?i)\b(authorization\s*[:=]\s*)(basic|bearer|token)\s+([^\s,'\"`;\n]{3,})"),
-        r"\1\2 [REDACTED_TOKEN]",
-    ),
-    (
-        re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"),
-        "[REDACTED_EMAIL]",
-    ),
-]
-
-
-def _redact_secrets_for_cloud(text: str) -> str:
-    """
-    Scrub API keys, tokens, URI passwords, and secret assignments from `text`
-    before sending it to any external LLM API (OpenAI, Anthropic, Groq, etc.).
-    """
-    # Compatibility characters (full-width letters, mathematical alphanumerics,
-    # etc.) would otherwise smuggle a key past ASCII regexes while an LLM still
-    # reads it normally. Invisible separators are removed first: they are
-    # preserved by NFKC and would otherwise split the secret across a regex.
-    redacted = _ZERO_WIDTH_RE.sub("", text)
-    redacted = unicodedata.normalize("NFKC", redacted)
-    for pattern, replacement in _CLOUD_REDACTION_RULES:
-        redacted = pattern.sub(replacement, redacted)
-    return redacted
+_FORBIDDEN_FILENAMES = {
+    ".env", ".env.local", ".env.production", ".netrc", ".pgpass",
+    "id_rsa", "id_ed25519", "id_ecdsa", "authorized_keys", "known_hosts",
+    "credentials", "config", "shadow", "passwd", "master.key", "auth_token",
+}
+_FORBIDDEN_DIRS = {
+    ".ssh", ".aws", ".gnupg", ".kube", ".docker", ".config", ".git", ".mesh",
+}
 
 
 def _normalize_memory_type(raw_type: Optional[str]) -> str:
@@ -138,11 +105,33 @@ def _normalize_memory_type(raw_type: Optional[str]) -> str:
     return _TYPE_ALIASES.get(cleaned, "general")
 
 
+def _is_safe_log_file_path(path: Path) -> bool:
+    """
+    Finding N1: Verify that `path` is a non-symlinked log file with an allowed extension
+    (`.log`, `.txt`, `.jsonl`, `.md`) and does not reside inside sensitive dot-directories
+    (`.ssh`, `.aws`, `.gnupg`, etc.).
+    """
+    try:
+        if path.is_symlink():
+            return False
+        name_low = path.name.lower()
+        if name_low in _FORBIDDEN_FILENAMES or name_low.startswith(".env"):
+            return False
+        if path.suffix.lower() not in _LOG_FILE_EXTENSIONS:
+            return False
+        for part in path.parts:
+            if part.lower() in _FORBIDDEN_DIRS:
+                return False
+        return path.is_file()
+    except OSError:
+        return False
+
+
 def _resolve_log_input(log_input: str, max_chars: int = 16000) -> str:
     """
-    Accept either raw log text OR a file/directory path string.
-    If `log_input` points to an existing file or directory on disk, reads the recent
-    log content automatically.
+    Accept either raw log text OR a verified log file/directory path string.
+    Finding N1: Refuses symlinks, non-log file extensions (e.g. `~/.ssh/config`, `.env`),
+    and bounds directory traversal depth and file count.
     """
     if not log_input or not log_input.strip():
         return ""
@@ -150,17 +139,37 @@ def _resolve_log_input(log_input: str, max_chars: int = 16000) -> str:
     if "\n" not in stripped and len(stripped) < 1024:
         try:
             candidate = Path(stripped).expanduser()
-            if candidate.exists():
+            if not candidate.is_symlink() and candidate.exists():
                 if candidate.is_file():
-                    return _read_log_file(candidate, max_chars=max_chars)
+                    if _is_safe_log_file_path(candidate):
+                        return _read_log_file(candidate, max_chars=max_chars)
+                    return stripped
                 if candidate.is_dir():
                     files: list[tuple[int, Path]] = []
-                    for child in candidate.rglob("*"):
-                        if child.is_file() and child.suffix.lower() in _LOG_FILE_EXTENSIONS:
-                            try:
-                                files.append((child.stat().st_mtime_ns, child))
-                            except OSError:
-                                continue
+                    inspected = 0
+                    base_depth = len(candidate.resolve().parts)
+                    for root, dirnames, filenames in os.walk(candidate, followlinks=False):
+                        root_path = Path(root)
+                        if len(root_path.parts) - base_depth > 3:
+                            dirnames[:] = []
+                            continue
+                        dirnames[:] = [
+                            d
+                            for d in dirnames
+                            if not d.startswith(".") and d.lower() not in _FORBIDDEN_DIRS
+                        ]
+                        for fname in filenames:
+                            inspected += 1
+                            if inspected > 64:
+                                break
+                            child = root_path / fname
+                            if _is_safe_log_file_path(child):
+                                try:
+                                    files.append((child.stat().st_mtime_ns, child))
+                                except OSError:
+                                    continue
+                        if inspected > 64:
+                            break
                     files.sort(key=lambda x: x[0], reverse=True)
                     chunks: list[str] = []
                     total_len = 0
@@ -171,9 +180,6 @@ def _resolve_log_input(log_input: str, max_chars: int = 16000) -> str:
                             total_len += len(chunk)
                             if total_len >= max_chars:
                                 break
-                    # Files were selected newest-first, but the caller keeps the
-                    # *tail* of this string. Join chronologically so truncation
-                    # drops the oldest content instead of the newest log.
                     chunks.reverse()
                     return "\n\n".join(chunks)
         except OSError:
@@ -182,15 +188,6 @@ def _resolve_log_input(log_input: str, max_chars: int = 16000) -> str:
 
 
 def _jsonl_record_text(value: Any) -> str:
-    """
-    Extract readable text from a JSONL record.
-
-    Chat exports nest the text differently: OpenAI-style
-    `{"message": {"content": "..."}}`, Anthropic-style
-    `{"message": {"content": [{"type": "text", "text": "..."}]}}`, and simple
-    `{"content": "..."}` / `{"text": "..."}` records. Returning "" for an object
-    or list (the old behaviour) silently dropped entire session logs.
-    """
     if isinstance(value, str):
         return value
     if isinstance(value, list):
@@ -206,8 +203,11 @@ def _jsonl_record_text(value: Any) -> str:
 
 
 def _read_log_file(path: Path, max_chars: int = 16000) -> str:
-    """Read text from a log or JSONL file, keeping the tail if the file is very large."""
+    """Read text from a verified log or JSONL file, keeping the tail if the file is very large."""
     try:
+        reject_symlink(path)
+        if not _is_safe_log_file_path(path):
+            return ""
         size = path.stat().st_size
         with open(path, "rb") as f:
             if size > max_chars * 4:
@@ -231,26 +231,25 @@ def _read_log_file(path: Path, max_chars: int = 16000) -> str:
                         continue
                 except Exception:
                     pass
-                # Unknown structure: keep the raw line rather than silently
-                # dropping a record that may contain the only useful fact.
                 extracted_lines.append(line)
             return "\n".join(extracted_lines)[-max_chars:]
         return raw[-max_chars:]
-    except OSError:
+    except (OSError, ValueError):
         return ""
 
 
-def detect_provider() -> dict[str, Any]:
+def detect_provider(*, allow_implicit: bool = True) -> dict[str, Any]:
     """
-    Auto-detect the best available AI provider.
-    Returns a dict with: provider, api_key, model, base_url, available
+    Detect the AI provider configuration.
+    Finding S7: When `allow_implicit=False` (or when `MESH_NO_IMPLICIT_CLOUD=1` is set),
+    ambient `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GROQ_API_KEY` environment variables are
+    ignored unless `MESH_AI_PROVIDER` (or `MESH_AI_API_KEY` + `MESH_AI_BASE_URL`) is explicitly set.
     """
     explicit = os.environ.get("MESH_AI_PROVIDER", "").lower().strip()
     api_key_override = os.environ.get("MESH_AI_API_KEY", "").strip()
     model_override = os.environ.get("MESH_AI_MODEL", "").strip()
     base_url_override = os.environ.get("MESH_AI_BASE_URL", "").strip()
 
-    # 1. Custom endpoint / base_url override checked first so MESH_AI_API_KEY + MESH_AI_BASE_URL work properly
     if api_key_override and base_url_override:
         return {
             "provider": "openai-compatible",
@@ -258,6 +257,7 @@ def detect_provider() -> dict[str, Any]:
             "model": model_override or "gpt-4o-mini",
             "base_url": base_url_override,
             "available": True,
+            "explicit": True,
         }
 
     if explicit == "anthropic":
@@ -268,6 +268,7 @@ def detect_provider() -> dict[str, Any]:
             "model": model_override or "claude-haiku-4-5-20251001",
             "base_url": None,
             "available": bool(key),
+            "explicit": True,
         }
     if explicit in ("openai",):
         key = api_key_override or os.environ.get("OPENAI_API_KEY", "")
@@ -277,6 +278,7 @@ def detect_provider() -> dict[str, Any]:
             "model": model_override or "gpt-4o-mini",
             "base_url": base_url_override or "https://api.openai.com/v1",
             "available": bool(key),
+            "explicit": True,
         }
     if explicit == "groq":
         key = api_key_override or os.environ.get("GROQ_API_KEY", "")
@@ -286,6 +288,7 @@ def detect_provider() -> dict[str, Any]:
             "model": model_override or "llama3-8b-8192",
             "base_url": base_url_override or "https://api.groq.com/openai/v1",
             "available": bool(key),
+            "explicit": True,
         }
     if explicit == "ollama":
         base = base_url_override or "http://localhost:11434/v1"
@@ -295,6 +298,7 @@ def detect_provider() -> dict[str, Any]:
             "model": model_override or "llama3",
             "base_url": base,
             "available": _ollama_is_running(base),
+            "explicit": True,
         }
     if explicit == "openai-compatible":
         key = api_key_override or ""
@@ -305,6 +309,7 @@ def detect_provider() -> dict[str, Any]:
             "model": model_override or "gpt-4o-mini",
             "base_url": base,
             "available": bool(key and base),
+            "explicit": True,
         }
     if explicit == "local":
         return {
@@ -313,9 +318,21 @@ def detect_provider() -> dict[str, Any]:
             "model": None,
             "base_url": None,
             "available": True,
+            "explicit": True,
         }
 
-    # --- Auto-detect: try in priority order ---
+    # Finding S7: Do not implicitly select cloud providers when disabled or when MESH_AUTO_APPROVE=1
+    # is set without an explicit MESH_AI_PROVIDER (prevents silent background log exfiltration).
+    if not allow_implicit or env_bool("MESH_NO_IMPLICIT_CLOUD", False) or env_bool("MESH_AUTO_APPROVE", False):
+        return {
+            "provider": "local",
+            "api_key": None,
+            "model": None,
+            "base_url": None,
+            "available": True,
+            "explicit": False,
+        }
+
     anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if anthropic_key and not api_key_override:
         return {
@@ -324,6 +341,7 @@ def detect_provider() -> dict[str, Any]:
             "model": model_override or "claude-haiku-4-5-20251001",
             "base_url": None,
             "available": True,
+            "explicit": False,
         }
 
     openai_key = os.environ.get("OPENAI_API_KEY", "")
@@ -334,6 +352,7 @@ def detect_provider() -> dict[str, Any]:
             "model": model_override or "gpt-4o-mini",
             "base_url": "https://api.openai.com/v1",
             "available": True,
+            "explicit": False,
         }
 
     groq_key = os.environ.get("GROQ_API_KEY", "")
@@ -344,6 +363,7 @@ def detect_provider() -> dict[str, Any]:
             "model": model_override or "llama3-8b-8192",
             "base_url": "https://api.groq.com/openai/v1",
             "available": True,
+            "explicit": False,
         }
 
     ollama_base = base_url_override or "http://localhost:11434/v1"
@@ -354,6 +374,7 @@ def detect_provider() -> dict[str, Any]:
             "model": model_override or _detect_ollama_model(ollama_base),
             "base_url": ollama_base,
             "available": True,
+            "explicit": False,
         }
 
     if api_key_override:
@@ -363,6 +384,7 @@ def detect_provider() -> dict[str, Any]:
             "model": model_override or "gpt-4o-mini",
             "base_url": base_url_override or "https://api.openai.com/v1",
             "available": True,
+            "explicit": False,
         }
 
     return {
@@ -371,7 +393,32 @@ def detect_provider() -> dict[str, Any]:
         "model": None,
         "base_url": None,
         "available": True,
+        "explicit": False,
     }
+
+
+def _request_cloud_upload_consent(provider_name: str, assume_yes: bool = False) -> bool:
+    """
+    Finding S7 / 2g: Cloud log upload consent that `MESH_AUTO_APPROVE=1` alone CANNOT grant.
+    Requires:
+      1. `assume_yes=True` (explicit per-invocation parameter/flag), OR
+      2. `MESH_ALLOW_CLOUD_CAPTURE=1` (dedicated cloud upload consent env var), OR
+      3. Interactive TTY confirmation at the keyboard (with `MESH_AUTO_APPROVE` temporarily ignored).
+    """
+    if assume_yes or env_bool("MESH_ALLOW_CLOUD_CAPTURE", False):
+        return True
+    if env_bool("MESH_NON_INTERACTIVE", False) or not ui.interactive():
+        return False
+    prev_auto = os.environ.pop("MESH_AUTO_APPROVE", None)
+    try:
+        return ui.confirm(
+            f"Allow Mesh to send redacted session log text to external cloud LLM provider '{provider_name}' for memory extraction?",
+            default=False,
+            assume_yes=False,
+        )
+    finally:
+        if prev_auto is not None:
+            os.environ["MESH_AUTO_APPROVE"] = prev_auto
 
 
 def _ollama_is_running(base_url: str) -> bool:
@@ -401,7 +448,7 @@ def _detect_ollama_model(base_url: str) -> str:
 def _extract_with_anthropic(log_text: str, config: dict[str, Any]) -> list[dict[str, Any]]:
     import httpx
 
-    safe_log_text = _redact_secrets_for_cloud(log_text)
+    safe_log_text = redact_secrets_for_cloud(log_text)
     response = httpx.post(
         "https://api.anthropic.com/v1/messages",
         headers={
@@ -429,7 +476,7 @@ def _extract_with_anthropic(log_text: str, config: dict[str, Any]) -> list[dict[
 def _extract_with_openai_compatible(log_text: str, config: dict[str, Any]) -> list[dict[str, Any]]:
     import httpx
 
-    safe_log_text = _redact_secrets_for_cloud(log_text)
+    safe_log_text = redact_secrets_for_cloud(log_text)
     base_url = (config.get("base_url") or "https://api.openai.com/v1").rstrip("/")
     headers = {
         "Content-Type": "application/json",
@@ -492,35 +539,7 @@ _SIGNAL_PATTERNS = [
     r"\btoken\b",
     r"\bsecret\b",
 ]
-_CREDENTIAL_PATTERNS = [
-    # Keyword + explicit assignment. A bare mention of "token" or "password"
-    # (e.g. "rotate the token before Friday") is *not* a secret; only a
-    # value-bearing assignment is. `$VAR` / `{...}` references are exempt so
-    # configuration notes such as `token=$GITHUB_TOKEN` stay usable.
-    r"(?i)\b(?:password|passwd|pwd|secret|api[_\s-]?key|access[_\s-]?token|"
-    r"auth[_\s-]?token|refresh[_\s-]?token|private[_\s-]?key|client[_\s-]?secret|"
-    r"aws_secret_access_key|aws_session_token|token)\b"
-    r"['\"]?\s*[:=]\s*['\"]?(?!\$|\{)[^\s,'\"`;\[]{4,}",
-    # Natural-language assignment ("the API key is sk-live-..."). Requiring 12
-    # non-space characters keeps prose like "the token is stored in .env" out.
-    r"(?i)\b(?:password|passwd|secret|api[_\s-]?key|private[_\s-]?key|token)\b"
-    r"\s+(?:is|was)\s+['\"]?[A-Za-z0-9_\-./+=:@]{12,}",
-    # Well-known credential shapes.
-    r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----",
-    r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b",
-    r"\b(?:sk-ant-[a-zA-Z0-9_-]{8,}|sk-[a-zA-Z0-9_-]{6,}|gh[pousr]_[a-zA-Z0-9]{12,}|"
-    r"github_pat_[a-zA-Z0-9_]{16,}|glpat-[a-zA-Z0-9_-]{12,}|hf_[a-zA-Z0-9]{16,}|"
-    r"AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|xox[baprs]-[a-zA-Z0-9-]{10,}|"
-    r"AIza[0-9A-Za-z_-]{20,}|rk_live_[0-9a-zA-Z]{16,}|sk_live_[0-9a-zA-Z]{16,})\b",
-    r"(?i)\bBearer\s+[^\s\"'`]{8,}",
-    # URL-embedded credentials, including empty usernames (`redis://:pass@host`).
-    # The scheme length is bounded so a long unbroken token without `://` cannot
-    # trigger quadratic backtracking (`[a-zA-Z0-9+.-]*` retried at every offset).
-    r"[a-zA-Z][a-zA-Z0-9+.-]{0,30}://[^/\s:@]*:[^@\s]+@",
-    # Authorization headers (`Authorization: Basic ...`, `authorization=bearer ...`)
-    r"(?i)\bauthorization\s*[:=]\s*(?:basic|bearer|token)\b",
-    r"\[REDACTED_(?:SECRET\vert{}API_KEY\vert{}TOKEN\vert{}PASSWORD\vert{}JWT\vert{}PRIVATE_KEY)\]",
-]
+
 _NOISE_PATTERNS = [
     r"^\s*(yes|no|ok|okay|sure|thanks|thank you|great|got it|understood|sounds good)\s*[.!]?\s*$",
     r"^\s*okay\s+sounds\s+good\b",
@@ -532,62 +551,12 @@ _NOISE_PATTERNS = [
     r"^\s*i'll\b",
 ]
 
-_POISON_PATTERNS = [
-    r"(?i)\bignore\s+(?:all\s+|the\s+)?(?:(?:previous|prior|above|earlier|preceding)\s+)?(?:instructions?|prompts?|rules?)\b",
-    r"(?i)\bdisregard\s+(?:all\s+|the\s+)?(?:previous|prior|above|system|earlier|preceding)\b",
-    r"(?i)\bforget\s+(?:all\s+|the\s+)?(?:previous|prior|above|earlier)\s+(?:instructions?|prompts?|rules?)\b",
-    r"(?i)\byou\s+are\s+now\s+in\s+developer\s+mode\b",
-    r"(?i)</?\s*mesh_context\b",
-    r"(?i)\bsystem\s*prompt\s*:",
-]
-
-# Invisible formatting characters (zero-width spaces/joiners, BOM, bidi controls,
-# soft hyphen, tag characters) can split a poison phrase or a credential so the
-# regex misses it while the reader (or a downstream prompt renderer) sees it
-# normally. Normalize them away before matching or redacting. Escapes are used
-# so no editor can silently turn them back into invisible source bytes.
-_INVISIBLE_CHAR_CLASS = (
-    r"\u00ad"                  # SOFT HYPHEN
-    r"\u034f"                  # COMBINING GRAPHEME JOINER
-    r"\u061c"                  # ARABIC LETTER MARK
-    r"\u115f\u1160"            # Hangul fillers
-    r"\u17b4\u17b5"            # Khmer inherent vowels
-    r"\u180b-\u180f"           # Mongolian FVS + vowel separator
-    r"\u200b-\u200f"           # zero-width space .. right-to-left mark
-    r"\u202a-\u202e"           # bidi embeddings / overrides
-    r"\u2060-\u2064"           # word joiner .. invisible plus
-    r"\u2066-\u2069"           # bidi isolates
-    r"\ufeff"                  # BOM / zero-width no-break space
-    r"\ufe00-\ufe0f"           # variation selectors
-    r"\uffa0"                  # halfwidth Hangul filler
-    r"\U000e0000-\U000e007f"   # tag characters
-    r"\U000e0100-\U000e01ef"   # variation selectors supplement
-)
-_ZERO_WIDTH_RE = re.compile(f"[{_INVISIBLE_CHAR_CLASS}]")
-
 _compiled_signals = [re.compile(p, re.IGNORECASE) for p in _SIGNAL_PATTERNS]
-_compiled_credentials = [re.compile(p, re.IGNORECASE) for p in _CREDENTIAL_PATTERNS]
 _compiled_noise = [re.compile(p, re.IGNORECASE) for p in _NOISE_PATTERNS]
-_compiled_poison = [re.compile(p) for p in _POISON_PATTERNS]
-
-
-def _is_credential(sentence: str) -> bool:
-    normalized = _ZERO_WIDTH_RE.sub("", sentence)
-    normalized = unicodedata.normalize("NFKC", normalized)
-    return any(p.search(normalized) for p in _compiled_credentials)
 
 
 def _is_noise(sentence: str) -> bool:
     return any(p.match(sentence) for p in _compiled_noise)
-
-
-def _is_poison_attempt(sentence: str) -> bool:
-    # Strip invisible separators, then apply NFKC: full-width / compatibility
-    # characters render as their ASCII equivalents downstream, so matching on
-    # the raw string would let them split an instruction phrase.
-    normalized = _ZERO_WIDTH_RE.sub("", sentence)
-    normalized = unicodedata.normalize("NFKC", normalized)
-    return any(p.search(normalized) for p in _compiled_poison)
 
 
 def _has_signal(sentence: str) -> bool:
@@ -615,15 +584,15 @@ def _extract_local(log_text: str) -> list[dict[str, Any]]:
         sentence = raw.strip()
         if len(sentence) < 20 or len(sentence) > 300:
             continue
-        if _is_noise(sentence) or _is_poison_attempt(sentence):
+        if _is_noise(sentence) or is_poison_attempt(sentence):
             continue
         key = sentence.lower()[:60]
         if key in seen:
             continue
         if _has_signal(sentence):
-            is_private = _is_credential(sentence)
+            is_private = is_credential(sentence)
             if is_private:
-                sentence = _redact_secrets_for_cloud(sentence)
+                sentence = redact_secrets_local(sentence)
             results.append(
                 {
                     "content": sentence,
@@ -658,7 +627,6 @@ def _parse_json_response(raw: str) -> list[dict[str, Any]]:
     parsed = json.loads(raw)
     if not isinstance(parsed, list):
         return []
-    # A model may return `["some text"]`; callers index these as mappings.
     return [item for item in parsed if isinstance(item, dict)]
 
 
@@ -672,13 +640,13 @@ def extract_memories_from_log(
     assume_yes: bool = False,
     default_local_only: bool = False,
     resolve_input: bool = True,
+    quarantine: Optional[bool] = None,
 ) -> dict[str, Any]:
     """
-    Extract and store memories from a session log (or file/directory path).
-    Asks the user for `y/n` permission before uploading redacted logs to external LLM providers.
-
-    Reports `captured_count`, `stored_count` (new rows only), `deduplicated_count`,
-    `skipped_count`, and `error` separately (Issue M5).
+    Extract and store memories from a session log (or verified log file/directory path).
+    Finding S7: Requires explicit cloud consent (`assume_yes=True`, `MESH_ALLOW_CLOUD_CAPTURE=1`,
+    or interactive TTY prompt) that `MESH_AUTO_APPROVE=1` alone cannot grant.
+    Finding S8: Marks captured memories with `trust_tier="log_captured"` and supports quarantine.
     """
     clean_ns = validate_namespace(namespace)
     resolved_text = _resolve_log_input(log_text) if resolve_input else str(log_text or "")
@@ -701,9 +669,6 @@ def extract_memories_from_log(
     else:
         config = detect_provider()
 
-    # A configured-but-unavailable provider must degrade to local *before* the
-    # dispatch below: otherwise the log is POSTed to the cloud endpoint without
-    # the consent prompt (which is gated on `available`).
     if config["provider"] != "local" and not config.get("available"):
         if verbose:
             ui.info(
@@ -711,13 +676,10 @@ def extract_memories_from_log(
             )
         config = {"provider": "local", "available": True}
 
-    # Prompt user for permission before sending log text to external LLM APIs
+    # Finding S7: Require dedicated cloud consent (`MESH_AUTO_APPROVE` alone does not grant cloud upload)
     if config["provider"] != "local":
         provider_name = config["provider"]
-        if not request_user_permission(
-            f"send redacted session log text to external cloud LLM provider '{provider_name}' for memory extraction",
-            assume_yes=assume_yes,
-        ):
+        if not _request_cloud_upload_consent(provider_name, assume_yes=assume_yes):
             if verbose:
                 ui.info("Cloud extraction declined — using local keyword extraction instead")
             config = {"provider": "local", "available": True}
@@ -786,7 +748,7 @@ def extract_memories_from_log(
             private = (
                 default_local_only
                 or bool(mem.get("private"))
-                or _is_credential(preview_content)
+                or is_credential(preview_content)
             )
             private_flag = "  " + ui.badge("private", "accent") if private else ""
             mtype = _normalize_memory_type(mem.get("type"))
@@ -803,6 +765,12 @@ def extract_memories_from_log(
             "error": extraction_error,
         }
 
+    should_quarantine = (
+        env_bool("MESH_QUARANTINE_CAPTURE", False)
+        if quarantine is None
+        else bool(quarantine)
+    )
+
     mesh = Mesh(namespace=clean_ns, agent_id=agent_id)
     captured = 0
     stored = 0
@@ -813,7 +781,7 @@ def extract_memories_from_log(
         if not content:
             skipped += 1
             continue
-        if _is_poison_attempt(content):
+        if is_poison_attempt(content):
             skipped += 1
             if verbose:
                 ui.warn(f"Ignored suspicious content: {ui.truncate(content, 60)}")
@@ -824,24 +792,23 @@ def extract_memories_from_log(
             if not isinstance(raw_tags, list):
                 raw_tags = [str(raw_tags)]
             tags = list(dict.fromkeys([*(str(t) for t in raw_tags), "auto-captured"]))
-            has_credential = _is_credential(content)
+            has_credential = is_credential(content)
             is_private = (
                 default_local_only
                 or bool(mem.get("private", False))
                 or has_credential
             )
-            # Redact only content that actually carries a credential. Redacting
-            # every private fact (the old behaviour when `default_local_only`
-            # was set) destroyed useful data — emails became [REDACTED_EMAIL]
-            # even though the row never leaves the local database.
+            # Finding S10: Use local redaction so non-secret emails are preserved in local DB
             if has_credential:
-                content = _redact_secrets_for_cloud(content)
+                content = redact_secrets_local(content)
             learn_res = mesh.learn(
                 content=content,
                 memory_type=mtype,
                 tags=tags,
                 local_only=is_private,
                 confidence=0.8,
+                trust_tier="log_captured",
+                quarantined=should_quarantine,
             )
             captured += 1
             if learn_res.get("deduplicated"):
@@ -865,6 +832,7 @@ def extract_memories_from_log(
         "skipped_count": skipped,
         "provider_used": provider_used,
         "memories": extracted,
+        "quarantined": should_quarantine,
         "error": extraction_error,
     }
 
@@ -898,6 +866,11 @@ def capture_cmd() -> None:
         help="Force local keyword extraction, skip all AI providers",
     )
     parser.add_argument(
+        "--quarantine",
+        action="store_true",
+        help="Store captured memories in quarantine until approved with `mesh approve`",
+    )
+    parser.add_argument(
         "--show-provider",
         action="store_true",
         help="Print which provider would be used and exit",
@@ -911,7 +884,7 @@ def capture_cmd() -> None:
             ui.header("Capture provider")
             print()
             ui.kv([("Provider", "local keyword extractor"), ("AI key", ui.style("none found", "muted"))])
-            ui.hint("For AI extraction set ANTHROPIC_API_KEY, OPENAI_API_KEY or GROQ_API_KEY, or start Ollama.", stream=sys.stdout)
+            ui.hint("For AI extraction set MESH_AI_PROVIDER and ANTHROPIC_API_KEY, OPENAI_API_KEY or GROQ_API_KEY.", stream=sys.stdout)
         else:
             ui.header("Capture provider")
             print()
@@ -930,12 +903,15 @@ def capture_cmd() -> None:
         sys.exit(1)
 
     if args.stdin:
-        # Bound memory use: a piped multi-GB log must not be read wholesale.
         log_text = sys.stdin.read(1_000_000)
     else:
         path = Path(args.file).expanduser()
         if not path.exists():
             ui.fail(f"File not found: {args.file}", "Check the path, or pipe the log in with --stdin.")
+        if not path.is_dir() and not _is_safe_log_file_path(path):
+            ui.fail(
+                f"Refusing to read '{args.file}': only non-symlinked .log, .txt, .jsonl, and .md files are allowed."
+            )
         log_text = _resolve_log_input(str(path))
 
     ns = validate_namespace(args.namespace or os.environ.get("MESH_NAMESPACE", "shared"))
@@ -946,9 +922,8 @@ def capture_cmd() -> None:
         verbose=args.verbose,
         force_local=args.local_only,
         assume_yes=args.yes,
-        # Both branches above already read the file/stdin; re-resolving would
-        # treat log *content* that looks like a path as another file to read.
         resolve_input=False,
+        quarantine=True if args.quarantine else None,
     )
     if not args.dry_run:
         provider_label = result.get("provider_used", "unknown")

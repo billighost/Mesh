@@ -1,29 +1,117 @@
 """
-Ingestion guards for the Mesh context layer.
-Sanitizes input, detects adversarial prompt injection patterns,
-and auto-redacts credentials while enforcing local_only (private) storage.
-"""
+mesh/guards.py — Ingestion guards for the Mesh context layer.
 
+Sanitizes input, detects adversarial prompt injection patterns (across NFKC,
+homoglyphs, inline markdown, paraphrases, and multilingual overrides),
+validates tags, and auto-redacts credentials locally while enforcing `local_only=True`.
+
+Addresses Findings:
+  - S2, S3, S4: Uses unified `mesh.secrets` detection and local redaction
+  - S8: Confusable homoglyph folding, inline markdown stripping, and expanded poison detection
+  - S10: Zero private imports from `passive.py`; uses `redact_secrets_local` (preserving emails)
+  - S11: Idempotent on already-redacted placeholders (`--force-public` safe) + `guard_tags()`
+"""
 from __future__ import annotations
 
 import re
-from typing import NamedTuple, Optional
+import unicodedata
+from typing import Iterable, NamedTuple, Optional
 
-from .passive import (
-    _INVISIBLE_CHAR_CLASS,
-    _is_credential,
-    _is_poison_attempt,
-    _redact_secrets_for_cloud,
+from .secrets import (
+    INVISIBLE_CHAR_CLASS,
+    ZERO_WIDTH_RE,
+    is_credential,
+    redact_secrets_local,
 )
 
-# Strip control characters (C0/C1) except newline (\n) and tab (\t), plus the
-# invisible formatting characters that can hide or split poison text and
-# credentials (soft hyphen, zero-width joiners, bidi controls, tag characters).
-# The invisible ranges are shared with `passive.py` so the guard, the poison
-# detector, and the cloud redactor can never drift apart.
+_INVISIBLE_CHAR_CLASS = INVISIBLE_CHAR_CLASS
+_ZERO_WIDTH_RE = ZERO_WIDTH_RE
+
+# Strip control characters (C0/C1) except newline (\n) and tab (\t), plus invisible formatting chars
 _CONTROL_CHAR_RE = re.compile(
-    "[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f" + _INVISIBLE_CHAR_CLASS + "]"
+    "[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f" + INVISIBLE_CHAR_CLASS + "]"
 )
+
+# Finding S8: Confusable Cyrillic / Greek homoglyphs mapped to ASCII Latin equivalents
+_CONFUSABLE_MAP = str.maketrans(
+    {
+        "\u0430": "a", "\u0410": "A",  # Cyrillic a
+        "\u0435": "e", "\u0415": "E",  # Cyrillic e
+        "\u0456": "i", "\u0406": "I",  # Cyrillic i
+        "\u043e": "o", "\u041e": "O",  # Cyrillic o
+        "\u0440": "p", "\u0420": "P",  # Cyrillic er -> p
+        "\u0441": "c", "\u0421": "C",  # Cyrillic es -> c
+        "\u0443": "y", "\u0423": "Y",  # Cyrillic u -> y
+        "\u0445": "x", "\u0425": "X",  # Cyrillic ha -> x
+        "\u0455": "s", "\u0405": "S",  # Cyrillic dze -> s
+        "\u0458": "j", "\u0408": "J",  # Cyrillic je -> j
+        "\u03bf": "o", "\u039f": "O",  # Greek omicron -> o
+        "\u03b1": "a", "\u0391": "A",  # Greek alpha -> a
+        "\u03b5": "e", "\u0395": "E",  # Greek epsilon -> e
+        "\u03b9": "i", "\u0399": "I",  # Greek iota -> i
+        "\u03ba": "k", "\u039a": "K",  # Greek kappa -> k
+        "\u03c1": "p", "\u03a1": "P",  # Greek rho -> p
+        "\u03c4": "t", "\u03a4": "T",  # Greek tau -> t
+    }
+)
+
+# Finding S8: Strip inline markdown formatting (`**`, `*`, `__`, `_`, `` ` ``, `~~`) used to split words
+_INLINE_MARKUP_BETWEEN_LETTERS_RE = re.compile(r"(?<=[A-Za-z])(?:[*_`~]{1,3})(?=[A-Za-z])")
+
+# Finding S8: Expanded prompt-injection / instruction-override / structural breakout patterns
+_POISON_PATTERNS = [
+    # English override / ignore / disregard / forget / bypass with up to 4 qualifiers
+    r"(?i)\b(?:ignore|disregard|forget|override|bypass)\s+"
+    r"(?:(?:all|any|the|every|previous|prior|above|earlier|preceding|system|developer|user|safety|security|initial|original|existing)\s+){1,5}"
+    r"(?:instructions?|prompts?|rules?|directives?|guidelines?|constraints?|guardrails?|directions?|commands?|policies)\b",
+    r"(?i)\bdisregard\s+(?:all\s+|any\s+|the\s+)?(?:previous|prior|above|system|earlier|preceding)\b",
+    # Paraphrase overrides ("do not follow earlier directives", "important system override")
+    r"(?i)\b(?:do\s+not|don't|never)\s+(?:follow|obey|adhere\s+to)\s+"
+    r"(?:(?:any|all|the|previous|prior|above|earlier|preceding|system|developer)\s+){1,4}"
+    r"(?:instructions?|prompts?|rules?|directives?|guidelines?|constraints?)\b",
+    r"(?i)\b(?:important|critical|urgent)\s+(?:system\s+|security\s+)?override\b",
+    r"(?i)\byou\s+are\s+now\s+(?:in\s+)?(?:developer|dan|unrestricted|jailbreak|god)\s+mode\b",
+    # Structural prompt / ChatML / XML breakout tags (Finding S8 / N7)
+    r"(?i)</?\s*mesh_?context\b",
+    r"(?i)</?\s*system(?:_?prompt|_?instructions)?\s*>",
+    r"(?i)<\|(?:im_start|im_end|system|user|assistant|endoftext)\|>",
+    r"(?i)\[/?INST\]",
+    r"(?i)\bsystem\s*_?prompt\s*:",
+    # Multilingual prompt injection overrides (Spanish, French, German, Portuguese)
+    r"(?i)\b(?:ignora|ignorez|ignoriere|ignorem)\s+"
+    r"(?:todas?\s+|toutes?\s+|alle\s+)?(?:las?\s+|les?\s+|as\s+)?"
+    r"(?:instrucciones|instructions|anweisungen|instruções|reglas|règles|regeln)\s*"
+    r"(?:anteriores|précédentes|vorherigen|anteriores)?\b",
+]
+
+_COMPILED_POISON = [re.compile(p) for p in _POISON_PATTERNS]
+
+
+def _normalize_for_poison_check(text: str) -> str:
+    """
+    Normalize text for adversarial prompt-injection detection (Finding S8):
+      1. Remove invisible format / zero-width characters.
+      2. Apply Unicode NFKC normalization (converts fullwidth Latin to ASCII).
+      3. Strip inline markdown emphasis/backticks splitting letters (`Ig**no**re` -> `Ignore`).
+      4. Fold Cyrillic/Greek confusable homoglyphs to Latin (`Ign\u043ere` -> `Ignore`).
+    """
+    s = ZERO_WIDTH_RE.sub("", str(text or ""))
+    s = unicodedata.normalize("NFKC", s)
+    # Apply twice in case of nested inline markers
+    s = _INLINE_MARKUP_BETWEEN_LETTERS_RE.sub("", s)
+    s = _INLINE_MARKUP_BETWEEN_LETTERS_RE.sub("", s)
+    return s.translate(_CONFUSABLE_MAP)
+
+
+def is_poison_attempt(text: str) -> bool:
+    """Return True if `text` matches any prompt-injection or structural breakout pattern."""
+    norm = _normalize_for_poison_check(text)
+    if not norm:
+        return False
+    return any(p.search(norm) for p in _COMPILED_POISON)
+
+
+_is_poison_attempt = is_poison_attempt
 
 
 class GuardResult(NamedTuple):
@@ -31,44 +119,37 @@ class GuardResult(NamedTuple):
     local_only: bool
     rejected: bool
     reason: Optional[str] = None
-    # `()` rather than `[]`: a mutable default on a NamedTuple is shared by every
-    # result that omits the field, so one caller appending a warning would leak
-    # it into all future results.
     warnings: tuple[str, ...] = ()
 
 
 def guard_ingest(content: str, local_only: bool = False) -> GuardResult:
     """
     Validate and sanitize content before memory ingestion across all entry points:
-    1. Strip NUL and unexpected control characters (preserving \\n and \\t).
-    2. Check for adversarial prompt injection patterns. If detected, reject.
-    3. Check for credentials or secrets. If detected, redact secrets and force local_only=True.
+      1. Strip NUL, unexpected C0/C1 control characters, and invisible characters (preserving \\n and \\t).
+      2. Enforce `MAX_CONTENT_LENGTH` before running regexes (DoS defense).
+      3. Reject adversarial prompt-injection / breakout patterns (`is_poison_attempt`).
+      4. Detect credentials (`is_credential`) and redact secret values via `redact_secrets_local`
+         (preserving non-secret emails locally) while forcing `local_only=True`.
     """
     if not isinstance(content, str):
         content = str(content or "")
 
-    # Strip NUL and non-whitespace control characters
     sanitized = _CONTROL_CHAR_RE.sub("", content).strip()
-
     if not sanitized:
         return GuardResult(
             content="",
-            local_only=local_only,
+            local_only=bool(local_only),
             rejected=True,
             reason="Memory content cannot be empty or solely control characters.",
             warnings=(),
         )
 
-    # Bound the work done by the credential/poison regexes. The memory store
-    # rejects content over `MAX_CONTENT_LENGTH` anyway, but that check happened
-    # *after* the guard, so a multi-megabyte unbroken token (base64 blob,
-    # minified code) spent seconds in regex matching before being refused.
     from .memory import MAX_CONTENT_LENGTH
 
     if len(sanitized) > MAX_CONTENT_LENGTH:
         return GuardResult(
             content=sanitized,
-            local_only=local_only,
+            local_only=bool(local_only),
             rejected=True,
             reason=(
                 f"content length ({len(sanitized)} chars) exceeds maximum allowed "
@@ -77,28 +158,26 @@ def guard_ingest(content: str, local_only: bool = False) -> GuardResult:
             warnings=(),
         )
 
-    # 1. Prompt injection / poison check. `_is_poison_attempt()` applies NFKC
-    # normalization internally so full-width / compatibility characters cannot
-    # hide an instruction phrase from the regex while the context renderer
-    # normalizes it back into one.
-    if _is_poison_attempt(sanitized):
+    if is_poison_attempt(sanitized):
         return GuardResult(
             content=sanitized,
-            local_only=local_only,
+            local_only=bool(local_only),
             rejected=True,
             reason="Prompt injection or adversarial instruction pattern detected in memory content.",
             warnings=(),
         )
 
-    # 2. Credential / secret check
     warnings: list[str] = []
     final_local_only = bool(local_only)
     final_content = sanitized
 
-    if _is_credential(sanitized):
-        final_content = _redact_secrets_for_cloud(sanitized)
+    # Finding S2, S3, S4, S10, S11: Only flag and redact live credentials (not already-redacted placeholders)
+    if is_credential(sanitized):
+        final_content = redact_secrets_local(sanitized)
         final_local_only = True
-        warnings.append("Credential or secret pattern detected: secret was redacted and forced to private (local_only).")
+        warnings.append(
+            "Credential or secret pattern detected: secret was redacted and forced to private (local_only)."
+        )
 
     return GuardResult(
         content=final_content,
@@ -107,3 +186,38 @@ def guard_ingest(content: str, local_only: bool = False) -> GuardResult:
         reason=None,
         warnings=tuple(warnings),
     )
+
+
+def guard_tags(
+    tags: Optional[Iterable[str]],
+    local_only: bool = False,
+) -> tuple[list[str], bool, tuple[str, ...]]:
+    """
+    Validate and sanitize memory tags against prompt injection and embedded secrets (Finding S11).
+    Raises `ValueError` if any tag contains a prompt-injection payload or exceeds 128 chars.
+    Redacts any secret inside a tag and sets `local_only=True`.
+    """
+    if not tags:
+        return [], bool(local_only), ()
+    clean_tags: list[str] = []
+    final_local_only = bool(local_only)
+    warnings: list[str] = []
+
+    for raw_tag in tags:
+        t = _CONTROL_CHAR_RE.sub("", str(raw_tag or "")).strip()
+        if not t:
+            continue
+        if len(t) > 128:
+            raise ValueError("Individual tag length cannot exceed 128 characters.")
+        if is_poison_attempt(t):
+            raise ValueError(
+                f"Prompt injection or adversarial instruction pattern detected in tag '{t[:40]}'."
+            )
+        if is_credential(t):
+            t = redact_secrets_local(t)
+            final_local_only = True
+            warnings.append("Credential pattern detected in tag: redacted and forced to private (local_only).")
+        if t not in clean_tags:
+            clean_tags.append(t)
+
+    return clean_tags, final_local_only, tuple(warnings)

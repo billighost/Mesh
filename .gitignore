@@ -32,10 +32,27 @@ playwright-report/
 qa-*.png
 hero-light*.png
 /*.png
+marketing/qa_stills/
+marketing/**/out/
 landing/*.png
 landing/.tmp-font/
+
+# Media, Audio & Videos (strictly local, keep repository lean)
+*.mp4
+*.webm
+*.mov
+*.wav
+*.mp3
+marketing/sfx/
+marketing/audio/
+marketing/preview_stills/
+marketing/ads/**/public/sfx/
+marketing/ads/**/public/*.mp3
 
 # OS files
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Scratch / local work
+.work/

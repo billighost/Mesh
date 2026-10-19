@@ -3,11 +3,12 @@ mesh/namespaces.py — Namespace listing, deletion, renaming, and statistics.
 
 Security & Integrity:
   - Validates all namespace identifiers against path traversal via `validate_namespace()`
+  - Rejects symlinked `.db`, `-wal`, and `-shm` files across listing, stats, rename, and deletion (Finding N6)
   - Flushes buffered telemetry (`flush_all_telemetry`) before reading stats, deleting, or renaming
   - Uses `_compute_row_effective_confidence()` from `store.py` for a single unified staleness definition
   - Evicts all in-memory vector, connection, lock, audit, context, HTTP, MCP, and Dashboard caches on delete/rename
   - Cleans up advisory `.mesh_<ns>.lock` files and enforces atomic rollback on failed `rename_namespace()`
-  - Enforces 0600 POSIX file permissions on renamed SQLite databases
+  - Enforces 0600 POSIX file permissions and Windows owner ACLs on renamed SQLite databases
 """
 from __future__ import annotations
 
@@ -26,11 +27,11 @@ from .audit import (
     ensure_secure_mesh_dir,
     evict_audit_cache,
     get_mesh_dir,
+    reject_symlink,
     secure_file_permissions,
     validate_namespace,
 )
 from .store import (
-    NamespaceLimitExceededError,
     NamespaceNotFoundError,
     _CACHE_LOCK,
     _CONNECTION_POOL,
@@ -50,13 +51,25 @@ logger = logging.getLogger(__name__)
 
 
 def _get_all_db_paths() -> list[Path]:
-    """Return paths to all valid namespace SQLite databases in ~/.mesh/"""
+    """
+    Return paths to all valid, non-symlinked namespace SQLite databases in ~/.mesh/.
+    Finding N6: Rejects symlinks and verifies resolved parent confinement inside `mesh_dir`.
+    """
     mesh_dir = get_mesh_dir()
-    if not mesh_dir.exists():
+    if not mesh_dir.exists() or mesh_dir.is_symlink():
         return []
+    resolved_base = mesh_dir.resolve()
     results: list[Path] = []
     for p in mesh_dir.glob("mesh_*.db"):
-        if not (p.is_file() and not p.name.endswith(("-wal", "-shm"))):
+        if p.name.endswith(("-wal", "-shm")):
+            continue
+        try:
+            reject_symlink(p)
+            if not p.is_file():
+                continue
+            if p.resolve().parent != resolved_base:
+                continue
+        except (OSError, ValueError):
             continue
         name = p.stem
         ns = name[5:] if name.startswith("mesh_") else name
@@ -76,9 +89,11 @@ def _namespace_from_db_path(path: Path) -> str:
 
 def _safe_mesh_db_path(base_dir: Path, namespace: str) -> Path:
     """
-    Resolve `mesh_<namespace>.db` inside `base_dir`, refusing symlinks that escape it.
+    Resolve `mesh_<namespace>.db` inside `base_dir`, refusing symlinks on the DB or sidecars (Finding N6).
     """
-    resolved = (base_dir / f"mesh_{namespace}.db").resolve()
+    candidate = base_dir / f"mesh_{namespace}.db"
+    reject_symlink(candidate)
+    resolved = candidate.resolve()
     if resolved.parent != base_dir:
         raise ValueError(
             f"Refusing to operate on '{resolved}': it resolves outside the Mesh data directory."
@@ -89,23 +104,20 @@ def _safe_mesh_db_path(base_dir: Path, namespace: str) -> Path:
 def _distinct_memory_namespaces(db_path: Path) -> list[str]:
     """Return the distinct `namespace` values stored in a database (empty on error)."""
     try:
+        reject_symlink(db_path)
         conn = sqlite3.connect(db_path, timeout=5.0)
         try:
             rows = conn.execute("SELECT DISTINCT namespace FROM memories").fetchall()
         finally:
             conn.close()
         return [str(r[0]) for r in rows if r[0] is not None]
-    except sqlite3.Error:
+    except (sqlite3.Error, ValueError):
         return []
 
 
 def _reject_namespace_collision(db_path: Path, clean_ns: str, action: str) -> None:
     """
     Refuse a destructive operation when the database's rows do not belong to `clean_ns`.
-
-    On case-insensitive filesystems (NTFS, default APFS) `mesh_Work.db` and
-    `mesh_work.db` are the same file. Without this check, deleting one casing
-    would destroy the other casing's memories.
     """
     names = _distinct_memory_namespaces(db_path)
     if not names:
@@ -156,8 +168,6 @@ def _evict_namespace_caches(namespace: str, db_path: Optional[Path] = None) -> N
     evict_namespace_write_lock(clean_ns)
 
     with _CACHE_LOCK:
-        # Clear every namespace spelling that shares this file; a single
-        # `_VECTOR_CACHE.pop(path)` would miss case-variant keys.
         _evict_vector_cache_for_db_path(resolved_db)
         _evict_vector_cache_for_db_path(db_path)
         _INITIALIZED_DBS.pop(resolved_db, None)
@@ -226,12 +236,13 @@ def evict_lru_namespace(exclude_namespace: Optional[str] = None) -> Optional[str
 
 
 def _remove_sqlite_files(db_path: Path, strict: bool = False) -> bool:
-    """Delete a SQLite database file along with any WAL or SHM sidecar files."""
+    """Delete a SQLite database file along with any WAL or SHM sidecar files (rejecting symlinks, Finding N6)."""
+    reject_symlink(db_path)
     all_removed = True
     for suffix in ("", "-wal", "-shm"):
         candidate = Path(f"{db_path}{suffix}")
         for attempt in range(5):
-            if not candidate.exists():
+            if not candidate.exists() and not candidate.is_symlink():
                 break
             try:
                 candidate.unlink()
@@ -252,7 +263,7 @@ def _remove_sqlite_files(db_path: Path, strict: bool = False) -> bool:
 def list_namespaces() -> list[dict[str, Any]]:
     """
     List all validated namespaces with their memory counts and last updated time.
-    - Never silently drops a namespace whose DB file errors; includes it with `"error": "<message>"` (Phase 4.3).
+    - Never silently drops a namespace whose DB file errors; includes it with `"error": "<message>"`.
     - Computes `last_updated` taking edits and accesses into account (`MAX(created_at, updated_at, accessed_at)`).
     """
     flush_all_telemetry()
@@ -264,6 +275,7 @@ def list_namespaces() -> list[dict[str, Any]]:
         except ValueError:
             continue
         try:
+            reject_symlink(db_path)
             conn = sqlite3.connect(db_path, timeout=5.0)
             conn.row_factory = sqlite3.Row
             try:
@@ -273,9 +285,6 @@ def list_namespaces() -> list[dict[str, Any]]:
                     raise sqlite3.DatabaseError(f"Database '{db_path.name}' is missing 'memories' table")
                 cursor.execute("SELECT DISTINCT namespace FROM memories")
                 row_names = [str(r[0]) for r in cursor.fetchall() if r[0] is not None]
-                # Aggregate every namespace value in the file. On a case-insensitive
-                # filesystem the same DB can hold rows for both 'Work' and 'work';
-                # counting only the filename's casing would under-report.
                 cursor.execute("SELECT COUNT(*) as count FROM memories")
                 total = int(cursor.fetchone()["count"] or 0)
                 cursor.execute("SELECT COUNT(*) as count FROM memories WHERE local_only = 1")
@@ -343,7 +352,7 @@ def list_namespaces() -> list[dict[str, Any]]:
 def delete_namespace(namespace: str) -> int:
     """
     Delete a validated namespace and ALL its memories (plus its isolated audit trail DB and `.lock` file).
-    Raises `NamespaceNotFoundError` (a `ValueError` subclass) if the namespace does not exist (Phase 4.2).
+    Raises `NamespaceNotFoundError` (a `ValueError` subclass) if the namespace does not exist.
     """
     clean_ns = validate_namespace(namespace)
     flush_all_telemetry()
@@ -359,6 +368,7 @@ def delete_namespace(namespace: str) -> int:
     _evict_namespace_caches(clean_ns, db_path)
 
     if db_path.exists():
+        reject_symlink(db_path)
         _reject_namespace_collision(db_path, clean_ns, "delete")
         conn = sqlite3.connect(db_path, timeout=5.0)
         try:
@@ -375,8 +385,6 @@ def delete_namespace(namespace: str) -> int:
                     exc,
                 )
                 count = 0
-            # Refuse to delete if another process prevents a clean checkpoint:
-            # deleting only the main file would orphan plaintext WAL frames.
             _checkpoint_truncate_or_raise(conn, db_path)
         finally:
             conn.close()
@@ -384,6 +392,7 @@ def delete_namespace(namespace: str) -> int:
         _evict_namespace_caches(clean_ns, db_path)
 
     if audit_db_path.exists():
+        reject_symlink(audit_db_path)
         conn_audit = sqlite3.connect(audit_db_path, timeout=5.0)
         try:
             _checkpoint_truncate_or_raise(conn_audit, audit_db_path)
@@ -391,9 +400,6 @@ def delete_namespace(namespace: str) -> int:
             conn_audit.close()
         evict_audit_cache(clean_ns)
 
-    # Preflight succeeded for both databases. Remove the audit trail first: if
-    # memory deletion then fails, no plaintext audit copy survives a "deleted"
-    # report, and the memory database is still intact for a retry.
     if audit_db_path.exists():
         _remove_sqlite_files(audit_db_path, strict=True)
     if db_path.exists():
@@ -405,7 +411,8 @@ def delete_namespace(namespace: str) -> int:
 
 def rename_namespace(old_name: str, new_name: str) -> int:
     """
-    Rename a namespace safely with full validation, cache eviction, and atomic rollback on failure (Phase 4.3).
+    Rename a namespace safely with full validation, symlink rejection, cache eviction,
+    and atomic rollback on failure.
     """
     clean_old = validate_namespace(old_name)
     clean_new = validate_namespace(new_name)
@@ -429,9 +436,6 @@ def rename_namespace(old_name: str, new_name: str) -> int:
     _evict_namespace_caches(clean_new, new_db)
 
     count = 0
-    # Serialize the checkpoint/copy/delete sequence against store writers in
-    # this and other processes. Canonical lock order prevents deadlock between
-    # two concurrent renames.
     lock_names = sorted({clean_old, clean_new})
     with ExitStack() as stack:
         for lock_ns in lock_names:
@@ -439,13 +443,13 @@ def rename_namespace(old_name: str, new_name: str) -> int:
 
         conn_old = sqlite3.connect(old_db, timeout=5.0)
         try:
-            # A busy checkpoint leaves committed transactions only in the WAL;
-            # copying just the main file would silently lose them.
             _checkpoint_truncate_or_raise(conn_old, old_db)
         finally:
             conn_old.close()
 
         try:
+            reject_symlink(old_db)
+            reject_symlink(new_db)
             shutil.copy2(old_db, new_db)
             secure_file_permissions(new_db)
 
@@ -456,7 +460,6 @@ def rename_namespace(old_name: str, new_name: str) -> int:
                 conn_new.execute(
                     "UPDATE contradictions SET namespace = ? WHERE namespace = ?", (clean_new, clean_old)
                 )
-                # Bump content_version in mesh_meta if present
                 tables = {
                     r[0]
                     for r in conn_new.execute(
@@ -479,6 +482,8 @@ def rename_namespace(old_name: str, new_name: str) -> int:
             secure_file_permissions(new_db)
 
             if old_audit.exists():
+                reject_symlink(old_audit)
+                reject_symlink(new_audit)
                 conn_audit_old = sqlite3.connect(old_audit, timeout=5.0)
                 try:
                     _checkpoint_truncate_or_raise(conn_audit_old, old_audit)
@@ -498,17 +503,12 @@ def rename_namespace(old_name: str, new_name: str) -> int:
                     conn_audit_new.close()
                 secure_file_permissions(new_audit)
         except Exception:
-            # Roll back partially created new DB and audit DB so old namespace remains untouched.
-            # Do not call `_evict_namespace_caches` here: it would drop the write locks we hold.
             close_store_connection(new_db)
             _remove_sqlite_files(new_db)
             if new_audit.exists():
                 _remove_sqlite_files(new_audit)
             raise
 
-        # Both DB and Audit DB succeeded — now remove old files while the lock
-        # is still held, and fail loudly if deletion is blocked (otherwise two
-        # live copies would silently diverge).
         removed = _remove_sqlite_files(old_db, strict=True)
         if old_audit.exists():
             removed = _remove_sqlite_files(old_audit, strict=True) and removed
@@ -565,8 +565,6 @@ def namespace_stats(namespace: str) -> dict[str, Any]:
             "SELECT SUM(access_count) as total FROM memories WHERE namespace = ?", (clean_ns,)
         )
         recall_row = cursor.fetchone()
-        # SUM(access_count) counts memory *hits*, not recall calls. Keep the key
-        # for API compatibility but expose the real search count separately.
         total_recalls = int(recall_row["total"] or 0)
 
         total_searches = 0
@@ -576,7 +574,6 @@ def namespace_stats(namespace: str) -> dict[str, Any]:
             )
             total_searches = int(cursor.fetchone()["total"] or 0)
         except sqlite3.OperationalError:
-            # Databases created before recall telemetry existed have no table.
             total_searches = 0
 
         cursor.execute("SELECT MIN(created_at) as oldest FROM memories WHERE namespace = ?", (clean_ns,))

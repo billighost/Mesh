@@ -5,6 +5,7 @@ Tools exposed:
   mesh_learn                  store a memory (with deduplication, contradiction detection & ingestion guard)
   mesh_recall                 5-stage hybrid search + peripheral `other_possible_memories` snippets
   mesh_update                 update an existing memory in-place by ID (supports `clear_ttl`)
+  mesh_approve                approve a quarantined memory by ID
   mesh_forget                 delete a memory by ID
   mesh_inspect                list memories in the namespace with optional filters
   mesh_context                generate a formatted system prompt context block (excludes private by default)
@@ -14,17 +15,15 @@ Tools exposed:
   mesh_sync                   store a session turn summary and (only when `MESH_ALLOW_LOG_SYNC=1` or
                               `MESH_ENABLE_AUTO_SYNC=1` is set) capture concrete facts from local agent logs
 
-Security & Privacy Hardening:
-  - Log ingestion is strictly opt-in: `mesh_sync` only reads local agent logs when `MESH_ALLOW_LOG_SYNC=1`
-    or `MESH_ENABLE_AUTO_SYNC=1` is set, and background auto-sync only runs when `MESH_ENABLE_AUTO_SYNC=1`
-    is set. When a workspace path can be inferred, log lines from unrelated workspaces are filtered out;
-    when global IDE logs do not tag individual lines with a workspace path, filtering is best-effort.
-  - `mesh_recall`, `mesh_inspect`, and `mesh_patterns` exclude `local_only=True` memories by default
-    (`include_private=False`) unless explicitly requested or `MESH_MCP_INCLUDE_PRIVATE=1` is set, and mark
-    all returned memory payloads with `"untrusted_reference_data": True`.
-  - Read-only tools open namespaces with `create=False` so typo'd namespaces never create `.db` files on disk.
-  - Daemon proxy verifies daemon identity via HMAC-SHA256 `/identity` before sending the bearer token,
-    detects stale keep-alive sockets before sending, and uses fresh connections for mutating calls.
+Addresses Findings:
+  - S1: Supports `secret_ref` locators and `vault_secrets` on `mesh_learn` and `mesh_update`
+  - S6: Removes `include_private` from advertised MCP tool schemas and enforces server-side
+        `MESH_MCP_INCLUDE_PRIVATE=0` / `MESH_BLOCK_PRIVATE_OVERRIDE=1` locks so a model cannot
+        self-authorize private memory access; validates `namespace` locally before daemon proxying
+  - S8: Marks agent-written memories with `trust_tier="agent"`, excludes `quarantined=True` memories
+        from `mesh_recall` and `mesh_context` by default, and adds `mesh_approve`
+  - S11: Enforces `guard_ingest` and `guard_tags` across `mesh_learn`, `mesh_update`, and `mesh_sync`
+  - N1: Confines `_iter_log_files` to non-symlinked log files outside sensitive dot-directories
 """
 from __future__ import annotations
 
@@ -47,11 +46,18 @@ from mcp import types
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 
-from .audit import ensure_secure_mesh_dir, get_mesh_dir, secure_file_permissions, validate_namespace
+from .audit import (
+    ensure_secure_mesh_dir,
+    get_mesh_dir,
+    log_audit_event,
+    reject_symlink,
+    secure_file_permissions,
+    validate_namespace,
+)
 from .context_builder import build_context_bundle
 from .daemon import get_auth_headers, request_user_permission
 from .envutil import env_bool, env_int, parse_strict_bool
-from .guards import guard_ingest
+from .guards import guard_ingest, guard_tags
 from .memory import (
     VALID_MEMORY_TYPES,
     Mesh,
@@ -82,6 +88,19 @@ def _env_flag(name: str) -> bool:
     return env_bool(name, False)
 
 
+def _is_mcp_private_locked_off() -> bool:
+    """
+    Finding S6: Return True when `MESH_MCP_INCLUDE_PRIVATE` is explicitly set to a falsy
+    value (`0`, `false`, `no`) or `MESH_BLOCK_PRIVATE_OVERRIDE=1` is set on the server.
+    """
+    if env_bool("MESH_BLOCK_PRIVATE_OVERRIDE", False):
+        return True
+    raw = os.environ.get("MESH_MCP_INCLUDE_PRIVATE")
+    if raw is not None and raw.strip().lower() in ("0", "false", "no"):
+        return True
+    return False
+
+
 def _ctx_default_include_private(context: Optional[dict[str, Any]]) -> bool:
     """Resolve the include-private default from the *calling* process, not the daemon's env."""
     if not isinstance(context, dict) or "default_include_private" not in context:
@@ -90,6 +109,27 @@ def _ctx_default_include_private(context: Optional[dict[str, Any]]) -> bool:
     if value is None:
         return _get_default_include_private()
     return parse_strict_bool(value, default=False, raise_on_invalid=False)
+
+
+def _resolve_mcp_include_private(
+    arguments: dict[str, Any],
+    context: Optional[dict[str, Any]],
+) -> bool:
+    """
+    Finding S6: Resolve `include_private` for MCP tool execution:
+      - If `context` explicitly supplies `default_include_private` (in-process trusted caller),
+        use it when `arguments` does not specify `include_private`.
+      - If the server has locked off private memories (`MESH_MCP_INCLUDE_PRIVATE=0` or
+        `MESH_BLOCK_PRIVATE_OVERRIDE=1`), tool `arguments["include_private"]` can never override it to `True`.
+    """
+    inc_priv_arg = _parse_arg_bool(arguments, "include_private", None)
+    if _is_mcp_private_locked_off():
+        if isinstance(context, dict) and "default_include_private" in context and inc_priv_arg is None:
+            return _ctx_default_include_private(context)
+        return False
+    if inc_priv_arg is not None:
+        return bool(inc_priv_arg)
+    return _ctx_default_include_private(context)
 
 
 def _ctx_flag(context: Optional[dict[str, Any]], key: str, default: bool) -> bool:
@@ -119,8 +159,6 @@ _DEFAULT_INCLUDE_PRIVATE = _get_default_include_private()
 app = Server("mesh")
 _MESH_LOCK = threading.RLock()
 _MESH_INSTANCES: OrderedDict[tuple[str, str], Mesh] = OrderedDict()
-# agent_id/namespace come from tool arguments; cap the cache so a client cannot
-# grow it without bound (each entry pins a Mesh and its SQLite handles).
 _MESH_INSTANCES_MAX = 64
 _mesh: Optional[Mesh] = None
 
@@ -143,12 +181,9 @@ _DAEMON_AVAILABLE = False
 _DAEMON_CONN: Optional[http.client.HTTPConnection] = None
 
 # Tracks (st_dev, st_ino, mtime_ns, byte_offset) per log file so passive sync only reads new log output.
-# Guarded by _LOG_WATERMARKS_LOCK and persisted atomically to ~/.mesh/log_watermarks.json.
 _LOG_WATERMARKS_LOCK = threading.RLock()
 _LOG_WATERMARKS: dict[str, tuple[int, ...]] = {}
 _LOG_WATERMARKS_LOADED_DIR: Optional[Path] = None
-# Log directories can contain thousands of rotating files; bound the map so a
-# long-lived server does not accumulate an entry per file ever seen.
 _LOG_WATERMARKS_MAX = 2048
 
 # Background sync error tracking (Issue M2)
@@ -195,6 +230,7 @@ def _load_persisted_watermarks_locked() -> None:
         if not state_file.exists():
             return
         try:
+            reject_symlink(state_file)
             raw = json.loads(state_file.read_text(encoding="utf-8"))
             if isinstance(raw, dict):
                 for k, v in raw.items():
@@ -212,14 +248,16 @@ def _persist_watermarks_locked() -> None:
     global _LOG_WATERMARKS_LOADED_DIR
     try:
         state_file = _watermarks_state_path()
+        reject_symlink(state_file)
         _LOG_WATERMARKS_LOADED_DIR = state_file.parent
         tmp_file = state_file.with_suffix(f".tmp.{os.getpid()}.{threading.get_ident()}")
+        reject_symlink(tmp_file)
         serializable = {k: list(v) for k, v in _LOG_WATERMARKS.items()}
         tmp_file.write_text(json.dumps(serializable), encoding="utf-8")
         secure_file_permissions(tmp_file)
         os.replace(tmp_file, state_file)
         secure_file_permissions(state_file)
-    except OSError:
+    except (OSError, ValueError):
         pass
 
 
@@ -273,6 +311,7 @@ _SORTED_MEMORY_TYPES = sorted(VALID_MEMORY_TYPES)
 _MUTATING_TOOLS = {
     "mesh_learn",
     "mesh_update",
+    "mesh_approve",
     "mesh_forget",
     "mesh_resolve_contradiction",
     "mesh_sync",
@@ -380,16 +419,20 @@ def _try_proxy_via_daemon(name: str, arguments: dict[str, Any]) -> Optional[dict
     If running as a stdio MCP process and a local Mesh HTTP daemon is active on
     127.0.0.1:7701 (or MESH_HTTP_PORT), proxy the tool execution over an authenticated
     connection.
+    - Finding S6: Always validates `namespace` and `default_namespace` locally against
+      `MESH_LOCKED_NAMESPACE` before proxying so a caller's namespace lock is never bypassed.
     - Never sends the bearer token until `verify_daemon_identity` succeeds (Phase 1.2).
-    - Always uses a fresh connection for mutating tools (`_MUTATING_TOOLS`) or after >3.5s idle
-      so Uvicorn's keep-alive timeout never drops the first write after idle.
-    - Surfaces 4xx/5xx daemon errors directly instead of re-executing locally.
     """
     global _DAEMON_CHECK_TS, _DAEMON_LAST_USE_TS, _DAEMON_AVAILABLE, _DAEMON_CONN
     if not _STDIO_SERVER_ACTIVE:
         return None
     if os.environ.get("MESH_NO_DAEMON_PROXY", "").strip().lower() in ("1", "true", "yes"):
         return None
+
+    # Finding S6: Enforce local MESH_LOCKED_NAMESPACE before contacting the daemon
+    def_ns = validate_namespace(_get_default_namespace())
+    if arguments.get("namespace"):
+        validate_namespace(str(arguments["namespace"]))
 
     now = time.monotonic()
     if not _DAEMON_AVAILABLE and (now - _DAEMON_CHECK_TS) < 3.0:
@@ -410,7 +453,7 @@ def _try_proxy_via_daemon(name: str, arguments: dict[str, Any]) -> Optional[dict
         {
             "name": name,
             "arguments": arguments,
-            "default_namespace": _get_default_namespace(),
+            "default_namespace": def_ns,
             "agent_id": _get_default_agent_id(),
             "context": {
                 "workspace_root": os.getcwd(),
@@ -568,9 +611,6 @@ def _infer_workspace_root() -> Optional[Path]:
 def _filter_log_text_to_workspace(log_text: str, workspace_root: Optional[Path]) -> str:
     """
     Filter ingested log lines to the current workspace when `workspace_root` can be inferred (Phase 1.3).
-    Note: Global IDE logs do not always tag every line with a path; lines that reference an explicit
-    unrelated absolute path outside `workspace_root` are excluded, while workspace-matching or
-    path-neutral lines are retained.
     """
     if not log_text or workspace_root is None:
         return log_text
@@ -579,14 +619,11 @@ def _filter_log_text_to_workspace(log_text: str, workspace_root: Optional[Path])
     if not ws_name:
         return log_text
 
-    # If the log chunk mentions the workspace path or workspace name anywhere, keep all lines
-    # except lines that explicitly point to a different user project directory under home.
     home_norm = str(Path.home().resolve()).replace("\\", "/").lower()
     filtered_lines: list[str] = []
     for line in log_text.splitlines():
         line_norm = line.replace("\\", "/").lower()
         if home_norm in line_norm and ws_norm not in line_norm and ws_name not in line_norm:
-            # Skip lines explicitly referencing a sibling directory under $HOME outside this workspace
             continue
         filtered_lines.append(line)
     return "\n".join(filtered_lines)
@@ -628,19 +665,26 @@ def detect_agent_logs() -> list[str]:
 
 
 def _iter_log_files(paths: list[str]) -> list[Path]:
-    """Enumerate valid log files from a list of file/directory paths, isolating per-path errors."""
+    """
+    Enumerate valid log files from a list of file/directory paths, isolating per-path errors
+    and rejecting symlinks (Finding N1, N6).
+    """
     found: list[Path] = []
     for raw_path in paths:
         try:
             p = Path(raw_path).expanduser()
-            if not p.exists():
+            if not p.exists() or p.is_symlink():
                 continue
-            if p.is_file():
+            if p.is_file() and p.suffix.lower() in _ALLOWED_LOG_EXTENSIONS:
                 found.append(p)
             elif p.is_dir():
                 for child in p.rglob("*"):
                     try:
-                        if child.is_file() and child.suffix.lower() in _ALLOWED_LOG_EXTENSIONS:
+                        if (
+                            not child.is_symlink()
+                            and child.is_file()
+                            and child.suffix.lower() in _ALLOWED_LOG_EXTENSIONS
+                        ):
                             found.append(child)
                     except OSError as exc:
                         logger.warning("Skipping unreadable log entry '%s': %s", child, exc)
@@ -694,8 +738,6 @@ def _collect_incremental_logs_pending(
     Read newly appended content from log files inside `paths` without advancing
     `_LOG_WATERMARKS` yet. Returns `(combined_text, pending_watermarks)` so callers
     only commit and persist watermarks after ingestion succeeds (Issue M1).
-    Detects file rotation `(st_dev, st_ino)` and truncation (`size < prev_offset`)
-    and resets the read offset to 0.
     """
     with _LOG_WATERMARKS_LOCK:
         _load_persisted_watermarks_locked()
@@ -742,8 +784,6 @@ def _collect_incremental_logs_pending(
                         and size == prev_offset
                     ):
                         continue
-                    # Reset to 0 if the file was rotated (different dev/ino), truncated (size < prev_offset),
-                    # or rewritten in-place to the exact same size (mtime changed while size == prev_offset).
                     rotated = (
                         raw_prev is not None
                         and (prev_dev, prev_ino) != (0, 0)
@@ -790,10 +830,6 @@ def _collect_incremental_logs(
     commit_watermarks: bool = True,
     include_history: bool = False,
 ) -> str:
-    """
-    Read newly appended content from log files inside `paths`, discarding any partial
-    leading line when seeking into a large file.
-    """
     text, pending = _collect_incremental_logs_pending(
         paths,
         max_files=max_files,
@@ -891,8 +927,8 @@ _MCP_TOOLS: list[types.Tool] = [
             "with existing memories. If a conflicting memory is found, the new memory "
             "is still stored and a conflict warning is returned for review. "
             "Use ttl_days for time-sensitive facts (e.g. staging IPs, sprint goals). "
-            "Set local_only=true for sensitive or private data so it is excluded from exports, "
-            "context blocks, and default agent recalls."
+            "For secrets, pass a `secret_ref` locator URI (e.g. 'env://STRIPE_KEY' or "
+            "'keyring://mesh/shared/STRIPE_KEY') or set `vault_secrets=true` instead of storing raw values."
         ),
         inputSchema={
             "type": "object",
@@ -900,7 +936,7 @@ _MCP_TOOLS: list[types.Tool] = [
                 "content": {
                     "type": "string",
                     "description": (
-                        "The specific fact, decision, process, or instruction to remember. "
+                        "The specific fact, decision, process, instruction, or secret locator description to remember. "
                         "Good: 'Production PostgreSQL runs on port 5432.' "
                         "Bad: 'Database info.'"
                     ),
@@ -913,7 +949,8 @@ _MCP_TOOLS: list[types.Tool] = [
                         "fact: objective info | preference: user/system prefs | "
                         "context: project background | result: task outcome | "
                         "instruction: rules to follow | process: workflow steps | "
-                        "decision: architectural choice | error: bug/fix note | general: other."
+                        "decision: architectural choice | error: bug/fix note | "
+                        "secret_ref: pointer to external secret | general: other."
                     ),
                 },
                 "confidence": {
@@ -940,8 +977,21 @@ _MCP_TOOLS: list[types.Tool] = [
                     "default": False,
                     "description": (
                         "Set true to mark private and exclude from exports, system prompt context blocks, "
-                        "and default agent recalls unless include_private=true is explicitly passed."
+                        "and default agent recalls."
                     ),
+                },
+                "secret_ref": {
+                    "type": "string",
+                    "description": (
+                        "Optional secret locator URI (e.g. 'env://STRIPE_SECRET_KEY', "
+                        "'keyring://mesh/shared/DB_PASS', 'op://Prod/Stripe/credential'). "
+                        "Never pass raw secret values."
+                    ),
+                },
+                "vault_secrets": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Set true to vault any detected secret into the keyring and store a secret_ref locator.",
                 },
                 "namespace": {
                     "type": "string",
@@ -956,7 +1006,7 @@ _MCP_TOOLS: list[types.Tool] = [
         description=(
             "Search shared agent memory using 5-stage hybrid search "
             "(pre-mask filters + dense SIMD cosine + Robertson-Sparck Jones BM25/IDF + tight domain synonyms + lexical grounding floor). "
-            "Excludes `local_only=true` private memories by default unless `include_private=true` is passed. "
+            "Excludes `local_only=true` private memories and unapproved `quarantined` memories by default. "
             "Also returns `other_possible_memories` snippets so you can see other related or "
             "filter-excluded memories in the namespace. Call this at the start of tasks."
         ),
@@ -992,11 +1042,6 @@ _MCP_TOOLS: list[types.Tool] = [
                     "type": "boolean",
                     "default": True,
                     "description": "Set false to exclude decayed/stale memories.",
-                },
-                "include_private": {
-                    "type": "boolean",
-                    "default": False,
-                    "description": "Set true only if you explicitly need local_only private memories returned.",
                 },
                 "memory_type": {
                     "type": "string",
@@ -1078,6 +1123,28 @@ _MCP_TOOLS: list[types.Tool] = [
                     "type": "boolean",
                     "description": "Updated privacy flag.",
                 },
+                "secret_ref": {
+                    "type": "string",
+                    "description": "Optional updated secret locator URI.",
+                },
+                "namespace": {
+                    "type": "string",
+                    "description": "Optional namespace override.",
+                },
+            },
+            "required": ["memory_id"],
+        },
+    ),
+    types.Tool(
+        name="mesh_approve",
+        description="Approve a quarantined memory by its ID so it can be recalled and included in context blocks.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "memory_id": {
+                    "type": "string",
+                    "description": "The UUID or 4+ character short ID prefix of the quarantined memory to approve.",
+                },
                 "namespace": {
                     "type": "string",
                     "description": "Optional namespace override.",
@@ -1108,7 +1175,7 @@ _MCP_TOOLS: list[types.Tool] = [
         name="mesh_inspect",
         description=(
             "List memories in the namespace sorted by most recently accessed. "
-            "Excludes `local_only=true` private memories by default unless `include_private=true` is passed."
+            "Excludes `local_only=true` private memories by default."
         ),
         inputSchema={
             "type": "object",
@@ -1128,10 +1195,10 @@ _MCP_TOOLS: list[types.Tool] = [
                     "type": "string",
                     "description": "Optional filter by a single tag.",
                 },
-                "include_private": {
+                "quarantined_only": {
                     "type": "boolean",
                     "default": False,
-                    "description": "Set true only if you explicitly need local_only private memories returned.",
+                    "description": "Set true to list only quarantined memories awaiting approval.",
                 },
                 "namespace": {
                     "type": "string",
@@ -1144,7 +1211,7 @@ _MCP_TOOLS: list[types.Tool] = [
         name="mesh_context",
         description=(
             "Generate a formatted context block of top project memories ready to prime "
-            "an agent session. Excludes `local_only` private memories by default."
+            "an agent session. Excludes `local_only` private memories and `quarantined` memories by default."
         ),
         inputSchema={
             "type": "object",
@@ -1186,11 +1253,6 @@ _MCP_TOOLS: list[types.Tool] = [
                     "items": {"type": "string"},
                     "description": "Optional filter by tags.",
                 },
-                "include_private": {
-                    "type": "boolean",
-                    "default": False,
-                    "description": "Set true only if you explicitly want local_only memories included.",
-                },
                 "namespace": {
                     "type": "string",
                     "description": "Optional namespace override.",
@@ -1203,19 +1265,11 @@ _MCP_TOOLS: list[types.Tool] = [
         description=(
             "Analyse memory usage patterns across agents. "
             "Returns top_topics, memory_gaps (frequently searched but poorly answered), "
-            "unused_memories, and stale_memories. Excludes private memories unless include_private=true."
+            "unused_memories, and stale_memories. Excludes private memories by default."
         ),
         inputSchema={
             "type": "object",
             "properties": {
-                "include_private": {
-                    "type": "boolean",
-                    "default": False,
-                    "description": (
-                        "Set true only if you explicitly need local_only private memories "
-                        "and private query telemetry included in pattern analysis."
-                    ),
-                },
                 "namespace": {
                     "type": "string",
                     "description": "Optional namespace override.",
@@ -1277,6 +1331,204 @@ _MCP_TOOLS: list[types.Tool] = [
                     "default": False,
                     "description": "Set true to ingest historical log tails when no prior watermark exists.",
                 },
+                "quarantine": {
+                    "type": "boolean",
+                    "description": "Optional flag to quarantine log-captured memories until approved.",
+                },
+                "namespace": {
+                    "type": "string",
+                    "description": "Optional namespace override.",
+                },
+            },
+        },
+    ),
+    types.Tool(
+        name="mesh_project_brief",
+        description=(
+            "Single-call session-start brief: loads namespace health, open goals and tasks, "
+            "recently completed work, and key architecture facts within a token budget."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "max_tokens": {
+                    "type": "integer",
+                    "default": 500,
+                    "description": "Token budget cap for the brief (approximated at 4 chars/token).",
+                },
+                "include_work_items": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Include open tasks, goals, and recently completed items.",
+                },
+                "namespace": {
+                    "type": "string",
+                    "description": "Optional namespace override.",
+                },
+            },
+        },
+    ),
+    types.Tool(
+        name="mesh_task_create",
+        description="Create a first-class task or goal in Mesh to track work across sessions.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "description": "Clear, concise title for the task or goal.",
+                },
+                "kind": {
+                    "type": "string",
+                    "enum": ["task", "goal"],
+                    "default": "task",
+                    "description": "Whether this item is a high-level goal or an actionable task.",
+                },
+                "parent_id": {
+                    "type": "string",
+                    "description": "Optional parent goal ID or short ID if this is a subtask.",
+                },
+                "description": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Detailed context, acceptance criteria, or instructions.",
+                },
+                "priority": {
+                    "type": "string",
+                    "enum": ["low", "medium", "high", "critical"],
+                    "default": "medium",
+                    "description": "Priority tier of the work item.",
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional categorisation tags.",
+                },
+                "namespace": {
+                    "type": "string",
+                    "description": "Optional namespace override.",
+                },
+            },
+            "required": ["title"],
+        },
+    ),
+    types.Tool(
+        name="mesh_task_update",
+        description="Update status, priority, or notes of an existing task or goal.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "item_id": {
+                    "type": "string",
+                    "description": "UUID or short ID (e.g. 'task-1', 'goal-2') of the work item.",
+                },
+                "status": {
+                    "type": "string",
+                    "enum": ["todo", "in_progress", "blocked", "done", "cancelled"],
+                    "description": "New lifecycle status.",
+                },
+                "priority": {
+                    "type": "string",
+                    "enum": ["low", "medium", "high", "critical"],
+                    "description": "Updated priority tier.",
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Updated title.",
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Updated description.",
+                },
+                "note": {
+                    "type": "string",
+                    "description": "Reason for status transition or blocker notes.",
+                },
+                "namespace": {
+                    "type": "string",
+                    "description": "Optional namespace override.",
+                },
+            },
+            "required": ["item_id"],
+        },
+    ),
+    types.Tool(
+        name="mesh_task_complete",
+        description="Mark a task or goal completed with a mandatory summary of changes and optional evidence.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "item_id": {
+                    "type": "string",
+                    "description": "UUID or short ID of the completed work item.",
+                },
+                "summary": {
+                    "type": "string",
+                    "description": "Detailed summary of what was completed, decisions made, or changes made.",
+                },
+                "evidence": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional list of modified file paths, git commit SHAs, or links.",
+                },
+                "namespace": {
+                    "type": "string",
+                    "description": "Optional namespace override.",
+                },
+            },
+            "required": ["item_id", "summary"],
+        },
+    ),
+    types.Tool(
+        name="mesh_task_list",
+        description="List tasks and goals in the namespace with deterministic priority and creation-date sorting.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "enum": ["all", "open", "closed", "todo", "in_progress", "blocked", "done", "cancelled"],
+                    "default": "open",
+                    "description": "Filter by status: 'open' (todo/in_progress/blocked), 'closed' (done/cancelled), or exact status.",
+                },
+                "kind": {
+                    "type": "string",
+                    "enum": ["task", "goal"],
+                    "description": "Filter by kind ('task' or 'goal').",
+                },
+                "parent_id": {
+                    "type": "string",
+                    "description": "Filter subtasks of a specific goal.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "default": 20,
+                    "description": "Maximum number of items to return.",
+                },
+                "namespace": {
+                    "type": "string",
+                    "description": "Optional namespace override.",
+                },
+            },
+        },
+    ),
+    types.Tool(
+        name="mesh_log",
+        description="Generate a project changelog combining completed tasks, evidence, and architectural decisions over a time window.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "since": {
+                    "type": "string",
+                    "default": "7d",
+                    "description": "Time window (e.g. '24h', '7d', '30d') or ISO timestamp.",
+                },
+                "format": {
+                    "type": "string",
+                    "enum": ["markdown", "json"],
+                    "default": "markdown",
+                    "description": "Output format ('markdown' or 'json').",
+                },
                 "namespace": {
                     "type": "string",
                     "description": "Optional namespace override.",
@@ -1329,21 +1581,40 @@ def _execute_tool_sync_impl(
                 if name == "mesh_learn":
                     content_raw = arguments["content"]
                     req_local_only = bool(_parse_arg_bool(arguments, "local_only", False))
-                    guard_res = guard_ingest(content_raw, local_only=req_local_only)
+                    req_vault = bool(_parse_arg_bool(arguments, "vault_secrets", False))
+                    guard_res = guard_ingest(
+                        content_raw,
+                        local_only=req_local_only,
+                    )
                     if guard_res.rejected:
                         return {
                             "status": "rejected",
                             "error": f"Memory rejected: {guard_res.reason}",
                             "namespace": validated_ns,
                         }
+                    try:
+                        clean_tags, tags_priv, tag_warns = guard_tags(
+                            arguments.get("tags", []),
+                            local_only=guard_res.local_only,
+                        )
+                    except ValueError as tag_exc:
+                        return {
+                            "status": "rejected",
+                            "error": f"Memory rejected: {tag_exc}",
+                            "namespace": validated_ns,
+                        }
+
                     mesh = get_mesh(namespace=validated_ns, agent_id=agent_id, create=True)
                     result = mesh.learn(
-                        content=guard_res.content,
+                        content=content_raw if req_vault else guard_res.content,
                         memory_type=arguments.get("memory_type", "fact"),
                         confidence=float(arguments.get("confidence", 1.0)),
-                        tags=arguments.get("tags", []),
+                        tags=clean_tags,
                         ttl_days=arguments.get("ttl_days"),
-                        local_only=guard_res.local_only,
+                        local_only=bool(guard_res.local_only or tags_priv),
+                        secret_ref=arguments.get("secret_ref"),
+                        vault_secrets=req_vault,
+                        trust_tier="agent",
                     )
                     eng = get_engine_status()
                     response: dict[str, Any] = {
@@ -1352,14 +1623,19 @@ def _execute_tool_sync_impl(
                         "deduplicated": result.get("deduplicated", False),
                         "namespace": mesh.namespace,
                         "total_memories": mesh.count(),
+                        "trust_tier": result.get("trust_tier", "agent"),
+                        "quarantined": bool(result.get("quarantined", False)),
                         "embedding_backend": result.get("embedding_backend", eng.get("backend", "unloaded")),
                         "embedding_degraded": bool(result.get("embedding_degraded", eng.get("embedding_degraded", False))),
                     }
+                    if result.get("secret_ref"):
+                        response["secret_ref"] = result["secret_ref"]
                     if result.get("namespace_created"):
                         response["namespace_created"] = True
                         response["similar_existing"] = result.get("similar_existing", [])
-                    if guard_res.warnings:
-                        response["warnings"] = guard_res.warnings
+                    all_warnings = tuple([*guard_res.warnings, *tag_warns])
+                    if all_warnings:
+                        response["warnings"] = all_warnings
                     if result.get("conflict"):
                         response["conflict_warning"] = (
                             "A potentially contradictory memory already exists. "
@@ -1372,13 +1648,9 @@ def _execute_tool_sync_impl(
                     limit_n = int(arguments.get("n") or arguments.get("count") or 5)
                     include_other = bool(_parse_arg_bool(arguments, "include_other_possible", True))
                     include_stale = bool(_parse_arg_bool(arguments, "include_stale", True))
+                    include_quarantined = bool(_parse_arg_bool(arguments, "include_quarantined", False))
                     max_other = int(arguments.get("max_other_possible", 5)) if include_other else 0
-                    inc_priv_arg = _parse_arg_bool(arguments, "include_private", None)
-                    inc_priv = (
-                        inc_priv_arg
-                        if inc_priv_arg is not None
-                        else _ctx_default_include_private(context)
-                    )
+                    inc_priv = _resolve_mcp_include_private(arguments, context)
                     try:
                         mesh = get_mesh(namespace=validated_ns, agent_id=agent_id, create=False)
                     except NamespaceNotFoundError:
@@ -1411,6 +1683,7 @@ def _execute_tool_sync_impl(
                         source_agent=arguments.get("source_agent"),
                         max_other_possible=max_other,
                         include_private=inc_priv,
+                        include_quarantined=include_quarantined,
                     )
                     res["namespace_exists"] = True
                     res["untrusted_reference_data"] = True
@@ -1432,6 +1705,23 @@ def _execute_tool_sync_impl(
                                 "error": f"Memory rejected: {guard_res.reason}",
                                 "namespace": validated_ns,
                             }
+                    clean_tags = arguments.get("tags")
+                    tag_warns: tuple[str, ...] = ()
+                    tags_priv = False
+                    if clean_tags is not None:
+                        try:
+                            clean_tags, tags_priv, tag_warns = guard_tags(
+                                clean_tags,
+                                local_only=bool(
+                                    (guard_res.local_only if guard_res else False) or req_local_only
+                                ),
+                            )
+                        except ValueError as tag_exc:
+                            return {
+                                "status": "rejected",
+                                "error": f"Memory rejected: {tag_exc}",
+                                "namespace": validated_ns,
+                            }
                     try:
                         mesh = get_mesh(namespace=validated_ns, agent_id=agent_id, create=False)
                     except NamespaceNotFoundError:
@@ -1446,14 +1736,15 @@ def _execute_tool_sync_impl(
                         content=guard_res.content if guard_res else arguments.get("content"),
                         memory_type=arguments.get("memory_type"),
                         confidence=arguments.get("confidence"),
-                        tags=arguments.get("tags"),
+                        tags=clean_tags,
                         ttl_days=arguments.get("ttl_days"),
                         clear_ttl=req_clear_ttl,
                         local_only=(
                             True
-                            if guard_res is not None and guard_res.local_only
+                            if ((guard_res is not None and guard_res.local_only) or tags_priv)
                             else req_local_only
                         ),
+                        secret_ref=arguments.get("secret_ref"),
                     )
                     update_resp: dict[str, Any] = {
                         "status": "updated",
@@ -1461,9 +1752,28 @@ def _execute_tool_sync_impl(
                         "namespace": mesh.namespace,
                         "memory": updated["memory"],
                     }
-                    if guard_res is not None and guard_res.warnings:
-                        update_resp["warnings"] = guard_res.warnings
+                    all_warnings = tuple([*(guard_res.warnings if guard_res else ()), *tag_warns])
+                    if all_warnings:
+                        update_resp["warnings"] = all_warnings
                     return update_resp
+
+                elif name == "mesh_approve":
+                    try:
+                        mesh = get_mesh(namespace=validated_ns, agent_id=agent_id, create=False)
+                    except NamespaceNotFoundError:
+                        return {
+                            "status": "error",
+                            "error": f"Namespace '{validated_ns}' does not exist.",
+                            "namespace_exists": False,
+                            "did_you_mean": suggest_did_you_mean_namespaces(validated_ns),
+                        }
+                    approved = mesh.approve(arguments["memory_id"])
+                    return {
+                        "status": "approved",
+                        "memory_id": approved["memory_id"],
+                        "namespace": mesh.namespace,
+                        "memory": approved["memory"],
+                    }
 
                 elif name == "mesh_forget":
                     try:
@@ -1485,12 +1795,8 @@ def _execute_tool_sync_impl(
                     }
 
                 elif name == "mesh_inspect":
-                    inc_priv_arg = _parse_arg_bool(arguments, "include_private", None)
-                    inc_priv = (
-                        inc_priv_arg
-                        if inc_priv_arg is not None
-                        else _ctx_default_include_private(context)
-                    )
+                    inc_priv = _resolve_mcp_include_private(arguments, context)
+                    quarantined_only = bool(_parse_arg_bool(arguments, "quarantined_only", False))
                     try:
                         mesh = get_mesh(namespace=validated_ns, agent_id=agent_id, create=False)
                     except NamespaceNotFoundError:
@@ -1512,12 +1818,17 @@ def _execute_tool_sync_impl(
                         tag=tag_filter,
                         tags=tags_filter,
                         include_private=inc_priv,
+                        quarantined_only=quarantined_only,
                     )
-                    total_matching = mesh.count_matching(
-                        memory_type=mem_type,
-                        tag=tag_filter,
-                        tags=tags_filter,
-                        include_private=inc_priv,
+                    total_matching = (
+                        len(mesh.inspect(limit=10000, memory_type=mem_type, tag=tag_filter, tags=tags_filter, include_private=inc_priv, quarantined_only=True))
+                        if quarantined_only
+                        else mesh.count_matching(
+                            memory_type=mem_type,
+                            tag=tag_filter,
+                            tags=tags_filter,
+                            include_private=inc_priv,
+                        )
                     )
                     return {
                         "namespace": mesh.namespace,
@@ -1529,12 +1840,7 @@ def _execute_tool_sync_impl(
                     }
 
                 elif name == "mesh_context":
-                    inc_priv_arg = _parse_arg_bool(arguments, "include_private", None)
-                    inc_priv = (
-                        inc_priv_arg
-                        if inc_priv_arg is not None
-                        else _ctx_default_include_private(context)
-                    )
+                    inc_priv = _resolve_mcp_include_private(arguments, context)
                     try:
                         mesh = get_mesh(namespace=validated_ns, agent_id=agent_id, create=False)
                     except NamespaceNotFoundError:
@@ -1569,12 +1875,7 @@ def _execute_tool_sync_impl(
                     return out_ctx
 
                 elif name == "mesh_patterns":
-                    inc_priv_arg = _parse_arg_bool(arguments, "include_private", None)
-                    inc_priv = (
-                        inc_priv_arg
-                        if inc_priv_arg is not None
-                        else _ctx_default_include_private(context)
-                    )
+                    inc_priv = _resolve_mcp_include_private(arguments, context)
                     try:
                         mesh = get_mesh(namespace=validated_ns, agent_id=agent_id, create=False)
                     except NamespaceNotFoundError:
@@ -1643,6 +1944,7 @@ def _execute_tool_sync_impl(
                         _parse_arg_bool(arguments, "include_history", False)
                         or _parse_arg_bool(arguments, "all", False)
                     )
+                    quarantine_arg = _parse_arg_bool(arguments, "quarantine", None)
                     mesh: Optional[Mesh] = None
                     if summary_text:
                         guard_res = guard_ingest(summary_text, local_only=False)
@@ -1658,6 +1960,7 @@ def _execute_tool_sync_impl(
                             memory_type="result",
                             tags=["session-sync"],
                             local_only=guard_res.local_only,
+                            trust_tier="agent",
                         )
 
                     allow_log_sync = _ctx_flag(
@@ -1727,6 +2030,7 @@ def _execute_tool_sync_impl(
                                 assume_yes=allow_cloud,
                                 default_local_only=not allow_cloud,
                                 resolve_input=False,
+                                quarantine=quarantine_arg,
                             )
                             stored_count = int(capture_res.get("stored_count", 0))
                             deduplicated_count = int(capture_res.get("deduplicated_count", 0))
@@ -1769,6 +2073,182 @@ def _execute_tool_sync_impl(
                         "last_sync_error": sync_status["last_error"],
                         "last_sync_error_at": sync_status["last_error_at"],
                         "total_memories": total_mems,
+                    }
+
+                elif name == "mesh_project_brief":
+                    inc_priv = _resolve_mcp_include_private(arguments, context)
+                    max_tokens = int(arguments.get("max_tokens") or 500)
+                    include_work = bool(_parse_arg_bool(arguments, "include_work_items", True))
+                    try:
+                        mesh = get_mesh(namespace=validated_ns, agent_id=agent_id, create=False)
+                    except NamespaceNotFoundError:
+                        return {
+                            "namespace": validated_ns,
+                            "namespace_exists": False,
+                            "namespace_state": "new",
+                            "did_you_mean": suggest_did_you_mean_namespaces(validated_ns),
+                            "total_memories": 0,
+                            "open_tasks_count": 0,
+                            "completed_recent_count": 0,
+                            "pending_contradictions": 0,
+                            "brief_markdown": (
+                                f"# Project Brief: {validated_ns}\n\n"
+                                f"*Namespace state:* `new` (empty)\n"
+                                f"No memories, goals, or tasks exist yet in this namespace. "
+                                f"Use `mesh_learn` to record durable conventions/facts and `mesh_task_create` to track work."
+                            ),
+                            "estimated_tokens": 30,
+                            "untrusted_reference_data": True,
+                            "notice": _UNTRUSTED_NOTICE,
+                        }
+                    brief = mesh.project_brief(
+                        max_tokens=max_tokens,
+                        include_work_items=include_work,
+                        include_private=inc_priv,
+                    )
+                    return {
+                        "namespace": mesh.namespace,
+                        "namespace_exists": True,
+                        "untrusted_reference_data": True,
+                        "notice": _UNTRUSTED_NOTICE,
+                        **brief,
+                    }
+
+                elif name == "mesh_task_create":
+                    inc_priv = _resolve_mcp_include_private(arguments, context)
+                    mesh = get_mesh(namespace=validated_ns, agent_id=agent_id, create=True)
+                    created = mesh.create_work_item(
+                        title=str(arguments.get("title") or ""),
+                        kind=str(arguments.get("kind") or "task"),
+                        parent_id=arguments.get("parent_id"),
+                        description=str(arguments.get("description") or ""),
+                        priority=str(arguments.get("priority") or "medium"),
+                        tags=arguments.get("tags"),
+                        local_only=inc_priv,
+                    )
+                    return {
+                        "status": "created",
+                        "namespace": mesh.namespace,
+                        "id": created["id"],
+                        "short_id": created["short_id"],
+                        "item": created,
+                    }
+
+                elif name == "mesh_task_update":
+                    try:
+                        mesh = get_mesh(namespace=validated_ns, agent_id=agent_id, create=False)
+                    except NamespaceNotFoundError:
+                        return {
+                            "status": "error",
+                            "error": f"Namespace '{validated_ns}' does not exist.",
+                            "namespace_exists": False,
+                            "did_you_mean": suggest_did_you_mean_namespaces(validated_ns),
+                        }
+                    updated = mesh.update_work_item(
+                        item_id=str(arguments.get("item_id") or ""),
+                        status=arguments.get("status"),
+                        priority=arguments.get("priority"),
+                        title=arguments.get("title"),
+                        description=arguments.get("description"),
+                        note=arguments.get("note"),
+                    )
+                    return {
+                        "status": "updated",
+                        "namespace": mesh.namespace,
+                        "id": updated["id"],
+                        "short_id": updated["short_id"],
+                        "item": updated,
+                    }
+
+                elif name == "mesh_task_complete":
+                    try:
+                        mesh = get_mesh(namespace=validated_ns, agent_id=agent_id, create=False)
+                    except NamespaceNotFoundError:
+                        return {
+                            "status": "error",
+                            "error": f"Namespace '{validated_ns}' does not exist.",
+                            "namespace_exists": False,
+                            "did_you_mean": suggest_did_you_mean_namespaces(validated_ns),
+                        }
+                    summary = str(arguments.get("summary") or "").strip()
+                    if not summary:
+                        return {
+                            "status": "error",
+                            "error": "A non-empty summary of what was completed is required.",
+                            "namespace": validated_ns,
+                        }
+                    evidence = arguments.get("evidence")
+                    completed = mesh.complete_work_item(
+                        item_id=str(arguments.get("item_id") or ""),
+                        summary=summary,
+                        evidence=evidence if isinstance(evidence, list) else None,
+                    )
+                    return {
+                        "status": "completed",
+                        "namespace": mesh.namespace,
+                        "id": completed["id"],
+                        "short_id": completed["short_id"],
+                        "item": completed,
+                    }
+
+                elif name == "mesh_task_list":
+                    inc_priv = _resolve_mcp_include_private(arguments, context)
+                    try:
+                        mesh = get_mesh(namespace=validated_ns, agent_id=agent_id, create=False)
+                    except NamespaceNotFoundError:
+                        return {
+                            "namespace": validated_ns,
+                            "namespace_exists": False,
+                            "did_you_mean": suggest_did_you_mean_namespaces(validated_ns),
+                            "count": 0,
+                            "items": [],
+                            "work_items": [],
+                            "untrusted_reference_data": True,
+                            "notice": _UNTRUSTED_NOTICE,
+                        }
+                    status_arg = arguments.get("status") or "open"
+                    if status_arg == "all":
+                        status_arg = None
+                    items = mesh.list_work_items(
+                        status=status_arg,
+                        kind=arguments.get("kind"),
+                        parent_id=arguments.get("parent_id"),
+                        include_private=inc_priv,
+                        limit=int(arguments.get("limit") or 20),
+                    )
+                    return {
+                        "namespace": mesh.namespace,
+                        "namespace_exists": True,
+                        "count": len(items),
+                        "items": items,
+                        "work_items": items,
+                        "untrusted_reference_data": True,
+                        "notice": _UNTRUSTED_NOTICE,
+                    }
+
+                elif name == "mesh_log":
+                    inc_priv = _resolve_mcp_include_private(arguments, context)
+                    try:
+                        mesh = get_mesh(namespace=validated_ns, agent_id=agent_id, create=False)
+                    except NamespaceNotFoundError:
+                        return {
+                            "namespace": validated_ns,
+                            "namespace_exists": False,
+                            "did_you_mean": suggest_did_you_mean_namespaces(validated_ns),
+                            "since": str(arguments.get("since") or "7d"),
+                            "changelog": "# Changelog\n\nNamespace does not exist yet.",
+                        }
+                    log_res = mesh.changelog(
+                        since=str(arguments.get("since") or "7d"),
+                        format=str(arguments.get("format") or "markdown"),
+                        include_private=inc_priv,
+                    )
+                    return {
+                        "namespace": mesh.namespace,
+                        "namespace_exists": True,
+                        "untrusted_reference_data": True,
+                        "notice": _UNTRUSTED_NOTICE,
+                        **log_res,
                     }
 
                 else:
@@ -1822,6 +2302,8 @@ class MeshCallToolResult(types.CallToolResult):
 @app.call_tool()
 async def call_tool(name: str, arguments: Optional[dict[str, Any]]) -> MeshCallToolResult:
     args = arguments or {}
+    t0 = time.perf_counter()
+    status_code = "ok"
     try:
         payload = await asyncio.to_thread(_execute_tool_sync, name, args)
         is_error = False
@@ -1830,11 +2312,37 @@ async def call_tool(name: str, arguments: Optional[dict[str, Any]]) -> MeshCallT
                 payload.get("error") is not None and payload.get("status") != "synchronized"
             ):
                 is_error = True
+                status_code = str(payload.get("status") or "error")
+        raw_text = json.dumps(payload, indent=2)
+        dur_ms = (time.perf_counter() - t0) * 1000.0
+        ns_used = str(args.get("namespace") or _get_default_namespace())
+        log_audit_event(
+            surface="mcp",
+            tool_or_command=name,
+            namespace=ns_used,
+            duration_ms=dur_ms,
+            status_code=status_code,
+            agent_id=str(_get_default_agent_id()),
+            payload_size_bytes=len(raw_text.encode("utf-8")),
+            result_count=len(payload.get("items") or payload.get("memories") or []) if isinstance(payload, dict) else 0,
+        )
         return MeshCallToolResult(
             isError=is_error,
-            content=[types.TextContent(type="text", text=json.dumps(payload, indent=2))],
+            content=[types.TextContent(type="text", text=raw_text)],
         )
     except Exception as e:
+        dur_ms = (time.perf_counter() - t0) * 1000.0
+        ns_used = str(args.get("namespace") or _get_default_namespace())
+        log_audit_event(
+            surface="mcp",
+            tool_or_command=name,
+            namespace=ns_used,
+            duration_ms=dur_ms,
+            status_code="error",
+            agent_id=str(_get_default_agent_id()),
+            payload_size_bytes=0,
+            result_count=0,
+        )
         return MeshCallToolResult(
             isError=True,
             content=[
