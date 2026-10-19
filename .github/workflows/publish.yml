@@ -46,7 +46,7 @@ jobs:
         run: ruff check .
 
       - name: Build Distributions & Generate SBOM / Provenance
-        run: python scripts/build_release.py
+        run: PYTHONPATH=. python scripts/build_release.py
 
       - name: Smoke-Test Wheel in Isolated Virtualenv
         run: |
@@ -81,18 +81,23 @@ jobs:
           name: dist-packages
           path: dist
 
+      - name: Isolate Wheels and Tarballs for PyPI Upload
+        run: |
+          mkdir -p dist_packages
+          cp dist/*.whl dist/*.tar.gz dist_packages/
+
       - name: Publish to TestPyPI
         if: ${{ github.event.inputs.target == 'testpypi' }}
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           repository-url: https://test.pypi.org/legacy/
-          packages-dir: dist/
+          packages-dir: dist_packages/
 
       - name: Publish to PyPI
         if: ${{ github.event.inputs.target != 'testpypi' }}
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          packages-dir: dist/
+          packages-dir: dist_packages/
 
   attach-github-release:
     name: Attach Artifacts to GitHub Release
