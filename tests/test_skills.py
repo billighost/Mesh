@@ -56,3 +56,17 @@ def test_install_all_dry_run():
         assert "agent" in r
         assert "path" in r
         assert "status" in r
+
+
+def test_check_skill_script():
+    """Verify that scripts/check_skill.py succeeds with exit code 0."""
+    import importlib.util
+
+    script_path = Path(__file__).resolve().parent.parent / "scripts" / "check_skill.py"
+    assert script_path.exists()
+    spec = importlib.util.spec_from_file_location("check_skill", script_path)
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert mod.main() == 0
+

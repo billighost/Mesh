@@ -1,5 +1,16 @@
 include LICENSE
 include README.md
+include CHANGELOG.md
+include ARCHITECTURE.md
+include DEVELOPER_GUIDE.md
+include pyproject.toml
 recursive-include mesh *.py
 recursive-include mesh/skills *.md *.txt *.json
-recursive-include tests *.py
+recursive-include tests *.py *.json
+prune landing
+prune marketing
+prune docs
+prune benchmarks
+prune assets
+prune .github
+global-exclude *.py[cod] __pycache__ *.so *.dylib *.mp4 *.mp3 *.wav *.png *.jpg

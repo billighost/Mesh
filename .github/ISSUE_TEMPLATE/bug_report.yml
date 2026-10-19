@@ -1,0 +1,52 @@
+name: Bug Report
+description: Create a report to help us improve Mesh
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report an issue!
+        Please ensure you are running the latest version of Mesh and that no private credentials or secrets are posted in this report.
+  - type: input
+    id: version
+    attributes:
+      label: Mesh Version
+      description: What version of Mesh are you using? (Run `mesh version` or `mesh doctor`)
+      placeholder: e.g. 0.7.2
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System
+      options:
+        - Linux
+        - macOS
+        - Windows
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the Bug
+      description: A clear and concise description of what the bug is.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: Steps to reproduce the behavior or a minimal Python/CLI snippet.
+      placeholder: |
+        1. Run 'mesh add ...'
+        2. Query 'mesh ask ...'
+        3. See error
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant Log Output or Doctor Output
+      description: Please copy and paste any relevant logs from `mesh doctor` or terminal output.
+      render: shell

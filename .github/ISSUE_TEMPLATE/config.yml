@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security Vulnerability Report
+    url: https://github.com/billighost/mesh/security/advisories/new
+    about: Please report security vulnerabilities privately via GitHub Security Advisories or bb2010ng@gmail.com
+  - name: Community Discussions & Questions
+    url: https://github.com/billighost/mesh/discussions
+    about: Ask questions and discuss agent memory patterns with the community

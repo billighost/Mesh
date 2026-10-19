@@ -4,6 +4,35 @@ All notable changes to `mesh-context-layer` are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (pre-1.0: minor versions may include behavior changes).
 
+## [0.8.0-dev] - 2026-10-19
+
+Agent Autonomous Adoption Release: First-class work items, token-budgeted briefs, automated multi-agent installer, progressive disclosure skill, and content-free audit telemetry.
+
+### Added
+- **First-class Work Items and Event Log (`work_items`, `work_events`)**:
+  - Deterministic tracking for goals and actionable tasks in SQLite, completely separated from vector decay, dedup, and contradiction detection.
+  - Schema bumped to version 3 with automated pre-migration SQLite backups (`.backup-v0.7.2-<timestamp>`).
+  - New MCP tools: `mesh_task_create`, `mesh_task_update`, `mesh_task_complete`, `mesh_task_list`.
+  - Mandatory completion summary and optional evidence (file paths, commit SHAs, URLs) on `mesh_task_complete`.
+- **Session-Start Brief & Project Changelog**:
+  - `mesh_project_brief` MCP tool and `mesh brief` CLI: single-call session primer loading namespace health, open tasks, recent completions, and core facts within an exact token budget (default: 500 tokens).
+  - `mesh_log` MCP tool and `mesh log` CLI: chronological changelog combining completed tasks, evidence, and architectural decisions over time windows (`24h`, `7d`, `30d`).
+- **Unified Multi-Agent Installer (`mesh install` / `mesh uninstall`)**:
+  - One-command configuration for Claude Code, Claude Desktop, Antigravity IDE & CLI, Gemini CLI, Cursor, Windsurf, OpenCode, and Codex.
+  - Generates atomic backups (`.bak.<timestamp>`), dry-run preview with line diffs, project vs user scopes, and preserves existing MCP servers without data loss.
+  - Single source of truth always-on rules block (<= 12 lines) injected into `AGENTS.md`, `CLAUDE.md`, or `.cursorrules` between idempotent markers.
+- **Content-Free Audit Telemetry**:
+  - Microsecond per-call duration tracking across all surfaces (MCP, CLI, HTTP, SDK).
+  - Zero memory or task text logged; `mesh audit export --json` exports content-free metrics for telemetry and CI.
+  - Extended `mesh status --json` with schema version, embedding mode, memory counts, and task counts.
+- **Progressive Disclosure Skill & Automated Verification**:
+  - Rewrote `SKILL.md` (<= 160 lines) with imperative mandatory protocol, decision table, and trigger-rich frontmatter.
+  - Modularized bundled references in `references/tool_reference.md`, `references/examples.md`, and `references/troubleshooting.md`.
+  - Added `scripts/check_skill.py` wired into pytest to validate all tool names, arguments, version stamps, and line limits.
+- **End-to-End Verification**:
+  - New test suites `tests/test_work_items.py` (11 tests), `tests/test_installer.py` (9 tests), and `tests/test_agent_scenarios.py` (9 end-to-end scenarios).
+  - Added `docs/AGENT_QA.md` manual testing playbook for real coding agents.
+
 ## [0.7.2] - 2026-10-19
 
 Second security and correctness audit round. Every fix is pinned by `tests/test_audit_round2.py` and `tests/test_deep_scan_regressions.py`.
@@ -181,4 +210,89 @@ This release fixes a set of privacy, concurrency, search-quality, and documentat
 
 ---
 
-Earlier release notes (0.6.2 and before) are not included in this file.
+##  Historical Releases (0.1.0 – 0.6.2)
+
+ 
+
+### [0.6.2] - 2026-10-17
+
+#### Added
+- **Bundled Agent Skill (`mesh/skills/mesh-context-layer/SKILL.md`)**: Complete operating manual for Mesh covering all 10 MCP tools, Python SDK, CLI, architecture, security model, and troubleshooting.
+- **Cross-Agent Skill Installer (`mesh-install-skills` / `mesh.skill_installer`)**: Installs or symlinks `mesh-context-layer` skill into detected agent directories (Claude Desktop, Cursor, Windsurf, Antigravity, Custom).
+  - Supports `--global`, `--workspace`, and `--agent <name>`.
+  - `--list` flag shows detected skill directories and install status without writing anything.
+  - Idempotent: re-running overwrites with the latest skill version.
+- **Automatic Skill Install during `mesh setup`**: `mesh setup` calls `install-skills` as its final step.
+- **Skill files in wheel and sdist**: `mesh/skills/**/*.md`, `.txt`, `.json` included in package builds.
+
+### [0.6.1] - 2026-10-17
+
+#### Security & Privacy Hardening
+- **Eliminated `Host: testserver` Auth Bypass**: Removed unauthenticated bypass logic; added `verify_request_auth` and `verify_dashboard_auth` FastAPI dependencies for clean test overrides. Protected `GET /` on the Web Dashboard with a launch-scoped `?token=` exchange that sets an `HttpOnly; SameSite=Strict` session cookie (`mesh_dash_session`) and strips the token from the URL bar via `history.replaceState`. Fixed IPv6 localhost CORS regex (`[::1]`).
+- **Fixed Dashboard Stored XSS & Added Memory ID Validation**: Enforced strict regex validation (`validate_memory_id`) across `store.py` and `io.py`. Replaced all inline `onclick="..."` string interpolations in `dashboard.py` with delegated `data-action` and `data-id` attributes and full HTML/attribute escaping.
+- **Redacted Private Memories in Contradiction Payloads & Cold Cache**: Redacted `existing_content` and `existing_memory` in the `conflict` dictionary returned by `learn()` whenever the existing memory has `local_only=True`. Hardened `store.log_contradiction()` to query SQLite when the in-memory cache is cold. Defaulted `include_private=False` on recall and inspect.
+- **Historical Audit & Contradiction Scrubbing on `update()`**: Added `scrub_memory_update_from_audit()` and automatic contradiction scrubbing whenever memory content is modified or marked `local_only=True` via `update()`. Added automatic retention pruning to bound `audit_log` (`MESH_MAX_AUDIT_ROWS=10000`) and `queries` (`MESH_MAX_QUERY_ROWS=10000`).
+- **Atomic `0600` Token/DB Permissions & `0700` Directory Permissions**: Created `~/.mesh` with mode `0700` and sensitive files (`auth_token`, `daemon.pid`, `daemon.log`) atomically with `os.open(..., 0o600)`.
+- **Explicit `y/n` User Consent Across Background & Cloud Operations**: Added interactive `y/n` prompts before downloading ONNX models, starting background threads, sending logs to cloud LLMs, modifying shell RC files, or deleting namespaces. Made PyPI update checks strictly opt-in (`mesh status --check-updates` or `MESH_CHECK_UPDATES=1`).
+- **Prompt Injection & Context Block Hardening**: Collapsed newlines and control characters inside memories, stripped leading markdown heading/bullet markers, and neutralized `<mesh_context` sequences. Added `MESH_LOCKED_NAMESPACE` enforcement.
+
+#### Fixed & Improved
+- **MCP Daemon Proxy Stale Keep-Alive Recovery**: Detected closed idle keep-alive sockets via `select.select` prior to sending and enforced fresh connections for mutating tools.
+- **Fixed Custom AI Provider Detection**: Checked `MESH_AI_API_KEY` + `MESH_AI_BASE_URL` before provider-specific defaults in `detect_provider()`. Discarded partial leading lines when seeking into large `.jsonl` and `.log` files.
+- **Verified ONNX SHA-256 Digests & Atomic Model Tagging**: Updated `_ALLOWED_MODEL_SHA256` and `_ALLOWED_TOKENIZER_SHA256` with verified digests and added a 200 MB stream/tarball extraction cap. Stored `(vector, model_tag)` atomically in `_EMBED_CACHE`. Improved deduplication and contradiction detection for alphanumeric identifiers (`db1` vs `db2`). Enforced `MAX_CONTENT_LENGTH = 16384`.
+- **Unified Staleness, TTL Clearing & Context Ranking**: Unified staleness calculations across `namespace_stats()`, `generate_digest()`, and `get_patterns()` using `_compute_row_effective_confidence()`. Added `clear_ttl=True` / `--clear-ttl` support across Python, CLI, MCP, HTTP, and Dashboard. Disabled telemetry increments during `build_context()`.
+- **CLI, Doctor, Completions & Packaging Polish**: Implemented PEP 562 lazy `__getattr__` in `mesh/__init__.py`. Upgraded `mesh doctor` to verify FTS5, permissions, checksums, and daemon status. Added native completion scripts for bash, zsh, fish, and powershell.
+
+### [0.6.0] - 2026-10-15
+
+#### Added
+- **Direct Zero-Network ONNX Runtime Engine (`_DirectOnnxEmbedding`)**: Replaced blocking Hugging Face Hub calls with direct `onnxruntime.InferenceSession` + `tokenizers.Tokenizer` execution (~80 ms cold start, ~1.5–3 ms CPU inference, zero PyTorch overhead). Routed `_encode_texts()` directly through the 4,096-entry `_EMBED_CACHE`.
+- **Non-Blocking Multi-Mirror Background ONNX Auto-Downloader**: Downloads `model.onnx` and `tokenizer.json` into `~/.mesh/models/all-MiniLM-L6-v2-onnx/` prioritizing CDN mirrors.
+- **In-Memory Metadata Cache & Capacity-Doubling Vector Buffer**: Cached full row metadata and parsed `tags_list` in RAM alongside a capacity-doubling `float32` NumPy matrix buffer.
+- **Persistent SQLite WAL Connection Pooling**: Replaced per-call connection closing with persistent pooled SQLite WAL connections (`_PooledConnection` and `_ManagedAuditConnection`).
+
+### [0.5.3] - 2026-10-15
+
+#### Added
+- Added `GET /engine` and `POST /unload` HTTP REST endpoints and `mesh-daemon` CLI management commands.
+- Added background inactivity watchdog (`MESH_IDLE_UNLOAD_SECONDS=180`) to unload neural model weights when idle.
+
+### [0.5.1] - 2026-10-15
+
+#### Performance & Optimizations
+- **High-Speed Batch Import Pipeline**: Implemented `upsert_batch()` writing all imported memories in a single atomic SQLite WAL transaction. Batch-computed missing embeddings in a single forward pass with LRU cache integration. Pre-resolved existing IDs in $O(1)$ from the in-memory vector cache.
+- **Single-Query Export Embedding Resolution**: Replaced individual vector lookups with batch ID resolution for missing embeddings.
+- **Single-Pass Context Builder**: Streamlined `/context` HTTP endpoint and `mesh_context` MCP tool to retrieve and format system prompt context in a single optimized pass.
+- **MCP Stdio Protocol Safety**: Implemented thread-safe `_safe_redirect_stdout_to_stderr()` in `mesh/mcp_server.py`, preventing stdout prints from corrupting JSON-RPC stdio communication.
+
+### [0.5.0] - 2026-10-15
+
+#### Major Architecture Evolution
+- **ChromaDB Removal & Unified SQLite Architecture**: Completely replaced the legacy dual-database architecture (ChromaDB + SQLite) with a single, unified SQLite WAL database (`mesh_<namespace>.db`) storing metadata, full-text FTS5 tables, and normalized `float32` vector BLOBs together.
+- **3-Stage Hybrid Search Engine**: Dense vector SIMD cosine (`cache.matrix @ q_vec`), lexical BM25 ranking (SQLite FTS5), and exact token overlap boost.
+- **Automatic Deduplication Engine**: Near-identical facts ($\ge 0.985$ cosine similarity) are reinforced in-place rather than creating duplicate records.
+- **Contradiction Detection & Tracking**: Conflicting memories ($\ge 0.82$ similarity with numeric shifts or negation polarity differences) are stored safely while recording a structured conflict entry.
+- **Time-to-Live (TTL) & Linear Confidence Decay**: Time-sensitive memories decay linearly towards staleness (`STALE_THRESHOLD = 0.3`) using `ttl_days` and `decay_start_at`.
+- **10 Full MCP Server Tools**: `mesh_learn`, `mesh_recall`, `mesh_update`, `mesh_forget`, `mesh_inspect`, `mesh_context`, `mesh_patterns`, `mesh_contradictions`, `mesh_resolve_contradiction`, `mesh_sync`.
+- **Modern Web Dashboard**: Zero-build single-file web interface (`http://localhost:7433`) with dark/light mode, real-time hybrid search, contradiction manager, pattern analysis, and live audit viewer.
+- **Passive Log Capture (`mesh-capture`)**: Extracts durable learnings and facts from chat transcripts, terminal outputs, and build logs.
+- **Session Digests (`mesh-digest`)**: Automated Markdown summaries of newly stored knowledge, patterns, and contradictions.
+
+### [0.4.4] - 2026-05-13
+
+#### Changed
+- Restructured project layout into standard module layout with `hatchling` build backend.
+- Resolved Windows CP1252 terminal encoding exceptions during CLI execution.
+- Added comprehensive unit and integration test suites (`tests/test_memory.py`, `tests/test_v03.py`, `tests/test_v04.py`).
+
+### [0.3.0] - 2026-05-13
+
+#### Added
+- **Privacy Flags (`local_only=True`)**: Mark sensitive memories to guarantee they are never exported or synced across shared instances.
+- **Namespace Export & Import (`mesh-export`, `mesh-import`)**: JSON-based backup and migration supporting `skip_existing` and `overwrite` strategies.
+- **Namespace Management CLI (`mesh-namespaces`)**: Commands to inspect, list, calculate statistics, rename, and delete namespaces.
+
+### [0.1.0] - 2026-05-13
+
+#### Added
+- Initial public release of Mesh: high-speed shared semantic & hybrid memory layer for AI agents.
