@@ -14,6 +14,11 @@ import sys
 import tarfile
 import zipfile
 
+# Ensure repository root is in sys.path for standalone execution
+REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 
 def clean_dist(dist_dir: pathlib.Path) -> None:
     if dist_dir.exists():
