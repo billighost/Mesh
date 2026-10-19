@@ -98,8 +98,21 @@ include = [
 ]
 
 [tool.hatch.build.targets.sdist]
-# The landing site is a separate frontend artifact; keep it out of the
-# Python source distribution so the package stays small.
+# Ship only what is needed to build and test the Python package. The landing
+# site and the ad/SFX projects (source, audio, and rendered video) are separate
+# artifacts; listing the include set explicitly keeps them out of the sdist.
+include = [
+    "/mesh",
+    "/tests",
+    "/examples",
+    "/README.md",
+    "/LICENSE",
+    "/CHANGELOG.md",
+    "/ARCHITECTURE.md",
+    "/DEVELOPER_GUIDE.md",
+    "/pyproject.toml",
+    "/MANIFEST.in",
+]
 exclude = [
     "/landing",
     "/.github",
