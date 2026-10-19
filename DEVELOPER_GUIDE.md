@@ -1,4 +1,4 @@
-# Mesh — Developer Guide (v0.6.1)
+# Mesh — Developer Guide (v0.7.2)
 
 > High-speed shared semantic & hybrid memory for AI agents. One agent learns, every agent recalls.
 
@@ -387,19 +387,29 @@ Every `recall`, `learn`, `update`, and `forget` is logged to `~/.mesh/audit_<nam
 | :--- | :--- | :--- |
 | `MESH_HOME` / `MESH_DIR` | `~/.mesh` | Root directory override for Mesh data, database files, and auth tokens |
 | `MESH_NAMESPACE` | `shared` | Default namespace across CLI, MCP, HTTP, and Dashboard |
+| `MESH_DEFAULT_NAMESPACE` | `shared` | Fallback namespace when `MESH_NAMESPACE` is not set |
 | `MESH_LOCKED_NAMESPACE` | — | Set to `1` or `<namespace>` to strictly lock the process to a single namespace |
 | `MESH_AGENT_ID` | `mcp-agent` / `http-client` | Default agent identifier recorded on memories and audit logs |
 | `MESH_ENFORCE_AGENT_OWNERSHIP` | `0` | Set to `1` to prevent agents from modifying memories owned by other agents (`human-cli` and `dashboard` exempt) |
 | `MESH_INCLUDE_PRIVATE` | `1` | Set to `0` or `false` to globally exclude private (`local_only`) memories from SDK recalls/inspects |
-| `MESH_AUTH_TOKEN` | `~/.mesh/auth_token` | Explicit override for the local 256-bit daemon/dashboard auth token |
+| `MESH_MCP_INCLUDE_PRIVATE` | `0` | Set to `1` to include `local_only` memories by default in `mesh_recall` and `mesh_inspect` |
+| `MESH_AUTH_TOKEN` / `MESH_TOKEN` | `~/.mesh/auth_token` | Explicit token override for daemon, MCP proxy, and dashboard authentication |
+| `MESH_AUTH_REQUIRED` | `1` | Set to `0` to disable HTTP authentication in isolated testing environments |
 | `MESH_AUTO_APPROVE` | `0` | Set to `1` or `true` to auto-approve all interactive `y/n` permission prompts |
 | `MESH_NON_INTERACTIVE` | `0` | Set to `1` or `true` to auto-decline interactive prompts without blocking |
+| `MESH_NO_AUTO_DAEMON` | `0` | Set to `1` to prevent automated background daemon launching on CLI/MCP calls |
+| `MESH_NO_DAEMON_PROXY` | `0` | Set to `1` to disable proxying CLI and MCP commands through the warm daemon |
 | `MESH_HTTP_HOST` | `127.0.0.1` | Host interface for the HTTP daemon |
 | `MESH_HTTP_PORT` | `7701` | Port for the HTTP daemon |
 | `MESH_IDLE_UNLOAD_SECONDS` | `180` | Inactivity seconds before neural model weights are unloaded from RAM (`0` to disable) |
 | `MESH_NO_MODEL_DOWNLOAD` | `0` | Set to `1` to disable ONNX model downloads and always use `hash-384` |
-| `MESH_NO_DAEMON_PROXY` | `0` | Set to `1` to disable proxying CLI and MCP commands through the warm daemon |
-| `MESH_MCP_INCLUDE_PRIVATE` | `0` | Set to `1` to include `local_only` memories by default in `mesh_recall` and `mesh_inspect` |
+| `MESH_EMBEDDING_PROVIDER` | *auto-detected* | Explicitly select embedding provider (`onnx` or `hash-384`) |
+| `MESH_FALLBACK_DEVICE` | `cpu` | Device target when hardware acceleration or neural providers are unavailable |
+| `MESH_AUTO_CONTRADICTION_DETECTION` | `1` | Set to `0` to bypass automatic contradiction and conflict analysis on `learn()` |
+| `MESH_ALLOW_LOG_SYNC` | `0` | Set to `1` to explicitly permit `mesh_sync` to ingest session logs from disk |
+| `MESH_ENABLE_AUTO_SYNC` | `0` | Set to `1` to enable automatic background log ingestion |
+| `MESH_ALLOW_CLOUD_SYNC` | `0` | Set to `1` to permit passive extraction via cloud AI providers after redaction |
+| `MESH_LOG_LEVEL` | `INFO` | Logging verbosity level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
 | `MESH_MAX_CONTENT_LENGTH` | `16384` | Maximum characters allowed in a single memory |
 | `MESH_MAX_AUDIT_ROWS` | `10000` | Maximum rows retained in `audit_log` per namespace |
 | `MESH_MAX_QUERY_ROWS` | `10000` | Maximum rows retained in `queries` per namespace |

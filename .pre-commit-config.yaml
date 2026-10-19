@@ -1,0 +1,37 @@
+# See https://pre-commit.com for more information
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: ^marketing/
+      - id: end-of-file-fixer
+        exclude: ^marketing/
+      - id: check-yaml
+        exclude: ^marketing/
+      - id: check-added-large-files
+        args: ['--maxkb=2048']
+        exclude: ^marketing/
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.9.1
+    hooks:
+      - id: ruff
+        args: [--fix]
+        exclude: ^(marketing|landing)/
+
+  - repo: local
+    hooks:
+      - id: check-skill
+        name: Check Mesh Skill & References
+        entry: python scripts/check_skill.py
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      - id: check-docs
+        name: Check Mesh Documentation Consistency
+        entry: python scripts/check_docs.py
+        language: system
+        pass_filenames: false
+        always_run: true

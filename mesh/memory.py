@@ -11,9 +11,14 @@ Performance & Security Architecture:
     cleared on `unload_model()` so idle memory drops to ~0 MB.
   - Bounded `_PENDING_REEMBED_QUEUE` (capped at 10,000 `(namespace, memory_id)` entries, drop-oldest)
     and single-flight per-namespace background healing threads.
-  - Built-in SDK Audit Trail & Privacy Redaction:
-      Logs `learn`, `recall`, `update`, and `forget` with automatic redaction for `local_only=True`
-      memories in both audit logs and returned conflict payloads.
+  - Security & Provenance Controls:
+      - First-class `secret_ref` memory type and optional automatic keyring vaulting (Finding S1)
+      - Per-agent access scopes (`MESH_AGENT_SCOPES` & `MESH_READ_ONLY`, Finding S6)
+      - Provenance tiers (`trust_tier`: 'user' | 'agent' | 'log_captured'), quarantine filtering
+        on `recall()`, and `Mesh.approve()` (Finding S8)
+      - Full ingestion & update guard enforcement on content, tags, and visibility changes (Finding S11)
+      - Recall query secret redaction and side-channel protection (Finding S12, N8)
+      - Linear-time subject-value copula extraction preventing ReDoS inside write locks (Finding N3)
 """
 from __future__ import annotations
 
@@ -51,13 +56,20 @@ from .audit import (
     secure_file_permissions,
     validate_namespace,
 )
-from .envutil import env_float, env_int
+from .envutil import env_bool, env_float, env_int
+from .secrets import (
+    convert_text_secrets_to_refs,
+    is_credential,
+    normalize_secret_ref,
+    redact_secrets_local,
+)
 from .store import (
     EMBEDDING_DIM,
     STALE_THRESHOLD,
     MeshStore,
     _extract_search_tokens,
     _is_same_known_space,
+    _normalize_trust_tier,
     _parse_iso_utc,
     _utc_now,
     _utc_now_iso,
@@ -91,10 +103,6 @@ _ONNX_MODEL_DIR = _get_onnx_model_dir()
 _GCS_TARBALL_MIRRORS = [
     "https://storage.googleapis.com/qdrant-fastembed/sentence-transformers-all-MiniLM-L6-v2.tar.gz",
 ]
-# Pinned HuggingFace revision for the model repo. Pinning the revision (in
-# addition to the SHA-256 allowlist) means an upstream force-push to `main`
-# cannot change which bytes we attempt to fetch; a checksum mismatch becomes a
-# clear download failure instead of a silent model swap.
 _HF_MODEL_REVISION = "1110a243fdf4706b3f48f1d95db1a4f5529b4d41"
 _TOKENIZER_MIRRORS = [
     f"https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/{_HF_MODEL_REVISION}/tokenizer.json",
@@ -213,11 +221,10 @@ CONTRADICTION_THRESHOLD = 0.82
 DEDUP_THRESHOLD = 0.985
 
 # Absolute minimum similarity floor when min_similarity is not explicitly set (> 0).
-# Prevents orthogonal/zero vectors and weak feature-hash collisions from returning as matches.
 RECALL_ABSOLUTE_SIMILARITY_FLOOR = 0.05
 HASH_SEMANTIC_ONLY_FLOOR = 0.18
 
-# Unified set of valid memory types across MCP, CLI, HTTP, Passive Capture, and Dashboard
+# Finding S1: Unified set of valid memory types including first-class `secret_ref`
 VALID_MEMORY_TYPES = {
     "fact",
     "preference",
@@ -228,12 +235,11 @@ VALID_MEMORY_TYPES = {
     "decision",
     "error",
     "general",
+    "secret_ref",
 }
 
-# Extracts standalone numbers AND numbers embedded inside identifiers (e.g. "db1", "v2", "ipv6")
 _NUMBER_TOKEN_RE = re.compile(r"\d+(?:\.\d+)?")
 _ALNUM_ID_WITH_DIGITS_RE = re.compile(r"\b[a-z0-9_.-]*\d+[a-z0-9_.-]*\b")
-# Preserves internal apostrophes so contractions like "isn't", "doesn't", "won't" stay intact
 _WORD_TOKEN_RE = re.compile(r"[a-z0-9]+(?:'[a-z0-9]+)?")
 
 _NEGATION_TOKENS = {
@@ -298,7 +304,6 @@ _COLOR_TOKENS = {
     "pink", "brown", "gray", "grey", "cyan", "magenta", "silver", "gold",
 }
 
-# Semantic concept clusters for instant zero-wait local embedding before ONNX finishes downloading
 _CONCEPT_CLUSTERS: list[tuple[str, set[str]]] = [
     ("@c_theme", {"dark", "light", "mode", "theme", "visual", "color", "colour", "appearance", "editor", "editors", "ui", *_COLOR_TOKENS}),
     ("@c_pref", {"prefer", "prefers", "preference", "preferences", "like", "likes", "favorite", "favourite", "want", "strongly", "love", "loves"}),
@@ -421,11 +426,6 @@ _SHA256_CACHE_LOCK = threading.Lock()
 
 
 def _compute_file_sha256_cached(path: Path) -> str:
-    """SHA-256 of `path`, memoized by (path, size, mtime) so a 90 MB model is hashed once.
-
-    Re-hashing a large ONNX file on every engine lookup/status call was the slow
-    checksum path; file replacement changes size+mtime and invalidates the entry.
-    """
     try:
         st = path.stat()
     except OSError:
@@ -449,11 +449,6 @@ def _verify_sha256(
     env_override_key: str,
     source_label: str = "",
 ) -> bool:
-    """
-    Verify that `path` matches one of `allowed_hashes` (or custom hash in `env_override_key`),
-    unless `MESH_SKIP_CHECKSUM=1` is set.
-    Logs any mismatch loudly to stderr and to `~/.mesh/model_status.json` (Phase 3.3).
-    """
     if not path.exists():
         return False
     if os.environ.get("MESH_SKIP_CHECKSUM", "").strip().lower() in ("1", "true", "yes"):
@@ -508,10 +503,6 @@ def _confirm_background_action(
     env_disable_key: Optional[str] = None,
     assume_yes: bool = False,
 ) -> bool:
-    """
-    Ask the user for explicit `y/n` permission before starting a background process
-    or downloading weights. Never runs silently in non-interactive library usage.
-    """
     if env_disable_key and os.environ.get(env_disable_key, "").strip().lower() in ("1", "true", "yes"):
         return False
     from .daemon import request_user_permission
@@ -520,16 +511,8 @@ def _confirm_background_action(
 
 
 def _request_model_download_permission(assume_yes: bool = False) -> bool:
-    """
-    Prompt the user once per session for `y/n` permission before downloading the ~90MB ONNX model.
-    In non-TTY contexts (such as the MCP stdio server), records `state="download_skipped_non_interactive"`
-    with hint `"run mesh setup"` in `~/.mesh/model_status.json` (Phase 3.3).
-    """
     global _download_permission_decided, _download_permission_granted
     if os.environ.get("MESH_NO_MODEL_DOWNLOAD", "").strip().lower() in ("1", "true", "yes"):
-        # Record the disabled state once per process. Re-recording on every
-        # call rewrote `model_status.json` (new `last_attempt`) for every
-        # embed/status request, making the status look continuously active.
         if not _download_permission_decided:
             _download_permission_decided = True
             _download_permission_granted = False
@@ -576,10 +559,6 @@ def _request_model_download_permission(assume_yes: bool = False) -> bool:
 
 
 def _split_long_text_windows(text: str, max_words: int = 180, stride: int = 140) -> list[str]:
-    """
-    Split texts longer than ~256 subword tokens into overlapping windows so information
-    beyond the first 256 tokens is represented in the pooled embedding vector.
-    """
     words = text.split()
     if len(words) <= max_words:
         return [text]
@@ -599,7 +578,6 @@ class _DirectOnnxEmbedding:
     """
     Ultra-fast, zero-network local ONNX Runtime + HuggingFace Tokenizers engine
     for 384-dim `all-MiniLM-L6-v2` embeddings (~80ms cold load, ~2ms inference).
-    Supports automatic multi-window mean pooling for texts exceeding 256 tokens.
     """
 
     def __init__(self, model_path: Path, tokenizer_path: Path):
@@ -759,13 +737,6 @@ def _hash_embed_384(text: str) -> np.ndarray:
 
 
 def _has_local_onnx_pair() -> Optional[tuple[Path, Path]]:
-    """
-    Hot-path check for a *valid* `~/.mesh/models/all-MiniLM-L6-v2-onnx/{model.onnx, tokenizer.json}`.
-
-    Checksums are verified too (cached by path/size/mtime), so a truncated or
-    corrupted file is no longer reported as a usable model. First verification
-    reads the files once; later calls are O(1).
-    """
     model_dir = _get_onnx_model_dir()
     target_model = model_dir / "model.onnx"
     target_tok = model_dir / "tokenizer.json"
@@ -790,10 +761,6 @@ def _has_local_onnx_pair() -> Optional[tuple[Path, Path]]:
 
 
 def _discover_local_onnx_pair() -> Optional[tuple[Path, Path]]:
-    """
-    Check `_get_onnx_model_dir()` first; if missing, scan local HuggingFace / FastEmbed caches
-    for canonical unquantized `model.onnx` and `tokenizer.json`.
-    """
     fast_pair = _has_local_onnx_pair()
     if fast_pair is not None:
         return fast_pair
@@ -842,9 +809,6 @@ def _discover_local_onnx_pair() -> Optional[tuple[Path, Path]]:
         except OSError:
             continue
 
-    # Copy a verified cache hit over a missing *or invalid* local target: an
-    # interrupted download leaves a file that passes the size check but fails
-    # SHA-256, and refusing to replace it would keep using a corrupt model.
     target_tok_ok = target_tok.exists() and _verify_sha256(
         target_tok, _ALLOWED_TOKENIZER_SHA256, "MESH_TOKENIZER_SHA256", source_label=str(target_tok)
     )
@@ -874,10 +838,6 @@ def _download_file_from_mirrors(
     allowed_sha256: Optional[set[str]] = None,
     sha256_env_key: str = "",
 ) -> bool:
-    """
-    Download a single file from the first responsive mirror, verify its SHA-256 checksum,
-    and log any rejection or HTTP failure loudly to stderr and `model_status.json` (Phase 3.3).
-    """
     if dest.exists():
         try:
             if dest.stat().st_size >= min_bytes:
@@ -966,7 +926,6 @@ def _download_file_from_mirrors(
 
 
 def _safe_copy_limited(src: Any, dst: Any, max_bytes: int = _MAX_TAR_EXTRACT_BYTES) -> bool:
-    """Copy at most `max_bytes` from `src` to `dst` to prevent archive decompression bombs."""
     total = 0
     while True:
         buf = src.read(65536)
@@ -979,10 +938,6 @@ def _safe_copy_limited(src: Any, dst: Any, max_bytes: int = _MAX_TAR_EXTRACT_BYT
 
 
 def _download_from_gcs_tarball() -> bool:
-    """
-    Download from Google Cloud Storage `.tar.gz` bundle with size-bounded extraction
-    and SHA-256 verification on extracted files.
-    """
     if _has_local_onnx_pair() is not None:
         return True
     model_dir = _get_onnx_model_dir()
@@ -1052,14 +1007,6 @@ def ensure_model_downloaded(
     assume_yes: bool = False,
     detached: bool = False,
 ) -> Optional[tuple[Path, Path]]:
-    """
-    Ensure the `all-MiniLM-L6-v2` ONNX model and tokenizer are present on local disk.
-    Asks the user for `y/n` permission before starting the download unless `assume_yes=True`.
-
-    `detached=True` runs the download in a separate process. Daemon threads are
-    killed when a short-lived CLI process exits, which silently aborted the
-    download for `mesh setup` / `mesh daemon start`; a detached child survives.
-    """
     existing = _has_local_onnx_pair() or _discover_local_onnx_pair()
     if existing is not None:
         _download_complete_event.set()
@@ -1070,7 +1017,6 @@ def ensure_model_downloaded(
     if detached and not blocking:
         if _spawn_detached_model_download():
             return None
-        # Fall through to the in-process thread if the child could not start.
     _start_background_model_download()
     if not blocking:
         return None
@@ -1079,7 +1025,6 @@ def ensure_model_downloaded(
 
 
 def _spawn_detached_model_download() -> bool:
-    """Launch `python -m mesh._model_download` as a detached background process."""
     try:
         kwargs: dict[str, Any] = {
             "stdin": subprocess.DEVNULL,
@@ -1096,14 +1041,13 @@ def _spawn_detached_model_download() -> bool:
         subprocess.Popen([sys.executable, "-m", "mesh._model_download"], **kwargs)
         _record_model_status(state="downloading", backend=_model_backend or "onnx-warming")
         return True
-    except Exception as exc:  # pragma: no cover - platform/environment dependent
+    except Exception as exc:  # pragma: no cover
         _emit_warning(f"Could not start detached model download: {exc}")
         return False
 
 
 def _background_download_worker() -> None:
-    """Download `tokenizer.json` and canonical `model.onnx` in the background and hot-swap the ONNX engine."""
-    global _download_in_progress, _model, _model_backend
+    global _download_in_progress, _model, _model_backend, _download_failed_until
     try:
         _record_model_status(state="downloading", backend=_model_backend or "onnx-warming")
         pair = _discover_local_onnx_pair()
@@ -1163,8 +1107,6 @@ def _background_download_worker() -> None:
                 _emit_warning(err_msg)
                 _record_model_status(state="onnx_init_failed", backend="hash-fallback", last_error=err_msg)
             else:
-                # Backfill is a separate failure domain: a re-embedding problem must
-                # not be reported as "the ONNX model failed to initialize".
                 try:
                     _backfill_pending_embeddings()
                 except Exception as exc:
@@ -1172,9 +1114,6 @@ def _background_download_worker() -> None:
                     _emit_warning(err_msg)
                     _record_model_status(state="backfill_failed", backend="onnx", last_error=err_msg)
         else:
-            # No model and no usable download: stop advertising "onnx-warming",
-            # which otherwise never clears and makes status look stuck forever.
-            global _download_failed_until
             _download_failed_until = time.monotonic() + _DOWNLOAD_RETRY_SECONDS
             with _MODEL_LOCK:
                 if _model is None or _model is _hash_embed_384:
@@ -1210,10 +1149,6 @@ def _start_background_model_download() -> None:
 
 
 def _backfill_pending_embeddings() -> None:
-    """
-    Re-embed any memories that were stored while the ONNX model was downloading in the background,
-    verifying that the memory still exists with the same content and preserving `accessed_at`.
-    """
     with _PENDING_REEMBED_LOCK:
         pending = _PENDING_REEMBED_QUEUE.pop_all()
 
@@ -1256,11 +1191,6 @@ def _backfill_pending_embeddings() -> None:
 
 
 def _trigger_background_bootstrap() -> None:
-    """
-    Never spawns background daemons or modifies OS login startup silently on `Mesh()` instantiation.
-    Only starts background daemon if explicitly opted into via `MESH_AUTO_START_DAEMON=1` and
-    confirmed by the user with `y/n`.
-    """
     global _bootstrap_triggered
     if _bootstrap_triggered:
         return
@@ -1281,7 +1211,6 @@ def _trigger_background_bootstrap() -> None:
 
 
 def set_idle_unload_seconds(seconds: float) -> None:
-    """Configure the automatic idle model unload timeout in seconds (0 disables unloading)."""
     global _IDLE_UNLOAD_SECONDS
     _IDLE_UNLOAD_SECONDS = max(0.0, float(seconds))
     if _IDLE_UNLOAD_SECONDS > 0:
@@ -1289,11 +1218,6 @@ def set_idle_unload_seconds(seconds: float) -> None:
 
 
 def unload_model() -> bool:
-    """
-    Explicitly unload the embedding model from memory, clear `_EMBED_CACHE`,
-    and trigger garbage collection so idle memory drops to ~0 MB (Phase 3.1).
-    Returns True if a loaded model was unloaded.
-    """
     global _model, _torch, _model_backend
     with _EMBED_CACHE_LOCK:
         _EMBED_CACHE.clear()
@@ -1314,7 +1238,6 @@ def unload_model() -> bool:
 
 
 def get_engine_status() -> dict[str, Any]:
-    """Return current embedding engine, cache memory usage, and bootstrap status in O(1) time."""
     with _MODEL_LOCK:
         loaded = _model is not None
         backend = _model_backend or "unloaded"
@@ -1360,7 +1283,6 @@ def get_engine_status() -> dict[str, Any]:
 
 
 def _idle_watchdog_loop() -> None:
-    """Background daemon that unloads the embedding model when idle to keep RAM near zero."""
     while True:
         sleep_step = 15.0
         if _IDLE_UNLOAD_SECONDS > 0:
@@ -1393,13 +1315,6 @@ def _ensure_idle_watchdog() -> None:
 
 
 def _get_model() -> tuple[Any, str]:
-    """
-    Thread-safe model loader:
-      1. Direct local ONNX (`_DirectOnnxEmbedding`) — checks `_ONNX_MODEL_DIR` and local caches
-      2. Optional PyTorch `SentenceTransformer` when `MESH_FORCE_PYTORCH=1`
-      3. Instant `<0.05ms` `_hash_embed_384` fallback while background downloader fetches ONNX
-         (only after asking the user for `y/n` permission).
-    """
     global _model, _torch, _model_backend, _last_model_use_ts
     _last_model_use_ts = time.monotonic()
 
@@ -1407,8 +1322,6 @@ def _get_model() -> tuple[Any, str]:
         if _model_backend not in ("onnx-warming", "hash-fallback"):
             return _model, _model_backend
         if _has_local_onnx_pair() is None:
-            # Fallback is in use. Retry the download only after the cooling-off
-            # window so a dead mirror cannot turn every encode into a retry storm.
             if _download_in_progress or time.monotonic() < _download_failed_until:
                 return _model, _model_backend
 
@@ -1477,9 +1390,6 @@ def _get_model() -> tuple[Any, str]:
         if _request_model_download_permission(assume_yes=False):
             _start_background_model_download()
         _model = _hash_embed_384
-        # `onnx-warming` must mean "a download is actually running". If permission
-        # was denied or the download already failed, the honest state is the
-        # hash-384 fallback.
         _model_backend = "onnx-warming" if _download_in_progress else "hash-fallback"
         _ensure_idle_watchdog()
         return _model, _model_backend
@@ -1492,13 +1402,11 @@ def _backend_to_model_tag(backend: Optional[str], model_obj: Any) -> str:
 
 
 def _current_embedding_model_tag() -> str:
-    """Return the canonical storage tag for the active embedding backend."""
     model, backend = _get_model()
     return _backend_to_model_tag(backend, model)
 
 
 def _encode_uncached_texts_with_tag(texts: list[str]) -> tuple[np.ndarray, str]:
-    """Encode uncached strings into L2-normalized float32 rows and return `(vectors, model_tag)` atomically."""
     global _last_model_use_ts
     model, backend = _get_model()
     _last_model_use_ts = time.monotonic()
@@ -1559,10 +1467,6 @@ def _store_in_embed_cache_locked(cleaned_text: str, vec: np.ndarray, model_tag: 
 
 
 def _encode_texts_with_tag(texts: list[str]) -> tuple[np.ndarray, str]:
-    """
-    Encode a list of strings into a 2D array of L2-normalized float32 embeddings
-    and return `(array, model_tag)` atomically.
-    """
     if not texts:
         return np.empty((0, EMBEDDING_DIM), dtype=np.float32), _current_embedding_model_tag()
 
@@ -1597,7 +1501,6 @@ def _encode_texts_with_tag(texts: list[str]) -> tuple[np.ndarray, str]:
 
 
 def _encode_texts(texts: list[str]) -> np.ndarray:
-    """Encode a list of strings into a 2D array of L2-normalized float32 embeddings."""
     arr, _ = _encode_texts_with_tag(texts)
     return arr
 
@@ -1607,12 +1510,6 @@ def warmup_model(
     blocking: bool = False,
     assume_yes: bool = False,
 ) -> dict[str, Any]:
-    """
-    Pre-load the embedding engine and (ONLY if the target namespace database already
-    exists on disk) warm its vector cache and heal pending warm-up embeddings (Phase 3.4).
-    Never creates an empty `mesh_shared.db` file on disk.
-    Returns a summary dict with `status`, `namespace`, and any `error`.
-    """
     ns = "shared"
     try:
         ns = validate_namespace((namespace or os.environ.get("MESH_NAMESPACE", "shared")).strip() or "shared")
@@ -1630,7 +1527,6 @@ def warmup_model(
 
 
 def _embed_cached_with_tag(cleaned_text: str) -> tuple[np.ndarray, str]:
-    """O(1) LRU-cached embedding helper returning `(readonly_float32_ndarray, model_tag)` atomically."""
     with _EMBED_CACHE_LOCK:
         cached = _EMBED_CACHE.get(cleaned_text)
         if cached is not None:
@@ -1654,23 +1550,17 @@ def _embed_cached(cleaned_text: str) -> np.ndarray:
 
 
 def _embed_with_tag(text: str) -> tuple[list[float], str]:
-    """Embed a single text string and return `(vector_list, embedding_model_tag)` atomically."""
     cleaned = " ".join(text.strip().split())
     vec_arr, model_tag = _embed_cached_with_tag(cleaned)
     return vec_arr.tolist(), model_tag
 
 
 def _embed(text: str) -> list[float]:
-    """Embed a single text string into a normalized float vector."""
     vec, _ = _embed_with_tag(text)
     return vec
 
 
 def _embed_query_with_tag(query_text: str) -> tuple[list[float], str]:
-    """
-    Embed a search query, softly blending domain synonyms for short queries,
-    and return (vector_list, query_embedding_model_tag).
-    """
     cleaned = " ".join(query_text.strip().split())
     base_arr, tag = _embed_cached_with_tag(cleaned)
     base_vec = np.asarray(base_arr, dtype=np.float32)
@@ -1697,9 +1587,6 @@ def _embed_query_with_tag(query_text: str) -> tuple[list[float], str]:
 
 
 def _embed_query(query_text: str) -> list[float]:
-    """
-    Embed a search query, softly blending domain synonyms for short queries.
-    """
     vec, _ = _embed_query_with_tag(query_text)
     return vec
 
@@ -1715,7 +1602,6 @@ def _embed_batch_with_tag(texts: list[str]) -> tuple[list[list[float]], str]:
 
 
 def _embed_batch(texts: list[str]) -> list[list[float]]:
-    """Embed multiple texts in a single batch forward pass."""
     vecs, _ = _embed_batch_with_tag(texts)
     return vecs
 
@@ -1750,7 +1636,7 @@ def _list_existing_namespace_names() -> list[str]:
         return []
     names: list[str] = []
     for p in mesh_dir.glob("mesh_*.db"):
-        if not (p.is_file() and not p.name.endswith(("-wal", "-shm"))):
+        if not (p.is_file() and not p.is_symlink() and not p.name.endswith(("-wal", "-shm"))):
             continue
         stem = p.stem
         ns = stem[5:] if stem.startswith("mesh_") else stem
@@ -1763,7 +1649,6 @@ def _list_existing_namespace_names() -> list[str]:
 
 
 def find_similar_namespaces(target_ns: str, max_distance: int = 2) -> list[str]:
-    """Return existing namespaces within edit distance <= `max_distance` of `target_ns`."""
     t_low = (target_ns or "").strip().lower()
     if not t_low:
         return []
@@ -1778,7 +1663,6 @@ def find_similar_namespaces(target_ns: str, max_distance: int = 2) -> list[str]:
 
 
 def suggest_did_you_mean_namespaces(target_ns: str, n: int = 3) -> list[str]:
-    """Return close matches for a missing namespace using `difflib.get_close_matches` + edit distance."""
     existing = _list_existing_namespace_names()
     if not existing:
         return []
@@ -1792,14 +1676,11 @@ def _compute_decay_metrics(
     decay_start_at: Optional[str],
     now: Optional[datetime] = None,
 ) -> tuple[float, Optional[int]]:
-    """Compute (decay_factor, days_until_stale) in a single timestamp parse pass."""
     if ttl_days is None or not decay_start_at:
         return 1.0, None
     try:
         ttl = float(ttl_days)
         if ttl <= 0.0:
-            # `ttl_days <= 0` means "permanent" at every ingestion surface, so it
-            # must not decay here either (a legacy row may still carry 0).
             return 1.0, None
         start = _parse_iso_utc(decay_start_at)
         if start is None:
@@ -1833,7 +1714,6 @@ def _compute_days_until_stale(
 
 
 def _parse_tags(raw_tags: Any) -> list[str]:
-    """Safely parse tags from a list, JSON string, or comma-separated string."""
     if not raw_tags:
         return []
     if isinstance(raw_tags, list):
@@ -1854,10 +1734,6 @@ def _parse_tags(raw_tags: Any) -> list[str]:
 
 
 def _extract_numeric_and_alnum_signatures(norm_text: str) -> tuple[list[str], set[str]]:
-    """
-    Extract all digit sequences (including digits attached to letters like `db1`, `v2`, `sha256`)
-    and alphanumeric identifier tokens containing digits.
-    """
     cleaned = _normalize_text_for_tokens(norm_text)
     nums = _NUMBER_TOKEN_RE.findall(cleaned)
     alnum_ids = set(_ALNUM_ID_WITH_DIGITS_RE.findall(cleaned))
@@ -1865,10 +1741,6 @@ def _extract_numeric_and_alnum_signatures(norm_text: str) -> tuple[list[str], se
 
 
 def _is_true_duplicate(new_text: str, existing_text: str, similarity: float) -> bool:
-    """
-    Determine whether `new_text` is a semantic duplicate of `existing_text`
-    rather than a conflicting update or a distinct long note sharing the same opening.
-    """
     norm_new = " ".join(new_text.strip().lower().split())
     norm_old = " ".join(existing_text.strip().lower().split())
     if norm_new == norm_old:
@@ -1888,7 +1760,6 @@ def _is_true_duplicate(new_text: str, existing_text: str, similarity: float) -> 
     if bool(words_new & _NEGATION_TOKENS) != bool(words_old & _NEGATION_TOKENS):
         return False
 
-    # Guard against long notes sharing an opening paragraph deduplicating into each other
     if len(norm_new) > 350 or len(norm_old) > 350:
         max_len = max(len(norm_new), len(norm_old), 1)
         min_len = min(len(norm_new), len(norm_old))
@@ -1901,32 +1772,42 @@ def _is_true_duplicate(new_text: str, existing_text: str, similarity: float) -> 
     return True
 
 
-_SUBJECT_VALUE_RE = re.compile(
-    r"^(.+?)\s*(?:\b(?:is|are|was|equals)\b|(?<![<>=!])=(?!=)|:(?=\s|$))\s*(.+)$"
+# Finding N3: Non-backtracking copula operator matcher (prevents O(N^2) ReDoS on 16 KB strings)
+_COPULA_OP_RE = re.compile(
+    r"(?:\b(?:is|are|was|equals)\b|(?<![<>=!])=(?!=)|:(?=\s|$))"
 )
+_SUBJECT_VALUE_MAX_CHARS = 512
 
 
 def _extract_subject_value_pair(norm_text: str) -> Optional[tuple[str, str]]:
     """
-    Extract `(subject_phrase, value_phrase)` for copula or key-value statements (Phase 2.6):
+    Extract `(subject_phrase, value_phrase)` for copula or key-value statements in O(N) linear time (Finding N3):
       - "the user's pen is blue" -> ("user pen", "blue")
       - "staging redis port is 6380" -> ("staging redi port", "6380")
       - "port = 5432" / "port=5432" / "port: 5432" -> ("port", "5432")
       - "url is http://a:80/x" -> ("url", "http a 80 x")
       - "a == b" / "a <= b" / "10:30" -> None
     """
+    if not norm_text or len(norm_text) > _SUBJECT_VALUE_MAX_CHARS:
+        return None
     cleaned = _normalize_text_for_tokens(norm_text)
-    m = _SUBJECT_VALUE_RE.match(cleaned)
+    if not cleaned or len(cleaned) > _SUBJECT_VALUE_MAX_CHARS:
+        return None
+    m = _COPULA_OP_RE.search(cleaned)
     if not m:
+        return None
+    lhs = cleaned[: m.start()].strip()
+    rhs = cleaned[m.end() :].strip()
+    if not lhs or not rhs:
         return None
     subj_tokens = [
         _stem_word(w)
-        for w in _WORD_TOKEN_RE.findall(m.group(1))
+        for w in _WORD_TOKEN_RE.findall(lhs)
         if w not in _STOPWORDS and w not in _NEGATION_TOKENS
     ]
     val_tokens = [
         _stem_word(w)
-        for w in _WORD_TOKEN_RE.findall(m.group(2))
+        for w in _WORD_TOKEN_RE.findall(rhs)
         if w not in _STOPWORDS or w in _NEGATION_TOKENS
     ]
     if not subj_tokens or not val_tokens:
@@ -1935,11 +1816,6 @@ def _extract_subject_value_pair(norm_text: str) -> Optional[tuple[str, str]]:
 
 
 def _extract_number_contexts(norm_text: str) -> dict[str, set[str]]:
-    """
-    Map each content anchor word or prefix attached to a number to the set of numbers
-    associated with it (e.g. "postgresql 16 on port 5432" -> {"postgresql": {"16"}, "port": {"5432"}},
-    and "db1" vs "db2" -> {"alnum:db": {"1"}} vs {"alnum:db": {"2"}}).
-    """
     cleaned = _normalize_text_for_tokens(norm_text)
     tokens = _WORD_TOKEN_RE.findall(cleaned)
     slots: dict[str, set[str]] = {}
@@ -1972,12 +1848,6 @@ def _extract_number_contexts(norm_text: str) -> dict[str, set[str]]:
 
 
 def _has_numeric_slot_conflict(norm_new: str, norm_old: str) -> bool:
-    """
-    Return True only if `norm_new` and `norm_old` assign conflicting numbers to the
-    same contextual slot (e.g. "port 5432" vs "port 5433", or "db1" vs "db2").
-    Elaborations that add a version number while agreeing on shared slots
-    (e.g. "PostgreSQL 16 runs on port 5432" vs "PostgreSQL runs on port 5432") return False.
-    """
     nums_new, alnum_new = _extract_numeric_and_alnum_signatures(norm_new)
     nums_old, alnum_old = _extract_numeric_and_alnum_signatures(norm_old)
     if nums_new == nums_old and alnum_new == alnum_old:
@@ -2004,10 +1874,6 @@ def _has_numeric_slot_conflict(norm_new: str, norm_old: str) -> bool:
 
 
 def _is_true_contradiction(new_text: str, existing_text: str, similarity: float) -> bool:
-    """
-    Determine whether `new_text` genuinely conflicts with `existing_text`
-    rather than elaborating on the same compatible fact.
-    """
     if _is_true_duplicate(new_text, existing_text, similarity):
         return False
 
@@ -2021,14 +1887,10 @@ def _is_true_contradiction(new_text: str, existing_text: str, similarity: float)
     neg_new = bool(tokens_new & _NEGATION_TOKENS)
     neg_old = bool(tokens_old & _NEGATION_TOKENS)
 
-    # 1. Check direct subject-value slot conflict ("the user's pen is blue" vs "the user's pen is red")
     sv_new = _extract_subject_value_pair(norm_new)
     sv_old = _extract_subject_value_pair(norm_old)
     if sv_new is not None and sv_old is not None:
         if sv_new[0] == sv_old[0] and sv_new[1] != sv_old[1]:
-            # A shared subject that assigns different numbers to the same slot is
-            # structural evidence, so it must not depend on embedding similarity:
-            # the hash-384 fallback cannot produce the cosine the gate expects.
             if _has_numeric_slot_conflict(norm_new, norm_old):
                 return True
             if similarity >= 0.70:
@@ -2042,15 +1904,12 @@ def _is_true_contradiction(new_text: str, existing_text: str, similarity: float)
     if similarity < CONTRADICTION_THRESHOLD:
         return False
 
-    # 2. Negation polarity flip
     if neg_new != neg_old:
         return True
 
-    # 3. Contextual numeric slot conflict
     if _has_numeric_slot_conflict(norm_new, norm_old):
         return True
 
-    # 4. Exclusive color conflict on highly similar sentences
     colors_new = tokens_new & _COLOR_TOKENS
     colors_old = tokens_old & _COLOR_TOKENS
     if colors_new and colors_old and colors_new != colors_old:
@@ -2089,14 +1948,6 @@ def _can_modify_agent_memory(
     existing_agent: Optional[str],
     trusted_local: bool = False,
 ) -> bool:
-    """
-    Return True when `agent_id` may modify a memory owned by `existing_agent`.
-
-    Exemption is granted by *provenance* (`trusted_local=True`, set only by the
-    local CLI/dashboard code paths), never by an agent choosing a reserved name.
-    Previously any caller that self-declared `agent_id="human-cli"` — including
-    an agent through an MCP/HTTP argument — bypassed ownership enforcement.
-    """
     if not _ownership_enforced() or trusted_local:
         return True
     if not existing_agent or existing_agent == agent_id:
@@ -2115,8 +1966,50 @@ def _check_agent_ownership(
         )
 
 
+def _check_agent_scope(
+    agent_id: str,
+    namespace: str,
+    *,
+    write: bool = False,
+    trusted_local: bool = False,
+) -> None:
+    """
+    Finding S6 / 2e: Enforce per-agent read-only and namespace confinement scopes
+    configured via `MESH_READ_ONLY=1` or `MESH_AGENT_SCOPES` JSON policy.
+    """
+    if trusted_local:
+        return
+    if write and env_bool("MESH_READ_ONLY", False):
+        raise ValueError(
+            f"Agent '{agent_id}' cannot modify namespace '{namespace}': Mesh is in read-only mode (MESH_READ_ONLY=1)."
+        )
+    raw_scopes = (os.environ.get("MESH_AGENT_SCOPES") or "").strip()
+    if not raw_scopes:
+        return
+    try:
+        scopes_map = json.loads(raw_scopes)
+    except Exception:
+        raise ValueError("Malformed MESH_AGENT_SCOPES configuration; expected valid JSON object.")
+    if not isinstance(scopes_map, dict):
+        return
+    rule = scopes_map.get(agent_id) or scopes_map.get("*")
+    if not isinstance(rule, dict):
+        return
+
+    allowed_ns = rule.get("namespaces")
+    if isinstance(allowed_ns, list) and namespace not in [str(x).strip() for x in allowed_ns]:
+        raise ValueError(
+            f"Agent '{agent_id}' is not authorized to access namespace '{namespace}' (restricted by MESH_AGENT_SCOPES)."
+        )
+    if write:
+        mode = str(rule.get("mode") or "rw").strip().lower()
+        if mode in ("ro", "read", "readonly", "read-only", "read_only"):
+            raise ValueError(
+                f"Agent '{agent_id}' has read-only scope in MESH_AGENT_SCOPES and is not authorized to modify memories."
+            )
+
+
 def _clamp_confidence(value: Any, *, field: str = "confidence") -> float:
-    """Return a finite confidence clamped to [0.0, 1.0]; reject NaN and infinities."""
     try:
         parsed = float(value)
     except (TypeError, ValueError):
@@ -2152,8 +2045,6 @@ class Mesh:
         )
         clean_agent = re.sub(r"[\x00-\x1f\x7f]+", "", str(resolved_agent)).strip()[:64]
         self.agent_id = clean_agent or "agent"
-        # Only in-process local callers (CLI, dashboard) opt out of cross-agent
-        # ownership checks. Remote tool arguments can never set this.
         self.trusted_local = bool(trusted_local)
         db_file = ensure_secure_mesh_dir().resolve() / f"mesh_{self.namespace}.db"
         self._ns_existed_before = db_file.exists()
@@ -2161,13 +2052,6 @@ class Mesh:
         _trigger_background_bootstrap()
 
     def _heal_namespace_embeddings_if_needed(self, max_batch: int = 8) -> None:
-        """
-        O(1) check via `cache.needs_healing_ids`: if a real neural model (`onnx`, `fastembed`, or
-        `sentence-transformers`) is active and the namespace contains any rows embedded
-        with `hash-384` or `needs-reembed`, re-embed at most `max_batch` (default 8) rows
-        synchronously and spawn at most one background healing thread per namespace (Phase 3.2).
-        Never runs inside `namespace_write_lock`.
-        """
         if not self.store.db_path.exists():
             return
         with _HEALING_IN_FLIGHT_LOCK:
@@ -2245,33 +2129,53 @@ class Mesh:
         ttl_days: Optional[float] = None,
         local_only: bool = False,
         deduplicate: bool = True,
+        secret_ref: Optional[Any] = None,
+        trust_tier: Optional[str] = None,
+        quarantined: bool = False,
+        vault_secrets: bool = False,
+        allow_redacted_public: bool = False,
     ) -> dict[str, Any]:
+        _check_agent_scope(self.agent_id, self.namespace, write=True, trusted_local=self.trusted_local)
         if not content or not content.strip():
             raise ValueError("content cannot be empty")
 
-        # Central ingestion guard. Every write path (MCP tool, HTTP API, Python
-        # SDK, passive capture, import) funnels through this method, so policy
-        # cannot be bypassed by a caller that forgets to call `guard_ingest()`
-        # itself. Imported lazily because guards -> passive -> memory.
-        from .guards import guard_ingest
+        from .guards import guard_ingest, guard_tags
 
-        # The guard can force `local_only` for secret-bearing content. Keep the
-        # caller's requested visibility separately: the dedup privacy check must
-        # use the request, otherwise a public learn whose content merely *looks*
-        # like a credential becomes eligible to merge into someone's private row
-        # (the dedup-oracle leak).
         requested_local_only = bool(local_only)
+
+        # Finding S1 / 2b: Convert-instead-of-destroy flow when vault_secrets=True or MESH_VAULT_SECRETS=1
+        auto_vault = bool(vault_secrets or env_bool("MESH_VAULT_SECRETS", False))
+        vaulted_locators = []
+        if auto_vault and is_credential(content):
+            content, vaulted_locators = convert_text_secrets_to_refs(content, namespace=self.namespace)
+            if vaulted_locators and secret_ref is None:
+                secret_ref = vaulted_locators[0].to_dict()
+                memory_type = "secret_ref"
 
         guarded = guard_ingest(content, local_only=requested_local_only)
         if guarded.rejected:
             raise ValueError(guarded.reason or "Memory content rejected by ingestion guard.")
         content = guarded.content
-        local_only = guarded.local_only
+        clean_tags, tags_private, tag_warnings = guard_tags(
+            _parse_tags(tags),
+            local_only=guarded.local_only,
+        )
+
+        # Finding S11: Support explicit `--force-public` on interactive human CLI after redaction
+        if allow_redacted_public and self.trusted_local:
+            local_only = requested_local_only
+        else:
+            local_only = bool(guarded.local_only or tags_private)
+
         clean_content = content.strip()
         if len(clean_content) > MAX_CONTENT_LENGTH:
             raise ValueError(
                 f"content length ({len(clean_content)} chars) exceeds maximum allowed length ({MAX_CONTENT_LENGTH} chars)."
             )
+
+        norm_ref = normalize_secret_ref(secret_ref, default_namespace=self.namespace)
+        if norm_ref is not None and (not memory_type or memory_type == "fact"):
+            memory_type = "secret_ref"
 
         memory_type = (memory_type or "fact").strip().lower()
         if memory_type not in VALID_MEMORY_TYPES:
@@ -2279,19 +2183,21 @@ class Mesh:
                 f"memory_type must be one of {sorted(VALID_MEMORY_TYPES)}, got '{memory_type}'"
             )
 
+        default_tier = "user" if self.trusted_local else "agent"
+        resolved_trust_tier = _normalize_trust_tier(trust_tier, default=default_tier)
+        if resolved_trust_tier == "user" and not self.trusted_local and trust_tier is not None:
+            resolved_trust_tier = "agent"
+
         confidence = _clamp_confidence(confidence)
-        clean_tags = _parse_tags(tags)
         ttl_val = float(ttl_days) if ttl_days is not None and float(ttl_days) > 0 else None
         now = _utc_now_iso()
 
         self._heal_namespace_embeddings_if_needed()
-        # Compute embedding BEFORE taking the namespace write lock (Phase 2.2)
         embedding, emb_model_tag = _embed_with_tag(clean_content)
         _, active_backend = _get_model()
         is_degraded = emb_model_tag != "onnx-minilm-l6-v2"
         memory_id = str(uuid.uuid4())
 
-        # Check whether this learn() is creating a brand-new namespace (Phase 3.4)
         was_new_namespace = not self._ns_existed_before and self.store.count() == 0
         similar_existing = (
             find_similar_namespaces(self.namespace, max_distance=2)
@@ -2299,10 +2205,8 @@ class Mesh:
             else []
         )
 
-        # --- Atomic Deduplication, Contradiction Detection & Write (Phase 2.2) ---
         conflict: Optional[dict[str, Any]] = None
         with namespace_write_lock(self.namespace):
-            # Force vector cache sync check inside the write lock so cross-process writes are visible
             self.store._get_vector_cache()
             if self.store.count() > 0:
                 raw = self.store.query(embedding, n=3, query_embedding_model=emb_model_tag)
@@ -2311,7 +2215,6 @@ class Mesh:
                 ids = raw.get("ids", [[]])[0]
                 metadatas = raw.get("metadatas", [[]])[0]
 
-                # Pass 1: Check if any top candidate is a true duplicate (preserves original source_agent & memory_type)
                 if deduplicate:
                     for i, doc in enumerate(docs):
                         meta = metadatas[i] if metadatas and i < len(metadatas) else {}
@@ -2325,9 +2228,6 @@ class Mesh:
                         if existing_id and not _can_modify_agent_memory(
                             self.agent_id, meta.get("source_agent"), self.trusted_local
                         ):
-                            # Never mutate a memory owned by another agent through the
-                            # dedup path when ownership enforcement is active; store a
-                            # separate memory instead of raising for benign duplicates.
                             continue
                         if existing_id and _is_true_duplicate(clean_content, doc, similarity):
                             existing_tags = _parse_tags(meta.get("tags"))
@@ -2339,14 +2239,15 @@ class Mesh:
                                 memory_id=existing_id,
                                 content=clean_content if content_changed else None,
                                 embedding=embedding if content_changed else None,
-                                memory_type=None,   # Preserve original memory_type
+                                memory_type=None,
                                 confidence=updated_conf,
                                 tags=merged_tags,
                                 ttl_days=ttl_val,
                                 reset_ttl=ttl_val is not None,
                                 local_only=is_priv,
-                                source_agent=None,  # Preserve original author provenance
+                                source_agent=None,
                                 embedding_model=emb_model_tag if content_changed else None,
+                                secret_ref=norm_ref if norm_ref is not None else None,
                             )
                             if content_changed and emb_model_tag == "hash-384":
                                 with _PENDING_REEMBED_LOCK:
@@ -2358,7 +2259,11 @@ class Mesh:
                                 "conflict": None,
                                 "embedding_backend": active_backend or "hash-fallback",
                                 "embedding_degraded": is_degraded,
+                                "trust_tier": meta.get("trust_tier", resolved_trust_tier),
+                                "quarantined": bool(meta.get("quarantined", quarantined)),
                             }
+                            if norm_ref is not None:
+                                dedup_res["secret_ref"] = norm_ref
                             log_learn(
                                 content=clean_content,
                                 namespace=self.namespace,
@@ -2368,7 +2273,6 @@ class Mesh:
                             )
                             return dedup_res
 
-                # Pass 2: Check for genuine semantic contradiction against the closest existing memories
                 for i, doc in enumerate(docs):
                     meta = metadatas[i] if metadatas and i < len(metadatas) else {}
                     if not _is_same_known_space(meta.get("embedding_model"), emb_model_tag):
@@ -2376,9 +2280,6 @@ class Mesh:
                     similarity = round(1.0 - float(distances[i]), 4)
                     existing_is_private = bool(meta.get("local_only"))
                     if existing_is_private and not local_only:
-                        # A public write must not probe private memories: the conflict
-                        # payload and the persisted contradiction record would both
-                        # reveal the existence and content of a local_only memory.
                         continue
                     if _is_true_contradiction(clean_content, doc, similarity):
                         existing_id = ids[i] if ids and i < len(ids) else None
@@ -2423,9 +2324,13 @@ class Mesh:
                     "ttl_days": ttl_val,
                     "decay_start_at": decay_start_at,
                     "embedding_model": emb_model_tag,
+                    "trust_tier": resolved_trust_tier,
+                    "quarantined": bool(quarantined),
+                    "secret_ref": norm_ref,
                 },
                 local_only=bool(local_only),
                 embedding_model=emb_model_tag,
+                allow_redacted_public=bool(allow_redacted_public and self.trusted_local),
             )
             self._ns_existed_before = True
 
@@ -2433,6 +2338,7 @@ class Mesh:
             with _PENDING_REEMBED_LOCK:
                 _PENDING_REEMBED_QUEUE.put(self.namespace, memory_id, clean_content)
 
+        all_warnings = tuple([*guarded.warnings, *tag_warnings])
         result: dict[str, Any] = {
             "memory_id": memory_id,
             "status": "stored_with_conflict" if conflict else "stored",
@@ -2440,7 +2346,13 @@ class Mesh:
             "conflict": conflict,
             "embedding_backend": active_backend or "hash-fallback",
             "embedding_degraded": is_degraded,
+            "trust_tier": resolved_trust_tier,
+            "quarantined": bool(quarantined),
         }
+        if norm_ref is not None:
+            result["secret_ref"] = norm_ref
+        if all_warnings:
+            result["warnings"] = all_warnings
         if was_new_namespace:
             result["namespace_created"] = True
             result["similar_existing"] = similar_existing
@@ -2465,10 +2377,12 @@ class Mesh:
         tags: Optional[list[str]] = None,
         source_agent: Optional[str] = None,
         include_private: Optional[bool] = None,
+        include_quarantined: bool = False,
         record_telemetry: bool = True,
         _precomputed_embedding: Optional[list[float]] = None,
         _precomputed_model_tag: Optional[str] = None,
     ) -> list[dict[str, Any]]:
+        _check_agent_scope(self.agent_id, self.namespace, write=False, trusted_local=self.trusted_local)
         if not query or not query.strip():
             raise ValueError("query cannot be empty")
         clean_query = query.strip()
@@ -2495,6 +2409,7 @@ class Mesh:
             include_stale=include_stale,
             min_confidence=min_confidence,
             now=now,
+            include_quarantined=include_quarantined,
         )
 
         memories: list[dict[str, Any]] = []
@@ -2571,31 +2486,34 @@ class Mesh:
                 4,
             )
 
-            memories.append(
-                {
-                    "id": row.get("id"),
-                    "content": row["content"],
-                    "snippet": row.get("snippet") or row["content"][:110],
-                    "match_reason": row.get("match_reason", "hybrid"),
-                    "similarity": similarity,
-                    "semantic_similarity": sem_sim,
-                    "lexical_score": lex_score,
-                    "composite_score": composite_score,
-                    "source_agent": row.get("source_agent", "unknown"),
-                    "memory_type": row.get("memory_type", "fact"),
-                    "tags": mem_tags,
-                    "confidence": stored_confidence,
-                    "effective_confidence": effective_confidence,
-                    "decay_factor": round(decay_factor, 4),
-                    "is_stale": is_stale,
-                    "days_until_stale": days_until_stale,
-                    "ttl_days": ttl_days,
-                    "access_count": access_count,
-                    "local_only": bool(row.get("local_only", False)),
-                    "created_at": row.get("created_at", ""),
-                    "accessed_at": row.get("accessed_at", ""),
-                }
-            )
+            mem_entry: dict[str, Any] = {
+                "id": row.get("id"),
+                "content": row["content"],
+                "snippet": row.get("snippet") or row["content"][:110],
+                "match_reason": row.get("match_reason", "hybrid"),
+                "similarity": similarity,
+                "semantic_similarity": sem_sim,
+                "lexical_score": lex_score,
+                "composite_score": composite_score,
+                "source_agent": row.get("source_agent", "unknown"),
+                "memory_type": row.get("memory_type", "fact"),
+                "tags": mem_tags,
+                "confidence": stored_confidence,
+                "effective_confidence": effective_confidence,
+                "decay_factor": round(decay_factor, 4),
+                "is_stale": is_stale,
+                "days_until_stale": days_until_stale,
+                "ttl_days": ttl_days,
+                "access_count": access_count,
+                "local_only": bool(row.get("local_only", False)),
+                "trust_tier": row.get("trust_tier", "user"),
+                "quarantined": bool(row.get("quarantined", False)),
+                "created_at": row.get("created_at", ""),
+                "accessed_at": row.get("accessed_at", ""),
+            }
+            if row.get("secret_ref") is not None:
+                mem_entry["secret_ref"] = row.get("secret_ref")
+            memories.append(mem_entry)
 
         memories.sort(
             key=lambda x: (
@@ -2608,15 +2526,20 @@ class Mesh:
         )
         memories = memories[:n]
 
+        # Finding S12: Redact credential queries and mark private_query=True even on 0 results
         if record_telemetry and self.store.db_path.exists():
             returned_ids = [m["id"] for m in memories if m.get("id")]
+            query_has_cred = is_credential(clean_query)
             is_priv_query = bool(
-                include_private is True or any(m.get("local_only") for m in memories)
+                include_private is True
+                or query_has_cred
+                or any(m.get("local_only") for m in memories)
             )
+            safe_logged_query = redact_secrets_local(clean_query) if query_has_cred else clean_query
             try:
                 self.store.record_recall_telemetry(
                     memory_ids=returned_ids,
-                    query_text=clean_query,
+                    query_text=safe_logged_query,
                     agent_id=self.agent_id,
                     best_similarity=best_similarity,
                     result_count=len(memories),
@@ -2644,20 +2567,24 @@ class Mesh:
         source_agent: Optional[str] = None,
         max_other_possible: int = 5,
         include_private: Optional[bool] = None,
+        include_quarantined: bool = False,
     ) -> dict[str, Any]:
         """
         Execute `recall()` and also surface `other_possible_memories`, computing
         `_embed_query_with_tag()` only once across both stages (Phase 2.1).
+        Finding N8: Excludes `local_only=True` memories from `other_possible_memories`
+        unless `include_private=True` was explicitly passed.
         """
         clean_query = (query or "").strip()
         if not clean_query:
             raise ValueError("query cannot be empty")
 
         actual_include_private = _resolve_sdk_include_private(include_private)
+        # Finding N8: Peripheral "other possible" snippets only include private rows if explicitly requested
+        other_include_private = bool(include_private is True)
         query_embedding, query_model_tag = _embed_query_with_tag(clean_query)
         _, active_backend = _get_model()
 
-        # Pass `include_private` as received so `recall()` knows whether `include_private=True` was explicit
         results = self.recall(
             query=clean_query,
             n=n,
@@ -2668,6 +2595,7 @@ class Mesh:
             tags=tags,
             source_agent=source_agent,
             include_private=include_private,
+            include_quarantined=include_quarantined,
             _precomputed_embedding=query_embedding,
             _precomputed_model_tag=query_model_tag,
         )
@@ -2682,8 +2610,9 @@ class Mesh:
                 limit=max_other_possible,
                 active_memory_type=memory_type,
                 active_tags=_parse_tags(tags) if tags else None,
-                include_private=actual_include_private,
+                include_private=other_include_private,
                 query_embedding_model=query_model_tag,
+                include_quarantined=include_quarantined,
             )
 
         filter_rescued = [
@@ -2702,7 +2631,10 @@ class Mesh:
             "query": clean_query,
             "namespace": self.namespace,
             "count": len(results),
-            "total_in_namespace": self.store.count_matching(include_private=actual_include_private),
+            "total_in_namespace": self.store.count_matching(
+                include_private=actual_include_private,
+                include_quarantined=include_quarantined,
+            ),
             "stale_count": sum(1 for m in results if m.get("is_stale")),
             "results": results,
             "other_possible_memories": other_possible,
@@ -2723,7 +2655,11 @@ class Mesh:
         clear_ttl: bool = False,
         local_only: Optional[bool] = None,
         source_agent: Optional[str] = None,
+        trust_tier: Optional[str] = None,
+        quarantined: Optional[bool] = None,
+        secret_ref: Optional[Any] = None,
     ) -> dict[str, Any]:
+        _check_agent_scope(self.agent_id, self.namespace, write=True, trusted_local=self.trusted_local)
         if not memory_id or not memory_id.strip():
             raise ValueError("memory_id cannot be empty")
 
@@ -2737,16 +2673,14 @@ class Mesh:
         _check_agent_ownership(self.agent_id, existing.get("source_agent"), self.trusted_local)
         old_content = str(existing.get("content", ""))
 
+        from .guards import guard_ingest, guard_tags
+
         new_embedding: Optional[list[float]] = None
         emb_model_tag: Optional[str] = None
         clean_content: Optional[str] = None
         if content is not None:
             if not content.strip():
                 raise ValueError("content cannot be empty")
-            # Same central guard as learn(): sanitize, reject poison, redact
-            # credentials, and force private storage for secret-bearing edits.
-            from .guards import guard_ingest
-
             guarded = guard_ingest(content, local_only=bool(local_only))
             if guarded.rejected:
                 raise ValueError(guarded.reason or "Memory content rejected by ingestion guard.")
@@ -2760,6 +2694,23 @@ class Mesh:
                 )
             if clean_content != old_content:
                 new_embedding, emb_model_tag = _embed_with_tag(clean_content)
+        elif local_only is False:
+            # Finding S11: Re-guard existing content when attempting to flip a private memory to public
+            guarded_existing = guard_ingest(old_content, local_only=False)
+            if guarded_existing.rejected:
+                raise ValueError(guarded_existing.reason or "Existing memory content rejected by ingestion guard.")
+            if guarded_existing.local_only:
+                clean_content = guarded_existing.content
+                local_only = True
+
+        clean_tags: Optional[list[str]] = None
+        if tags is not None:
+            clean_tags, tags_private, _ = guard_tags(
+                _parse_tags(tags),
+                local_only=bool(local_only),
+            )
+            if tags_private:
+                local_only = True
 
         clean_type: Optional[str] = None
         if memory_type is not None:
@@ -2773,7 +2724,6 @@ class Mesh:
         if confidence is not None:
             clean_conf = _clamp_confidence(confidence)
 
-        clean_tags = _parse_tags(tags) if tags is not None else None
         should_clear_ttl = bool(clear_ttl) or (ttl_days is not None and float(ttl_days) <= 0)
         ttl_val = (
             None
@@ -2792,8 +2742,11 @@ class Mesh:
             reset_ttl=reset_ttl or (ttl_val is not None),
             clear_ttl=should_clear_ttl,
             local_only=local_only,
-            source_agent=source_agent,  # Preserve original source_agent unless explicitly overridden
+            source_agent=source_agent,
             embedding_model=emb_model_tag,
+            trust_tier=trust_tier,
+            quarantined=quarantined,
+            secret_ref=secret_ref,
         )
         if not updated:
             raise ValueError(f"Failed to update memory '{resolved_id}'")
@@ -2817,7 +2770,28 @@ class Mesh:
             "memory": self._enrich_memory_row(updated),
         }
 
+    def approve(self, memory_id: str) -> dict[str, Any]:
+        """
+        Approve a quarantined memory (`quarantined=False`), making it eligible for
+        agent recalls and context blocks (Finding S8).
+        """
+        _check_agent_scope(self.agent_id, self.namespace, write=True, trusted_local=self.trusted_local)
+        if not memory_id or not memory_id.strip():
+            raise ValueError("memory_id cannot be empty")
+        resolved_id = self.store.resolve_id_prefix(memory_id)
+        if not resolved_id:
+            raise ValueError(f"Memory ID '{memory_id}' not found in namespace '{self.namespace}'")
+        updated = self.store.approve(resolved_id)
+        if not updated:
+            raise ValueError(f"Memory '{resolved_id}' not found in namespace '{self.namespace}'")
+        return {
+            "memory_id": resolved_id,
+            "status": "approved",
+            "memory": self._enrich_memory_row(updated),
+        }
+
     def get(self, memory_id: str) -> Optional[dict[str, Any]]:
+        _check_agent_scope(self.agent_id, self.namespace, write=False, trusted_local=self.trusted_local)
         resolved_id = self.store.resolve_id_prefix(memory_id) or memory_id
         row = self.store.get(resolved_id)
         if not row:
@@ -2848,12 +2822,15 @@ class Mesh:
         enriched["is_stale"] = is_stale
         enriched["days_until_stale"] = days_until_stale
         enriched["local_only"] = bool(row.get("local_only", False))
+        enriched["trust_tier"] = row.get("trust_tier", "user")
+        enriched["quarantined"] = bool(row.get("quarantined", False))
         enriched["tags_list"] = (
             row["tags_list"] if "tags_list" in row else _parse_tags(row.get("tags"))
         )
         return enriched
 
     def forget(self, memory_id: str) -> bool:
+        _check_agent_scope(self.agent_id, self.namespace, write=True, trusted_local=self.trusted_local)
         resolved_id = self.store.resolve_id_prefix(memory_id) or memory_id
         existing = self.store.get(resolved_id)
         if existing:
@@ -2870,12 +2847,15 @@ class Mesh:
         return deleted
 
     def patterns(self, include_private: bool = False) -> dict[str, Any]:
+        _check_agent_scope(self.agent_id, self.namespace, write=False, trusted_local=self.trusted_local)
         return self.store.get_patterns(include_private=include_private)
 
     def contradictions(self, resolved: bool = False) -> list[dict[str, Any]]:
+        _check_agent_scope(self.agent_id, self.namespace, write=False, trusted_local=self.trusted_local)
         return self.store.get_contradictions(resolved=resolved)
 
     def resolve_contradiction(self, contradiction_id: str) -> bool:
+        _check_agent_scope(self.agent_id, self.namespace, write=True, trusted_local=self.trusted_local)
         clean_pref = (contradiction_id or "").strip().lower()
         if not clean_pref:
             raise ValueError("contradiction_id cannot be empty")
@@ -2927,7 +2907,10 @@ class Mesh:
         include_stale: bool = True,
         min_confidence: float = 0.0,
         order_by: str = "accessed",
+        include_quarantined: bool = True,
+        quarantined_only: bool = False,
     ) -> list[dict[str, Any]]:
+        _check_agent_scope(self.agent_id, self.namespace, write=False, trusted_local=self.trusted_local)
         actual_include_private = _resolve_sdk_include_private(include_private)
         rows = self.store.list_all(
             limit=limit,
@@ -2938,6 +2921,8 @@ class Mesh:
             include_stale=include_stale,
             min_confidence=min_confidence,
             order_by=order_by,
+            include_quarantined=include_quarantined,
+            quarantined_only=quarantined_only,
         )
         now = _utc_now()
         return [self._enrich_memory_row(r, now=now) for r in rows]
@@ -2949,7 +2934,9 @@ class Mesh:
         tags: Optional[list[str]] = None,
         include_private: Optional[bool] = None,
         source_agent: Optional[str] = None,
+        include_quarantined: bool = True,
     ) -> int:
+        _check_agent_scope(self.agent_id, self.namespace, write=False, trusted_local=self.trusted_local)
         actual_include_private = _resolve_sdk_include_private(include_private)
         return self.store.count_matching(
             memory_type=memory_type,
@@ -2957,16 +2944,130 @@ class Mesh:
             tags=tags,
             include_private=actual_include_private,
             source_agent=source_agent,
+            include_quarantined=include_quarantined,
         )
 
     def clear(self) -> None:
+        _check_agent_scope(self.agent_id, self.namespace, write=True, trusted_local=self.trusted_local)
         self.store.clear_namespace()
 
     def count(self) -> int:
         return self.store.count()
 
+    def create_work_item(
+        self,
+        title: str,
+        kind: str = "task",
+        parent_id: Optional[str] = None,
+        description: str = "",
+        priority: str = "medium",
+        tags: Optional[list[str]] = None,
+        local_only: bool = False,
+    ) -> dict[str, Any]:
+        _check_agent_scope(self.agent_id, self.namespace, write=True, trusted_local=self.trusted_local)
+        return self.store.create_work_item(
+            title=title,
+            kind=kind,
+            parent_id=parent_id,
+            description=description,
+            priority=priority,
+            tags=tags,
+            created_by=self.agent_id,
+            local_only=local_only,
+        )
+
+    def update_work_item(
+        self,
+        item_id: str,
+        status: Optional[str] = None,
+        priority: Optional[str] = None,
+        title: Optional[str] = None,
+        description: Optional[str] = None,
+        note: Optional[str] = None,
+    ) -> dict[str, Any]:
+        _check_agent_scope(self.agent_id, self.namespace, write=True, trusted_local=self.trusted_local)
+        return self.store.update_work_item(
+            item_id=item_id,
+            status=status,
+            priority=priority,
+            title=title,
+            description=description,
+            note=note,
+            agent_id=self.agent_id,
+        )
+
+    def complete_work_item(
+        self,
+        item_id: str,
+        summary: str,
+        evidence: Optional[list[str]] = None,
+        note: Optional[str] = None,
+    ) -> dict[str, Any]:
+        _check_agent_scope(self.agent_id, self.namespace, write=True, trusted_local=self.trusted_local)
+        return self.store.complete_work_item(
+            item_id=item_id,
+            summary=summary,
+            evidence=evidence,
+            note=note,
+            agent_id=self.agent_id,
+        )
+
+    def get_work_item(self, item_id: str, include_private: Optional[bool] = None) -> Optional[dict[str, Any]]:
+        _check_agent_scope(self.agent_id, self.namespace, write=False, trusted_local=self.trusted_local)
+        inc_priv = _resolve_sdk_include_private(include_private)
+        return self.store.get_work_item(item_id, include_private=inc_priv)
+
+    def list_work_items(
+        self,
+        status: Optional[str] = None,
+        kind: Optional[str] = None,
+        parent_id: Optional[str] = None,
+        include_private: Optional[bool] = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        _check_agent_scope(self.agent_id, self.namespace, write=False, trusted_local=self.trusted_local)
+        inc_priv = _resolve_sdk_include_private(include_private)
+        return self.store.list_work_items(
+            status=status,
+            kind=kind,
+            parent_id=parent_id,
+            include_private=inc_priv,
+            limit=limit,
+        )
+
+    def get_work_events(self, item_id: Optional[str] = None, limit: int = 50) -> list[dict[str, Any]]:
+        _check_agent_scope(self.agent_id, self.namespace, write=False, trusted_local=self.trusted_local)
+        return self.store.get_work_events(item_id=item_id, limit=limit)
+
+    def project_brief(
+        self,
+        max_tokens: int = 500,
+        include_work_items: bool = True,
+        include_private: Optional[bool] = None,
+    ) -> dict[str, Any]:
+        _check_agent_scope(self.agent_id, self.namespace, write=False, trusted_local=self.trusted_local)
+        inc_priv = _resolve_sdk_include_private(include_private)
+        return self.store.get_project_brief(
+            max_tokens=max_tokens,
+            include_work_items=include_work_items,
+            include_private=inc_priv,
+        )
+
+    def changelog(
+        self,
+        since: str = "7d",
+        format: str = "markdown",
+        include_private: Optional[bool] = None,
+    ) -> dict[str, Any]:
+        _check_agent_scope(self.agent_id, self.namespace, write=False, trusted_local=self.trusted_local)
+        inc_priv = _resolve_sdk_include_private(include_private)
+        return self.store.get_changelog(
+            since=since,
+            format=format,
+            include_private=inc_priv,
+        )
+
     def close(self) -> None:
-        """Flush any pending telemetry and release pooled resources for this namespace."""
         if hasattr(self, "store") and self.store is not None:
             self.store.flush_telemetry()
 
@@ -2985,11 +3086,6 @@ class Mesh:
 
 
 def _emit_warning(msg: Any) -> None:
-    """User-facing warning on stderr, styled like the rest of the CLI (plain fallback if ui fails).
-
-    Identical messages are emitted once per process: download retries, model
-    lookups, and status polls would otherwise repeat the same warning many times.
-    """
     text = " ".join(str(msg).split())
     with _WARNED_LOCK:
         if text in _WARNED_MESSAGES:

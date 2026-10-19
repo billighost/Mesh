@@ -3,11 +3,12 @@ mesh/digest.py — Timezone-safe End-of-Session Digest for Mesh.
 
 Summarizes recent activity: what was learned, contradictions detected, and stale memories.
 Security & Consistency:
-  - Validates namespace identifiers via `validate_namespace()` to prevent path traversal
+  - Validates namespace identifiers via `validate_namespace()` and rejects symlinks (`reject_symlink`)
   - Flushes buffered telemetry (`flush_all_telemetry`) before reading database state
-  - Uses `_compute_row_effective_confidence()` from `store.py` across all rows for a single unified staleness definition
-  - Excludes rows with unparseable `created_at` timestamps from `new_memories` and counts them in `unparseable_count`
-  - Includes 8-character `short_id`s in `new_memories` and `stale_memories`
+  - Decrypts encrypted-at-rest fields transparently via `mesh.crypto` (Finding S5)
+  - Excludes `quarantined=1` memories from active digest counts by default (Finding S8)
+  - Reads unresolved contradictions from the `contradictions` table (falling back to `audit_log`
+    only when the `contradictions` table is absent) so resolved conflicts are not re-reported (Finding S12)
   - Redacts `local_only=True` memory content by default unless `include_private=True`
 """
 from __future__ import annotations
@@ -24,8 +25,10 @@ from .audit import (
     REDACTED_CONTENT_PLACEHOLDER,
     _get_audit_db_path,
     ensure_secure_mesh_dir,
+    reject_symlink,
     validate_namespace,
 )
+from .crypto import decrypt_text_if_encrypted
 from .store import (
     _compute_row_effective_confidence,
     _parse_iso_utc,
@@ -50,6 +53,7 @@ def generate_digest(
     hours: int = 24,
     include_private: bool = False,
     filter_stale_by_window: bool = False,
+    include_quarantined: bool = False,
 ) -> dict[str, Any]:
     """
     Generate a session digest for the given namespace and time window using timezone-safe UTC timestamps.
@@ -63,16 +67,18 @@ def generate_digest(
     since_iso = since_dt.isoformat()
 
     base_dir = ensure_secure_mesh_dir().resolve()
-    db_path = (base_dir / f"mesh_{clean_ns}.db").resolve()
+    raw_candidate = base_dir / f"mesh_{clean_ns}.db"
+    reject_symlink(raw_candidate)
+    db_path = raw_candidate.resolve()
     if db_path.parent != base_dir:
         raise ValueError(f"Invalid namespace path resolution for '{namespace}'.")
 
     new_memories: list[dict[str, Any]] = []
     stale_memories: list[dict[str, Any]] = []
+    contradictions: list[dict[str, Any]] = []
+    has_contradictions_table = False
     unparseable_count = 0
-    # A missing namespace, or an unreadable/corrupt database, used to produce an
-    # empty digest indistinguishable from "nothing happened", and the CLI then
-    # printed "All clear". Track both so callers can tell the difference.
+    quarantined_count = 0
     namespace_exists = db_path.exists()
     read_errors: list[str] = []
 
@@ -81,11 +87,19 @@ def generate_digest(
         conn.row_factory = sqlite3.Row
         try:
             if _has_table(conn, "memories"):
+                cols = {r[1] for r in conn.execute("PRAGMA table_info(memories)").fetchall()}
+                select_cols = (
+                    "id, content, memory_type, source_agent, confidence, "
+                    "created_at, decay_start_at, ttl_days, local_only"
+                )
+                if "quarantined" in cols:
+                    select_cols += ", quarantined"
+                if "trust_tier" in cols:
+                    select_cols += ", trust_tier"
                 cursor = conn.cursor()
                 cursor.execute(
-                    """
-                    SELECT id, content, memory_type, source_agent, confidence,
-                           created_at, decay_start_at, ttl_days, local_only
+                    f"""
+                    SELECT {select_cols}
                     FROM memories
                     WHERE namespace = ?
                     ORDER BY created_at DESC
@@ -96,13 +110,20 @@ def generate_digest(
                 cursor.close()
 
                 for row in all_rows:
+                    is_quarantined = bool(row.get("quarantined", 0))
+                    if is_quarantined:
+                        quarantined_count += 1
+                        if not include_quarantined:
+                            continue
+
                     mid = str(row.get("id") or "")
                     short_id = mid[:8]
                     is_priv = bool(row.get("local_only"))
+                    plain_content = decrypt_text_if_encrypted(row.get("content", ""))
                     display_content = (
                         REDACTED_CONTENT_PLACEHOLDER
                         if (is_priv and not include_private)
-                        else row.get("content", "")
+                        else plain_content
                     )
 
                     created_dt = _parse_iso_utc(row.get("created_at"))
@@ -119,6 +140,8 @@ def generate_digest(
                                 "confidence": float(row.get("confidence", 1.0)),
                                 "created_at": row.get("created_at", ""),
                                 "local_only": is_priv,
+                                "trust_tier": row.get("trust_tier", "user"),
+                                "quarantined": is_quarantined,
                             }
                         )
 
@@ -140,13 +163,43 @@ def generate_digest(
                                 "local_only": is_priv,
                             }
                         )
+
+            # Finding S12: Prefer unresolved records in `contradictions` over raw `audit_log`
+            # so resolved or deleted contradictions are not reported as active conflicts.
+            if _has_table(conn, "contradictions"):
+                has_contradictions_table = True
+                c_cur = conn.execute(
+                    """
+                    SELECT id, new_content, existing_content, detected_at
+                    FROM contradictions
+                    WHERE namespace = ? AND COALESCE(resolved, 0) = 0
+                    ORDER BY detected_at DESC
+                    """,
+                    (clean_ns,),
+                )
+                for cr in c_cur.fetchall():
+                    det_dt = _parse_iso_utc(cr["detected_at"])
+                    if det_dt is not None and det_dt >= since_dt:
+                        new_c = decrypt_text_if_encrypted(cr["new_content"])
+                        if not include_private and new_c == REDACTED_CONTENT_PLACEHOLDER:
+                            display_c = REDACTED_CONTENT_PLACEHOLDER
+                        else:
+                            display_c = new_c
+                        contradictions.append(
+                            {
+                                "id": cr["id"],
+                                "content": display_c,
+                                "agent_id": "memory-store",
+                                "timestamp": cr["detected_at"],
+                            }
+                        )
+                c_cur.close()
         except sqlite3.Error as exc:
             read_errors.append(f"memory database: {exc}")
         finally:
             conn.close()
 
     audit_db = _get_audit_db_path(clean_ns)
-    contradictions: list[dict[str, Any]] = []
     recalls = 0
     agents_active: list[str] = []
 
@@ -156,16 +209,15 @@ def generate_digest(
         try:
             if _has_table(conn, "audit_log"):
                 cursor = conn.cursor()
-                # Push coarse ISO date prefix filter into SQL, then verify exact UTC datetime in Python
                 sql_floor = (since_dt - timedelta(days=1)).strftime("%Y-%m-%d")
                 cursor.execute(
                     """
                     SELECT action, content, agent_id, timestamp, had_conflict
                     FROM audit_log
-                    WHERE timestamp >= ?
+                    WHERE namespace = ? AND timestamp >= ?
                     ORDER BY timestamp DESC
                     """,
-                    (sql_floor,),
+                    (clean_ns, sql_floor),
                 )
                 active_set: set[str] = set()
                 for r in cursor.fetchall():
@@ -178,10 +230,14 @@ def generate_digest(
                         active_set.add(str(aid))
                     if act == "recall":
                         recalls += 1
-                    elif act == "learn" and int(r["had_conflict"] or 0) == 1:
+                    elif (
+                        not has_contradictions_table
+                        and act == "learn"
+                        and int(r["had_conflict"] or 0) == 1
+                    ):
                         contradictions.append(
                             {
-                                "content": r["content"],
+                                "content": decrypt_text_if_encrypted(r["content"]),
                                 "agent_id": aid,
                                 "timestamp": r["timestamp"],
                             }
@@ -199,6 +255,7 @@ def generate_digest(
         "since": since_iso,
         "new_memories": new_memories,
         "new_count": len(new_memories),
+        "quarantined_count": quarantined_count,
         "unparseable_count": unparseable_count,
         "contradictions": contradictions,
         "contradiction_count": len(contradictions),
@@ -233,9 +290,6 @@ def print_digest(digest: dict[str, Any]) -> None:
         or digest["stale_count"]
         or digest["total_recalls"]
     ):
-        # Do not claim "All clear" for a namespace that does not exist at all:
-        # a typo in the namespace name would otherwise look like a healthy,
-        # quiet project.
         ui.hint(f"Namespace '{ns}' has no memories yet.", stream=sys.stdout)
         print()
         return
@@ -262,6 +316,14 @@ def print_digest(digest: dict[str, Any]) -> None:
         ui.table(["ID", "Type", "When", "By", "", "Memory"], rows, flex=5)
         if digest["new_count"] > 10:
             ui.hint(f"…and {digest['new_count'] - 10} more. Browse them with `mesh inspect`.", stream=sys.stdout)
+
+    if int(digest.get("quarantined_count") or 0) > 0:
+        q_cnt = int(digest["quarantined_count"])
+        ui.warn(
+            f"{ui.plural(q_cnt, 'quarantined memory', 'quarantined memories')} awaiting review",
+            "Run `mesh inspect --quarantined` and `mesh approve <id>`.",
+            stdout=True,
+        )
 
     unparseable = int(digest.get("unparseable_count") or 0)
     if unparseable > 0:
@@ -335,6 +397,7 @@ def print_digest(digest: dict[str, Any]) -> None:
         and digest["contradiction_count"] == 0
         and digest["stale_count"] == 0
         and int(digest.get("unparseable_count") or 0) == 0
+        and int(digest.get("quarantined_count") or 0) == 0
     ):
         print()
         ui.success("All clear — Mesh is up to date")

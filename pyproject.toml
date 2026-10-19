@@ -34,6 +34,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+secrets = [
+    "keyring>=24.0.0",
+]
+crypto = [
+    "cryptography>=42.0.0",
+    "sqlcipher3-binary>=0.5.0; platform_system != 'Windows'",
+]
 pytorch = [
     "sentence-transformers>=3.0.0",
 ]
@@ -46,10 +53,15 @@ legacy = [
 test = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
+    "pytest-cov>=5.0.0",
+    "hypothesis>=6.100.0",
 ]
 dev = [
-    "black>=24.0.0",
-    "isort>=5.13.0",
+    "ruff>=0.9.0",
+    "mypy>=1.10.0",
+    "bandit>=1.7.8",
+    "pip-audit>=2.7.0",
+    "pre-commit>=3.7.0",
     "build>=1.0.0",
     "twine>=5.0.0",
 ]
@@ -72,6 +84,9 @@ mesh-ask = "mesh.cli:ask_cmd"
 mesh-inspect = "mesh.cli:inspect_cmd"
 mesh-update = "mesh.cli:update_cmd"
 mesh-forget = "mesh.cli:forget_cmd"
+mesh-approve = "mesh.cli:approve_cmd"
+mesh-run = "mesh.cli:run_cmd"
+mesh-encrypt-db = "mesh.cli:encrypt_db_cmd"
 mesh-why = "mesh.cli:why_cmd"
 mesh-status = "mesh.cli:status_cmd"
 mesh-conflicts = "mesh.cli:conflicts_cmd"
@@ -98,22 +113,86 @@ include = [
 ]
 
 [tool.hatch.build.targets.sdist]
-# Ship only what is needed to build and test the Python package. The landing
-# site and the ad/SFX projects (source, audio, and rendered video) are separate
-# artifacts; listing the include set explicitly keeps them out of the sdist.
 include = [
     "/mesh",
     "/tests",
-    "/examples",
     "/README.md",
     "/LICENSE",
     "/CHANGELOG.md",
     "/ARCHITECTURE.md",
     "/DEVELOPER_GUIDE.md",
+    "/SECURITY.md",
+    "/THREAT_MODEL.md",
     "/pyproject.toml",
-    "/MANIFEST.in",
 ]
 exclude = [
     "/landing",
+    "/marketing",
+    "/docs",
+    "/benchmarks",
+    "/assets",
     "/.github",
+    "*.mp4",
+    "*.mp3",
+    "*.wav",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+exclude = [
+    "marketing",
+    "landing",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
+ignore = [
+    "E501", # Line length handled by formatter
+    "E402", # Module level import not at top of file
+    "E741", # Ambiguous variable name
+    "E731", # Lambda assignment
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E501", "F401", "F841"]
+"benchmarks/*" = ["E501", "F401"]
+"examples/*" = ["E501"]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+warn_unused_configs = true
+exclude = [
+    "^marketing/",
+    "^landing/",
+    "^tests/",
+    "^benchmarks/",
+]
+
+[tool.bandit]
+targets = ["mesh"]
+skips = ["B101", "B608", "B310"]
+exclude_dirs = ["tests", "benchmarks", "marketing", "landing", ".venv"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "strict"
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+
+[tool.coverage.run]
+source = ["mesh"]
+omit = [
+    "mesh/skills/**",
+]
+
+[tool.coverage.report]
+fail_under = 60
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
 ]
