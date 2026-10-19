@@ -35,7 +35,7 @@ export default function MemoryCard({
   resolved = false,
   entranceFrame = 0,
   slideFrom = "bottom",
-  width = 420,
+  width = 580,
   style,
 }: MemoryCardProps) {
   const frame = useCurrentFrame();
@@ -76,7 +76,7 @@ export default function MemoryCard({
         border: `1px solid ${borderColor}`,
         borderRadius: radius.sm,
         boxShadow: `4px 4px 0px #000`,
-        padding: "18px 20px",
+        padding: "22px 26px",
         fontFamily: fonts.mono,
         ...style,
       }}
@@ -84,21 +84,21 @@ export default function MemoryCard({
       {/* Type label */}
       <div
         style={{
-          fontSize: 10,
-          fontWeight: 500,
+          fontSize: 15,
+          fontWeight: 600,
           textTransform: "uppercase",
-          letterSpacing: "0.13em",
+          letterSpacing: "0.12em",
           color: colors.muted,
-          marginBottom: 10,
+          marginBottom: 12,
           display: "flex",
           alignItems: "center",
-          gap: 8,
+          gap: 10,
         }}
       >
         <span
           style={{
-            width: 6,
-            height: 6,
+            width: 9,
+            height: 9,
             borderRadius: "50%",
             background: conflict ? colors.warn : resolved ? colors.accent : colors.muted,
             display: "inline-block",
@@ -120,21 +120,21 @@ export default function MemoryCard({
           </>
         )}
         {conflict && (
-          <span style={{ color: colors.warn, marginLeft: "auto" }}>⚠ conflict</span>
+          <span style={{ color: colors.warn, marginLeft: "auto", fontWeight: 700 }}>⚠ conflict</span>
         )}
         {resolved && (
-          <span style={{ color: colors.accent, marginLeft: "auto" }}>✓ resolved</span>
+          <span style={{ color: colors.accent, marginLeft: "auto", fontWeight: 700 }}>✓ resolved</span>
         )}
       </div>
 
       {/* Content */}
       <div
         style={{
-          fontSize: 14,
+          fontSize: 22,
           color: colors.ink,
           lineHeight: 1.55,
           fontFamily: fonts.mono,
-          marginBottom: tags.length ? 14 : 0,
+          marginBottom: tags.length ? 16 : 0,
         }}
       >
         {content}
@@ -142,17 +142,17 @@ export default function MemoryCard({
 
       {/* Tags */}
       {tags.length > 0 && (
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
           {tags.map((tag, i) => (
             <span
               key={i}
               style={{
                 fontFamily: fonts.mono,
-                fontSize: 10,
-                fontWeight: 500,
+                fontSize: 14,
+                fontWeight: 600,
                 textTransform: "uppercase",
-                letterSpacing: "0.1em",
-                padding: "2px 8px",
+                letterSpacing: "0.08em",
+                padding: "4px 10px",
                 border: `1px solid ${tag.variant === "accent" ? colors.accent : colors.line}`,
                 borderRadius: radius.sm,
                 color: tag.variant === "accent" ? colors.accent : colors.muted,

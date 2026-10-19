@@ -132,8 +132,8 @@ export default function S04_Recall() {
           alignItems: "center",
           justifyContent: "center",
           gap: 50,
-          padding: "0 80px",
-          paddingTop: 60,
+          padding: "0 60px",
+          paddingTop: 40,
         }}
       >
         {/* Left: existing memory card */}
@@ -167,7 +167,7 @@ export default function S04_Recall() {
             ]}
             entranceFrame={0}
             slideFrom="none"
-            width={400}
+            width={620}
           />
         </div>
 
@@ -183,7 +183,7 @@ export default function S04_Recall() {
             title="frontend-agent / checkout-service"
             lines={recallLines}
             startFrame={50}
-            width={540}
+            width={840}
             speed={0.75}
           />
         </div>
@@ -193,7 +193,7 @@ export default function S04_Recall() {
       <div
         style={{
           position: "absolute",
-          bottom: 100,
+          bottom: 70,
           left: 0,
           right: 0,
           textAlign: "center",
@@ -203,8 +203,8 @@ export default function S04_Recall() {
         <span
           style={{
             fontFamily: fonts.display,
-            fontWeight: 600,
-            fontSize: 32,
+            fontWeight: 700,
+            fontSize: 38,
             letterSpacing: "-0.035em",
             color: colors.ink,
           }}

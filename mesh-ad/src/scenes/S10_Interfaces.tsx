@@ -73,16 +73,17 @@ export default function S10_Interfaces() {
           display: "flex",
           alignItems: "stretch",
           gap: 24,
-          padding: "120px 80px 120px",
+          padding: "100px 60px 100px",
         }}
       >
         {/* Panel 1: CLI */}
         <div style={panelStyle(0)}>
           <div
             style={{
-              padding: "10px 14px",
+              padding: "12px 18px",
               borderBottom: `1px solid ${colors.terminalLine}`,
-              fontSize: 10,
+              fontSize: 16,
+              fontWeight: 600,
               color: colors.muted,
               letterSpacing: "0.08em",
               background: colors.terminalBg,
@@ -92,26 +93,27 @@ export default function S10_Interfaces() {
           </div>
           <div
             style={{
-              padding: "16px 18px",
+              padding: "18px 20px",
               background: colors.terminalBg,
               color: colors.terminalDim,
-              lineHeight: 1.8,
+              fontSize: 17,
+              lineHeight: 1.85,
             }}
           >
             <div>
-              <span style={{ color: colors.accent }}>$ </span>
+              <span style={{ color: colors.accent, fontWeight: 600 }}>$ </span>
               mesh add "postgres port 5432" --tags db,prod
             </div>
             <div style={{ color: colors.muted }}>ok  indexed / 0.08 ms</div>
             <div>
-              <span style={{ color: colors.accent }}>$ </span>
+              <span style={{ color: colors.accent, fontWeight: 600 }}>$ </span>
               mesh ask "postgres port" --n 3
             </div>
-            <div style={{ color: colors.accent }}>
+            <div style={{ color: colors.accent, fontWeight: 600 }}>
               [0.93] postgres port 5432
             </div>
             <div>
-              <span style={{ color: colors.accent }}>$ </span>
+              <span style={{ color: colors.accent, fontWeight: 600 }}>$ </span>
               mesh inspect --limit 10
             </div>
             <div style={{ color: colors.muted }}>10 memories · checkout-service▌</div>
@@ -122,16 +124,17 @@ export default function S10_Interfaces() {
         <div style={panelStyle(1)}>
           <div
             style={{
-              padding: "10px 14px",
+              padding: "12px 18px",
               borderBottom: `1px solid ${colors.line}`,
-              fontSize: 10,
+              fontSize: 16,
+              fontWeight: 600,
               color: colors.muted,
               letterSpacing: "0.08em",
             }}
           >
             10 MCP Tools
           </div>
-          <div style={{ padding: "12px 16px", display: "flex", flexDirection: "column", gap: 8 }}>
+          <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 10 }}>
             {mcpTools.slice(0, toolIndex).map((tool, i) => (
               <div
                 key={tool}
@@ -139,15 +142,16 @@ export default function S10_Interfaces() {
                   display: "flex",
                   alignItems: "center",
                   gap: 10,
-                  fontSize: 12,
+                  fontSize: 16,
+                  fontWeight: i === toolIndex - 1 ? 600 : 500,
                   color: i === toolIndex - 1 ? colors.accent : colors.ink,
-                  opacity: i === toolIndex - 1 ? 1 : 0.7,
+                  opacity: i === toolIndex - 1 ? 1 : 0.8,
                 }}
               >
                 <span
                   style={{
-                    width: 5,
-                    height: 5,
+                    width: 7,
+                    height: 7,
                     borderRadius: "50%",
                     background: i === toolIndex - 1 ? colors.accent : colors.muted,
                     display: "inline-block",
@@ -164,17 +168,18 @@ export default function S10_Interfaces() {
         <div style={panelStyle(2)}>
           <div
             style={{
-              padding: "10px 14px",
+              padding: "12px 18px",
               borderBottom: `1px solid ${colors.line}`,
-              fontSize: 10,
+              fontSize: 16,
+              fontWeight: 600,
               color: colors.muted,
               letterSpacing: "0.08em",
               display: "flex",
               alignItems: "center",
-              gap: 8,
+              gap: 10,
             }}
           >
-            <svg width="12" height="12" viewBox="0 0 64 64" fill="none"
+            <svg width="16" height="16" viewBox="0 0 64 64" fill="none"
               stroke={colors.accent} strokeWidth="4.5" strokeLinecap="round">
               <path d="M27.6 21.1 L16.4 41.9" /><path d="M36.4 21.1 L47.6 41.9" />
               <path d="M19.0 50.0 L45.0 50.0" />
@@ -182,16 +187,16 @@ export default function S10_Interfaces() {
             </svg>
             mesh-dashboard · checkout-service
           </div>
-          <div style={{ padding: "12px 16px", display: "flex", flexDirection: "column", gap: 6 }}>
+          <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 8 }}>
             {/* Fake search bar */}
             <div
               style={{
                 border: `1px solid ${colors.line}`,
                 borderRadius: radius.sm,
-                padding: "8px 12px",
-                fontSize: 12,
+                padding: "10px 14px",
+                fontSize: 16,
                 color: colors.muted,
-                marginBottom: 8,
+                marginBottom: 10,
               }}
             >
               / search memories…
@@ -201,11 +206,12 @@ export default function S10_Interfaces() {
               <div
                 key={i}
                 style={{
-                  fontSize: 11,
+                  fontSize: 16,
                   color: i === 0 ? colors.accent : colors.muted,
+                  fontWeight: i === 0 ? 600 : 400,
                   display: "flex",
                   alignItems: "center",
-                  gap: 8,
+                  gap: 10,
                   opacity: interpolate(frame, [80 + i * 20, 100 + i * 20], [0, 1], {
                     extrapolateLeft: "clamp",
                     extrapolateRight: "clamp",
@@ -214,8 +220,8 @@ export default function S10_Interfaces() {
               >
                 <span
                   style={{
-                    width: 4,
-                    height: 4,
+                    width: 6,
+                    height: 6,
                     borderRadius: "50%",
                     background: i === 0 ? colors.accent : colors.line,
                     display: "inline-block",
@@ -232,7 +238,7 @@ export default function S10_Interfaces() {
       <div
         style={{
           position: "absolute",
-          bottom: 60,
+          bottom: 40,
           left: 0,
           right: 0,
           textAlign: "center",
@@ -242,8 +248,8 @@ export default function S10_Interfaces() {
         <span
           style={{
             fontFamily: fonts.display,
-            fontWeight: 600,
-            fontSize: 28,
+            fontWeight: 700,
+            fontSize: 40,
             letterSpacing: "-0.03em",
             color: colors.ink,
           }}

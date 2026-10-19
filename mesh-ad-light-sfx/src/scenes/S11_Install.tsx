@@ -69,37 +69,37 @@ export default function S11_Install() {
           style={{
             opacity: termOpacity,
             transform: `scale(${termScale})`,
-            width: 600,
+            width: 860,
             background: colors.surface,
             border: `1px solid ${colors.line}`,
             borderRadius: radius.sm,
-            boxShadow: `4px 4px 0px ${colors.ink}`,
+            boxShadow: `6px 6px 0px rgba(0,0,0,0.08)`,
             fontFamily: fonts.mono,
-            fontSize: 14,
+            fontSize: 22,
             overflow: "hidden",
           }}
         >
           {/* Title bar */}
           <div
             style={{
-              padding: "10px 16px",
+              padding: "14px 22px",
               background: colors.surface2,
               borderBottom: `1px solid ${colors.line}`,
               display: "flex",
               alignItems: "center",
-              gap: 8,
+              gap: 10,
             }}
           >
-            {["#C5CBB9", "#C5CBB9", "#C5CBB9"].map((c, i) => (
-              <span key={i} style={{ width: 8, height: 8, borderRadius: "50%", background: c, display: "inline-block" }} />
+            {["#B0B8A2", "#B0B8A2", "#B0B8A2"].map((c, i) => (
+              <span key={i} style={{ width: 11, height: 11, borderRadius: "50%", background: c, display: "inline-block" }} />
             ))}
-            <span style={{ marginLeft: 8, color: colors.muted, fontSize: 11, letterSpacing: "0.08em" }}>
+            <span style={{ marginLeft: 10, color: colors.muted, fontSize: 16, letterSpacing: "0.08em" }}>
               shell
             </span>
           </div>
 
           {/* Lines */}
-          <div style={{ padding: "16px 20px", background: colors.surface, minHeight: 180, lineHeight: 1.7 }}>
+          <div style={{ padding: "26px 30px", background: colors.surface, minHeight: 280, lineHeight: 1.8 }}>
             {typedLines.map((line, i) => {
               const isPrompt = line.startsWith("$");
               const isOk = line.startsWith("ok ");
@@ -111,7 +111,7 @@ export default function S11_Install() {
               if (isSuccess) color = colors.muted;
 
               return (
-                <div key={i} style={{ color, whiteSpace: "pre" }}>
+                <div key={i} style={{ color, whiteSpace: "pre", fontWeight: isPrompt ? 600 : 400 }}>
                   {line}
                   {i === typedLines.length - 1 && cursorVisible && (
                     <span style={{ color: colors.accentText }}>▌</span>
@@ -123,12 +123,12 @@ export default function S11_Install() {
         </div>
 
         {/* Caption */}
-        <div style={{ opacity: captionOpacity, textAlign: "center" }}>
+        <div style={{ opacity: captionOpacity, textAlign: "center", marginTop: 10 }}>
           <span
             style={{
               fontFamily: fonts.display,
-              fontWeight: 600,
-              fontSize: 30,
+              fontWeight: 700,
+              fontSize: 42,
               letterSpacing: "-0.035em",
               color: colors.ink,
             }}

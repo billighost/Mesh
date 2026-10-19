@@ -82,16 +82,16 @@ export default function S08_TTLDecay() {
           style={{
             opacity: cardOpacity,
             fontFamily: fonts.mono,
-            fontSize: 12,
+            fontSize: 18,
             color: colors.muted,
             letterSpacing: "0.06em",
-            marginBottom: 16,
+            marginBottom: 20,
             display: "flex",
             alignItems: "center",
-            gap: 8,
+            gap: 12,
           }}
         >
-          <span>ttl_days: 30</span>
+          <span style={{ fontWeight: 600 }}>ttl_days: 30</span>
           <span style={{ color: colors.line }}>·</span>
           <span>confidence decays toward staleness</span>
         </div>
@@ -110,15 +110,15 @@ export default function S08_TTLDecay() {
             tags={[{ label: "staging" }, { label: "ip" }, { label: "temp" }]}
             entranceFrame={20}
             slideFrom="none"
-            width={480}
+            width={680}
           />
         </div>
 
         {/* Decay bar */}
         <div
           style={{
-            marginTop: 16,
-            width: 480,
+            marginTop: 20,
+            width: 680,
             opacity: cardOpacity,
           }}
         >
@@ -127,11 +127,12 @@ export default function S08_TTLDecay() {
               display: "flex",
               justifyContent: "space-between",
               fontFamily: fonts.mono,
-              fontSize: 10,
+              fontSize: 16,
+              fontWeight: 600,
               color: colors.muted,
               letterSpacing: "0.1em",
               textTransform: "uppercase",
-              marginBottom: 6,
+              marginBottom: 8,
             }}
           >
             <span>confidence</span>
@@ -141,7 +142,7 @@ export default function S08_TTLDecay() {
           </div>
           <div
             style={{
-              height: 4,
+              height: 10,
               width: "100%",
               background: colors.surface2,
               borderRadius: radius.sm,
@@ -163,12 +164,13 @@ export default function S08_TTLDecay() {
           {/* Stale label */}
           <div
             style={{
-              marginTop: 8,
+              marginTop: 12,
               opacity: staleOpacity,
               fontFamily: fonts.mono,
-              fontSize: 11,
+              fontSize: 18,
+              fontWeight: 600,
               color: colors.warn,
-              letterSpacing: "0.1em",
+              letterSpacing: "0.08em",
               textTransform: "uppercase",
             }}
           >
@@ -181,7 +183,7 @@ export default function S08_TTLDecay() {
       <div
         style={{
           position: "absolute",
-          bottom: 100,
+          bottom: 90,
           left: 0,
           right: 0,
           textAlign: "center",
@@ -191,8 +193,8 @@ export default function S08_TTLDecay() {
         <span
           style={{
             fontFamily: fonts.display,
-            fontWeight: 600,
-            fontSize: 28,
+            fontWeight: 700,
+            fontSize: 40,
             letterSpacing: "-0.03em",
             color: colors.ink,
           }}

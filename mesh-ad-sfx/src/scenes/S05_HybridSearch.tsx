@@ -81,7 +81,8 @@ export default function S05_HybridSearch() {
           opacity: counterOpacity,
           transform: `scale(${counterPulse})`,
           fontFamily: fonts.mono,
-          fontSize: 13,
+          fontSize: 22,
+          fontWeight: 600,
           color: colors.accent,
           letterSpacing: "0.06em",
         }}
@@ -95,8 +96,8 @@ export default function S05_HybridSearch() {
           display: "flex",
           flexDirection: "column",
           justifyContent: "center",
-          padding: "100px 160px 80px",
-          gap: 20,
+          padding: "90px 100px 60px",
+          gap: 22,
         }}
       >
         {stages.map((stage, i) => {
@@ -139,13 +140,13 @@ export default function S05_HybridSearch() {
               <span
                 style={{
                   fontFamily: fonts.mono,
-                  fontSize: 11,
-                  fontWeight: 500,
+                  fontSize: 18,
+                  fontWeight: 600,
                   color: colors.muted,
                   letterSpacing: "0.1em",
-                  marginTop: 3,
+                  marginTop: 4,
                   flexShrink: 0,
-                  width: 26,
+                  width: 32,
                 }}
               >
                 {stage.num}
@@ -156,8 +157,8 @@ export default function S05_HybridSearch() {
                 <div
                   style={{
                     fontFamily: fonts.display,
-                    fontWeight: 600,
-                    fontSize: 22,
+                    fontWeight: 700,
+                    fontSize: 32,
                     color: colors.ink,
                     letterSpacing: "-0.03em",
                     marginBottom: 4,
@@ -167,13 +168,13 @@ export default function S05_HybridSearch() {
                   {stage.badge && (
                     <span
                       style={{
-                        marginLeft: 14,
+                        marginLeft: 16,
                         fontFamily: fonts.mono,
-                        fontSize: 12,
-                        fontWeight: 500,
+                        fontSize: 16,
+                        fontWeight: 600,
                         color: colors.accentInk,
                         background: colors.accent,
-                        padding: "2px 9px",
+                        padding: "3px 12px",
                         borderRadius: radius.sm,
                         letterSpacing: "0.04em",
                         verticalAlign: "middle",
@@ -186,9 +187,10 @@ export default function S05_HybridSearch() {
                 <div
                   style={{
                     fontFamily: fonts.mono,
-                    fontSize: 13,
+                    fontSize: 20,
                     color: colors.muted,
-                    letterSpacing: "0.02em",
+                    letterSpacing: "0.01em",
+                    marginTop: 4,
                   }}
                 >
                   {stage.detail}
@@ -199,10 +201,10 @@ export default function S05_HybridSearch() {
                   <div
                     style={{
                       marginTop: 10,
-                      height: 3,
-                      width: 280,
+                      height: 6,
+                      width: 340,
                       background: colors.surface2,
-                      borderRadius: 2,
+                      borderRadius: 3,
                       overflow: "hidden",
                     }}
                   >
@@ -211,7 +213,7 @@ export default function S05_HybridSearch() {
                         height: "100%",
                         width: `${barProgress * 100}%`,
                         background: colors.accent,
-                        borderRadius: 2,
+                        borderRadius: 3,
                       }}
                     />
                   </div>
@@ -223,10 +225,11 @@ export default function S05_HybridSearch() {
                     <span
                       style={{
                         fontFamily: fonts.mono,
-                        fontSize: 11,
+                        fontSize: 15,
+                        fontWeight: 600,
                         color: colors.accent,
                         border: `1px solid ${colors.accent}`,
-                        padding: "2px 8px",
+                        padding: "3px 12px",
                         borderRadius: radius.sm,
                         letterSpacing: "0.06em",
                         opacity: checkOpacity,
@@ -243,10 +246,11 @@ export default function S05_HybridSearch() {
                 style={{
                   opacity: checkOpacity,
                   fontFamily: fonts.mono,
-                  fontSize: 18,
+                  fontSize: 24,
+                  fontWeight: 700,
                   color: colors.accent,
                   flexShrink: 0,
-                  marginTop: 2,
+                  marginTop: 4,
                 }}
               >
                 ✓

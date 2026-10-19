@@ -22,7 +22,7 @@ export default function NetworkLine({
   startFrame = 0,
   duration = 20,
   color = colors.accentText,
-  strokeWidth = 2,
+  strokeWidth = 2.5,
   showPacket = false,
   packetDelay = 0,
 }: NetworkLineProps) {
@@ -72,7 +72,7 @@ export default function NetworkLine({
         <circle
           cx={px}
           cy={py}
-          r={4}
+          r={7}
           fill={color}
           opacity={packetOpacity}
         />

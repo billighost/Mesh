@@ -54,7 +54,7 @@ export default function TerminalPanel({
         boxShadow: `4px 4px 0px #000`,
         overflow: "hidden",
         fontFamily: fonts.mono,
-        fontSize: 14,
+        fontSize: 21,
         lineHeight: 1.6,
         ...style,
       }}
@@ -62,11 +62,11 @@ export default function TerminalPanel({
       {/* Title bar */}
       <div
         style={{
-          padding: "10px 16px",
+          padding: "12px 20px",
           borderBottom: `1px solid ${colors.terminalLine}`,
           display: "flex",
           alignItems: "center",
-          gap: 8,
+          gap: 10,
         }}
       >
         {/* Traffic-light dots */}
@@ -74,8 +74,8 @@ export default function TerminalPanel({
           <span
             key={i}
             style={{
-              width: 8,
-              height: 8,
+              width: 11,
+              height: 11,
               borderRadius: "50%",
               background: c,
               display: "inline-block",
@@ -86,7 +86,7 @@ export default function TerminalPanel({
           style={{
             marginLeft: 8,
             color: colors.terminalDim,
-            fontSize: 11,
+            fontSize: 16,
             letterSpacing: "0.08em",
             fontFamily: fonts.mono,
           }}
@@ -96,7 +96,7 @@ export default function TerminalPanel({
       </div>
 
       {/* Content */}
-      <div style={{ padding: "16px 20px", minHeight: 140 }}>
+      <div style={{ padding: "22px 26px", minHeight: 160 }}>
         {typedLines.map((line, i) => {
           const isPrompt = line.startsWith("$") || line.startsWith(">>>");
           const isOk = line.startsWith("ok ");

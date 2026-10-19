@@ -58,16 +58,17 @@ export default function S07_Contradictions() {
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          gap: 48,
-          paddingTop: 60,
+          gap: 40,
+          paddingTop: 40,
         }}
       >
         {/* Card A — conflict */}
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12 }}>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 14 }}>
           <span
             style={{
               fontFamily: fonts.mono,
-              fontSize: 11,
+              fontSize: 18,
+              fontWeight: 600,
               color: colors.muted,
               letterSpacing: "0.1em",
               textTransform: "uppercase",
@@ -84,7 +85,7 @@ export default function S07_Contradictions() {
             resolved={false}
             entranceFrame={20}
             slideFrom="left"
-            width={400}
+            width={620}
           />
         </div>
 
@@ -92,7 +93,7 @@ export default function S07_Contradictions() {
         <div
           style={{
             fontFamily: fonts.mono,
-            fontSize: 20,
+            fontSize: 36,
             color: frame > 100 ? colors.warn : colors.line,
             letterSpacing: "0.1em",
             opacity: interpolate(frame, [80, 100], [0, 1], {
@@ -105,11 +106,12 @@ export default function S07_Contradictions() {
         </div>
 
         {/* Card B — resolved */}
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12 }}>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 14 }}>
           <span
             style={{
               fontFamily: fonts.mono,
-              fontSize: 11,
+              fontSize: 18,
+              fontWeight: 600,
               color: colors.muted,
               letterSpacing: "0.1em",
               textTransform: "uppercase",
@@ -126,7 +128,7 @@ export default function S07_Contradictions() {
             resolved={isResolved}
             entranceFrame={35}
             slideFrom="right"
-            width={400}
+            width={620}
           />
         </div>
       </AbsoluteFill>
@@ -135,7 +137,7 @@ export default function S07_Contradictions() {
       <div
         style={{
           position: "absolute",
-          bottom: 100,
+          bottom: 90,
           left: 0,
           right: 0,
           textAlign: "center",
@@ -145,8 +147,8 @@ export default function S07_Contradictions() {
         <span
           style={{
             fontFamily: fonts.display,
-            fontWeight: 600,
-            fontSize: 28,
+            fontWeight: 700,
+            fontSize: 40,
             letterSpacing: "-0.03em",
             color: colors.ink,
           }}
