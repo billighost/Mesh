@@ -9,7 +9,7 @@ description: >-
   manage persistent agent memory across sessions.
 ---
 
-# Mesh Context Layer — Full Agent Skill (v0.7.1)
+# Mesh Context Layer — Full Agent Skill (v0.7.2)
 
 > **Mesh** gives every AI agent persistent, shared memory. When one agent learns
 > something, every other agent can recall it — by meaning, keyword, or exact
@@ -280,10 +280,12 @@ and edits, and `mesh import`. Each guarded path:
 - **Redacts** credential/secret patterns and forces the memory to
   `local_only=true`.
 
-Passive log capture (`mesh_sync`'s log scanning, `mesh capture`) applies its
-own sanitisation and cloud-redaction rules before extracting facts; it never
-bypasses the credential and poison checks, but it is a separate pipeline from
-`guard_ingest()`.
+Passive log capture (`mesh_sync`'s log scanning, `mesh capture`) is a separate
+extraction pipeline: it applies its own sanitisation and cloud-redaction rules
+before extracting facts. Every extracted fact is then stored through
+`Mesh.learn()`, so it still passes the same credential and poison checks as any
+other write. The guard is enforced inside `Mesh.learn()` / `Mesh.update()`, not
+only at the MCP/HTTP boundary, so SDK and in-process callers cannot bypass it.
 
 ---
 
@@ -591,7 +593,7 @@ concrete facts from recent agent session logs.
    grounding floor; synonym-only matches get a reduced weight and are not
    eligible for the floor.
 5. **Match-reason tagging.** Each result is tagged `exact+hybrid`,
-   `lexical+semantic`, `synonym+semantic`, or `semantic`.
+   `lexical+semantic`, `synonym+semantic`, `tag+semantic`, or `semantic`.
 
 ---
 

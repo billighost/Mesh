@@ -11,13 +11,13 @@ import threading
 import urllib.request
 from typing import Optional
 
-VERSION = "0.7.1"
+VERSION = "0.7.2"
 
 _PEP440_RE = re.compile(
     r"^\s*v?(?P<release>\d+(?:\.\d+)*)"
     r"(?:[-._]?(?P<pre_type>a|alpha|b|beta|c|rc|pre|preview)[-._]?(?P<pre_num>\d+)?)?"
-    r"(?:[-._]?(?:post|rev|r)[-._]?(?P<post_num>\d+)?)?"
-    r"(?:[-._]?dev[-._]?(?P<dev_num>\d+)?)?"
+    r"(?:[-._]?(?P<post_type>post|rev|r)[-._]?(?P<post_num>\d+)?)?"
+    r"(?:[-._]?(?P<dev_type>dev)[-._]?(?P<dev_num>\d+)?)?"
     r"(?:\+[A-Za-z0-9._-]+)?\s*$",
     re.IGNORECASE,
 )
@@ -63,9 +63,12 @@ def parse_version_tuple(version_str: Optional[str]) -> tuple[int, ...]:
 
     pre_type = (m.group("pre_type") or "").lower()
     pre_num_raw = m.group("pre_num")
-    post_Spec = m.group("post_num")
-    has_post = bool(re.search(r"(?:post|rev|r)", version_str, re.IGNORECASE)) and not pre_type.startswith("pr")
-    has_dev = bool(re.search(r"dev", version_str, re.IGNORECASE))
+    post_num_raw = m.group("post_num")
+    # Detect the *matched optional group*, not the presence of letters anywhere
+    # in the string. `re.search("r", ...)` also matched "rc", "pre", "+arch"
+    # and local-version labels, silently turning releases into post-releases.
+    has_post = m.group("post_type") is not None
+    has_dev = m.group("dev_type") is not None
     dev_num_raw = m.group("dev_num")
 
     if pre_type:
@@ -81,7 +84,7 @@ def parse_version_tuple(version_str: Optional[str]) -> tuple[int, ...]:
 
     if has_post:
         post_rank = 1
-        post_num = int(post_Spec) if post_Spec is not None else 0
+        post_num = int(post_num_raw) if post_num_raw is not None else 0
     else:
         post_rank = 0
         post_num = 0

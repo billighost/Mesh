@@ -10,7 +10,7 @@ Security hardening:
     non-loopback binds require `MESH_ALLOWED_HOSTS` to be explicitly configured)
   - Per-user 256-bit Bearer / X-Mesh-Token authentication (`~/.mesh/auth_token`) compared via `hmac.compare_digest`
   - Unauthenticated `/identity` HMAC-SHA256 challenge-response endpoint so clients verify daemon
-    identity before ever sending their bearer token
+    identity before ever sending their bearer token (with bounded nonce length and charset)
   - Read-only routes open namespaces with `create=False` so typo'd namespaces never create `.db` files
   - Interactive `y/n` user permission prompts before starting background downloads or warmup workers
 """
@@ -19,10 +19,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import hmac
+import json
+import logging
 import os
 import re
+import sqlite3
 import sys
 import threading
+from collections import OrderedDict
 from typing import Any, Optional
 from urllib.parse import urlparse
 
@@ -30,7 +34,7 @@ import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .audit import _get_audit_db_path, ensure_secure_mesh_dir, get_audit_log, validate_namespace
 from .context_builder import build_context_bundle
@@ -45,12 +49,23 @@ from .memory import (
     unload_model,
     warmup_model,
 )
-from .store import NamespaceNotFoundError
+from .namespaces import _evict_namespace_caches
+from .store import NamespaceLimitExceededError, NamespaceNotFoundError
 from .version import VERSION
 
-_LOCAL_ORIGIN_REGEX = r"^https?://(127\.0\.0\.1|localhost|[::1])(:\d+)?$"
+logger = logging.getLogger(__name__)
+
+_LOCAL_ORIGIN_REGEX = r"^https?://(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$"
 _ALLOWED_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]"}
 _ACTIVE_BIND_HOST = "127.0.0.1"
+
+_VALID_NONCE_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+_MAX_IDENTITY_BODY_BYTES = 1024
+
+# Whitelisted context keys accepted by `/mcp` (Issue H4).
+# Security-sensitive keys (`enforce_agent_ownership`, auth/token/permission/privacy/sync flags)
+# are never trusted from the request body and are derived strictly from server configuration.
+_ALLOWED_MCP_CONTEXT_KEYS = {"workspace_root"}
 
 
 def _tokens_match(provided: str, expected: str) -> bool:
@@ -93,6 +108,49 @@ def verify_request_auth(request: Request) -> None:
             status_code=401,
             detail="Unauthorized: missing or invalid Mesh authentication token.",
         )
+
+
+def _raise_http_error(exc: BaseException, endpoint: str) -> None:
+    """
+    Centralized exception-to-HTTPException mapper for HTTP routes (Issue H5):
+      - HTTPException -> re-raised unchanged
+      - NamespaceLimitExceededError -> 429
+      - NamespaceNotFoundError / FileNotFoundError / missing object ValueError -> 404
+      - Conflict / lock timeout / busy database / already exists -> 409
+      - Other ValueError (validation / malformed input) -> 400
+      - Unexpected Exception -> logged server-side and returned as generic 500
+    """
+    if isinstance(exc, HTTPException):
+        raise exc
+    if isinstance(exc, NamespaceLimitExceededError):
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
+    if isinstance(exc, (NamespaceNotFoundError, FileNotFoundError)):
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if isinstance(exc, TimeoutError):
+        raise HTTPException(
+            status_code=409,
+            detail="Conflict: namespace is currently locked by another operation.",
+        ) from exc
+    if isinstance(exc, ValueError):
+        msg = str(exc)
+        msg_low = msg.lower()
+        if "not found" in msg_low or "does not exist" in msg_low:
+            raise HTTPException(status_code=404, detail=msg) from exc
+        if "already exists" in msg_low:
+            raise HTTPException(status_code=409, detail=msg) from exc
+        raise HTTPException(status_code=400, detail=msg) from exc
+    if isinstance(exc, (RuntimeError, sqlite3.OperationalError, OSError)):
+        msg_low = str(exc).lower()
+        if any(
+            marker in msg_low
+            for marker in ("locked", "busy", "checkpoint", "another process", "hold", "open")
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Conflict: another process holds the namespace database open.",
+            ) from exc
+    logger.exception("Unhandled error in HTTP endpoint '%s': %s", endpoint, exc)
+    raise HTTPException(status_code=500, detail="Internal server error.") from exc
 
 
 app = FastAPI(
@@ -174,7 +232,16 @@ async def _security_middleware(request: Request, call_next: Any) -> Any:
 
 
 _MESH_LOCK = threading.RLock()
-_MESH_REGISTRY: dict[tuple[str, str], Mesh] = {}
+_MESH_REGISTRY: OrderedDict[tuple[str, str], Mesh] = OrderedDict()
+# `agent_id` and `namespace` are caller-supplied; bound the registry with LRU eviction
+# and evict underlying store connections/vector caches for evicted namespaces (Issue H3).
+_MESH_REGISTRY_MAX = 64
+
+
+def _get_registry_max() -> int:
+    if os.environ.get("MESH_MAX_OPEN_NAMESPACES"):
+        return env_int("MESH_MAX_OPEN_NAMESPACES", _MESH_REGISTRY_MAX, minimum=2)
+    return max(2, int(_MESH_REGISTRY_MAX))
 
 
 def evict_http_mesh_cache(namespace: Optional[str] = None) -> None:
@@ -188,6 +255,18 @@ def evict_http_mesh_cache(namespace: Optional[str] = None) -> None:
             _MESH_REGISTRY.pop(k, None)
 
 
+def _is_cached_mesh_valid(mesh: Mesh, expected_ns: str) -> bool:
+    try:
+        return (
+            mesh.namespace == expected_ns
+            and mesh.store.namespace == expected_ns
+            and mesh.store.db_path.exists()
+            and mesh.store.db_path.stat().st_size > 0
+        )
+    except OSError:
+        return False
+
+
 def get_mesh(
     namespace: Optional[str] = None,
     agent_id: Optional[str] = None,
@@ -195,108 +274,204 @@ def get_mesh(
 ) -> Mesh:
     """
     Return a cached `Mesh` instance for the given namespace and agent_id.
-    When `create=False` and the namespace database does not exist, raises `NamespaceNotFoundError`
-    without creating any `.db` file on disk (Phase 3.4).
+    - When `create=False` and the namespace database does not exist, raises `NamespaceNotFoundError`
+      without creating any `.db` file on disk.
+    - Revalidates `db_path.exists()` and namespace metadata on lookup so out-of-band deletions
+      are evicted and recreated according to `create` (Issue H7).
+    - Evicts the least-recently-used namespace *other than the one serving the request* across
+      store/vector/audit/context/HTTP caches when inserting beyond `_MESH_REGISTRY_MAX` (Issue H3).
     """
     raw_ns = (namespace or os.environ.get("MESH_NAMESPACE", "shared")).strip() or "shared"
     ns = validate_namespace(raw_ns)
     aid = (agent_id or os.environ.get("MESH_AGENT_ID", "http-client")).strip() or "http-client"
     key = (ns, aid)
+
+    stale_to_clean: list[tuple[str, Any]] = []
     with _MESH_LOCK:
         mesh = _MESH_REGISTRY.get(key)
         if mesh is not None:
-            if not create and not mesh.store.db_path.exists():
+            if not _is_cached_mesh_valid(mesh, ns):
                 _MESH_REGISTRY.pop(key, None)
-                raise NamespaceNotFoundError(f"Namespace '{ns}' does not exist.")
+                stale_to_clean.append((ns, mesh.store.db_path))
+                mesh = None
+            else:
+                if create and not mesh.store.create:
+                    mesh.store.create = True
+                _MESH_REGISTRY.move_to_end(key)
+                return mesh
+
+    for ev_ns, ev_path in stale_to_clean:
+        _evict_namespace_caches(ev_ns, ev_path)
+
+    if not create:
+        db_file = ensure_secure_mesh_dir().resolve() / f"mesh_{ns}.db"
+        if not db_file.exists():
+            raise NamespaceNotFoundError(f"Namespace '{ns}' does not exist.")
+
+    evicted_namespaces: list[tuple[str, Any]] = []
+    with _MESH_LOCK:
+        mesh = _MESH_REGISTRY.get(key)
+        if mesh is not None and _is_cached_mesh_valid(mesh, ns):
+            if create and not mesh.store.create:
+                mesh.store.create = True
+            _MESH_REGISTRY.move_to_end(key)
             return mesh
+
         mesh = Mesh(namespace=ns, agent_id=aid, create=create)
         if mesh.store.db_path.exists() or create:
+            max_reg = _get_registry_max()
+            while len(_MESH_REGISTRY) >= max_reg:
+                victim_key: Optional[tuple[str, str]] = None
+                for cand_key in _MESH_REGISTRY:
+                    if cand_key[0] != ns:
+                        victim_key = cand_key
+                        break
+                if victim_key is None:
+                    for cand_key in _MESH_REGISTRY:
+                        if cand_key != key:
+                            victim_key = cand_key
+                            break
+                if victim_key is None:
+                    break
+                victim_mesh = _MESH_REGISTRY.pop(victim_key, None)
+                victim_ns = victim_key[0]
+                if (
+                    victim_mesh is not None
+                    and victim_ns != ns
+                    and not any(k[0] == victim_ns for k in _MESH_REGISTRY)
+                ):
+                    evicted_namespaces.append((victim_ns, victim_mesh.store.db_path))
             _MESH_REGISTRY[key] = mesh
-        return mesh
+            _MESH_REGISTRY.move_to_end(key)
+
+    for ev_ns, ev_path in evicted_namespaces:
+        _evict_namespace_caches(ev_ns, ev_path)
+    return mesh
 
 
 # --- Request Models ---
 
 
 class LearnRequest(BaseModel):
-    content: str
-    memory_type: Optional[str] = "fact"
+    content: str = Field(..., max_length=65536)
+    memory_type: Optional[str] = Field(default="fact", max_length=64)
     confidence: Optional[float] = 1.0
-    tags: Optional[list[str]] = Field(default_factory=list)
+    tags: Optional[list[str]] = Field(default_factory=list, max_length=64)
     local_only: Optional[bool] = False
     ttl_days: Optional[float] = None
-    namespace: Optional[str] = None
-    agent_id: Optional[str] = None
+    namespace: Optional[str] = Field(default=None, max_length=64)
+    agent_id: Optional[str] = Field(default=None, max_length=128)
+
+    @field_validator("tags")
+    @classmethod
+    def _validate_tags(cls, v: Optional[list[str]]) -> Optional[list[str]]:
+        if v is not None:
+            for item in v:
+                if len(str(item)) > 128:
+                    raise ValueError("Individual tag length cannot exceed 128 characters.")
+        return v
 
 
 class RecallRequest(BaseModel):
-    query: str
-    count: Optional[int] = 5
-    n: Optional[int] = None
-    memory_type: Optional[str] = None
-    tags: Optional[list[str]] = None
-    source_agent: Optional[str] = None
+    query: str = Field(..., max_length=16384)
+    count: Optional[int] = Field(default=5, ge=1, le=200)
+    n: Optional[int] = Field(default=None, ge=1, le=200)
+    memory_type: Optional[str] = Field(default=None, max_length=64)
+    tags: Optional[list[str]] = Field(default=None, max_length=64)
+    source_agent: Optional[str] = Field(default=None, max_length=128)
     min_similarity: Optional[float] = 0.0
     min_confidence: Optional[float] = 0.0
     include_stale: Optional[bool] = True
     # None means "not specified": the MESH_MCP_INCLUDE_PRIVATE default applies.
     include_private: Optional[bool] = None
     include_other_possible: Optional[bool] = True
-    max_other_possible: Optional[int] = 5
-    namespace: Optional[str] = None
-    agent_id: Optional[str] = None
+    max_other_possible: Optional[int] = Field(default=5, ge=0, le=50)
+    namespace: Optional[str] = Field(default=None, max_length=64)
+    agent_id: Optional[str] = Field(default=None, max_length=128)
+
+    @field_validator("tags")
+    @classmethod
+    def _validate_tags(cls, v: Optional[list[str]]) -> Optional[list[str]]:
+        if v is not None:
+            for item in v:
+                if len(str(item)) > 128:
+                    raise ValueError("Individual tag length cannot exceed 128 characters.")
+        return v
 
 
 class UpdateRequest(BaseModel):
-    memory_id: str
-    content: Optional[str] = None
-    memory_type: Optional[str] = None
+    memory_id: str = Field(..., min_length=1, max_length=128)
+    content: Optional[str] = Field(default=None, max_length=65536)
+    memory_type: Optional[str] = Field(default=None, max_length=64)
     confidence: Optional[float] = None
-    tags: Optional[list[str]] = None
+    tags: Optional[list[str]] = Field(default=None, max_length=64)
     local_only: Optional[bool] = None
     ttl_days: Optional[float] = None
     clear_ttl: Optional[bool] = False
-    namespace: Optional[str] = None
-    agent_id: Optional[str] = None
+    namespace: Optional[str] = Field(default=None, max_length=64)
+    agent_id: Optional[str] = Field(default=None, max_length=128)
+
+    @field_validator("tags")
+    @classmethod
+    def _validate_tags(cls, v: Optional[list[str]]) -> Optional[list[str]]:
+        if v is not None:
+            for item in v:
+                if len(str(item)) > 128:
+                    raise ValueError("Individual tag length cannot exceed 128 characters.")
+        return v
 
 
 class ForgetRequest(BaseModel):
-    memory_id: str
-    namespace: Optional[str] = None
-    agent_id: Optional[str] = None
+    memory_id: str = Field(..., min_length=1, max_length=128)
+    namespace: Optional[str] = Field(default=None, max_length=64)
+    agent_id: Optional[str] = Field(default=None, max_length=128)
 
 
 class ResolveContradictionRequest(BaseModel):
-    contradiction_id: str
-    namespace: Optional[str] = None
+    contradiction_id: str = Field(..., min_length=1, max_length=128)
+    namespace: Optional[str] = Field(default=None, max_length=64)
+    agent_id: Optional[str] = Field(default=None, max_length=128)
 
 
 class ContextRequest(BaseModel):
-    query: Optional[str] = None
-    count: Optional[int] = 10
-    max_memories: Optional[int] = None
-    n: Optional[int] = None
-    namespace: Optional[str] = None
-    format: Optional[str] = "markdown"  # "markdown" | "plain" | "xml" | "json"
+    query: Optional[str] = Field(default=None, max_length=16384)
+    count: Optional[int] = Field(default=10, ge=1, le=200)
+    max_memories: Optional[int] = Field(default=None, ge=1, le=200)
+    n: Optional[int] = Field(default=None, ge=1, le=200)
+    namespace: Optional[str] = Field(default=None, max_length=64)
+    format: Optional[str] = Field(default="markdown", max_length=32)  # "markdown" | "plain" | "xml" | "json"
     min_confidence: Optional[float] = 0.3
-    memory_type: Optional[str] = None
-    tags: Optional[list[str]] = None
+    memory_type: Optional[str] = Field(default=None, max_length=64)
+    tags: Optional[list[str]] = Field(default=None, max_length=64)
     # None means "not specified": the MESH_MCP_INCLUDE_PRIVATE default applies.
     include_private: Optional[bool] = None
 
+    @field_validator("tags")
+    @classmethod
+    def _validate_tags(cls, v: Optional[list[str]]) -> Optional[list[str]]:
+        if v is not None:
+            for item in v:
+                if len(str(item)) > 128:
+                    raise ValueError("Individual tag length cannot exceed 128 characters.")
+        return v
+
 
 class WarmupRequest(BaseModel):
-    namespace: Optional[str] = None
+    namespace: Optional[str] = Field(default=None, max_length=64)
+    namespaces: Optional[list[str]] = Field(default=None, max_length=64)
+    blocking: bool = False
 
 
 class McpProxyRequest(BaseModel):
-    name: str
+    name: Optional[str] = Field(default=None, max_length=128)
     arguments: dict[str, Any] = Field(default_factory=dict)
-    default_namespace: Optional[str] = None
-    agent_id: Optional[str] = None
-    # Caller-environment semantics that must not silently fall back to the daemon's
-    # own env/cwd (private-memory defaults, ownership enforcement, workspace, sync).
+    default_namespace: Optional[str] = Field(default=None, max_length=64)
+    agent_id: Optional[str] = Field(default=None, max_length=128)
     context: dict[str, Any] = Field(default_factory=dict)
+    jsonrpc: Optional[str] = Field(default=None, max_length=16)
+    id: Optional[Any] = None
+    method: Optional[str] = Field(default=None, max_length=128)
+    params: Optional[dict[str, Any]] = None
 
 
 # --- Endpoints (Synchronous `def` so FastAPI runs them in a worker threadpool) ---
@@ -316,24 +491,58 @@ async def identity(request: Request, nonce: Optional[str] = None) -> dict[str, A
     """
     Challenge-response authentication verification for the local Mesh daemon.
     Allows clients to cryptographically verify daemon identity before transmitting auth tokens.
+    Enforces strict length (1..128) and charset (`[A-Za-z0-9_-]`) bounds on `nonce` before HMAC work (Issue H9).
     """
-    clean_nonce = (nonce or "").strip()
-    if not clean_nonce and request.method == "POST":
-        try:
-            body = await request.json()
-            if isinstance(body, dict):
-                clean_nonce = str(body.get("nonce", "")).strip()
-        except Exception:
-            pass
-    if not clean_nonce:
-        clean_nonce = request.headers.get("x-mesh-nonce", "").strip()
-    if not clean_nonce:
+    raw_nonce: Optional[str] = None
+    if nonce is not None:
+        raw_nonce = nonce.strip()
+    elif "nonce" in request.query_params:
+        raw_nonce = (request.query_params.get("nonce") or "").strip()
+
+    if raw_nonce is None and request.method == "POST":
+        content_len_hdr = request.headers.get("content-length")
+        if content_len_hdr:
+            try:
+                if int(content_len_hdr) > _MAX_IDENTITY_BODY_BYTES:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Identity request body exceeds {_MAX_IDENTITY_BODY_BYTES} bytes.",
+                    )
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid Content-Length header.")
+        raw_bytes = await request.body()
+        if len(raw_bytes) > _MAX_IDENTITY_BODY_BYTES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Identity request body exceeds {_MAX_IDENTITY_BODY_BYTES} bytes.",
+            )
+        if raw_bytes:
+            try:
+                body = json.loads(raw_bytes.decode("utf-8"))
+            except Exception:
+                raise HTTPException(status_code=400, detail="Malformed JSON body on /identity.")
+            if isinstance(body, dict) and "nonce" in body:
+                val = body.get("nonce")
+                if not isinstance(val, str):
+                    raise HTTPException(status_code=400, detail="Challenge nonce must be a string.")
+                raw_nonce = val.strip()
+
+    if raw_nonce is None and "x-mesh-nonce" in request.headers:
+        raw_nonce = request.headers.get("x-mesh-nonce", "").strip()
+
+    if not raw_nonce:
         raise HTTPException(status_code=400, detail="Missing challenge nonce.")
 
+    if len(raw_nonce) > 128 or not _VALID_NONCE_RE.fullmatch(raw_nonce):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid challenge nonce: must be 1-128 characters matching ^[A-Za-z0-9_-]+$.",
+        )
+
     try:
-        nonce_bytes = bytes.fromhex(clean_nonce)
+        nonce_bytes = bytes.fromhex(raw_nonce)
     except ValueError:
-        nonce_bytes = clean_nonce.encode("utf-8")
+        nonce_bytes = raw_nonce.encode("utf-8")
 
     token = get_or_create_auth_token()
     proof = hmac.new(token.encode("utf-8"), nonce_bytes, hashlib.sha256).hexdigest()
@@ -352,14 +561,77 @@ def engine_status() -> dict[str, Any]:
 
 
 @app.post("/warmup", dependencies=[Depends(verify_request_auth)])
-def warmup_endpoint(req: WarmupRequest) -> dict[str, Any]:
-    """Warm the embedding model and (if the namespace already exists) heal pending embeddings."""
-    try:
-        ns = validate_namespace((req.namespace or os.environ.get("MESH_NAMESPACE", "shared")).strip() or "shared")
-        warmup_model(namespace=ns, blocking=False, assume_yes=False)
-        return {"status": "ok", "engine": get_engine_status()}
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+def warmup_endpoint(req: WarmupRequest) -> Any:
+    """
+    Warm the embedding model and heal pending embeddings across requested namespaces.
+    Aggregates per-namespace results and returns `ok` (200), `partial` (207), or `error` (500)
+    with counts and error summaries (Issue H8).
+    """
+    target_namespaces: list[str] = []
+    if req.namespaces:
+        target_namespaces.extend(str(n).strip() for n in req.namespaces if str(n).strip())
+    if req.namespace and req.namespace.strip():
+        if req.namespace.strip() not in target_namespaces:
+            target_namespaces.append(req.namespace.strip())
+    if not target_namespaces:
+        default_ns = (os.environ.get("MESH_NAMESPACE") or "shared").strip() or "shared"
+        target_namespaces.append(default_ns)
+
+    # If a single explicit namespace fails basic validation, return 400 directly when not a batch
+    if len(target_namespaces) == 1 and not req.namespaces:
+        try:
+            validate_namespace(target_namespaces[0])
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    per_namespace: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+    succeeded = 0
+    failed = 0
+
+    for raw_ns in target_namespaces:
+        try:
+            clean_ns = validate_namespace(raw_ns)
+            res = warmup_model(namespace=clean_ns, blocking=bool(req.blocking), assume_yes=False)
+            if isinstance(res, dict) and res.get("status") == "error":
+                failed += 1
+                err_msg = str(res.get("error") or f"Warmup failed for namespace '{clean_ns}'.")
+                per_namespace.append({"namespace": clean_ns, "status": "error", "error": err_msg})
+                errors.append({"namespace": clean_ns, "error": err_msg})
+            else:
+                succeeded += 1
+                ns_exists = bool(res.get("namespace_exists")) if isinstance(res, dict) else False
+                per_namespace.append(
+                    {"namespace": clean_ns, "status": "ok", "namespace_exists": ns_exists}
+                )
+        except Exception as exc:
+            failed += 1
+            logger.exception("Warmup failed for namespace '%s': %s", raw_ns, exc)
+            err_summary = str(exc) if isinstance(exc, ValueError) else f"Failed warming namespace '{raw_ns}'."
+            per_namespace.append({"namespace": raw_ns, "status": "error", "error": err_summary})
+            errors.append({"namespace": raw_ns, "error": err_summary})
+
+    total = len(target_namespaces)
+    if failed == 0:
+        overall_status = "ok"
+        http_code = 200
+    elif succeeded > 0:
+        overall_status = "partial"
+        http_code = 207
+    else:
+        overall_status = "error"
+        http_code = 500
+
+    payload = {
+        "status": overall_status,
+        "total": total,
+        "succeeded": succeeded,
+        "failed": failed,
+        "namespaces": per_namespace,
+        "errors": errors,
+        "engine": get_engine_status(),
+    }
+    return JSONResponse(status_code=http_code, content=payload)
 
 
 @app.post("/unload", dependencies=[Depends(verify_request_auth)])
@@ -369,29 +641,175 @@ def unload_engine() -> dict[str, Any]:
     return {"status": "ok", "unloaded": unloaded, "engine": get_engine_status()}
 
 
+def _sanitize_mcp_context(raw_context: Any) -> dict[str, Any]:
+    """
+    Whitelist allowed `/mcp` context keys (Issue H4).
+    Drops all security-sensitive keys (`enforce_agent_ownership`, auth/token/permission/privacy/sync flags)
+    so ownership enforcement and permissions are derived strictly from server configuration.
+    """
+    if not isinstance(raw_context, dict):
+        return {}
+    sanitized: dict[str, Any] = {}
+    for k, v in raw_context.items():
+        if k in _ALLOWED_MCP_CONTEXT_KEYS and isinstance(v, str) and len(v) <= 1024:
+            sanitized[k] = v
+    return sanitized
+
+
+def _resolve_mcp_agent_id(request: Request, caller_agent_id: Optional[str]) -> str:
+    """
+    Bind `agent_id` to an authenticated identity if configured (`request.state.agent_id`
+    or `MESH_AUTHENTICATED_AGENT_ID`); otherwise treat `caller_agent_id` as an unverified label (Issue H4).
+    """
+    state_agent = getattr(request.state, "agent_id", None) or getattr(
+        request.state, "authenticated_agent_id", None
+    )
+    if isinstance(state_agent, str) and state_agent.strip():
+        return re.sub(r"[\x00-\x1f\x7f]+", "", state_agent).strip()[:64] or "mcp-agent"
+    env_bound = (os.environ.get("MESH_AUTHENTICATED_AGENT_ID") or "").strip()
+    if env_bound:
+        return re.sub(r"[\x00-\x1f\x7f]+", "", env_bound).strip()[:64] or "mcp-agent"
+    raw = (
+        caller_agent_id
+        if (caller_agent_id is not None and str(caller_agent_id).strip())
+        else (os.environ.get("MESH_AGENT_ID") or "mcp-agent")
+    )
+    return re.sub(r"[\x00-\x1f\x7f]+", "", str(raw)).strip()[:64] or "mcp-agent"
+
+
 @app.post("/mcp", dependencies=[Depends(verify_request_auth)])
-def mcp_proxy(req: McpProxyRequest) -> dict[str, Any]:
-    """Execute an MCP tool request in the shared daemon process with structured error handling."""
-    from .mcp_server import _execute_tool_sync
+async def mcp_proxy(request: Request) -> Any:
+    """
+    Execute an MCP tool request in the shared daemon process (Issues H4 & H6):
+      - Protocol/parse errors or unknown tools -> JSON-RPC `error` object
+      - Tool execution failures -> MCP result with `isError: true` and explanatory `content` block
+      - Whitelists `context` keys and derives `enforce_agent_ownership` from server configuration
+    """
+    from .mcp_server import _MCP_TOOLS, _execute_tool_sync
 
     try:
-        if req.arguments and "namespace" in req.arguments and req.arguments["namespace"]:
-            validate_namespace(str(req.arguments["namespace"]))
-        if req.default_namespace:
-            validate_namespace(str(req.default_namespace))
+        raw_body = await request.body()
+        if not raw_body:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {"code": -32700, "message": "Parse error: empty request body."},
+                    "detail": "Parse error: empty request body.",
+                },
+            )
+        try:
+            body_data = json.loads(raw_body.decode("utf-8"))
+        except Exception:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {"code": -32700, "message": "Parse error: invalid JSON."},
+                    "detail": "Parse error: invalid JSON.",
+                },
+            )
+        if not isinstance(body_data, dict):
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {"code": -32600, "message": "Invalid Request: expected JSON object."},
+                    "detail": "Invalid Request: expected JSON object.",
+                },
+            )
+
+        req_id = body_data.get("id")
+        params = body_data.get("params") if isinstance(body_data.get("params"), dict) else {}
+        tool_name = str(body_data.get("name") or params.get("name") or "").strip()
+        arguments = body_data.get("arguments") if "arguments" in body_data else params.get("arguments", {})
+        default_ns = body_data.get("default_namespace") or params.get("default_namespace")
+        raw_agent_id = body_data.get("agent_id") or params.get("agent_id")
+        raw_context = body_data.get("context") if "context" in body_data else params.get("context", {})
+
+        if not tool_name:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "error": {"code": -32600, "message": "Invalid Request: missing tool 'name'."},
+                    "detail": "Invalid Request: missing tool 'name'.",
+                },
+            )
+        if not isinstance(arguments, dict):
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "error": {"code": -32602, "message": "Invalid params: 'arguments' must be an object."},
+                    "detail": "Invalid params: 'arguments' must be an object.",
+                },
+            )
+
+        known_tools = {t.name for t in _MCP_TOOLS}
+        if tool_name not in known_tools:
+            err_payload = {"error": f"Unknown tool: {tool_name}", "status": "error"}
+            text_block = {"type": "text", "text": json.dumps(err_payload, indent=2)}
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "status": "error",
+                    "isError": True,
+                    "error": {"code": -32601, "message": f"Unknown tool: {tool_name}"},
+                    "content": [text_block],
+                    "result": {"isError": True, "content": [text_block]},
+                    "payload": err_payload,
+                },
+            )
+
+        if default_ns:
+            validate_namespace(str(default_ns))
+        if arguments.get("namespace"):
+            validate_namespace(str(arguments["namespace"]))
+
+        safe_context = _sanitize_mcp_context(raw_context)
+        bound_agent_id = _resolve_mcp_agent_id(request, raw_agent_id)
+
         payload = _execute_tool_sync(
-            name=req.name,
-            arguments=req.arguments,
-            default_namespace=req.default_namespace,
-            agent_id=req.agent_id,
+            name=tool_name,
+            arguments=arguments,
+            default_namespace=default_ns,
+            agent_id=bound_agent_id,
             allow_daemon_proxy=False,
-            context=req.context,
+            context=safe_context,
         )
-        return {"status": "ok", "payload": payload}
+
+        is_tool_error = False
+        if isinstance(payload, dict):
+            if payload.get("status") in ("rejected", "error") or (
+                payload.get("error") is not None and payload.get("status") != "synchronized"
+            ):
+                is_tool_error = True
+
+        text_block = {"type": "text", "text": json.dumps(payload, indent=2)}
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "status": "error" if is_tool_error else "ok",
+            "isError": is_tool_error,
+            "content": [text_block],
+            "result": {
+                "isError": is_tool_error,
+                "content": [text_block],
+            },
+            "payload": payload,
+        }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        _raise_http_error(e, "/mcp")
 
 
 @app.post("/learn", dependencies=[Depends(verify_request_auth)])
@@ -400,6 +818,8 @@ def learn(req: LearnRequest) -> Any:
     try:
         from .guards import guard_ingest
 
+        raw_ns = (req.namespace or os.environ.get("MESH_NAMESPACE", "shared")).strip() or "shared"
+        ns = validate_namespace(raw_ns)
         guard = guard_ingest(req.content, local_only=bool(req.local_only))
         if guard.rejected:
             reason_str = guard.reason or "Memory content rejected by ingestion guard."
@@ -411,22 +831,33 @@ def learn(req: LearnRequest) -> Any:
                     "detail": reason_str,
                 },
             )
-        mesh = get_mesh(req.namespace, req.agent_id, create=True)
-        result = mesh.learn(
-            content=guard.content,
-            memory_type=req.memory_type or "fact",
-            confidence=req.confidence if req.confidence is not None else 1.0,
-            tags=req.tags or [],
-            local_only=bool(guard.local_only),
-            ttl_days=req.ttl_days,
-        )
+        try:
+            mesh = get_mesh(ns, req.agent_id, create=True)
+            result = mesh.learn(
+                content=guard.content,
+                memory_type=req.memory_type or "fact",
+                confidence=req.confidence if req.confidence is not None else 1.0,
+                tags=req.tags or [],
+                local_only=bool(guard.local_only),
+                ttl_days=req.ttl_days,
+            )
+        except (NamespaceNotFoundError, sqlite3.OperationalError):
+            evict_http_mesh_cache(ns)
+            _evict_namespace_caches(ns)
+            mesh = get_mesh(ns, req.agent_id, create=True)
+            result = mesh.learn(
+                content=guard.content,
+                memory_type=req.memory_type or "fact",
+                confidence=req.confidence if req.confidence is not None else 1.0,
+                tags=req.tags or [],
+                local_only=bool(guard.local_only),
+                ttl_days=req.ttl_days,
+            )
         if guard.warnings:
             result["warnings"] = guard.warnings
         return {"status": "ok", "result": result}
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        _raise_http_error(e, "/learn")
 
 
 @app.post("/recall", dependencies=[Depends(verify_request_auth)])
@@ -478,21 +909,19 @@ def recall(req: RecallRequest) -> dict[str, Any]:
             "other_possible_memories": bundle["other_possible_memories"],
             "filter_hint": bundle["filter_hint"],
         }
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        _raise_http_error(e, "/recall")
 
 
 @app.post("/update", dependencies=[Depends(verify_request_auth)])
-def update(req: UpdateRequest) -> dict[str, Any]:
+def update(req: UpdateRequest) -> Any:
     """Update an existing memory in-place by ID (supports clearing TTL via `clear_ttl=True`)."""
     try:
         from .guards import guard_ingest
 
         content = req.content
         local_only = req.local_only
-        warnings: list[str] = []
+        warnings: tuple[str, ...] = ()
         if content is not None:
             guard = guard_ingest(content, local_only=bool(req.local_only))
             if guard.rejected:
@@ -521,14 +950,8 @@ def update(req: UpdateRequest) -> dict[str, Any]:
         if warnings:
             payload["warnings"] = warnings
         return payload
-    except NamespaceNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except ValueError as e:
-        msg = str(e)
-        status_code = 404 if "not found" in msg.lower() else 400
-        raise HTTPException(status_code=status_code, detail=msg)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        _raise_http_error(e, "/update")
 
 
 @app.post("/forget", dependencies=[Depends(verify_request_auth)])
@@ -544,10 +967,30 @@ def forget(req: ForgetRequest) -> dict[str, Any]:
             "status": "ok" if deleted else "not_found",
             "deleted": req.memory_id if deleted else None,
         }
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        _raise_http_error(e, "/forget")
+
+
+@app.delete("/memories/{memory_id}", dependencies=[Depends(verify_request_auth)])
+def delete_memory_rest(
+    memory_id: str,
+    namespace: Optional[str] = None,
+    agent_id: Optional[str] = None,
+) -> dict[str, Any]:
+    """RESTful DELETE endpoint returning 404 when the namespace or memory does not exist (Issue H5)."""
+    try:
+        raw_ns = (namespace or os.environ.get("MESH_NAMESPACE", "shared")).strip() or "shared"
+        ns = validate_namespace(raw_ns)
+        mesh = get_mesh(ns, agent_id, create=False)
+        deleted = mesh.forget(memory_id)
+        if not deleted:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Memory ID '{memory_id}' not found in namespace '{ns}'.",
+            )
+        return {"status": "deleted", "deleted": memory_id, "namespace": ns}
+    except Exception as e:
+        _raise_http_error(e, "DELETE /memories/{memory_id}")
 
 
 @app.get("/inspect", dependencies=[Depends(verify_request_auth)])
@@ -560,6 +1003,8 @@ def inspect(
 ) -> dict[str, Any]:
     """List memories in the namespace (excludes `local_only` private memories by default)."""
     try:
+        if limit < 1 or limit > 1000:
+            raise ValueError("limit must be between 1 and 1000.")
         inc_priv = (
             env_bool("MESH_MCP_INCLUDE_PRIVATE", False)
             if include_private is None
@@ -591,10 +1036,8 @@ def inspect(
             "memories": result,
             "count": len(result),
         }
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        _raise_http_error(e, "/inspect")
 
 
 @app.get("/patterns", dependencies=[Depends(verify_request_auth)])
@@ -633,10 +1076,8 @@ def patterns(
             "namespace_exists": True,
             "patterns": result,
         }
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        _raise_http_error(e, "/patterns")
 
 
 @app.get("/contradictions", dependencies=[Depends(verify_request_auth)])
@@ -667,27 +1108,19 @@ def contradictions(
             "contradictions": items,
             "count": len(items),
         }
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        _raise_http_error(e, "/contradictions")
 
 
 @app.post("/contradictions/resolve", dependencies=[Depends(verify_request_auth)])
 def resolve_contradiction(req: ResolveContradictionRequest) -> dict[str, Any]:
     """Mark a contradiction as resolved."""
     try:
-        mesh = get_mesh(req.namespace, create=False)
+        mesh = get_mesh(req.namespace, req.agent_id, create=False)
         mesh.resolve_contradiction(req.contradiction_id)
         return {"status": "ok", "resolved": req.contradiction_id}
-    except NamespaceNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except ValueError as e:
-        msg = str(e)
-        status_code = 404 if "not found" in msg.lower() else 400
-        raise HTTPException(status_code=status_code, detail=msg)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        _raise_http_error(e, "/contradictions/resolve")
 
 
 @app.post("/context", dependencies=[Depends(verify_request_auth)])
@@ -734,10 +1167,8 @@ def context(req: ContextRequest) -> dict[str, Any]:
             "context": bundle["context"],
             "memory_count": bundle["memory_count"],
         }
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        _raise_http_error(e, "/context")
 
 
 @app.get("/audit", dependencies=[Depends(verify_request_auth)])
@@ -748,6 +1179,8 @@ def audit(
 ) -> dict[str, Any]:
     """Return the audit trail: recent memory reads and writes."""
     try:
+        if limit < 1 or limit > 1000:
+            raise ValueError("limit must be between 1 and 1000.")
         ns = validate_namespace((namespace or os.environ.get("MESH_NAMESPACE", "shared")).strip() or "shared")
         db_file = ensure_secure_mesh_dir().resolve() / f"mesh_{ns}.db"
         audit_file = _get_audit_db_path(ns)
@@ -761,8 +1194,8 @@ def audit(
                 "entries": [],
             }
         return {"status": "ok", "namespace": ns, "namespace_exists": True, "entries": entries}
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        _raise_http_error(e, "/audit")
 
 
 def start(host: Optional[str] = None, port: Optional[int] = None) -> None:

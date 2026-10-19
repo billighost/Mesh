@@ -17,20 +17,23 @@ from __future__ import annotations
 
 import argparse
 import hmac
+import logging
 import os
 import re
 import secrets
+import sqlite3
 import sys
 import threading
 import time
 import webbrowser
+from collections import OrderedDict
 from typing import Any, List, Optional
 from urllib.parse import urlparse
 
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .audit import ensure_secure_mesh_dir, get_audit_log, validate_namespace
 from .daemon import get_or_create_auth_token, request_user_permission
@@ -42,9 +45,11 @@ from .memory import (
     suggest_did_you_mean_namespaces,
     warmup_model,
 )
-from .namespaces import delete_namespace, list_namespaces, namespace_stats
-from .store import NamespaceNotFoundError
+from .namespaces import _evict_namespace_caches, delete_namespace, list_namespaces, namespace_stats
+from .store import NamespaceLimitExceededError, NamespaceNotFoundError
 from .version import VERSION
+
+logger = logging.getLogger(__name__)
 
 _LOCAL_ORIGIN_REGEX = r"^https?://(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$"
 _ALLOWED_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]"}
@@ -52,9 +57,71 @@ _ACTIVE_BIND_HOST = "127.0.0.1"
 _SESSION_COOKIE_NAME = "mesh_dash_session"
 
 _MESH_LOCK = threading.RLock()
-_MESH_CACHE: dict[str, Mesh] = {}
+_MESH_CACHE_MAX = 64
+_MESH_CACHE: OrderedDict[str, Mesh] = OrderedDict()
 _default_namespace: str = "shared"
 _mesh: Optional[Mesh] = None
+
+_LAUNCH_NONCES_LOCK = threading.Lock()
+_LAUNCH_NONCES_MAX = 64
+_LAUNCH_NONCE_TTL_SECONDS = 60.0
+_LAUNCH_NONCES: dict[str, float] = {}
+
+
+def _resolve_default_namespace() -> str:
+    """
+    Resolve the default namespace with deterministic precedence:
+      1. Explicitly configured `_default_namespace` (when set to a non-'shared' value by `run()` or caller)
+      2. `MESH_NAMESPACE` environment variable
+      3. `_default_namespace` fallback ('shared')
+    Never derives the default from the mutable cached `_mesh` instance (Issue H2).
+    """
+    if _default_namespace and _default_namespace != "shared":
+        return validate_namespace(_default_namespace)
+    env_ns = (os.environ.get("MESH_NAMESPACE") or "").strip()
+    if env_ns:
+        return validate_namespace(env_ns)
+    raw_default = (_default_namespace or "shared").strip() or "shared"
+    return validate_namespace(raw_default)
+
+
+def _resolve_namespace(namespace: Optional[str] = None) -> str:
+    raw = (namespace or "").strip()
+    if raw:
+        return validate_namespace(raw)
+    return _resolve_default_namespace()
+
+
+def _register_launch_nonce(nonce: str, now: Optional[float] = None) -> None:
+    ts = time.time() if now is None else float(now)
+    with _LAUNCH_NONCES_LOCK:
+        expired = [
+            k for k, created_at in _LAUNCH_NONCES.items()
+            if (ts - created_at) >= _LAUNCH_NONCE_TTL_SECONDS
+        ]
+        for k in expired:
+            _LAUNCH_NONCES.pop(k, None)
+        _LAUNCH_NONCES[nonce] = ts
+        while len(_LAUNCH_NONCES) > _LAUNCH_NONCES_MAX:
+            oldest_key = next(iter(_LAUNCH_NONCES))
+            _LAUNCH_NONCES.pop(oldest_key, None)
+
+
+def _consume_launch_nonce(code: str, now: Optional[float] = None) -> bool:
+    if not code:
+        return False
+    ts = time.time() if now is None else float(now)
+    with _LAUNCH_NONCES_LOCK:
+        expired = [
+            k for k, created_at in _LAUNCH_NONCES.items()
+            if (ts - created_at) >= _LAUNCH_NONCE_TTL_SECONDS
+        ]
+        for k in expired:
+            _LAUNCH_NONCES.pop(k, None)
+        created_at = _LAUNCH_NONCES.pop(code, None)
+        if created_at is None:
+            return False
+        return (ts - created_at) < _LAUNCH_NONCE_TTL_SECONDS
 
 
 def evict_dashboard_mesh_cache(namespace: Optional[str] = None) -> None:
@@ -70,7 +137,47 @@ def evict_dashboard_mesh_cache(namespace: Optional[str] = None) -> None:
             _mesh = None
 
 
-_LAUNCH_NONCES: dict[str, float] = {}
+def _raise_dashboard_http_error(exc: BaseException, endpoint: str) -> None:
+    """
+    Centralized exception-to-HTTPException mapper for dashboard routes (Issue H5):
+      - HTTPException -> re-raised unchanged
+      - NamespaceLimitExceededError -> 429
+      - NamespaceNotFoundError / FileNotFoundError / missing object ValueError -> 404
+      - Conflict / lock timeout / busy database / already exists -> 409
+      - Other ValueError (validation / malformed input) -> 400
+      - Unexpected Exception -> logged server-side and returned as generic 500
+    """
+    if isinstance(exc, HTTPException):
+        raise exc
+    if isinstance(exc, NamespaceLimitExceededError):
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
+    if isinstance(exc, (NamespaceNotFoundError, FileNotFoundError)):
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if isinstance(exc, TimeoutError):
+        raise HTTPException(
+            status_code=409,
+            detail="Conflict: namespace is currently locked by another operation.",
+        ) from exc
+    if isinstance(exc, ValueError):
+        msg = str(exc)
+        msg_low = msg.lower()
+        if "not found" in msg_low or "does not exist" in msg_low:
+            raise HTTPException(status_code=404, detail=msg) from exc
+        if "already exists" in msg_low:
+            raise HTTPException(status_code=409, detail=msg) from exc
+        raise HTTPException(status_code=400, detail=msg) from exc
+    if isinstance(exc, (RuntimeError, sqlite3.OperationalError, OSError)):
+        msg_low = str(exc).lower()
+        if any(
+            marker in msg_low
+            for marker in ("locked", "busy", "checkpoint", "another process", "hold", "open")
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Conflict: another process holds the namespace database open.",
+            ) from exc
+    logger.exception("Unhandled error in dashboard endpoint '%s': %s", endpoint, exc)
+    raise HTTPException(status_code=500, detail="Internal server error.") from exc
 
 
 def _tokens_match(provided: str, expected: str) -> bool:
@@ -181,58 +288,122 @@ async def _dashboard_security_middleware(request: Request, call_next: Any) -> An
     return await call_next(request)
 
 
+def _is_cached_mesh_valid(inst: Mesh, expected_ns: str) -> bool:
+    try:
+        return (
+            inst.namespace == expected_ns
+            and inst.store.namespace == expected_ns
+            and inst.store.db_path.exists()
+            and inst.store.db_path.stat().st_size > 0
+        )
+    except OSError:
+        return False
+
+
 def get_mesh(namespace: Optional[str] = None, create: bool = True) -> Mesh:
     """
-    Return a cached `Mesh` instance for the requested (or default) namespace.
-    When `create=False` and the namespace database does not exist, raises `NamespaceNotFoundError`
-    without creating any `.db` file on disk (Phase 3.4).
+    Return a cached `Mesh` instance for the requested (or configured default) namespace.
+    - Never falls back to `_mesh.namespace` when `namespace` is omitted (Issue H2).
+    - Revalidates `db_path.exists()` and namespace metadata on lookup so out-of-band
+      deletions are evicted and recreated according to `create` (Issue H7).
     """
     global _mesh
-    raw_ns = (namespace or (_mesh.namespace if _mesh is not None else _default_namespace)).strip() or "shared"
-    ns = validate_namespace(raw_ns)
+    ns = _resolve_namespace(namespace)
+    evicted_to_clean: list[tuple[str, Any]] = []
     with _MESH_LOCK:
-        if _mesh is not None and _mesh.namespace == ns:
-            if not create and not _mesh.store.db_path.exists():
-                _MESH_CACHE.pop(ns, None)
-                _mesh = None
-                raise NamespaceNotFoundError(f"Namespace '{ns}' does not exist.")
-            return _mesh
         inst = _MESH_CACHE.get(ns)
         if inst is not None:
-            if not create and not inst.store.db_path.exists():
+            if not _is_cached_mesh_valid(inst, ns):
                 _MESH_CACHE.pop(ns, None)
-                raise NamespaceNotFoundError(f"Namespace '{ns}' does not exist.")
+                if _mesh is inst:
+                    _mesh = None
+                evicted_to_clean.append((ns, inst.store.db_path))
+                inst = None
+            else:
+                if create and not inst.store.create:
+                    inst.store.create = True
+                _MESH_CACHE.move_to_end(ns)
+                return inst
+
+    for ev_ns, ev_path in evicted_to_clean:
+        _evict_namespace_caches(ev_ns, ev_path)
+
+    if not create:
+        db_file = ensure_secure_mesh_dir().resolve() / f"mesh_{ns}.db"
+        if not db_file.exists():
+            raise NamespaceNotFoundError(f"Namespace '{ns}' does not exist.")
+
+    evicted_lru: list[tuple[str, Any]] = []
+    with _MESH_LOCK:
+        inst = _MESH_CACHE.get(ns)
+        if inst is not None and _is_cached_mesh_valid(inst, ns):
+            if create and not inst.store.create:
+                inst.store.create = True
+            _MESH_CACHE.move_to_end(ns)
             return inst
-        inst = Mesh(namespace=ns, agent_id="dashboard", create=create)
+
+        inst = Mesh(namespace=ns, agent_id="dashboard", create=create, trusted_local=True)
         if inst.store.db_path.exists() or create:
+            while len(_MESH_CACHE) >= _MESH_CACHE_MAX:
+                victim_ns: Optional[str] = None
+                for cand_ns in _MESH_CACHE:
+                    if cand_ns != ns:
+                        victim_ns = cand_ns
+                        break
+                if victim_ns is None:
+                    break
+                victim_inst = _MESH_CACHE.pop(victim_ns, None)
+                if victim_inst is not None:
+                    evicted_lru.append((victim_ns, victim_inst.store.db_path))
             _MESH_CACHE[ns] = inst
-            if _mesh is None:
+            _MESH_CACHE.move_to_end(ns)
+            if _mesh is None and ns == _resolve_default_namespace():
                 _mesh = inst
-        return inst
+
+    for ev_ns, ev_path in evicted_lru:
+        _evict_namespace_caches(ev_ns, ev_path)
+    return inst
 
 
 # --- Request models ---
 
 
 class CreateMemoryRequest(BaseModel):
-    content: str
-    memory_type: str = "fact"
+    content: str = Field(..., max_length=65536)
+    memory_type: str = Field(default="fact", max_length=64)
     confidence: float = 1.0
-    tags: List[str] = Field(default_factory=list)
+    tags: List[str] = Field(default_factory=list, max_length=64)
     local_only: bool = False
     ttl_days: Optional[float] = None
-    namespace: Optional[str] = None
+    namespace: Optional[str] = Field(default=None, max_length=64)
+
+    @field_validator("tags")
+    @classmethod
+    def _validate_tags(cls, v: List[str]) -> List[str]:
+        for item in v:
+            if len(str(item)) > 128:
+                raise ValueError("Individual tag length cannot exceed 128 characters.")
+        return v
 
 
 class UpdateMemoryRequest(BaseModel):
-    content: Optional[str] = None
-    memory_type: Optional[str] = None
+    content: Optional[str] = Field(default=None, max_length=65536)
+    memory_type: Optional[str] = Field(default=None, max_length=64)
     confidence: Optional[float] = None
-    tags: Optional[List[str]] = None
+    tags: Optional[List[str]] = Field(default=None, max_length=64)
     local_only: Optional[bool] = None
     ttl_days: Optional[float] = None
     clear_ttl: Optional[bool] = None
-    namespace: Optional[str] = None
+    namespace: Optional[str] = Field(default=None, max_length=64)
+
+    @field_validator("tags")
+    @classmethod
+    def _validate_tags(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        if v is not None:
+            for item in v:
+                if len(str(item)) > 128:
+                    raise ValueError("Individual tag length cannot exceed 128 characters.")
+        return v
 
 
 # --- REST API endpoints (synchronous `def` so FastAPI runs them in threadpool) ---
@@ -241,8 +412,7 @@ class UpdateMemoryRequest(BaseModel):
 @api.get("/api/stats", dependencies=[Depends(verify_dashboard_auth)])
 def get_stats(namespace: Optional[str] = None) -> dict[str, Any]:
     try:
-        raw_ns = (namespace or (_mesh.namespace if _mesh is not None else _default_namespace)).strip() or "shared"
-        ns = validate_namespace(raw_ns)
+        ns = _resolve_namespace(namespace)
         try:
             mesh = get_mesh(ns, create=False)
         except NamespaceNotFoundError:
@@ -269,20 +439,23 @@ def get_stats(namespace: Optional[str] = None) -> dict[str, Any]:
             "unused_memories": len(patterns["unused_memories"]),
             "engine": get_engine_status(),
         }
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        _raise_dashboard_http_error(e, "/api/stats")
 
 
 @api.get("/api/memories", dependencies=[Depends(verify_dashboard_auth)])
 def get_memories(limit: int = 200, namespace: Optional[str] = None) -> list[dict[str, Any]]:
     try:
+        if limit < 1 or limit > 1000:
+            raise ValueError("limit must be between 1 and 1000.")
+        ns = _resolve_namespace(namespace)
         try:
-            mesh = get_mesh(namespace, create=False)
+            mesh = get_mesh(ns, create=False)
         except NamespaceNotFoundError:
             return []
         return mesh.inspect(limit=limit)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        _raise_dashboard_http_error(e, "/api/memories")
 
 
 @api.post("/api/memories", dependencies=[Depends(verify_dashboard_auth)])
@@ -291,32 +464,45 @@ def create_memory(req: CreateMemoryRequest) -> dict[str, Any]:
     try:
         from .guards import guard_ingest
 
+        ns = _resolve_namespace(req.namespace)
         guard = guard_ingest(req.content, local_only=bool(req.local_only))
         if guard.rejected:
             raise HTTPException(status_code=400, detail=guard.reason or "Memory rejected by ingestion guard.")
 
-        mesh = get_mesh(req.namespace, create=True)
-        result = mesh.learn(
-            content=guard.content,
-            memory_type=req.memory_type,
-            confidence=req.confidence,
-            tags=req.tags,
-            local_only=guard.local_only,
-            ttl_days=req.ttl_days if req.ttl_days and req.ttl_days > 0 else None,
-        )
+        try:
+            mesh = get_mesh(ns, create=True)
+            result = mesh.learn(
+                content=guard.content,
+                memory_type=req.memory_type,
+                confidence=req.confidence,
+                tags=req.tags,
+                local_only=guard.local_only,
+                ttl_days=req.ttl_days if req.ttl_days and req.ttl_days > 0 else None,
+            )
+        except (NamespaceNotFoundError, sqlite3.OperationalError):
+            evict_dashboard_mesh_cache(ns)
+            _evict_namespace_caches(ns)
+            mesh = get_mesh(ns, create=True)
+            result = mesh.learn(
+                content=guard.content,
+                memory_type=req.memory_type,
+                confidence=req.confidence,
+                tags=req.tags,
+                local_only=guard.local_only,
+                ttl_days=req.ttl_days if req.ttl_days and req.ttl_days > 0 else None,
+            )
         if guard.warnings:
             result["warnings"] = guard.warnings
         return {"status": "ok", "result": result}
-    except HTTPException:
-        raise
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        _raise_dashboard_http_error(e, "POST /api/memories")
 
 
 @api.put("/api/memories/{memory_id}", dependencies=[Depends(verify_dashboard_auth)])
 def update_memory(memory_id: str, req: UpdateMemoryRequest) -> dict[str, Any]:
     """Update a memory in-place, supporting clearing TTL when `clear_ttl=True` or `ttl_days` is omitted/0."""
     try:
+        ns = _resolve_namespace(req.namespace)
         content_to_set = req.content
         local_only_to_set = req.local_only
         if content_to_set is not None:
@@ -329,7 +515,7 @@ def update_memory(memory_id: str, req: UpdateMemoryRequest) -> dict[str, Any]:
             if guard.local_only:
                 local_only_to_set = True
 
-        mesh = get_mesh(req.namespace, create=False)
+        mesh = get_mesh(ns, create=False)
         should_clear_ttl = bool(req.clear_ttl) or (req.ttl_days is not None and req.ttl_days <= 0)
         ttl_val = None if should_clear_ttl else req.ttl_days
         result = mesh.update(
@@ -344,23 +530,24 @@ def update_memory(memory_id: str, req: UpdateMemoryRequest) -> dict[str, Any]:
             clear_ttl=should_clear_ttl,
         )
         return {"status": "ok", "result": result}
-    except HTTPException:
-        raise
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        _raise_dashboard_http_error(e, "PUT /api/memories/{memory_id}")
 
 
 @api.delete("/api/memories/{memory_id}", dependencies=[Depends(verify_dashboard_auth)])
 def delete_memory(memory_id: str, namespace: Optional[str] = None) -> dict[str, str]:
     try:
-        try:
-            mesh = get_mesh(namespace, create=False)
-        except NamespaceNotFoundError:
-            return {"status": "not_found", "memory_id": memory_id}
+        ns = _resolve_namespace(namespace)
+        mesh = get_mesh(ns, create=False)
         deleted = mesh.forget(memory_id)
-        return {"status": "deleted" if deleted else "not_found", "memory_id": memory_id}
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        if not deleted:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Memory ID '{memory_id}' not found in namespace '{ns}'.",
+            )
+        return {"status": "deleted", "memory_id": memory_id}
+    except Exception as e:
+        _raise_dashboard_http_error(e, "DELETE /api/memories/{memory_id}")
 
 
 @api.get("/api/patterns", dependencies=[Depends(verify_dashboard_auth)])
@@ -369,8 +556,9 @@ def get_patterns(
     include_private: bool = False,
 ) -> dict[str, Any]:
     try:
+        ns = _resolve_namespace(namespace)
         try:
-            mesh = get_mesh(namespace, create=False)
+            mesh = get_mesh(ns, create=False)
         except NamespaceNotFoundError:
             return {
                 "top_topics": [],
@@ -379,29 +567,31 @@ def get_patterns(
                 "stale_memories": [],
             }
         return mesh.patterns(include_private=include_private)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        _raise_dashboard_http_error(e, "/api/patterns")
 
 
 @api.get("/api/contradictions", dependencies=[Depends(verify_dashboard_auth)])
 def get_contradictions(namespace: Optional[str] = None) -> list[dict[str, Any]]:
     try:
+        ns = _resolve_namespace(namespace)
         try:
-            mesh = get_mesh(namespace, create=False)
+            mesh = get_mesh(ns, create=False)
         except NamespaceNotFoundError:
             return []
         return mesh.contradictions()
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        _raise_dashboard_http_error(e, "/api/contradictions")
 
 
 @api.post("/api/contradictions/{contradiction_id}/resolve", dependencies=[Depends(verify_dashboard_auth)])
 def resolve_contradiction(contradiction_id: str, namespace: Optional[str] = None) -> dict[str, str]:
     try:
-        get_mesh(namespace, create=False).resolve_contradiction(contradiction_id)
+        ns = _resolve_namespace(namespace)
+        get_mesh(ns, create=False).resolve_contradiction(contradiction_id)
         return {"status": "resolved"}
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        _raise_dashboard_http_error(e, "/api/contradictions/resolve")
 
 
 @api.get("/api/search", dependencies=[Depends(verify_dashboard_auth)])
@@ -412,11 +602,14 @@ def search(
     memory_type: Optional[str] = None,
     include_other: bool = False,
 ) -> Any:
-    if not q.strip():
+    if not q or not q.strip():
         raise HTTPException(status_code=400, detail="Query cannot be empty")
+    if len(q) > 16384:
+        raise HTTPException(status_code=400, detail="Query exceeds maximum allowed length (16384 chars).")
+    if n < 1 or n > 200:
+        raise HTTPException(status_code=400, detail="n must be between 1 and 200.")
     try:
-        raw_ns = (namespace or (_mesh.namespace if _mesh is not None else _default_namespace)).strip() or "shared"
-        ns = validate_namespace(raw_ns)
+        ns = _resolve_namespace(namespace)
         try:
             mesh = get_mesh(ns, create=False)
         except NamespaceNotFoundError:
@@ -447,50 +640,44 @@ def search(
                 max_other_possible=6,
             )
         return mesh.recall(q, n=n, memory_type=clean_type)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        _raise_dashboard_http_error(e, "/api/search")
 
 
 @api.get("/api/namespaces", dependencies=[Depends(verify_dashboard_auth)])
 def get_namespaces() -> list[dict[str, Any]]:
-    return list_namespaces()
+    try:
+        return list_namespaces()
+    except Exception as e:
+        _raise_dashboard_http_error(e, "/api/namespaces")
 
 
 @api.get("/api/namespaces/{namespace}/stats", dependencies=[Depends(verify_dashboard_auth)])
 def get_namespace_stats(namespace: str) -> dict[str, Any]:
     try:
-        return namespace_stats(validate_namespace(namespace))
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        clean_ns = validate_namespace(namespace)
+        return namespace_stats(clean_ns)
+    except Exception as e:
+        _raise_dashboard_http_error(e, "/api/namespaces/{namespace}/stats")
 
 
 @api.delete("/api/namespaces/{namespace}", dependencies=[Depends(verify_dashboard_auth)])
 def api_delete_namespace(namespace: str) -> dict[str, Any]:
     try:
         clean_ns = validate_namespace(namespace)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    evict_dashboard_mesh_cache(clean_ns)
-    try:
+        evict_dashboard_mesh_cache(clean_ns)
         count = delete_namespace(clean_ns)
         return {"deleted": True, "memories_removed": count}
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except (RuntimeError, OSError) as e:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Another process still holds the database open: {e}",
-        )
+    except Exception as e:
+        _raise_dashboard_http_error(e, "DELETE /api/namespaces/{namespace}")
 
 
 @api.get("/api/export/{namespace}", dependencies=[Depends(verify_dashboard_auth)])
 def api_export_namespace(namespace: str, include_embeddings: bool = False) -> dict[str, Any]:
     try:
         return export_namespace(namespace=validate_namespace(namespace), include_embeddings=include_embeddings)
-    except NamespaceNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        _raise_dashboard_http_error(e, "/api/export/{namespace}")
 
 
 @api.get("/api/audit", dependencies=[Depends(verify_dashboard_auth)])
@@ -500,21 +687,23 @@ def get_audit(
     action: str = "all",
 ) -> list[dict[str, Any]]:
     try:
-        raw_ns = (namespace or (_mesh.namespace if _mesh is not None else _default_namespace)).strip() or "shared"
-        ns = validate_namespace(raw_ns)
+        if limit < 1 or limit > 1000:
+            raise ValueError("limit must be between 1 and 1000.")
+        ns = _resolve_namespace(namespace)
         return get_audit_log(namespace=ns, limit=limit, action_filter=action)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        _raise_dashboard_http_error(e, "/api/audit")
 
 
 @api.get("/api/digest", dependencies=[Depends(verify_dashboard_auth)])
 def get_digest(namespace: Optional[str] = None, hours: int = 24) -> dict[str, Any]:
     try:
-        raw_ns = (namespace or (_mesh.namespace if _mesh is not None else _default_namespace)).strip() or "shared"
-        ns = validate_namespace(raw_ns)
+        if hours < 1 or hours > 8760:
+            raise ValueError("hours must be between 1 and 8760.")
+        ns = _resolve_namespace(namespace)
         return generate_digest(namespace=ns, hours=hours)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        _raise_dashboard_http_error(e, "/api/digest")
 
 
 # --- Minimal, Responsive Dashboard HTML (RAW STRING to preserve JS regex backslashes) ---
@@ -1198,6 +1387,9 @@ let sortBy = 'accessed';
 let editId = null;
 let editOrigTtl = null;
 let debounceTimer = null;
+// Monotonic token so an out-of-order search response can never overwrite the
+// results of a newer query (or of a namespace that has since been switched).
+let searchSeq = 0;
 
 function authHeaders(extra = {}) {
   const h = { ...extra };
@@ -1226,6 +1418,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   await refreshAll();
 });
 
+let authFailureShown = false;
 async function apiFetch(path, opts = {}) {
   try {
     const mergedOpts = {
@@ -1234,6 +1427,13 @@ async function apiFetch(path, opts = {}) {
       headers: authHeaders(opts.headers || {})
     };
     const res = await fetch(path, mergedOpts);
+    if (res.status === 401 || res.status === 403) {
+      if (!authFailureShown) {
+        authFailureShown = true;
+        notify('Authentication failed — reopen the dashboard with its access token');
+      }
+      return null;
+    }
     return res.ok ? await res.json() : null;
   } catch { return null; }
 }
@@ -1270,6 +1470,10 @@ async function populateNamespaceDropdown() {
 
 function switchNamespace(newNs) {
   ns = newNs;
+  // Cancel any in-flight/debounced search for the previous namespace; its
+  // response must not populate the new namespace's view.
+  clearTimeout(debounceTimer);
+  searchSeq++;
   searchResults = null;
   otherPossibleResults = [];
   searchFilterHint = null;
@@ -1430,6 +1634,7 @@ function onSearch(val) {
   clearTimeout(debounceTimer);
   const q = val.trim();
   if (!q) {
+    searchSeq++;
     searchResults = null;
     otherPossibleResults = [];
     searchFilterHint = null;
@@ -1463,11 +1668,14 @@ function onSearch(val) {
   renderMemories();
 
   if (q.length >= 2) {
+    const seq = ++searchSeq;
+    const requestedNs = ns;
     debounceTimer = setTimeout(async () => {
       const typeParam = activeType !== 'all' ? `&memory_type=${encodeURIComponent(activeType)}` : '';
       const res = await apiFetch(
-        `/api/search?q=${encodeURIComponent(q)}&n=25&include_other=true&namespace=${encodeURIComponent(ns)}${typeParam}`
+        `/api/search?q=${encodeURIComponent(q)}&n=25&include_other=true&namespace=${encodeURIComponent(requestedNs)}${typeParam}`
       );
+      if (seq !== searchSeq || requestedNs !== ns) return;
       if (res && Array.isArray(res.results)) {
         searchResults = res.results;
         otherPossibleResults = Array.isArray(res.other_possible_memories) ? res.other_possible_memories : [];
@@ -1574,7 +1782,13 @@ async function saveMemory() {
     notify(wasEdit ? 'Memory updated' : 'Memory saved');
     await refreshAll();
   } else {
-    notify('Failed to save memory');
+    let detail = '';
+    try {
+      const body = await res.json();
+      const reason = body && (body.detail || body.error);
+      if (reason) detail = `: ${typeof reason === 'string' ? reason : JSON.stringify(reason)}`;
+    } catch { /* non-JSON error body */ }
+    notify(`Failed to save memory${detail}`);
   }
 }
 
@@ -1837,10 +2051,8 @@ def dashboard(request: Request) -> HTMLResponse:
     expected_token = get_or_create_auth_token()
     provided_token = _extract_request_token(request)
     code = (request.query_params.get("code") or "").strip()
-    if code and code in _LAUNCH_NONCES:
-        if (time.time() - _LAUNCH_NONCES[code]) < 60.0:
-            provided_token = expected_token
-        _LAUNCH_NONCES.pop(code, None)
+    if code and _consume_launch_nonce(code):
+        provided_token = expected_token
 
     has_auth_override = verify_dashboard_auth in api.dependency_overrides
     is_authenticated = has_auth_override or (
@@ -1929,7 +2141,7 @@ def run(
     get_or_create_auth_token()
     db_file = ensure_secure_mesh_dir().resolve() / f"mesh_{clean_ns}.db"
     if db_file.exists():
-        _mesh = Mesh(namespace=clean_ns, agent_id="dashboard", create=False)
+        _mesh = Mesh(namespace=clean_ns, agent_id="dashboard", create=False, trusted_local=True)
 
     from .memory import _has_local_onnx_pair
 
@@ -1943,7 +2155,7 @@ def run(
         threading.Thread(target=warmup_model, args=(clean_ns, False, False), daemon=True).start()
 
     nonce = secrets.token_urlsafe(16)
-    _LAUNCH_NONCES[nonce] = time.time()
+    _register_launch_nonce(nonce)
     launch_url = f"http://localhost:{resolved_port}/?ns={clean_ns}&code={nonce}"
 
     from . import ui

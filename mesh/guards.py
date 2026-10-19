@@ -10,17 +10,19 @@ import re
 from typing import NamedTuple, Optional
 
 from .passive import (
+    _INVISIBLE_CHAR_CLASS,
     _is_credential,
     _is_poison_attempt,
     _redact_secrets_for_cloud,
 )
 
-# Strip control characters (C0/C1) except newline (\n) and tab (\t), plus
-# invisible zero-width / bidi formatting characters that can hide poison text.
-# Written as escapes so the source cannot be altered by editors or copy/paste.
+# Strip control characters (C0/C1) except newline (\n) and tab (\t), plus the
+# invisible formatting characters that can hide or split poison text and
+# credentials (soft hyphen, zero-width joiners, bidi controls, tag characters).
+# The invisible ranges are shared with `passive.py` so the guard, the poison
+# detector, and the cloud redactor can never drift apart.
 _CONTROL_CHAR_RE = re.compile(
-    "[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f"
-    "​-‏‪-‮⁠-⁤﻿⁦-⁩]"
+    "[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f" + _INVISIBLE_CHAR_CLASS + "]"
 )
 
 
@@ -57,6 +59,24 @@ def guard_ingest(content: str, local_only: bool = False) -> GuardResult:
             warnings=(),
         )
 
+    # Bound the work done by the credential/poison regexes. The memory store
+    # rejects content over `MAX_CONTENT_LENGTH` anyway, but that check happened
+    # *after* the guard, so a multi-megabyte unbroken token (base64 blob,
+    # minified code) spent seconds in regex matching before being refused.
+    from .memory import MAX_CONTENT_LENGTH
+
+    if len(sanitized) > MAX_CONTENT_LENGTH:
+        return GuardResult(
+            content=sanitized,
+            local_only=local_only,
+            rejected=True,
+            reason=(
+                f"content length ({len(sanitized)} chars) exceeds maximum allowed "
+                f"length ({MAX_CONTENT_LENGTH} chars)."
+            ),
+            warnings=(),
+        )
+
     # 1. Prompt injection / poison check. `_is_poison_attempt()` applies NFKC
     # normalization internally so full-width / compatibility characters cannot
     # hide an instruction phrase from the regex while the context renderer
@@ -85,5 +105,5 @@ def guard_ingest(content: str, local_only: bool = False) -> GuardResult:
         local_only=final_local_only,
         rejected=False,
         reason=None,
-        warnings=warnings,
+        warnings=tuple(warnings),
     )

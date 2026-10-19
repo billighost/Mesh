@@ -42,9 +42,10 @@ def test_install_skill_to_custom_dir():
         assert changed2 is False
         assert "already installed" in msg2
 
-        # Second install with dry_run
+        # Second install with dry_run: already up to date, and a dry run must
+        # never report that it changed anything.
         msg3, changed3 = install_skill(target_root, dry_run=True)
-        assert changed3 is True
+        assert changed3 is False
         assert "would install to" in msg3
 
 

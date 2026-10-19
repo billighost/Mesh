@@ -19,7 +19,7 @@ import sys
 import time
 from contextlib import ExitStack
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from .audit import (
     _get_audit_db_path,
@@ -30,12 +30,15 @@ from .audit import (
     validate_namespace,
 )
 from .store import (
+    NamespaceLimitExceededError,
     NamespaceNotFoundError,
     _CACHE_LOCK,
+    _CONNECTION_POOL,
     _INITIALIZED_DBS,
     _TRANSIENT_EMBEDDINGS,
     _VECTOR_CACHE,
     _compute_row_effective_confidence,
+    _evict_vector_cache_for_db_path,
     _utc_now,
     close_store_connection,
     evict_namespace_write_lock,
@@ -138,20 +141,25 @@ def _checkpoint_truncate_or_raise(conn: sqlite3.Connection, db_path: Path) -> No
         )
 
 
-def _evict_namespace_caches(namespace: str, db_path: Path) -> None:
+def _evict_namespace_caches(namespace: str, db_path: Optional[Path] = None) -> None:
     """
     Clear all in-memory caches and close pooled SQLite connections for `namespace`
     across store, audit, context_builder, http_server, mcp_server, and dashboard.
     Only touches already-imported server modules in `sys.modules` to preserve lazy loading.
     """
     clean_ns = validate_namespace(namespace)
+    if db_path is None:
+        base_dir = ensure_secure_mesh_dir().resolve()
+        db_path = _safe_mesh_db_path(base_dir, clean_ns)
     resolved_db = db_path.resolve()
 
     evict_namespace_write_lock(clean_ns)
 
     with _CACHE_LOCK:
-        _VECTOR_CACHE.pop(resolved_db, None)
-        _VECTOR_CACHE.pop(db_path, None)
+        # Clear every namespace spelling that shares this file; a single
+        # `_VECTOR_CACHE.pop(path)` would miss case-variant keys.
+        _evict_vector_cache_for_db_path(resolved_db)
+        _evict_vector_cache_for_db_path(db_path)
         _INITIALIZED_DBS.pop(resolved_db, None)
         _INITIALIZED_DBS.pop(db_path, None)
         close_store_connection(resolved_db)
@@ -189,6 +197,32 @@ def _evict_namespace_caches(namespace: str, db_path: Path) -> None:
             dash_mod.evict_dashboard_mesh_cache(clean_ns)
         except Exception:
             pass
+
+
+def evict_lru_namespace(exclude_namespace: Optional[str] = None) -> Optional[str]:
+    """
+    Evict the least-recently-used namespace (other than `exclude_namespace`) across
+    store, vector, audit, context_builder, HTTP, MCP, and dashboard caches.
+    """
+    excl = validate_namespace(exclude_namespace) if exclude_namespace else None
+    victim_ns: Optional[str] = None
+    victim_db: Optional[Path] = None
+    with _CACHE_LOCK:
+        for db_path, ns in _VECTOR_CACHE.keys():
+            if ns != excl:
+                victim_ns = ns
+                victim_db = db_path
+                break
+        if victim_ns is None:
+            for db_path in _CONNECTION_POOL.keys():
+                cand_ns = _namespace_from_db_path(db_path)
+                if cand_ns != excl:
+                    victim_ns = cand_ns
+                    victim_db = db_path
+                    break
+    if victim_ns is not None:
+        _evict_namespace_caches(victim_ns, victim_db)
+    return victim_ns
 
 
 def _remove_sqlite_files(db_path: Path, strict: bool = False) -> bool:
@@ -531,7 +565,19 @@ def namespace_stats(namespace: str) -> dict[str, Any]:
             "SELECT SUM(access_count) as total FROM memories WHERE namespace = ?", (clean_ns,)
         )
         recall_row = cursor.fetchone()
+        # SUM(access_count) counts memory *hits*, not recall calls. Keep the key
+        # for API compatibility but expose the real search count separately.
         total_recalls = int(recall_row["total"] or 0)
+
+        total_searches = 0
+        try:
+            cursor.execute(
+                "SELECT COUNT(*) as total FROM queries WHERE namespace = ?", (clean_ns,)
+            )
+            total_searches = int(cursor.fetchone()["total"] or 0)
+        except sqlite3.OperationalError:
+            # Databases created before recall telemetry existed have no table.
+            total_searches = 0
 
         cursor.execute("SELECT MIN(created_at) as oldest FROM memories WHERE namespace = ?", (clean_ns,))
         oldest = cursor.fetchone()["oldest"] or "none"
@@ -564,6 +610,7 @@ def namespace_stats(namespace: str) -> dict[str, Any]:
         "type_breakdown": type_breakdown,
         "avg_confidence": avg_conf,
         "total_recalls": total_recalls,
+        "total_searches": total_searches,
         "oldest_memory": oldest,
         "newest_memory": newest,
         "stale_count": stale,

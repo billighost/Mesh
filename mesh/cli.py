@@ -480,7 +480,7 @@ def setup_cmd() -> None:
                     stdout=True,
                 )
         else:
-            ensure_model_downloaded(blocking=False, assume_yes=True)
+            ensure_model_downloaded(blocking=False, assume_yes=True, detached=True)
             ui.info("Downloading embedding model in the background", _tilde(str(_ONNX_MODEL_DIR)))
     else:
         skipped_steps += 1
@@ -687,7 +687,7 @@ def add_cmd() -> None:
         else:
             from .memory import Mesh
 
-            mesh = Mesh(namespace=ns, agent_id="human-cli", create=True)
+            mesh = Mesh(namespace=ns, agent_id="human-cli", create=True, trusted_local=True)
             try:
                 result = mesh.learn(
                     content=final_content,
@@ -806,7 +806,7 @@ def ask_cmd() -> None:
 
             sp.update(f"Searching {ns} (loading the embedding model on first use)…")
             try:
-                mesh = Mesh(namespace=ns, agent_id="human-cli", create=False)
+                mesh = Mesh(namespace=ns, agent_id="human-cli", create=False, trusted_local=True)
             except NamespaceNotFoundError:
                 mesh = None
                 ns_missing = True
@@ -924,7 +924,7 @@ def inspect_cmd() -> None:
         from .memory import Mesh
 
         try:
-            mesh = Mesh(namespace=ns, agent_id="cli", create=False)
+            mesh = Mesh(namespace=ns, agent_id="cli", create=False, trusted_local=True)
         except NamespaceNotFoundError:
             _handle_missing_namespace_cli(ns, args.json)
             return
@@ -1065,7 +1065,7 @@ def update_cmd() -> None:
     from .store import NamespaceNotFoundError
 
     try:
-        mesh = Mesh(namespace=ns, agent_id="human-cli", create=False)
+        mesh = Mesh(namespace=ns, agent_id="human-cli", create=False, trusted_local=True)
         res = mesh.update(
             memory_id=args.memory_id,
             content=content,
@@ -1123,7 +1123,7 @@ def forget_cmd() -> None:
     from .store import NamespaceNotFoundError
 
     try:
-        mesh = Mesh(namespace=ns, agent_id="human-cli", create=False)
+        mesh = Mesh(namespace=ns, agent_id="human-cli", create=False, trusted_local=True)
         deleted = mesh.forget(args.memory_id)
     except NamespaceNotFoundError:
         _handle_missing_namespace_cli(ns)
@@ -1164,7 +1164,7 @@ def conflicts_cmd() -> None:
         from .memory import Mesh
 
         try:
-            mesh = Mesh(namespace=ns, agent_id="cli", create=False)
+            mesh = Mesh(namespace=ns, agent_id="cli", create=False, trusted_local=True)
             mesh.resolve_contradiction(args.resolve)
             print()
             ui.success(f"Resolved conflict {ui.style(str(args.resolve)[:8], 'bold')}")
@@ -1190,7 +1190,7 @@ def conflicts_cmd() -> None:
         from .memory import Mesh
 
         try:
-            mesh = Mesh(namespace=ns, agent_id="cli", create=False)
+            mesh = Mesh(namespace=ns, agent_id="cli", create=False, trusted_local=True)
         except NamespaceNotFoundError:
             _handle_missing_namespace_cli(ns, args.json)
             return
@@ -1255,7 +1255,7 @@ def patterns_cmd() -> None:
         from .memory import Mesh
 
         try:
-            mesh = Mesh(namespace=ns, agent_id="cli", create=False)
+            mesh = Mesh(namespace=ns, agent_id="cli", create=False, trusted_local=True)
         except NamespaceNotFoundError:
             _handle_missing_namespace_cli(ns, args.json)
             return
@@ -1466,8 +1466,11 @@ def doctor_cmd() -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 _SHELL_FORWARD_NS = {
+    # Deliberately excludes `import`: the export file normally names its own
+    # namespace, and injecting the shell's active `--namespace` silently
+    # redirected every restore into the wrong namespace.
     "add", "ask", "inspect", "update", "forget", "status", "why", "context",
-    "conflicts", "patterns", "digest", "export", "import", "capture",
+    "conflicts", "patterns", "digest", "export", "capture",
 }
 
 
@@ -1808,7 +1811,8 @@ def namespaces_cmd() -> None:
                 ("Exportable", str(st["exportable_count"])),
                 ("Stale", ui.style(str(stale), "warn") if stale else "0"),
                 ("Avg confidence", f"{ui.meter(float(st['avg_confidence']))} {st['avg_confidence']:.2f}"),
-                ("Recalls", str(st["total_recalls"])),
+                ("Searches", str(st.get("total_searches", 0))),
+                ("Memory hits", str(st["total_recalls"])),
             ]
         )
         types = st.get("type_breakdown") or {}
@@ -2020,7 +2024,7 @@ def status_cmd() -> None:
         if st["stale_count"]:
             bits.append(ui.style(f"{st['stale_count']} stale", "warn"))
         rows.append(("Memories", _muted_join(bits)))
-        rows.append(("Searches", str(st["total_recalls"])))
+        rows.append(("Searches", str(st.get("total_searches", 0))))
     else:
         rows.append(("Memories", ui.style("namespace doesn't exist yet", "muted")))
     rows.append(
