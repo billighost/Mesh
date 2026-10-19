@@ -1,15 +1,13 @@
 """
 mesh/daemon.py — Background daemon, authentication token manager, and OS login auto-start manager.
 
-Capabilities:
-  - Interactive `y/n` user permission prompts before spawning background processes or modifying OS startup
-  - Per-user 256-bit authentication token (`~/.mesh/auth_token`, created atomically with mode 0600)
-  - Cryptographic HMAC-SHA256 challenge-response daemon identity verification on `/identity`
-    so CLI and MCP clients never transmit bearer tokens to port-squatting processes
-  - Reduced `/health` endpoint (`{"status": "ok", "version": ...}` — no PID or engine details leaked)
-  - Enforced 0700 `~/.mesh` directory and 0600 `daemon.log` permissions on POSIX
-  - Strict process UID and command-line ownership verification before stopping PIDs
-  - XML-escaped macOS LaunchAgent plist & Desktop Entry spec-compliant Linux `.desktop` entries
+Addresses Findings:
+  - S9: Tracks `(st_mtime_ns, st_size)` of `~/.mesh/auth_token` so token rotations on disk
+        are picked up immediately by running processes without a restart, and adds
+        `rotate_auth_token()` + `mesh daemon rotate-token` CLI action.
+  - S9: Supports optional Unix domain socket (`MESH_UNIX_SOCKET`) when spawning the daemon.
+  - N5 & N6: Rejects symlinks (`reject_symlink`) and applies Windows owner-only ACLs via
+             `secure_file_permissions` on `auth_token`, `daemon.pid`, `daemon.log`, and `.autostart_registered`.
 """
 from __future__ import annotations
 
@@ -34,7 +32,12 @@ from pathlib import Path
 from typing import Any, Optional, Union
 from xml.sax.saxutils import escape as xml_escape
 
-from .audit import ensure_secure_mesh_dir, get_mesh_dir, secure_file_permissions
+from .audit import (
+    ensure_secure_mesh_dir,
+    get_mesh_dir,
+    reject_symlink,
+    secure_file_permissions,
+)
 from .envutil import env_float, env_int
 from .store import _acquire_os_file_lock, _release_os_file_lock
 
@@ -72,17 +75,12 @@ _LAST_SPAWN_TS = 0.0
 _TOKEN_LOCK = threading.Lock()
 _CACHED_TOKEN: Optional[str] = None
 _CACHED_TOKEN_PATH: Optional[Path] = None
+_CACHED_TOKEN_STAMP: Optional[tuple[int, int]] = None
 
-# Characters that require double-quoting in a freedesktop.org Desktop Entry `Exec=` value
 _DESKTOP_EXEC_SPECIAL_RE = re.compile(r'[\s"\'`$\\><~|&;*?#()]')
 
 
 def _format_desktop_exec_arg(arg: str) -> str:
-    """
-    Format a single command-line argument according to the freedesktop.org Desktop Entry
-    Specification for the `Exec=` key (never uses single quotes, escapes `\\`, `"`, `` ` ``,
-    and `$` inside double quotes, and doubles literal `%` field-code characters).
-    """
     s = str(arg).replace("%", "%%")
     if not s:
         return '""'
@@ -98,23 +96,37 @@ def _format_desktop_exec_arg(arg: str) -> str:
 
 
 def _format_desktop_exec_command(args: list[str]) -> str:
-    """Join command arguments into a Desktop Entry spec-compliant `Exec=` string."""
     return " ".join(_format_desktop_exec_arg(str(a)) for a in args)
+
+
+def _get_token_file_stamp(token_file: Path) -> Optional[tuple[int, int]]:
+    try:
+        if not token_file.exists():
+            return None
+        st = token_file.stat()
+        return (int(st.st_mtime_ns), int(st.st_size))
+    except OSError:
+        return None
 
 
 def _write_private_file(path: Path, content: str) -> None:
     """
     Write `content` to `path` creating the file with 0600 permissions atomically from birth
-    so sensitive tokens are never briefly world-readable or visible truncated to concurrent readers.
+    (and owner-only Windows ACLs via `secure_file_permissions`, Findings N5, N6).
     """
     ensure_secure_mesh_dir(path.parent)
+    reject_symlink(path)
     tmp_path = path.with_suffix(f".tmp.{os.getpid()}.{threading.get_ident()}")
+    reject_symlink(tmp_path)
     if os.name == "nt":
         tmp_path.write_text(content, encoding="utf-8")
         os.replace(tmp_path, path)
+        secure_file_permissions(path)
         return
 
     flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
     fd = os.open(str(tmp_path), flags, stat.S_IRUSR | stat.S_IWUSR)
     try:
         os.fchmod(fd, stat.S_IRUSR | stat.S_IWUSR)
@@ -128,11 +140,16 @@ def _write_private_file(path: Path, content: str) -> None:
 
 
 def _open_private_log_append(path: Path) -> Any:
-    """Open `daemon.log` in append mode with 0600 permissions on POSIX."""
+    """Open `daemon.log` in append mode with 0600 permissions on POSIX and owner ACLs on Windows."""
     ensure_secure_mesh_dir(path.parent)
+    reject_symlink(path)
     if os.name == "nt":
-        return open(path, "a", encoding="utf-8")
+        fh = open(path, "a", encoding="utf-8")
+        secure_file_permissions(path)
+        return fh
     flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
     fd = os.open(str(path), flags, stat.S_IRUSR | stat.S_IWUSR)
     try:
         os.fchmod(fd, stat.S_IRUSR | stat.S_IWUSR)
@@ -142,7 +159,7 @@ def _open_private_log_append(path: Path) -> Any:
 
 
 def _read_valid_token_file(token_file: Path) -> Optional[str]:
-    """Read and return the token from `token_file` if it exists and is at least 16 chars."""
+    reject_symlink(token_file)
     if not token_file.exists():
         return None
     try:
@@ -156,11 +173,10 @@ def _read_valid_token_file(token_file: Path) -> Optional[str]:
 
 
 def _try_atomic_create_token_file(token_file: Path, token: str) -> bool:
-    """
-    Attempt to create `token_file` atomically with `O_CREAT | O_EXCL` (mode 0600).
-    Returns True if this call created the file, or False if the file already exists.
-    """
+    reject_symlink(token_file)
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
     mode = stat.S_IRUSR | stat.S_IWUSR if os.name != "nt" else 0o600
     try:
         fd = os.open(str(token_file), flags, mode)
@@ -196,22 +212,32 @@ def _try_atomic_create_token_file(token_file: Path, token: str) -> bool:
 def get_or_create_auth_token() -> str:
     """
     Return the local Mesh authentication token stored in `~/.mesh/auth_token` (mode 0600).
-    Supports `MESH_AUTH_TOKEN` (and `MESH_TOKEN` alias) environment variable override.
-    Uses atomic `O_CREAT | O_EXCL` creation across all platforms and a cross-process
-    lock when repairing a corrupt/short token file so concurrent callers never overwrite
-    a valid token (Observation D).
+    Finding S9: Revalidates `(st_mtime_ns, st_size)` against `_CACHED_TOKEN_STAMP` so
+    `rotate_auth_token()` updates are immediately visible to all local processes.
     """
-    global _CACHED_TOKEN, _CACHED_TOKEN_PATH
+    global _CACHED_TOKEN, _CACHED_TOKEN_PATH, _CACHED_TOKEN_STAMP
     env_tok = (os.environ.get("MESH_AUTH_TOKEN") or os.environ.get("MESH_TOKEN") or "").strip()
     if env_tok:
         return env_tok
     token_file = _auth_token_file()
-    if _CACHED_TOKEN and _CACHED_TOKEN_PATH == token_file and token_file.exists():
+    cur_stamp = _get_token_file_stamp(token_file)
+    if (
+        _CACHED_TOKEN
+        and _CACHED_TOKEN_PATH == token_file
+        and cur_stamp is not None
+        and _CACHED_TOKEN_STAMP == cur_stamp
+    ):
         return _CACHED_TOKEN
 
     with _TOKEN_LOCK:
         token_file = _auth_token_file()
-        if _CACHED_TOKEN and _CACHED_TOKEN_PATH == token_file and token_file.exists():
+        cur_stamp = _get_token_file_stamp(token_file)
+        if (
+            _CACHED_TOKEN
+            and _CACHED_TOKEN_PATH == token_file
+            and cur_stamp is not None
+            and _CACHED_TOKEN_STAMP == cur_stamp
+        ):
             return _CACHED_TOKEN
         ensure_secure_mesh_dir(token_file.parent)
 
@@ -219,6 +245,7 @@ def get_or_create_auth_token() -> str:
         if existing is not None:
             _CACHED_TOKEN = existing
             _CACHED_TOKEN_PATH = token_file
+            _CACHED_TOKEN_STAMP = _get_token_file_stamp(token_file)
             return existing
 
         token = secrets.token_urlsafe(32)
@@ -226,24 +253,21 @@ def get_or_create_auth_token() -> str:
             if _try_atomic_create_token_file(token_file, token):
                 _CACHED_TOKEN = token
                 _CACHED_TOKEN_PATH = token_file
+                _CACHED_TOKEN_STAMP = _get_token_file_stamp(token_file)
                 return token
         except OSError:
             pass
 
-        # Another process/thread created the file or a pre-existing file is present.
-        # Wait briefly in case the winner just opened the file and is flushing bytes.
         for attempt in range(6):
             existing = _read_valid_token_file(token_file)
             if existing is not None:
                 _CACHED_TOKEN = existing
                 _CACHED_TOKEN_PATH = token_file
+                _CACHED_TOKEN_STAMP = _get_token_file_stamp(token_file)
                 return existing
             if attempt < 5:
                 time.sleep(0.005 * (attempt + 1))
 
-        # The file on disk is genuinely corrupt/empty/short. Serialize repair across
-        # processes with an advisory lock and re-check before replacing so only one
-        # process repairs the file and later arrivals read the winner's token.
         repair_lock_path = token_file.with_name(".auth_token.lock")
         lock_fd: Optional[int] = None
         try:
@@ -252,6 +276,7 @@ def get_or_create_auth_token() -> str:
             if existing is not None:
                 _CACHED_TOKEN = existing
                 _CACHED_TOKEN_PATH = token_file
+                _CACHED_TOKEN_STAMP = _get_token_file_stamp(token_file)
                 return existing
 
             try:
@@ -263,6 +288,7 @@ def get_or_create_auth_token() -> str:
                 if _try_atomic_create_token_file(token_file, token):
                     _CACHED_TOKEN = token
                     _CACHED_TOKEN_PATH = token_file
+                    _CACHED_TOKEN_STAMP = _get_token_file_stamp(token_file)
                     return token
             except OSError:
                 pass
@@ -271,6 +297,7 @@ def get_or_create_auth_token() -> str:
             if existing is not None:
                 _CACHED_TOKEN = existing
                 _CACHED_TOKEN_PATH = token_file
+                _CACHED_TOKEN_STAMP = _get_token_file_stamp(token_file)
                 return existing
 
             _write_private_file(token_file, token)
@@ -287,11 +314,38 @@ def get_or_create_auth_token() -> str:
 
         _CACHED_TOKEN = token
         _CACHED_TOKEN_PATH = token_file
+        _CACHED_TOKEN_STAMP = _get_token_file_stamp(token_file)
         return token
 
 
+def rotate_auth_token() -> str:
+    """
+    Atomically generate and write a fresh 256-bit authentication token to `~/.mesh/auth_token`,
+    invalidating in-memory token and daemon identity caches (Finding S9).
+    """
+    global _CACHED_TOKEN, _CACHED_TOKEN_PATH, _CACHED_TOKEN_STAMP
+    token_file = _auth_token_file()
+    ensure_secure_mesh_dir(token_file.parent)
+    new_token = secrets.token_urlsafe(32)
+    repair_lock_path = token_file.with_name(".auth_token.lock")
+    lock_fd: Optional[int] = None
+    with _TOKEN_LOCK:
+        try:
+            lock_fd = _acquire_os_file_lock(repair_lock_path, timeout=5.0)
+            _write_private_file(token_file, new_token)
+            _CACHED_TOKEN = new_token
+            _CACHED_TOKEN_PATH = token_file
+            _CACHED_TOKEN_STAMP = _get_token_file_stamp(token_file)
+        finally:
+            if lock_fd is not None:
+                _release_os_file_lock(lock_fd)
+    with _VERIFIED_DAEMON_LOCK:
+        _VERIFIED_DAEMON_CACHE.clear()
+    return new_token
+
+
 def get_auth_headers() -> dict[str, str]:
-    """Return HTTP headers containing the local Mesh bearer token."""
+    """Return HTTP headers containing the local Mesh bearer token[cite: 2]."""
     tok = get_or_create_auth_token()
     return {
         "Authorization": f"Bearer {tok}",
@@ -302,11 +356,7 @@ def get_auth_headers() -> dict[str, str]:
 def request_user_permission(action_desc: str, assume_yes: bool = False) -> bool:
     """
     Prompt the user with a `y/n` question before starting a background process,
-    downloading model weights, modifying shell config files, or calling external cloud APIs.
-    Returns True if approved, or False in non-interactive contexts.
-
-    Non-interactive and declined prompts explain why nothing happened and how to
-    approve explicitly (`--yes`), instead of skipping silently.
+    downloading model weights, or modifying shell config files[cite: 2].
     """
     try:
         from . import ui
@@ -316,7 +366,6 @@ def request_user_permission(action_desc: str, assume_yes: bool = False) -> bool:
             assume_yes=assume_yes,
         )
     except Exception:
-        # ui is presentation only; permission checks must still work without it.
         pass
     if assume_yes or os.environ.get("MESH_AUTO_APPROVE", "").strip().lower() in ("1", "true", "yes"):
         return True
@@ -352,7 +401,6 @@ def invalidate_daemon_identity_cache(
     host: Optional[str] = DEFAULT_HOST,
     port: Optional[int] = DEFAULT_PORT,
 ) -> None:
-    """Invalidate cached daemon verification result for (host, port)."""
     h = host or DEFAULT_HOST
     p = int(port or DEFAULT_PORT)
     with _VERIFIED_DAEMON_LOCK:
@@ -364,11 +412,6 @@ def get_daemon_health(
     port: int = DEFAULT_PORT,
     timeout: float = 0.6,
 ) -> Optional[dict[str, Any]]:
-    """
-    Query the unauthenticated local daemon `/health` endpoint.
-    Returns `{"status": "ok", "version": ...}` if alive, else None.
-    Never sends the bearer token.
-    """
     url = f"http://{host}:{port}/health"
     try:
         req = urllib.request.Request(
@@ -391,12 +434,6 @@ def verify_daemon_identity(
     port: int = DEFAULT_PORT,
     timeout: float = 0.5,
 ) -> Optional[dict[str, Any]]:
-    """
-    Verify that the process listening on `host:port` possesses `~/.mesh/auth_token`
-    via the `/identity` HMAC-SHA256 challenge-response handshake without sending the bearer token.
-    Caches positive results for up to 30 seconds per `(host, port)`.
-    Invalidates cache, prints a clear stderr warning on proof mismatch, and returns None on failure.
-    """
     key = (host, int(port))
     now = time.monotonic()
     with _VERIFIED_DAEMON_LOCK:
@@ -455,7 +492,6 @@ def trigger_daemon_unload(
     host: str = DEFAULT_HOST,
     port: int = DEFAULT_PORT,
 ) -> Optional[dict[str, Any]]:
-    """Ask the running daemon to unload the neural model from RAM immediately (after identity check)."""
     if not verify_daemon_identity(host=host, port=port, timeout=0.5):
         return None
     try:
@@ -479,6 +515,7 @@ def _read_pid_file() -> Optional[int]:
     if not pid_file.exists():
         return None
     try:
+        reject_symlink(pid_file)
         raw = pid_file.read_text(encoding="utf-8").strip()
         return int(raw) if raw else None
     except (OSError, ValueError):
@@ -521,11 +558,6 @@ def _is_pid_alive(pid: int) -> bool:
 
 
 def _matches_mesh_daemon_cmdline(cmdline: Union[str, list[str]]) -> bool:
-    """
-    Strictly verify that a command-line string or token list belongs to a Mesh HTTP daemon process
-    (`python -m mesh.http_server`, `mesh-http`, `mesh-server-http`, `mesh http`, `mesh daemon`),
-    rejecting unrelated processes that merely contain the substring 'mesh' in an argument.
-    """
     if isinstance(cmdline, (list, tuple)):
         norm = " ".join(str(c) for c in cmdline).strip()
     else:
@@ -541,14 +573,12 @@ def _matches_mesh_daemon_cmdline(cmdline: Union[str, list[str]]) -> bool:
     if not tokens:
         return False
 
-    # Case 1: `python -m mesh.http_server` or `python -m mesh.daemon`
     for idx, tok in enumerate(tokens[:-1]):
         if tok == "-m" and tokens[idx + 1] in ("mesh.http_server", "mesh.daemon"):
             return True
     if any(tok in ("mesh.http_server", "mesh.daemon") for tok in tokens):
         return True
 
-    # Case 2: Direct console script or module path (`mesh-http`, `mesh-server-http`, `mesh-daemon`, `.../mesh/http_server.py`)
     basenames = [t.rsplit("/", 1)[-1] for t in tokens]
     for base in basenames:
         stem = base[:-4] if base.endswith(".exe") else base
@@ -558,7 +588,6 @@ def _matches_mesh_daemon_cmdline(cmdline: Union[str, list[str]]) -> bool:
         if tok.endswith("/mesh/http_server.py") or tok == "mesh/http_server.py":
             return True
 
-    # Case 3: `mesh http` or `mesh daemon`
     for idx, base in enumerate(basenames[:-1]):
         stem = base[:-4] if base.endswith(".exe") else base
         if stem == "mesh" and tokens[idx + 1] in ("http", "daemon"):
@@ -568,10 +597,6 @@ def _matches_mesh_daemon_cmdline(cmdline: Union[str, list[str]]) -> bool:
 
 
 def _is_mesh_daemon_process(pid: int) -> bool:
-    """
-    Verify that `pid` is owned by the current OS user and its command line strictly
-    matches a Mesh daemon / `mesh.http_server` process before attempting to terminate it.
-    """
     if not _is_pid_alive(pid):
         return False
     if os.name == "nt":
@@ -642,11 +667,6 @@ def ensure_daemon_running(
     interactive_prompt: bool = True,
     assume_yes: bool = False,
 ) -> dict[str, Any]:
-    """
-    Ensure the Mesh background HTTP daemon is running and verified via `/identity`.
-    Asks the user for `y/n` permission before spawning a background process unless
-    already running or `assume_yes=True` / `MESH_AUTO_APPROVE=1`.
-    """
     global _LAST_SPAWN_TS
     if os.environ.get("MESH_IN_DAEMON", "").strip().lower() in ("1", "true", "yes"):
         return {
@@ -703,13 +723,6 @@ def start_daemon(
     interactive_prompt: bool = False,
     assume_yes: bool = False,
 ) -> dict[str, Any]:
-    """
-    Start the Mesh background HTTP daemon if not already running and verified.
-    Only removes or overwrites `daemon.pid` when the process is confirmed dead
-    (`poll() is not None` or stale PID file). On identity-verification timeout while
-    the child process is still alive, leaves `daemon.pid` intact and returns a
-    retryable status instead of spawning duplicate daemons (Observation C).
-    """
     existing_ident = verify_daemon_identity(
         host=host,
         port=port,
@@ -728,7 +741,6 @@ def start_daemon(
             "health": existing_ident,
         }
 
-    # Check if an existing PID file belongs to a live Mesh daemon that is still starting up.
     existing_pid = _read_pid_file()
     if existing_pid is not None:
         if _is_pid_alive(existing_pid) and _is_mesh_daemon_process(existing_pid):
@@ -762,7 +774,6 @@ def start_daemon(
                         "identity verification timed out. Retry shortly."
                     ),
                 }
-        # Existing PID file demonstrably belongs to a dead or non-Mesh process.
         _remove_pid_file()
 
     if interactive_prompt and not request_user_permission(
@@ -785,6 +796,9 @@ def start_daemon(
         "--idle-timeout",
         str(idle_timeout),
     ]
+    uds_path = os.environ.get("MESH_UNIX_SOCKET", "").strip()
+    if uds_path and os.name != "nt":
+        cmd.extend(["--unix-socket", uds_path])
     if lazy:
         cmd.append("--no-warmup")
 
@@ -864,9 +878,6 @@ def start_daemon(
             "health": verified,
         }
 
-    # Verification did not complete within the wait window. Only remove the PID file
-    # if the spawned process has actually exited; if it is still alive, leave state
-    # intact and report a retryable error.
     proc_dead = proc.poll() is not None
     if proc_dead:
         if _read_pid_file() == proc.pid:
@@ -900,10 +911,6 @@ def start_daemon(
 
 
 def stop_daemon(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> dict[str, Any]:
-    """
-    Stop the running Mesh daemon after verifying process ownership and HMAC identity.
-    Obtains the PID from `~/.mesh/daemon.pid` and from verified `/identity`, not from `/health`.
-    """
     pid_from_file = _read_pid_file()
     ident = verify_daemon_identity(host=host, port=port, timeout=0.5)
     pid_from_identity = (
@@ -964,7 +971,6 @@ def install_startup(
     interactive_prompt: bool = False,
     assume_yes: bool = False,
 ) -> dict[str, Any]:
-    """Register the Mesh daemon for OS login auto-start (with XML & Desktop Entry spec escaping)."""
     if interactive_prompt and not request_user_permission(
         "register the Mesh daemon for OS login auto-start",
         assume_yes=assume_yes,
@@ -1068,7 +1074,6 @@ def install_startup(
 
 
 def remove_startup() -> dict[str, Any]:
-    """Remove login auto-start registration."""
     try:
         _autostart_marker_file().unlink(missing_ok=True)
     except OSError:
@@ -1123,7 +1128,7 @@ def is_startup_installed() -> bool:
 
 
 def daemon_cmd() -> None:
-    """Entry point for: mesh-daemon / mesh daemon"""
+    """Entry point for: mesh-daemon / mesh daemon[cite: 2]"""
     parser = argparse.ArgumentParser(description="Manage background Mesh daemon and auto-start.")
     parser.add_argument(
         "action",
@@ -1136,6 +1141,7 @@ def daemon_cmd() -> None:
             "status",
             "unload",
             "warmup",
+            "rotate-token",
             "install-startup",
             "remove-startup",
         ],
@@ -1148,6 +1154,11 @@ def daemon_cmd() -> None:
     args = parser.parse_args()
 
     from . import ui
+
+    if args.action == "rotate-token":
+        rotate_auth_token()
+        ui.success("Rotated local Mesh authentication token", str(_auth_token_file()))
+        return
 
     if args.action == "start":
         if not request_user_permission(

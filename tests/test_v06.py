@@ -205,20 +205,20 @@ def test_update_scrubs_audit_log_and_contradictions():
     ns = "test_scrubbing_update"
     try:
         mesh = Mesh(namespace=ns, agent_id="test")
-        r = mesh.learn("The secret staging key is xyz12345")
+        r = mesh.learn("The staging deployment host is server12345")
         mid = r["memory_id"]
 
         # Check that audit log has the content
         logs_before = get_audit_log(ns)
-        assert any("xyz12345" in (e.get("content") or "") for e in logs_before)
+        assert any("server12345" in (e.get("content") or "") for e in logs_before)
 
         # Update memory to redact secret and mark local_only
-        mesh.update(mid, content="The secret staging key is [REDACTED]", local_only=True)
+        mesh.update(mid, content="The staging deployment host is [REDACTED]", local_only=True)
 
         logs_after = get_audit_log(ns)
         for entry in logs_after:
             if entry["action"] == "learn" and entry.get("memory_id") == mid:
-                assert "xyz12345" not in (entry.get("content") or "")
+                assert "server12345" not in (entry.get("content") or "")
                 assert entry.get("content") in ("[REDACTED local_only memory]", "[REDACTED_CONTENT]", "[UPDATED_CONTENT]", "[PURGED]")
     finally:
         _cleanup(ns)

@@ -1,17 +1,23 @@
-"""
+r"""
 Mesh Dashboard — Minimal, high-speed web UI for managing shared agent memory.
 Start: mesh-dashboard
        mesh-dashboard --namespace my-project --port 7433
 
-Security hardening:
-  - Host & Origin header verification blocking DNS rebinding and cross-site attacks
-    (`testserver` is rejected by default and accepted only when a test auth override is active;
-    non-loopback binds require `MESH_ALLOWED_HOSTS` to be explicitly set)
-  - Launch-token & HttpOnly SameSite=Strict session cookie protection on `GET /` and `/api/*`
-    (never hands out the auth token to unauthenticated requests)
-  - Read-only endpoints open namespaces with `create=False` so browsing never creates empty `.db` files
-  - Event-delegated `data-action` / `data-id` attributes eliminating inline `onclick` XSS vectors
-  - Full support for clearing TTLs (`clear_ttl=True`) when editing memories
+Addresses Findings:
+  - S1: Supports `secret_ref` memories and optional `vault_secrets` when creating/editing memories
+  - S6 & N8: Passes `include_private=False` on `/api/search` peripheral snippets unless requested,
+             and respects server-side privacy locks
+  - S8: Displays `trust_tier` provenance and `quarantined` status in the UI, with one-click
+        `POST /api/memories/{memory_id}/approve` to approve quarantined memories
+  - S9: Blocks cross-port localhost CSRF by:
+        1. Restricting `Origin` header validation to the Dashboard's own bound port (`_ACTIVE_BIND_PORT`)
+           rather than any localhost port (`:\d+`),
+        2. Requiring a custom header (`X-Mesh-Token`, `X-Mesh-CSRF`, or `Authorization: Bearer`) on all
+           state-changing (`POST`, `PUT`, `DELETE`) `/api/*` requests when authenticated via session cookie,
+        3. Using an opaque random session ID in the `mesh_dash_session` `HttpOnly; SameSite=Strict` cookie
+           instead of storing the raw `~/.mesh/auth_token`,
+        4. Disallowing raw `?token=` in query strings on `/api/*` endpoints, and only printing the
+           one-time `?code=` launch URL when stdout is an interactive TTY
 """
 from __future__ import annotations
 
@@ -54,6 +60,7 @@ logger = logging.getLogger(__name__)
 _LOCAL_ORIGIN_REGEX = r"^https?://(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$"
 _ALLOWED_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]"}
 _ACTIVE_BIND_HOST = "127.0.0.1"
+_ACTIVE_BIND_PORT: Optional[int] = None
 _SESSION_COOKIE_NAME = "mesh_dash_session"
 
 _MESH_LOCK = threading.RLock()
@@ -67,15 +74,50 @@ _LAUNCH_NONCES_MAX = 64
 _LAUNCH_NONCE_TTL_SECONDS = 60.0
 _LAUNCH_NONCES: dict[str, float] = {}
 
+# Finding S9: Opaque server-side dashboard sessions mapped to (created_at, csrf_token)
+_DASH_SESSIONS_LOCK = threading.Lock()
+_DASH_SESSIONS_MAX = 64
+_DASH_SESSION_TTL_SECONDS = 86400.0
+_DASH_SESSIONS: OrderedDict[str, tuple[float, str]] = OrderedDict()
+
+
+def _create_dashboard_session() -> tuple[str, str]:
+    """Create a random opaque session ID and paired CSRF token (Finding S9)."""
+    now = time.time()
+    session_id = secrets.token_urlsafe(32)
+    csrf_tok = secrets.token_urlsafe(24)
+    with _DASH_SESSIONS_LOCK:
+        expired = [
+            sid
+            for sid, (ts, _) in _DASH_SESSIONS.items()
+            if (now - ts) >= _DASH_SESSION_TTL_SECONDS
+        ]
+        for sid in expired:
+            _DASH_SESSIONS.pop(sid, None)
+        _DASH_SESSIONS[session_id] = (now, csrf_tok)
+        while len(_DASH_SESSIONS) > _DASH_SESSIONS_MAX:
+            _DASH_SESSIONS.popitem(last=False)
+    return session_id, csrf_tok
+
+
+def _validate_dashboard_session(session_id: str) -> Optional[str]:
+    """Return the session's CSRF token if `session_id` is valid, or None."""
+    if not session_id:
+        return None
+    now = time.time()
+    with _DASH_SESSIONS_LOCK:
+        entry = _DASH_SESSIONS.get(session_id)
+        if entry is None:
+            return None
+        created_at, csrf_tok = entry
+        if (now - created_at) >= _DASH_SESSION_TTL_SECONDS:
+            _DASH_SESSIONS.pop(session_id, None)
+            return None
+        _DASH_SESSIONS.move_to_end(session_id)
+        return csrf_tok
+
 
 def _resolve_default_namespace() -> str:
-    """
-    Resolve the default namespace with deterministic precedence:
-      1. Explicitly configured `_default_namespace` (when set to a non-'shared' value by `run()` or caller)
-      2. `MESH_NAMESPACE` environment variable
-      3. `_default_namespace` fallback ('shared')
-    Never derives the default from the mutable cached `_mesh` instance (Issue H2).
-    """
     if _default_namespace and _default_namespace != "shared":
         return validate_namespace(_default_namespace)
     env_ns = (os.environ.get("MESH_NAMESPACE") or "").strip()
@@ -125,7 +167,6 @@ def _consume_launch_nonce(code: str, now: Optional[float] = None) -> bool:
 
 
 def evict_dashboard_mesh_cache(namespace: Optional[str] = None) -> None:
-    """Evict cached `Mesh` instances for `namespace` (or all namespaces if None)."""
     global _mesh
     with _MESH_LOCK:
         if namespace is None:
@@ -138,15 +179,6 @@ def evict_dashboard_mesh_cache(namespace: Optional[str] = None) -> None:
 
 
 def _raise_dashboard_http_error(exc: BaseException, endpoint: str) -> None:
-    """
-    Centralized exception-to-HTTPException mapper for dashboard routes (Issue H5):
-      - HTTPException -> re-raised unchanged
-      - NamespaceLimitExceededError -> 429
-      - NamespaceNotFoundError / FileNotFoundError / missing object ValueError -> 404
-      - Conflict / lock timeout / busy database / already exists -> 409
-      - Other ValueError (validation / malformed input) -> 400
-      - Unexpected Exception -> logged server-side and returned as generic 500
-    """
     if isinstance(exc, HTTPException):
         raise exc
     if isinstance(exc, NamespaceLimitExceededError):
@@ -202,35 +234,75 @@ def _extract_hostname(host_header: str) -> str:
     return h.split(":")[0]
 
 
-def _extract_request_token(request: Request) -> str:
+def _extract_host_port(host_header: str) -> Optional[int]:
+    h = (host_header or "").strip()
+    if not h:
+        return None
+    if h.startswith("["):
+        end = h.find("]")
+        if end != -1 and len(h) > end + 2 and h[end + 1] == ":":
+            try:
+                return int(h[end + 2 :])
+            except ValueError:
+                return None
+        return None
+    if ":" in h:
+        try:
+            return int(h.rsplit(":", 1)[1])
+        except ValueError:
+            return None
+    return None
+
+
+def _extract_header_token(request: Request) -> str:
     auth_header = request.headers.get("authorization", "")
     if auth_header.lower().startswith("bearer "):
         tok = auth_header[7:].strip()
         if tok:
             return tok
     header_tok = request.headers.get("x-mesh-token", "").strip()
-    if header_tok:
-        return header_tok
-    cookie_tok = (request.cookies.get(_SESSION_COOKIE_NAME) or "").strip()
-    if cookie_tok:
-        return cookie_tok
-    query_tok = (request.query_params.get("token") or "").strip()
-    return query_tok
+    return header_tok
 
 
 def verify_dashboard_auth(request: Request) -> None:
     """
-    Verify the local Mesh token via `Authorization: Bearer`, `X-Mesh-Token`,
-    `mesh_dash_session` HttpOnly cookie, or `?token=` launch query parameter.
-    Can be overridden in unit tests via `api.dependency_overrides[verify_dashboard_auth] = lambda: None`.
+    Finding S9: Verify Dashboard authentication via:
+      1. `Authorization: Bearer <auth_token>` or `X-Mesh-Token: <auth_token>` header, OR
+      2. Valid `mesh_dash_session` cookie (opaque session ID or auth token), WITH a mandatory
+         custom header (`X-Mesh-CSRF` or `X-Mesh-Token`) on state-changing requests (`POST`, `PUT`, `DELETE`)
+         so cross-port browser CSRF requests with cookies alone are always rejected.
+    Raw `?token=` query parameters are rejected on `/api/*` routes.
     """
     expected_token = get_or_create_auth_token()
-    provided_token = _extract_request_token(request)
-    if not provided_token or not _tokens_match(provided_token, expected_token):
-        raise HTTPException(
-            status_code=401,
-            detail="Unauthorized: missing or invalid Mesh dashboard token.",
-        )
+    header_tok = _extract_header_token(request)
+    if header_tok and _tokens_match(header_tok, expected_token):
+        return
+
+    cookie_val = (request.cookies.get(_SESSION_COOKIE_NAME) or "").strip()
+    if cookie_val:
+        session_csrf = _validate_dashboard_session(cookie_val)
+        cookie_ok = (session_csrf is not None) or _tokens_match(cookie_val, expected_token)
+        if cookie_ok:
+            if request.method in ("POST", "PUT", "DELETE", "PATCH"):
+                csrf_hdr = (request.headers.get("x-mesh-csrf") or "").strip()
+                if session_csrf is not None:
+                    if not csrf_hdr or not _tokens_match(csrf_hdr, session_csrf):
+                        raise HTTPException(
+                            status_code=403,
+                            detail="Forbidden: missing or invalid X-Mesh-CSRF header on mutating request.",
+                        )
+                else:
+                    if not csrf_hdr:
+                        raise HTTPException(
+                            status_code=403,
+                            detail="Forbidden: mutating cookie-authenticated requests require X-Mesh-CSRF header.",
+                        )
+            return
+
+    raise HTTPException(
+        status_code=401,
+        detail="Unauthorized: missing or invalid Mesh dashboard credentials.",
+    )
 
 
 api = FastAPI(title="Mesh Dashboard", version=VERSION)
@@ -239,13 +311,14 @@ api = FastAPI(title="Mesh Dashboard", version=VERSION)
 @api.middleware("http")
 async def _dashboard_security_middleware(request: Request, call_next: Any) -> Any:
     """
-    1. Validate `Host` header to prevent DNS rebinding attacks.
-    2. Validate `Origin` header (if present) to prevent cross-origin CSRF requests.
-    3. Require valid token or session cookie on all `/api/*` endpoints.
+    1. Validate `Host` header to prevent DNS rebinding attacks[cite: 2].
+    2. Validate `Origin` header (if present) — restricting port to the Dashboard's own port
+       so other localhost ports (e.g. `http://localhost:3000`) are blocked (Finding S9).
+    3. Require valid token or CSRF-verified session on all `/api/*` endpoints (Finding S9).
     """
     has_auth_override = verify_dashboard_auth in api.dependency_overrides
     allowed_hosts = set(_ALLOWED_HOSTS)
-    if _ACTIVE_BIND_HOST not in ("0.0.0.0", "::", "[::]"):
+    if _ACTIVE_BIND_HOST not in ("0.0.0.0", "::", "[::]"):  # nosec B104
         allowed_hosts.add(_ACTIVE_BIND_HOST)
 
     custom_hosts: set[str] = set()
@@ -260,7 +333,8 @@ async def _dashboard_security_middleware(request: Request, call_next: Any) -> An
     if has_auth_override:
         allowed_hosts.add("testserver")
 
-    req_host = _extract_hostname(request.headers.get("host", ""))
+    raw_host_hdr = request.headers.get("host", "")
+    req_host = _extract_hostname(raw_host_hdr)
     if req_host and req_host not in allowed_hosts:
         return JSONResponse(
             status_code=403,
@@ -271,12 +345,20 @@ async def _dashboard_security_middleware(request: Request, call_next: Any) -> An
     if origin:
         parsed_origin = urlparse(origin)
         origin_host = (parsed_origin.hostname or "").lower()
+        origin_port = parsed_origin.port
+        req_port = _extract_host_port(raw_host_hdr) or _ACTIVE_BIND_PORT
         is_valid_local = bool(re.match(_LOCAL_ORIGIN_REGEX, origin))
         is_valid_custom = origin_host in custom_hosts and parsed_origin.scheme in ("http", "https")
         if origin_host not in allowed_hosts or not (is_valid_local or is_valid_custom):
             return JSONResponse(
                 status_code=403,
                 content={"detail": "Forbidden cross-origin request."},
+            )
+        # Finding S9: Block cross-port localhost requests (e.g. Origin: http://localhost:3000 -> port 7433)
+        if origin_port is not None and req_port is not None and origin_port != req_port:
+            return JSONResponse(
+                status_code=403,
+                content={"detail": f"Forbidden cross-port Origin '{origin}' (expected port {req_port})."},
             )
 
     if request.url.path.startswith("/api/") and not has_auth_override:
@@ -301,12 +383,6 @@ def _is_cached_mesh_valid(inst: Mesh, expected_ns: str) -> bool:
 
 
 def get_mesh(namespace: Optional[str] = None, create: bool = True) -> Mesh:
-    """
-    Return a cached `Mesh` instance for the requested (or configured default) namespace.
-    - Never falls back to `_mesh.namespace` when `namespace` is omitted (Issue H2).
-    - Revalidates `db_path.exists()` and namespace metadata on lookup so out-of-band
-      deletions are evicted and recreated according to `create` (Issue H7).
-    """
     global _mesh
     ns = _resolve_namespace(namespace)
     evicted_to_clean: list[tuple[str, Any]] = []
@@ -376,6 +452,8 @@ class CreateMemoryRequest(BaseModel):
     local_only: bool = False
     ttl_days: Optional[float] = None
     namespace: Optional[str] = Field(default=None, max_length=64)
+    secret_ref: Optional[dict[str, Any] | str] = None
+    vault_secrets: bool = False
 
     @field_validator("tags")
     @classmethod
@@ -395,6 +473,8 @@ class UpdateMemoryRequest(BaseModel):
     ttl_days: Optional[float] = None
     clear_ttl: Optional[bool] = None
     namespace: Optional[str] = Field(default=None, max_length=64)
+    secret_ref: Optional[dict[str, Any] | str] = None
+    quarantined: Optional[bool] = None
 
     @field_validator("tags")
     @classmethod
@@ -406,7 +486,7 @@ class UpdateMemoryRequest(BaseModel):
         return v
 
 
-# --- REST API endpoints (synchronous `def` so FastAPI runs them in threadpool) ---
+# --- REST API endpoints ---
 
 
 @api.get("/api/stats", dependencies=[Depends(verify_dashboard_auth)])
@@ -421,6 +501,7 @@ def get_stats(namespace: Optional[str] = None) -> dict[str, Any]:
                 "namespace_exists": False,
                 "did_you_mean": suggest_did_you_mean_namespaces(ns),
                 "total_memories": 0,
+                "quarantined_memories": 0,
                 "open_contradictions": 0,
                 "memory_gaps": 0,
                 "stale_memories": 0,
@@ -429,10 +510,12 @@ def get_stats(namespace: Optional[str] = None) -> dict[str, Any]:
             }
         patterns = mesh.patterns(include_private=False)
         contradictions = mesh.contradictions()
+        quarantined_cnt = len(mesh.inspect(limit=500, quarantined_only=True))
         return {
             "namespace": mesh.namespace,
             "namespace_exists": True,
             "total_memories": mesh.count(),
+            "quarantined_memories": quarantined_cnt,
             "open_contradictions": len(contradictions),
             "memory_gaps": len(patterns["memory_gaps"]),
             "stale_memories": len(patterns["stale_memories"]),
@@ -444,7 +527,11 @@ def get_stats(namespace: Optional[str] = None) -> dict[str, Any]:
 
 
 @api.get("/api/memories", dependencies=[Depends(verify_dashboard_auth)])
-def get_memories(limit: int = 200, namespace: Optional[str] = None) -> list[dict[str, Any]]:
+def get_memories(
+    limit: int = 200,
+    namespace: Optional[str] = None,
+    quarantined_only: bool = False,
+) -> list[dict[str, Any]]:
     try:
         if limit < 1 or limit > 1000:
             raise ValueError("limit must be between 1 and 1000.")
@@ -453,21 +540,23 @@ def get_memories(limit: int = 200, namespace: Optional[str] = None) -> list[dict
             mesh = get_mesh(ns, create=False)
         except NamespaceNotFoundError:
             return []
-        return mesh.inspect(limit=limit)
+        return mesh.inspect(limit=limit, include_quarantined=True, quarantined_only=quarantined_only)
     except Exception as e:
         _raise_dashboard_http_error(e, "/api/memories")
 
 
 @api.post("/api/memories", dependencies=[Depends(verify_dashboard_auth)])
 def create_memory(req: CreateMemoryRequest) -> dict[str, Any]:
-    """Add a new memory from the dashboard (runs `guard_ingest` before storing)."""
+    """Add a new memory from the dashboard (runs `guard_ingest` & `guard_tags` before storing)."""
     try:
-        from .guards import guard_ingest
+        from .guards import guard_ingest, guard_tags
 
         ns = _resolve_namespace(req.namespace)
         guard = guard_ingest(req.content, local_only=bool(req.local_only))
         if guard.rejected:
             raise HTTPException(status_code=400, detail=guard.reason or "Memory rejected by ingestion guard.")
+        clean_tags, tags_priv, tag_warns = guard_tags(req.tags, local_only=guard.local_only)
+        final_local = bool(guard.local_only or tags_priv)
 
         try:
             mesh = get_mesh(ns, create=True)
@@ -475,9 +564,12 @@ def create_memory(req: CreateMemoryRequest) -> dict[str, Any]:
                 content=guard.content,
                 memory_type=req.memory_type,
                 confidence=req.confidence,
-                tags=req.tags,
-                local_only=guard.local_only,
+                tags=clean_tags,
+                local_only=final_local,
                 ttl_days=req.ttl_days if req.ttl_days and req.ttl_days > 0 else None,
+                secret_ref=req.secret_ref,
+                vault_secrets=bool(req.vault_secrets),
+                trust_tier="user",
             )
         except (NamespaceNotFoundError, sqlite3.OperationalError):
             evict_dashboard_mesh_cache(ns)
@@ -487,12 +579,16 @@ def create_memory(req: CreateMemoryRequest) -> dict[str, Any]:
                 content=guard.content,
                 memory_type=req.memory_type,
                 confidence=req.confidence,
-                tags=req.tags,
-                local_only=guard.local_only,
+                tags=clean_tags,
+                local_only=final_local,
                 ttl_days=req.ttl_days if req.ttl_days and req.ttl_days > 0 else None,
+                secret_ref=req.secret_ref,
+                vault_secrets=bool(req.vault_secrets),
+                trust_tier="user",
             )
-        if guard.warnings:
-            result["warnings"] = guard.warnings
+        all_warns = tuple([*guard.warnings, *tag_warns])
+        if all_warns:
+            result["warnings"] = all_warns
         return {"status": "ok", "result": result}
     except Exception as e:
         _raise_dashboard_http_error(e, "POST /api/memories")
@@ -500,7 +596,7 @@ def create_memory(req: CreateMemoryRequest) -> dict[str, Any]:
 
 @api.put("/api/memories/{memory_id}", dependencies=[Depends(verify_dashboard_auth)])
 def update_memory(memory_id: str, req: UpdateMemoryRequest) -> dict[str, Any]:
-    """Update a memory in-place, supporting clearing TTL when `clear_ttl=True` or `ttl_days` is omitted/0."""
+    """Update a memory in-place, supporting clearing TTL when `clear_ttl=True` or `ttl_days` is 0."""
     try:
         ns = _resolve_namespace(req.namespace)
         content_to_set = req.content
@@ -528,10 +624,24 @@ def update_memory(memory_id: str, req: UpdateMemoryRequest) -> dict[str, Any]:
             ttl_days=ttl_val,
             reset_ttl=ttl_val is not None,
             clear_ttl=should_clear_ttl,
+            secret_ref=req.secret_ref,
+            quarantined=req.quarantined,
         )
         return {"status": "ok", "result": result}
     except Exception as e:
         _raise_dashboard_http_error(e, "PUT /api/memories/{memory_id}")
+
+
+@api.post("/api/memories/{memory_id}/approve", dependencies=[Depends(verify_dashboard_auth)])
+def approve_memory(memory_id: str, namespace: Optional[str] = None) -> dict[str, Any]:
+    """Approve a quarantined memory from the Dashboard UI (Finding S8)."""
+    try:
+        ns = _resolve_namespace(namespace)
+        mesh = get_mesh(ns, create=False)
+        res = mesh.approve(memory_id)
+        return {"status": "ok", "result": res}
+    except Exception as e:
+        _raise_dashboard_http_error(e, "POST /api/memories/{memory_id}/approve")
 
 
 @api.delete("/api/memories/{memory_id}", dependencies=[Depends(verify_dashboard_auth)])
@@ -601,6 +711,7 @@ def search(
     namespace: Optional[str] = None,
     memory_type: Optional[str] = None,
     include_other: bool = False,
+    include_private: bool = False,
 ) -> Any:
     if not q or not q.strip():
         raise HTTPException(status_code=400, detail="Query cannot be empty")
@@ -632,14 +743,17 @@ def search(
             if memory_type and memory_type.strip().lower() != "all"
             else None
         )
+        # Finding N8: Pass `include_private=include_private` explicitly so `other_possible_memories`
+        # never leaks unrelated private memories by default.
         if include_other and hasattr(mesh, "recall_with_context"):
             return mesh.recall_with_context(
                 query=q,
                 n=n,
                 memory_type=clean_type,
                 max_other_possible=6,
+                include_private=include_private,
             )
-        return mesh.recall(q, n=n, memory_type=clean_type)
+        return mesh.recall(q, n=n, memory_type=clean_type, include_private=include_private)
     except Exception as e:
         _raise_dashboard_http_error(e, "/api/search")
 
@@ -713,6 +827,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="mesh-csrf" content="__MESH_CSRF_TOKEN__">
 <title>Mesh</title>
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -1012,6 +1127,7 @@ header {
 .type-pill.process     { color: #38bdf8; background: rgba(56,189,248,0.12); }
 .type-pill.decision    { color: #f472b6; background: rgba(244,114,182,0.12); }
 .type-pill.error       { color: #f87171; background: rgba(248,113,113,0.12); }
+.type-pill.secret_ref  { color: #fcd34d; background: rgba(245,158,11,0.18); }
 .type-pill.general     { color: #94a3b8; background: rgba(148,163,184,0.12); }
 
 .tag {
@@ -1031,6 +1147,7 @@ header {
 }
 .flag.stale { color: var(--amber); background: rgba(245,158,11,0.12); }
 .flag.private { color: var(--red); background: rgba(239,68,68,0.12); }
+.flag.quarantined { color: var(--amber); background: rgba(245,158,11,0.2); }
 .flag.sim { color: var(--accent); background: var(--accent-bg); font-family: var(--mono); }
 .flag.reason { color: var(--blue); background: rgba(59, 130, 246, 0.12); font-family: var(--mono); }
 .flag.synonym { color: var(--purple); background: rgba(139, 92, 246, 0.14); font-family: var(--mono); }
@@ -1265,6 +1382,7 @@ header {
       <button class="chip" onclick="setType('context', this)">Context</button>
       <button class="chip" onclick="setType('result', this)">Result</button>
       <button class="chip" onclick="setType('error', this)">Error</button>
+      <button class="chip" onclick="setType('secret_ref', this)">Secret Ref</button>
       <button class="chip" onclick="setType('general', this)">General</button>
       <select class="sort-select" onchange="setSort(this.value)">
         <option value="accessed">Sort: Recent access</option>
@@ -1336,6 +1454,7 @@ header {
           <option value="context">context</option>
           <option value="result">result</option>
           <option value="error">error</option>
+          <option value="secret_ref">secret_ref</option>
           <option value="general">general</option>
         </select>
       </div>
@@ -1368,8 +1487,10 @@ header {
 
 <script>
 const _urlParams = new URLSearchParams(location.search);
-let MESH_TOKEN = _urlParams.get('token') || '';
-if (_urlParams.has('token')) {
+const _csrfMeta = document.querySelector('meta[name="mesh-csrf"]');
+let MESH_CSRF = (_csrfMeta && _csrfMeta.getAttribute('content')) || '';
+if (_urlParams.has('code') || _urlParams.has('token')) {
+  _urlParams.delete('code');
   _urlParams.delete('token');
   const cleanSearch = _urlParams.toString();
   history.replaceState(null, '', location.pathname + (cleanSearch ? '?' + cleanSearch : ''));
@@ -1387,14 +1508,14 @@ let sortBy = 'accessed';
 let editId = null;
 let editOrigTtl = null;
 let debounceTimer = null;
-// Monotonic token so an out-of-order search response can never overwrite the
-// results of a newer query (or of a namespace that has since been switched).
 let searchSeq = 0;
 
 function authHeaders(extra = {}) {
   const h = { ...extra };
-  if (MESH_TOKEN) {
-    h['X-Mesh-Token'] = MESH_TOKEN;
+  if (MESH_CSRF && MESH_CSRF !== '__MESH_CSRF_TOKEN__') {
+    h['X-Mesh-CSRF'] = MESH_CSRF;
+  } else {
+    h['X-Mesh-CSRF'] = '1';
   }
   return h;
 }
@@ -1407,6 +1528,7 @@ document.addEventListener('click', e => {
   const targetId = el.getAttribute('data-id') || '';
   if (action === 'edit') openEdit(targetId);
   else if (action === 'delete') delMemory(targetId);
+  else if (action === 'approve') approveMemory(targetId);
   else if (action === 'jump-type') jumpToType(targetId);
   else if (action === 'resolve-conflict') resolveConflict(targetId);
   else if (action === 'switch-ns') switchNamespace(targetId);
@@ -1430,7 +1552,7 @@ async function apiFetch(path, opts = {}) {
     if (res.status === 401 || res.status === 403) {
       if (!authFailureShown) {
         authFailureShown = true;
-        notify('Authentication failed — reopen the dashboard with its access token');
+        notify('Authentication failed — reopen the dashboard from the terminal');
       }
       return null;
     }
@@ -1470,8 +1592,6 @@ async function populateNamespaceDropdown() {
 
 function switchNamespace(newNs) {
   ns = newNs;
-  // Cancel any in-flight/debounced search for the previous namespace; its
-  // response must not populate the new namespace's view.
   clearTimeout(debounceTimer);
   searchSeq++;
   searchResults = null;
@@ -1543,6 +1663,9 @@ function renderMemories() {
       const reasonBadge = (m.similarity !== undefined && reasonRaw) ? `<span class="flag ${reasonClass}">${esc(reasonRaw)}</span>` : '';
       const stale = m.is_stale ? `<span class="flag stale">stale</span>` : '';
       const priv = m.local_only ? `<span class="flag private">private</span>` : '';
+      const quar = m.quarantined ? `<span class="flag quarantined">quarantined</span>` : '';
+      const trust = m.trust_tier && m.trust_tier !== 'user' ? `<span>trust:${esc(m.trust_tier)}</span>` : '';
+      const approveBtn = m.quarantined ? `<button class="btn" data-action="approve" data-id="${escAttr(m.id)}">Approve</button>` : '';
       return `<div class="row">
         <div class="row-main">
           <div class="row-top">
@@ -1550,15 +1673,17 @@ function renderMemories() {
             <span class="row-content">${esc(m.content)}</span>
           </div>
           <div class="row-meta">
-            ${sim}${reasonBadge}${stale}${priv}
+            ${sim}${reasonBadge}${stale}${priv}${quar}
             <span>conf ${conf}</span>
             <span>by ${esc(m.source_agent || 'agent')}</span>
+            ${trust}
             ${m.access_count ? `<span>${m.access_count}x read</span>` : ''}
             ${m.created_at ? `<span>${relTime(m.created_at)}</span>` : ''}
             ${tags.map(tag => `<span class="tag">#${esc(tag)}</span>`).join('')}
           </div>
         </div>
         <div class="row-actions">
+          ${approveBtn}
           <button class="icon-btn" title="Edit" data-action="edit" data-id="${escAttr(m.id)}">&#x270e;</button>
           <button class="icon-btn del" title="Delete" data-action="delete" data-id="${escAttr(m.id)}">&#x2715;</button>
         </div>
@@ -1658,7 +1783,7 @@ function onSearch(val) {
       snippet: (m.content || '').slice(0, 120),
       reason: `matched_in_other_type_or_tag (type=${m.memory_type || 'fact'})`
     })),
-    ...memories.filter(m => !primaryIds.has(m.id) && !matchedAll.includes(m)).slice(0, 4).map(m => ({
+    ...memories.filter(m => !primaryIds.has(m.id) && !matchedAll.includes(m) && !m.local_only).slice(0, 4).map(m => ({
       ...m,
       snippet: (m.content || '').slice(0, 120),
       reason: 'namespace_context'
@@ -1741,7 +1866,6 @@ async function saveMemory() {
   const payload = {
     content,
     memory_type: document.getElementById('f-type').value,
-    // `|| 1.0` would silently turn a legitimate 0 confidence into 1.0.
     confidence: Number.isFinite(confRaw) ? confRaw : 1.0,
     tags,
     local_only: document.getElementById('f-private').checked,
@@ -1789,6 +1913,20 @@ async function saveMemory() {
       if (reason) detail = `: ${typeof reason === 'string' ? reason : JSON.stringify(reason)}`;
     } catch { /* non-JSON error body */ }
     notify(`Failed to save memory${detail}`);
+  }
+}
+
+async function approveMemory(id) {
+  const res = await fetch(`/api/memories/${encodeURIComponent(id)}/approve?namespace=${encodeURIComponent(ns)}`, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: authHeaders()
+  });
+  if (res.ok) {
+    notify('Memory approved');
+    await refreshAll();
+  } else {
+    notify('Could not approve memory');
   }
 }
 
@@ -2043,35 +2181,40 @@ document.addEventListener('keydown', e => {
 @api.get("/", response_class=HTMLResponse)
 def dashboard(request: Request) -> HTMLResponse:
     """
-    Serve the Dashboard UI.
-    Never embeds `~/.mesh/auth_token` into unauthenticated HTML responses.
-    If the caller presents a valid `?token=` launch parameter, `?code=` launch nonce,
-    header, or cookie, sets an `HttpOnly; SameSite=Strict` session cookie for subsequent `/api/*` calls.
+    Serve the Dashboard UI (Finding S9).
+    Never embeds `~/.mesh/auth_token` into HTML responses or cookies.
+    If the caller presents a valid `?code=` one-time launch nonce, header token, or existing
+    session cookie, sets an `HttpOnly; SameSite=Strict` opaque session cookie (`mesh_dash_session`)
+    and injects the paired `X-Mesh-CSRF` token into the HTML `<meta name="mesh-csrf">` tag.
     """
     expected_token = get_or_create_auth_token()
-    provided_token = _extract_request_token(request)
+    header_tok = _extract_header_token(request)
+    cookie_val = (request.cookies.get(_SESSION_COOKIE_NAME) or "").strip()
+    existing_csrf = _validate_dashboard_session(cookie_val) if cookie_val else None
+
     code = (request.query_params.get("code") or "").strip()
-    if code and _consume_launch_nonce(code):
-        provided_token = expected_token
+    nonce_ok = bool(code and _consume_launch_nonce(code))
+    header_ok = bool(header_tok and _tokens_match(header_tok, expected_token))
 
     has_auth_override = verify_dashboard_auth in api.dependency_overrides
-    is_authenticated = has_auth_override or (
-        bool(provided_token) and _tokens_match(provided_token, expected_token)
-    )
+    is_authenticated = has_auth_override or nonce_ok or header_ok or (existing_csrf is not None)
 
-    response = HTMLResponse(content=DASHBOARD_HTML, status_code=200)
-    if is_authenticated:
+    new_session_id: Optional[str] = None
+    csrf_token = existing_csrf or ""
+    if is_authenticated and existing_csrf is None:
+        new_session_id, csrf_token = _create_dashboard_session()
+
+    rendered_html = DASHBOARD_HTML.replace("__MESH_CSRF_TOKEN__", csrf_token)
+    response = HTMLResponse(content=rendered_html, status_code=200)
+    if new_session_id is not None:
         response.set_cookie(
             key=_SESSION_COOKIE_NAME,
-            value=expected_token,
+            value=new_session_id,
             httponly=True,
             samesite="strict",
             path="/",
         )
     return response
-
-
-# --- CLI entry point (standard library argparse, no click runtime dependency) ---
 
 
 def run(
@@ -2081,8 +2224,8 @@ def run(
     no_browser: Optional[bool] = None,
     yes: Optional[bool] = None,
 ) -> None:
-    """Start the Mesh dashboard at http://localhost:<port>"""
-    global _mesh, _default_namespace, _ACTIVE_BIND_HOST
+    """Start the Mesh dashboard at http://localhost:<port>[cite: 2]"""
+    global _mesh, _default_namespace, _ACTIVE_BIND_HOST, _ACTIVE_BIND_PORT
     parser = argparse.ArgumentParser(description="Start the Mesh web dashboard.")
     parser.add_argument(
         "--namespace",
@@ -2122,6 +2265,7 @@ def run(
     clean_ns = validate_namespace(resolved_ns)
     _default_namespace = clean_ns
     _ACTIVE_BIND_HOST = resolved_host.lower()
+    _ACTIVE_BIND_PORT = resolved_port
 
     env_allowed = os.environ.get("MESH_ALLOWED_HOSTS", "").strip()
     if _ACTIVE_BIND_HOST not in ("127.0.0.1", "localhost", "::1", "[::1]"):
@@ -2157,12 +2301,17 @@ def run(
     nonce = secrets.token_urlsafe(16)
     _register_launch_nonce(nonce)
     launch_url = f"http://localhost:{resolved_port}/?ns={clean_ns}&code={nonce}"
+    display_url = (
+        launch_url
+        if (hasattr(sys.stdout, "isatty") and sys.stdout.isatty())
+        else f"http://localhost:{resolved_port}/?ns={clean_ns}"
+    )
 
     from . import ui
 
     ui.header("Dashboard", f"namespace {clean_ns}")
     print()
-    ui.kv([("Open", ui.style(launch_url, "info")), ("Browser", "opening automatically" if not resolved_no_browser else "not opened (--no-browser)")])
+    ui.kv([("Open", ui.style(display_url, "info")), ("Browser", "opening automatically" if not resolved_no_browser else "not opened (--no-browser)")])
     print()
     ui.hint("Press Ctrl+C to stop", stream=sys.stdout)
     print()

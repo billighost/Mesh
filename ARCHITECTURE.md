@@ -1,4 +1,4 @@
-# Mesh — Architecture & Contributor Guide (v0.6.1)
+# Mesh — Architecture & Contributor Guide (v0.7.2)
 
 > How the code is organized, how the 5-stage hybrid storage & retrieval engine works, and how to extend Mesh safely.
 
@@ -16,6 +16,9 @@
    - [__init__.py](#__init__py)
    - [store.py](#storepy)
    - [memory.py](#memorypy)
+   - [crypto.py](#cryptopy)
+   - [secrets.py](#secretspy)
+   - [guards.py](#guardspy)
    - [audit.py](#auditpy)
    - [context_builder.py](#context_builderpy)
    - [passive.py](#passivepy)
@@ -27,6 +30,8 @@
    - [dashboard.py](#dashboardpy)
    - [daemon.py](#daemonpy)
    - [cli.py](#clipy)
+   - [skill_installer.py](#skill_installerpy)
+   - [ui.py](#uipy)
    - [version.py](#versionpy)
 5. [Storage Schema](#storage-schema)
 6. [Performance & Caching Architecture](#performance--caching-architecture)
@@ -36,7 +41,7 @@
 10. [How to Add a New MCP Tool](#how-to-add-a-new-mcp-tool)
 11. [How to Add a New HTTP Endpoint](#how-to-add-a-new-http-endpoint)
 12. [How to Add a New Memory Type](#how-to-add-a-new-memory-type)
-13. [Testing](#testing)
+13. [Testing & Quality Assurance](#testing)
 14. [Key Design Decisions](#key-design-decisions)
 
 ---
@@ -48,6 +53,10 @@ mesh/
 ├── __init__.py           # PEP 562 lazy public API surface — zero-overhead module loading
 ├── memory.py             # Core Mesh class — learn(), recall(), update(), forget(), patterns(), etc.
 ├── store.py              # Unified SQLite WAL + in-memory SIMD NumPy matrix + rowid FTS5 BM25 + IDF engine
+├── crypto.py             # Authenticated encryption at rest (ChaCha20-Poly1305 / AES-GCM) & key derivation
+├── secrets.py            # Credential detection, secret auto-redaction & local keyring fallback vault
+├── guards.py             # Prompt-injection defense, Unicode normalization & poison filter
+├── envutil.py            # Strict boolean, integer & float environment parser with NaN/Inf defense
 ├── audit.py              # Fault-isolated SQLite audit trail with automatic redaction, scrubbing & retention
 ├── context_builder.py    # Unified prompt-injection-safe system prompt builder (markdown, plain, xml, json)
 ├── passive.py            # AI-powered & local regex extraction from agent session logs (with y/n cloud consent)
@@ -59,15 +68,29 @@ mesh/
 ├── dashboard.py          # FastAPI + zero-build inline HTML/JS web UI (port 7433) with HttpOnly session cookie
 ├── daemon.py             # Background daemon, atomic 0600 token manager, y/n consent helper & OS auto-start
 ├── cli.py                # Unified `mesh` command router, REPL shell, doctor diagnostics & multi-shell completions
+├── skill_installer.py    # Multi-agent skill discovery & automated installer (Cursor, Claude, Antigravity, etc.)
+├── ui.py                 # Rich terminal rendering, spinners, progress formatting & color control
+├── _model_download.py    # SHA-256 verified ONNX model weight downloader with non-blocking fallback
 └── version.py            # Package version metadata, schema compatibility helpers & opt-in PyPI update checker
 
+benchmarks/
+├── mesh_benchmark.py     # End-to-end latency & hybrid retrieval throughput benchmark
+├── scale_benchmark.py    # Scale evaluation (1k, 3k, 5k memories) measuring throughput, DB size, RAM & latency
+└── concurrency_stress.py # High-concurrency stress suite (16 threads dedup, 320 multi-writers, multi-process lock)
+
 tests/
-├── test_memory.py        # Core unit tests: learn, hybrid recall, dedup, conflicts, decay, update
-├── test_v03.py           # Privacy flags (local_only), export/import, namespace management
-└── test_v04.py           # Audit trail, context builder, digest, HTTP API, MCP tools, passive capture
+├── test_memory.py              # Core unit tests: learn, hybrid recall, dedup, conflicts, decay, update
+├── test_v03.py                 # Privacy flags (local_only), export/import, namespace management
+├── test_v04.py                 # Audit trail, context builder, digest, HTTP API, MCP tools, passive capture
+├── test_v06.py                 # Security fixes, token boundary, prompt sanitization, atomic token concurrency
+├── test_security_audit_v08.py  # Security audit v0.8: encrypted databases, FTS suppression, cloud redaction
+├── test_retrieval_quality.py   # Retrieval accuracy regression, token prefix boundaries, Unicode bypasses
+├── test_dependency_matrix.py   # Runtime boundaries, PEP 562 lazy-loading isolation, keyring fallback
+└── bench/                      # Retrieval quality benchmark fixtures and test_retrieval_benchmark.py
 
 ~/.mesh/                  # Local data directory (created with 0700 permissions on POSIX)
 ├── auth_token            # Per-user 256-bit authentication token (created atomically with 0600 permissions)
+├── keyring_vault.json    # Encrypted local fallback vault when system keyring service is unavailable (0600)
 ├── daemon.pid            # Active background daemon PID file (0600)
 ├── daemon.log            # Background daemon log file (0600)
 ├── models/               # SHA-256 verified ONNX models (all-MiniLM-L6-v2-onnx)

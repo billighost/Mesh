@@ -1,0 +1,181 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, "chore/*", "feat/*", "fix/*" ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    - cron: '0 4 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-and-security:
+    name: Code Quality & Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Lint & Security Tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ruff bandit
+
+      - name: Run Ruff Lint Checks
+        run: ruff check .
+
+      - name: Run Mesh Skill & Rules Verification
+        run: python scripts/check_skill.py
+
+      - name: Run Mesh Documentation Consistency Checks
+        run: python scripts/check_docs.py
+
+      - name: Run Bandit Security Analysis (Medium+ Severity)
+        run: bandit -r mesh -c pyproject.toml -ll
+
+  test:
+    name: Test (${{ matrix.os }}, py${{ matrix.python-version }})
+    needs: [lint-and-security]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+
+    env:
+      MESH_HOME: ${{ runner.temp }}/.mesh_ci
+      MESH_NO_AUTO_DAEMON: "1"
+      MESH_AUTO_APPROVE: "0"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
+
+      - name: Install Package & Test Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install .[test,secrets]
+
+      - name: Run Pytest Suite with Coverage
+        run: pytest -v --tb=short
+
+  dist-check:
+    name: Packaging & Cleanliness Verification
+    needs: [lint-and-security]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Build Tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install build twine
+
+      - name: Build Sdist and Wheel
+        run: python -m build
+
+      - name: Twine Check
+        run: twine check --strict dist/*
+
+      - name: Verify Clean Tarballs and Zero Leaks
+        run: |
+          python -c "
+          import glob, tarfile, zipfile, sys
+
+          sdists = glob.glob('dist/*.tar.gz')
+          wheels = glob.glob('dist/*.whl')
+          if not sdists or not wheels:
+              sys.exit('Error: Missing build artifacts in dist/')
+
+          # Verify sdist
+          with tarfile.open(sdists[0], 'r:gz') as tar:
+              sdist_names = tar.getnames()
+              print(f'Sdist total files: {len(sdist_names)}')
+              leaks = [n for n in sdist_names if any(ext in n.lower() for ext in ['.mp4', '.mp3', '.wav', '.png', 'marketing/', 'node_modules/'])]
+              if leaks:
+                  sys.exit(f'Error: Leaked files in sdist: {leaks}')
+
+          # Verify wheel
+          with zipfile.ZipFile(wheels[0], 'r') as whl:
+              whl_names = whl.namelist()
+              print(f'Wheel total files: {len(whl_names)}')
+              leaks_whl = [n for n in whl_names if any(ext in n.lower() for ext in ['.mp4', '.mp3', '.wav', '.png', 'marketing/', 'node_modules/'])]
+              if leaks_whl:
+                  sys.exit(f'Error: Leaked files in wheel: {leaks_whl}')
+
+              # Check essential bundled assets
+              if 'mesh/skills/mesh-context-layer/SKILL.md' not in whl_names:
+                  sys.exit('Error: Bundled SKILL.md missing from wheel!')
+              if 'mesh/skills/mesh-context-layer/rules_block.md' not in whl_names:
+                  sys.exit('Error: Bundled rules_block.md missing from wheel!')
+              if not any(n.startswith('mesh/') and n.endswith('.py') for n in whl_names):
+                  sys.exit('Error: Python source files missing from wheel!')
+              if any(n.startswith('tests/') for n in whl_names):
+                  sys.exit('Error: Test files must not be present in wheel!')
+
+          print('Packaging verification PASSED: zero leaks, correct skill & module payloads.')
+          "
+
+      - name: Upload Build Artifacts for Smoke Test
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-packages
+          path: dist/*
+          retention-days: 1
+
+  wheel-smoke-test:
+    name: Built Wheel Smoke Test
+    needs: [dist-check]
+    runs-on: ubuntu-latest
+    env:
+      MESH_HOME: ${{ runner.temp }}/.mesh_smoke
+      MESH_NO_AUTO_DAEMON: "1"
+      MESH_AUTO_APPROVE: "0"
+    steps:
+      - name: Download Build Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-packages
+          path: dist
+
+      - name: Set up Clean Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Wheel in Isolated Environment
+        run: |
+          python -m pip install --upgrade pip
+          pip install dist/*.whl
+
+      - name: Verify CLI Doctor Command
+        run: mesh doctor
+
+      - name: Verify CLI Install Dry-Run
+        run: mesh install --dry-run
+
+      - name: Verify Smoke Memory Lifecycle
+        run: |
+          mesh add "Smoke test architectural decision for release" --type decision --tags smoke,ci
+          mesh ask "architectural decision"
+          mesh brief --max-tokens 500

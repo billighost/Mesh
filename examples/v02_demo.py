@@ -4,7 +4,6 @@ v02_demo.py — Demonstrates all four v0.2 features.
 Run: python examples/v02_demo.py
 """
 
-import time
 from mesh import Mesh
 
 print("=" * 60)
@@ -30,7 +29,7 @@ if r2["conflict"]:
     c = r2["conflict"]
     print(f"\n  [!] Conflict detected (similarity: {c['similarity']:.2f})")
     print(f"    Existing: \"{c['existing_content']}\"")
-    print(f"    New:      \"The production API rate limit is 200 requests per minute\"")
+    print("    New:      \"The production API rate limit is 200 requests per minute\"")
     print(f"    Contradiction ID: {c['contradiction_id'][:8]}...")
 else:
     print("  (No contradiction triggered — embeddings weren't similar enough)")
