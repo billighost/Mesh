@@ -100,9 +100,8 @@ def _get_model_status_path() -> Path:
 _ONNX_MODEL_DIR = _get_onnx_model_dir()
 
 # Canonical unquantized ONNX model & tokenizer mirrors + pinned SHA-256 checksums
-_GCS_TARBALL_MIRRORS = [
-    "https://storage.googleapis.com/qdrant-fastembed/sentence-transformers-all-MiniLM-L6-v2.tar.gz",
-]
+# Note: Deprecated GCS bucket (storage.googleapis.com/qdrant-fastembed) was removed (Issue B-003)
+_GCS_TARBALL_MIRRORS: list[str] = []
 _HF_MODEL_REVISION = "1110a243fdf4706b3f48f1d95db1a4f5529b4d41"
 _TOKENIZER_MIRRORS = [
     f"https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/{_HF_MODEL_REVISION}/tokenizer.json",
@@ -938,6 +937,8 @@ def _safe_copy_limited(src: Any, dst: Any, max_bytes: int = _MAX_TAR_EXTRACT_BYT
 
 
 def _download_from_gcs_tarball() -> bool:
+    if not _GCS_TARBALL_MIRRORS:
+        return False
     if _has_local_onnx_pair() is not None:
         return True
     model_dir = _get_onnx_model_dir()
@@ -959,11 +960,12 @@ def _download_from_gcs_tarball() -> bool:
                         tmp_out = target_model.with_suffix(f".tmp.{os.getpid()}")
                         with open(tmp_out, "wb") as out_f:
                             ok = _safe_copy_limited(extracted, out_f, _MAX_TAR_EXTRACT_BYTES)
+                        source_lbl = f"{_GCS_TARBALL_MIRRORS[0]}:{member.name}" if _GCS_TARBALL_MIRRORS else member.name
                         if ok and _verify_sha256(
                             tmp_out,
                             _ALLOWED_MODEL_SHA256,
                             "MESH_MODEL_SHA256",
-                            source_label=f"{_GCS_TARBALL_MIRRORS[0]}:{member.name}",
+                            source_label=source_lbl,
                         ):
                             tmp_out.replace(target_model)
                         else:
@@ -974,11 +976,12 @@ def _download_from_gcs_tarball() -> bool:
                         tmp_out = target_tok.with_suffix(f".tmp.{os.getpid()}")
                         with open(tmp_out, "wb") as out_f:
                             ok = _safe_copy_limited(extracted, out_f, 20 * 1024 * 1024)
+                        source_lbl = f"{_GCS_TARBALL_MIRRORS[0]}:{member.name}" if _GCS_TARBALL_MIRRORS else member.name
                         if ok and _verify_sha256(
                             tmp_out,
                             _ALLOWED_TOKENIZER_SHA256,
                             "MESH_TOKENIZER_SHA256",
-                            source_label=f"{_GCS_TARBALL_MIRRORS[0]}:{member.name}",
+                            source_label=source_lbl,
                         ):
                             tmp_out.replace(target_tok)
                         else:

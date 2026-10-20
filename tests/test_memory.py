@@ -385,3 +385,19 @@ class TestSdkMethodAliases:
         assert hasattr(store, "task_list")
         assert hasattr(store, "log")
 
+
+def test_issue_b003_no_defunct_gcs_mirror():
+    """
+    Issue B-003 regression:
+    Defunct GCS mirror (storage.googleapis.com/qdrant-fastembed) returning 403 Forbidden
+    must be removed from model download mirrors.
+    """
+    from mesh import memory
+
+    for mirror in memory._GCS_TARBALL_MIRRORS:
+        assert "storage.googleapis.com/qdrant-fastembed" not in mirror
+
+    # Verify _download_from_gcs_tarball returns False cleanly when no mirrors configured
+    assert memory._download_from_gcs_tarball() is False or memory._has_local_onnx_pair() is not None
+
+
