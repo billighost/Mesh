@@ -280,6 +280,70 @@ Marking a memory as `local_only=True`:
 
 ---
 
+## Evidence
+
+Field-test records are kept in [`docs/field-test/`](docs/field-test/). Two different kinds of
+evidence are reported separately and must not be merged.
+
+### Targeted re-test — Mesh 0.8.1b2
+
+Wheel `mesh_context_layer-0.8.1b2-py3-none-any.whl`, SHA-256
+`e1a7a0af71abe3f51b02150d9a2d5fdc1d9d8a618937e9d41bf899c08ead06ff`
+(the current repository version and the same wheel tested by the behavior probe).
+
+- **C-001 (SQLite concurrency, v0.8.1b2):** 4-writer/4-reader workload completed in 7.16 s
+  with 0 errors and 100/100 tasks preserved, down from 11.67 s with 1 `SQLITE_MISUSE` error
+  on v0.8.1b1. A 16-thread stress run completed in 17.11 s with 0 errors.
+- **C-002 (`local_only` reporting, v0.8.1b2):** the stored flag matched the database row in
+  10/10 tests across the Python SDK, HTTP, MCP and CLI.
+- **Regression sweep (v0.8.1b2):** 9/9 previously fixed issues re-tested without regression.
+- **Secrets audit (v0.8.1b2):** 6 of 9 tested secret patterns were quarantined; 3 leaked in
+  plaintext (keyword-free credentials, split-line tokens, and a PIN in a task description).
+- **Multi-session smoke test (v0.8.1b2):** 3/3 sessions called the brief first, and a
+  fresh-context quiz scored 15.0/15.0 versus 3.0/15.0 for the unassisted control. This run
+  was a **programmatic SDK simulation explicitly labelled "LLM behavior not tested"**; it is
+  not evidence of how a model behaves unprompted.
+
+Full detail: [`PUBLIC_ADDENDUM.md`](docs/field-test/PUBLIC_ADDENDUM.md) and
+[`ISSUE_STATUS_ADDENDUM.md`](docs/field-test/ISSUE_STATUS_ADDENDUM.md).
+
+### Automated unprompted-behavior probe — Mesh 0.8.1b2
+
+**Automated probe: the user was simulated by a model-driven orchestrator, and the
+sub-agents' fresh contexts were created by the orchestrator. This is not a human probe.
+A real human probe is still pending.**
+
+Agent: Claude Code CLI 2.1.304, model `deepseek-v4-flash`. One run per condition, five
+sessions per project. Rates below use only sessions the probe marked valid.
+
+| Configuration (Mesh 0.8.1b2) | Valid sessions | Brief-first | Wrote without being asked | Completed task with summary | Changed a fact in place | Recall |
+|---|---|---|---|---|---|---|
+| MCP + skill + rules block | 5/5 | **5/5 (100%)** | **4/5 (80%)** | **4/4 (100%)** of sessions that created a task | **2 updates, 0 learns** | **4.5/5** |
+| MCP + skill, no rules block | 1/5 | 0/1 (0%) | 0/1 (0%) | not provided | not provided | 5/5 raw, **invalid** |
+| No Mesh (control) | 1/5 valid + 2 partial | 0/1 (0%) | 0/1 (0%) | not provided | not provided | 3.0/5 partial |
+| MCP + rules, no skill | not run | not provided | not provided | not provided | not provided | not provided |
+| MCP only | not run | not provided | not provided | not provided | not provided | not provided |
+
+**What did not work, plainly:** with the full integration, agents called the brief first in
+5 of 5 valid sessions and wrote durable memory unprompted in 4 of 5. With MCP and the skill
+but **no rules block**, the only valid session made **0 Mesh calls and 0 skill
+invocations**; its four later sessions are invalid because the probe leaked its own scenario
+and prompts into them. The **rules-block-only and MCP-only configurations were not run**, so
+no rate can be stated for them.
+
+Read this before quoting: these are pilot results from one model, one tiny project and one
+run per condition; the probe workspace was not sandboxed, and the skill-only and control
+conditions are not a fair comparison. In the full-integration run the first tool overall was
+`ToolSearch`; "brief-first" means the first **Mesh** call.
+
+Full detail: [`PROBE_RESULTS.md`](docs/field-test/PROBE_RESULTS.md),
+[`PROBE_SUMMARY.md`](docs/field-test/PROBE_SUMMARY.md),
+[`PUBLIC_ADDENDUM_PROBE.md`](docs/field-test/PUBLIC_ADDENDUM_PROBE.md), and the data tables in
+[`docs/field-test/probe-data/`](docs/field-test/probe-data/). Proposed follow-ups, not
+implemented, are in [`PROBE_FOLLOWUPS.md`](docs/field-test/PROBE_FOLLOWUPS.md).
+
+---
+
 ## License
 
 MIT © billighost
