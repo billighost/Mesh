@@ -4,6 +4,22 @@ All notable changes to `mesh-context-layer` are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (pre-1.0: minor versions may include behavior changes).
 
+## [0.8.1b2] - 2026-10-20 (Beta)
+
+Re-test fixes for issues C-001 and C-002 from the third independent black-box evaluation (Run C), plus two approved diagnostic additions.
+
+### Fixed
+- **Thread-safe pooled SQLite connections (C-001)**: A pooled `sqlite3.Connection` (opened with `check_same_thread=False`) could be entered by several threads at once, producing `sqlite3.InterfaceError: bad parameter or other API misuse`, `IndexError: tuple index out of range` from row conversion, and `sqlite3.ProgrammingError: Cannot operate on a closed database` during pool eviction. Each pooled connection now owns a re-entrant lock serializing its cursor/statement state, uses a separate lifecycle lock so `retire()` never blocks in-flight users, and is reference-counted through checkout/checkin so a connection is only physically closed when the last user leaves. SDK threads, HTTP worker threads, MCP `asyncio.to_thread` calls and pool-eviction races are covered by `tests/test_thread_safety_c001.py` (8 tests, including 4-process concurrency).
+- **SDK `learn()` reports the stored privacy flag (C-002)**: `Mesh.learn()` returned no `local_only` value, so callers could not tell that `guard_ingest` had silently forced a secret-bearing memory private, and could not distinguish public from private writes. `MeshStore.upsert()` now returns the effective value persisted after the ingestion guards; `Mesh.learn()` surfaces it on both the insert and deduplication paths (including the audit log); and the MCP, HTTP, dashboard and CLI surfaces report the stored value instead of the requested one. Covered by `tests/test_learn_local_only_c002.py` (10 tests, each checked against the SQLite row that was written).
+
+### Added
+- **Doctor project-vs-user MCP precedence (optional re-test item)**: `mesh doctor` now reports, read-only, when the project-scope MCP config for the current directory takes precedence over a user-scope config, or is the only active one. Covered by `tests/test_doctor_scope_precedence.py` (6 tests).
+- **Mocked ONNX mirror-fallback coverage (optional re-test item)**: `tests/test_model_download_fallback.py` exercises the existing Hugging Face → `hf-mirror.com` fallback with all HTTP mocked: primary HTTP errors, connection errors, truncation and checksum mismatches fall through to the pinned secondary mirror, and a payload that fails checksum verification on every mirror is never installed. No new network destination was added.
+
+### Verified
+- Full suite: 317 passed. The nine fixes from `0.8.1b1` show no regression (`tests/test_agent_scenarios.py`, `test_installer.py`, `test_memory.py`, `test_security_audit_v08.py`, `test_work_items.py`: 91 passed).
+- Package version bumped to `0.8.1b2`.
+
 ## [0.8.1b1] - 2026-10-20 (Beta)
 
 Field Test Findings Resolution: Hardening and fixes from two independent black-box agent evaluations (Run A & Run B).

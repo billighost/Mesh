@@ -1,4 +1,4 @@
-# Mesh — Developer Guide (v0.8.1b1)
+# Mesh — Developer Guide (v0.8.1b2)
 
 > High-speed shared semantic & hybrid memory for AI agents. One agent learns, every agent recalls.
 

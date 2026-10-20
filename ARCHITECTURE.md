@@ -1,4 +1,4 @@
-# Mesh — Architecture & Contributor Guide (v0.8.1b1)
+# Mesh — Architecture & Contributor Guide (v0.8.1b2)
 
 > How the code is organized, how the 5-stage hybrid storage & retrieval engine works, and how to extend Mesh safely.
 
