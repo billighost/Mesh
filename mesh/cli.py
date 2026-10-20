@@ -1819,6 +1819,17 @@ def doctor_cmd() -> None:
 
     row("ok", "MCP Server tools", f"{len(_MCP_TOOLS)} tools defined in schema")
 
+    def _declares_mesh(path: Optional[Path]) -> bool:
+        """True when a client config file exists and actually registers the mesh server."""
+        if path is None or not path.exists():
+            return False
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return False
+        servers = data.get("mcpServers") if isinstance(data, dict) else None
+        return isinstance(servers, dict) and "mesh" in servers
+
     for agent_id, adapter in ADAPTER_MAP.items():
         mcp_cfg = adapter.get_mcp_config_path("user")
         if mcp_cfg and mcp_cfg.exists():
@@ -1851,6 +1862,31 @@ def doctor_cmd() -> None:
                     row("ok", f"{adapter.display_name} rules", f"always-on protocol active in {ui.short_path(rules_f)}")
             except Exception:
                 pass
+
+    # 5c. Project-vs-user MCP precedence (read-only)
+    # Clients that support it load the project-scope config for this directory
+    # ahead of the user-scope one, so a stale project entry silently shadows a
+    # correctly installed user entry. Surface that instead of leaving it implicit.
+    project_dir = Path.cwd()
+    for adapter in ADAPTER_MAP.values():
+        if not adapter.supports_scope("project"):
+            continue
+        user_cfg = adapter.get_mcp_config_path("user")
+        project_cfg = adapter.get_mcp_config_path("project", project_dir)
+        if not _declares_mesh(project_cfg):
+            continue
+        if _declares_mesh(user_cfg):
+            row(
+                "ok",
+                f"{adapter.display_name} scope",
+                f"project takes precedence over user  ({ui.short_path(project_cfg)}  {ui.sym('dot')}  {ui.short_path(user_cfg)})",
+            )
+        else:
+            row(
+                "ok",
+                f"{adapter.display_name} scope",
+                f"project config active  ({ui.short_path(project_cfg)})",
+            )
 
     # 6. Namespaces
     ns_list = list_namespaces()
