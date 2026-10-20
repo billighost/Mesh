@@ -35,12 +35,12 @@ _VERSION_MARKER_FILE = ".mesh-skill-version"
 def resolve_mesh_mcp_command() -> tuple[str, list[str]]:
     """
     Resolve the command to run the Mesh MCP server in the agent's environment:
-      1. Absolute path to 'mesh' or 'mesh.exe' via shutil.which
+      1. Absolute path to 'mesh' or 'mesh.exe' via shutil.which -> with ['server'] argument
       2. Fallback to sys.executable with ['-m', 'mesh.mcp_server']
     """
     cmd = shutil.which("mesh")
     if cmd:
-        return str(Path(cmd).resolve()), ["mcp"]
+        return str(Path(cmd).resolve()), ["server"]
     return str(Path(sys.executable).resolve()), ["-m", "mesh.mcp_server"]
 
 

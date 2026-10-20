@@ -3009,6 +3009,7 @@ def _get_command_mapping() -> dict[str, Callable[[], None]]:
         "digest": _lazy_digest_cmd,
         "daemon": _lazy_daemon_cmd,
         "server": _lazy_server_cmd,
+        "mcp": _lazy_server_cmd,
         "dashboard": _lazy_dashboard_cmd,
         "http": _lazy_http_cmd,
         "conflicts": conflicts_cmd,
@@ -3023,7 +3024,7 @@ def _get_command_mapping() -> dict[str, Callable[[], None]]:
 
 
 # Commands whose stdout is data (or a long-running server): never add decorative spacing.
-_RAW_OUTPUT_CMDS = {"context", "completion", "server", "http", "dashboard", "shell", "run", "brief", "log"}
+_RAW_OUTPUT_CMDS = {"context", "completion", "server", "mcp", "http", "dashboard", "shell", "run", "brief", "log"}
 
 
 def _silence_broken_pipe() -> None:

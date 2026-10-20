@@ -67,12 +67,24 @@ def isolated_env(monkeypatch):
 
 
 def test_resolve_mcp_command():
-    """Verify that resolve_mesh_mcp_command produces an executable and arguments."""
+    """Verify that resolve_mesh_mcp_command produces a valid executable and arguments (Issue A-002)."""
     cmd, args = resolve_mesh_mcp_command()
     assert cmd is not None
     assert len(cmd) > 0
     assert isinstance(args, list)
-    assert len(args) > 0
+    assert args != ["mcp"], "resolve_mesh_mcp_command must not generate invalid ['mcp'] argument"
+    if cmd.endswith("mesh") or cmd.endswith("mesh.exe"):
+        assert args == ["server"], f"Expected ['server'] for mesh executable, got {args}"
+    else:
+        assert args == ["-m", "mesh.mcp_server"], f"Expected ['-m', 'mesh.mcp_server'] for python fallback, got {args}"
+
+
+def test_cli_mesh_mcp_subcommand_alias(isolated_env):
+    """Verify 'mesh mcp' is supported as a transparent alias for 'mesh server' (Issue A-002)."""
+    from mesh.cli import _get_command_mapping
+    mapping = _get_command_mapping()
+    assert "mcp" in mapping, "'mcp' must be registered in CLI command handlers as alias to server"
+    assert mapping["mcp"] is mapping["server"]
 
 
 def test_rules_block_content():
