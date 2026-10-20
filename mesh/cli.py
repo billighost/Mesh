@@ -929,12 +929,13 @@ def add_cmd() -> None:
                 ui.fail(str(e))
 
     verb = "Reinforced an existing memory" if result.get("deduplicated") else "Remembered"
+    reported_private = bool(result.get("local_only", final_private))
     print()
     ui.success(f"{verb} in {ui.style(ns, 'bold')}")
     for line in ui.wrap(final_content, ui.term_width() - 6, max_lines=3):
         print(f"{ui.IND}  {ui.style(line, 'muted')}")
     meta = [_type_text(memory_type)]
-    if final_private:
+    if reported_private:
         meta.append(ui.badge("private", "accent"))
     if secret_ref_dict:
         meta.append(ui.style(secret_ref_dict["uri"], "warn"))

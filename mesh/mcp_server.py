@@ -1621,6 +1621,9 @@ def _execute_tool_sync_impl(
                         "status": result["status"],
                         "memory_id": result["memory_id"],
                         "deduplicated": result.get("deduplicated", False),
+                        "local_only": bool(
+                            result.get("local_only", guard_res.local_only or tags_priv)
+                        ),
                         "namespace": mesh.namespace,
                         "total_memories": mesh.count(),
                         "trust_tier": result.get("trust_tier", "agent"),

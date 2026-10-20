@@ -2238,7 +2238,7 @@ class Mesh:
                             updated_conf = max(confidence, float(meta.get("confidence", 1.0)))
                             content_changed = clean_content != doc
                             is_priv = bool(local_only or meta.get("local_only"))
-                            self.store.update(
+                            updated = self.store.update(
                                 memory_id=existing_id,
                                 content=clean_content if content_changed else None,
                                 embedding=embedding if content_changed else None,
@@ -2252,6 +2252,9 @@ class Mesh:
                                 embedding_model=emb_model_tag if content_changed else None,
                                 secret_ref=norm_ref if norm_ref is not None else None,
                             )
+                            stored_local_only = (
+                                bool(updated.get("local_only")) if updated else is_priv
+                            )
                             if content_changed and emb_model_tag == "hash-384":
                                 with _PENDING_REEMBED_LOCK:
                                     _PENDING_REEMBED_QUEUE.put(self.namespace, existing_id, clean_content)
@@ -2259,6 +2262,7 @@ class Mesh:
                                 "memory_id": existing_id,
                                 "status": "stored",
                                 "deduplicated": True,
+                                "local_only": stored_local_only,
                                 "conflict": None,
                                 "embedding_backend": active_backend or "hash-fallback",
                                 "embedding_degraded": is_degraded,
@@ -2272,7 +2276,7 @@ class Mesh:
                                 namespace=self.namespace,
                                 agent_id=self.agent_id,
                                 result=dedup_res,
-                                local_only=is_priv,
+                                local_only=stored_local_only,
                             )
                             return dedup_res
 
@@ -2311,29 +2315,31 @@ class Mesh:
                         break
 
             decay_start_at = now if ttl_val is not None else None
-            self.store.upsert(
-                memory_id=memory_id,
-                content=clean_content,
-                embedding=embedding,
-                metadata={
-                    "memory_type": memory_type,
-                    "confidence": confidence,
-                    "source_agent": self.agent_id,
-                    "tags": clean_tags,
-                    "created_at": now,
-                    "updated_at": now,
-                    "accessed_at": now,
-                    "access_count": 0,
-                    "ttl_days": ttl_val,
-                    "decay_start_at": decay_start_at,
-                    "embedding_model": emb_model_tag,
-                    "trust_tier": resolved_trust_tier,
-                    "quarantined": bool(quarantined),
-                    "secret_ref": norm_ref,
-                },
-                local_only=bool(local_only),
-                embedding_model=emb_model_tag,
-                allow_redacted_public=bool(allow_redacted_public and self.trusted_local),
+            stored_local_only = bool(
+                self.store.upsert(
+                    memory_id=memory_id,
+                    content=clean_content,
+                    embedding=embedding,
+                    metadata={
+                        "memory_type": memory_type,
+                        "confidence": confidence,
+                        "source_agent": self.agent_id,
+                        "tags": clean_tags,
+                        "created_at": now,
+                        "updated_at": now,
+                        "accessed_at": now,
+                        "access_count": 0,
+                        "ttl_days": ttl_val,
+                        "decay_start_at": decay_start_at,
+                        "embedding_model": emb_model_tag,
+                        "trust_tier": resolved_trust_tier,
+                        "quarantined": bool(quarantined),
+                        "secret_ref": norm_ref,
+                    },
+                    local_only=bool(local_only),
+                    embedding_model=emb_model_tag,
+                    allow_redacted_public=bool(allow_redacted_public and self.trusted_local),
+                )
             )
             self._ns_existed_before = True
 
@@ -2346,6 +2352,7 @@ class Mesh:
             "memory_id": memory_id,
             "status": "stored_with_conflict" if conflict else "stored",
             "deduplicated": False,
+            "local_only": stored_local_only,
             "conflict": conflict,
             "embedding_backend": active_backend or "hash-fallback",
             "embedding_degraded": is_degraded,
@@ -2365,7 +2372,7 @@ class Mesh:
             namespace=self.namespace,
             agent_id=self.agent_id,
             result=result,
-            local_only=bool(local_only),
+            local_only=stored_local_only,
         )
         return result
 

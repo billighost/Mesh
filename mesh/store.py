@@ -2608,10 +2608,13 @@ class MeshStore:
         local_only: bool = False,
         embedding_model: Optional[str] = None,
         allow_redacted_public: bool = False,
-    ) -> None:
+    ) -> bool:
         """
         Store or overwrite a memory and its normalized 384-dim vector in a single atomic transaction,
         enforcing `guard_ingest` & `guard_tags` and encrypting at rest when enabled (Findings S5, S8, S11).
+
+        Returns the effective ``local_only`` value persisted after guards so callers can
+        report the stored privacy level (Issue C-002).
         """
         memory_id = validate_memory_id(memory_id)
         self._ensure_initialized()
@@ -2773,6 +2776,7 @@ class MeshStore:
                 old_content=audit_scrub_old_content,
                 local_only=bool(local_flag),
             )
+        return bool(final_local)
 
     def upsert_batch(
         self,
