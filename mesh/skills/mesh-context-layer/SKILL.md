@@ -44,6 +44,7 @@ Follow these numbered steps in every session:
    - If a contradiction warning occurs, inspect with `mesh_contradictions` and resolve with `mesh_resolve_contradiction`.
 5. **TRACK GOALS & TASKS**:
    - Create high-level goals and actionable tasks using `mesh_task_create(title=..., kind="goal"|"task")`.
+   - Always create a task or goal first before updating or completing it; do not guess task IDs.
    - Update lifecycle state as work proceeds: `mesh_task_update(item_id=..., status="in_progress"|"blocked"|"reopened")`.
 6. **COMPLETE WITH SUMMARY & EVIDENCE**:
    - When finishing work, mark it done via `mesh_task_complete(item_id=..., summary=..., evidence=[...])`.

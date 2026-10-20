@@ -138,6 +138,26 @@ def test_invalid_transitions_and_validation(temp_mesh_dir):
         mesh.create_work_item(title="Bad kind", kind="epic")
 
 
+def test_work_item_not_found_guidance(temp_mesh_dir):
+    """
+    Issue A-007 regression:
+    Updating or completing an unknown work item must provide actionable guidance:
+    1. If no items exist: advice to use mesh_task_create first.
+    2. If items exist: list available work item IDs in the namespace.
+    """
+    mesh = Mesh(namespace="guidance_test", agent_id="agent-alice")
+
+    # 1. Empty namespace
+    with pytest.raises(ValueError, match="No work items exist yet in this namespace; use mesh_task_create to create one first"):
+        mesh.update_work_item(item_id="task-1", status="in_progress")
+
+    # 2. Namespace with an item
+    created = mesh.create_work_item(title="Existing Task")
+    with pytest.raises(ValueError, match=f"Available work items:.*{created['short_id']}"):
+        mesh.update_work_item(item_id="task-99", status="in_progress")
+
+
+
 def test_work_item_reopen_status_transition(temp_mesh_dir):
     """
     Issue A-005 / B-006 regression:

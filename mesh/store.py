@@ -4774,6 +4774,22 @@ class MeshStore:
                 return dict(rows[0])
         return None
 
+    def _not_found_error_message(self, conn: sqlite3.Connection, item_id: str) -> str:
+        rows = conn.execute(
+            "SELECT short_id, title FROM work_items WHERE namespace = ? ORDER BY created_at DESC LIMIT 5",
+            (self.namespace,),
+        ).fetchall()
+        if not rows:
+            return (
+                f"Work item '{item_id}' not found in namespace '{self.namespace}'. "
+                "No work items exist yet in this namespace; use mesh_task_create to create one first."
+            )
+        available = [f"{r[0]} ({r[1][:30]})" for r in rows]
+        return (
+            f"Work item '{item_id}' not found in namespace '{self.namespace}'. "
+            f"Available work items: {', '.join(available)}."
+        )
+
     def _generate_short_id_locked(self, conn: sqlite3.Connection, kind: str) -> str:
         count_row = conn.execute(
             "SELECT COUNT(*) FROM work_items WHERE namespace = ? AND kind = ?",
@@ -4836,7 +4852,7 @@ class MeshStore:
                 if parent_id:
                     parent_row = self._resolve_work_item_locked(conn, parent_id)
                     if not parent_row:
-                        raise ValueError(f"Parent work item '{parent_id}' not found in namespace '{self.namespace}'.")
+                        raise ValueError(f"Parent {self._not_found_error_message(conn, parent_id)}")
                     resolved_parent = parent_row["id"]
 
                 count_row = conn.execute(
@@ -4907,7 +4923,7 @@ class MeshStore:
                 conn.row_factory = sqlite3.Row
                 item = self._resolve_work_item_locked(conn, item_id)
                 if not item:
-                    raise ValueError(f"Work item '{item_id}' not found in namespace '{self.namespace}'.")
+                    raise ValueError(self._not_found_error_message(conn, item_id))
 
                 full_id = item["id"]
                 updates: list[str] = []
@@ -5031,7 +5047,7 @@ class MeshStore:
                 conn.row_factory = sqlite3.Row
                 item = self._resolve_work_item_locked(conn, item_id)
                 if not item:
-                    raise ValueError(f"Work item '{item_id}' not found in namespace '{self.namespace}'.")
+                    raise ValueError(self._not_found_error_message(conn, item_id))
 
                 full_id = item["id"]
                 old_status = item["status"]
