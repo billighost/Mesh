@@ -1,7 +1,7 @@
 # Mesh Field Test Issue Status Record
 
 **Branch:** `fix/field-test-findings`  
-**Base Version:** `0.8.0`  
+**Base Version:** `0.8.0` | **Target Version:** `0.8.1b1` (Beta)  
 **Evaluation Sources:**
 - **Run A:** `C:\Users\bb201\Documents\bun` (Issues `A-001` through `A-008`)
 - **Run B:** `C:\Users\bb201\Documents\bun1` (Issues `B-001` through `B-007`)
@@ -169,4 +169,4 @@ All fixes verified against the full repository test suite:
 - **`check_docs.py`**: PASSED (Version consistency validated).
 - **`ruff check`**: PASSED (0 errors).
 - **`pytest`**: **284 passed, 0 failed, 0 errors**.
-- **Wheel Build**: `mesh_context_layer-0.8.0-py3-none-any.whl` successfully built in `dist/`.
+- **Wheel Build**: `mesh_context_layer-0.8.1b1-py3-none-any.whl` successfully built in `dist/`.

@@ -1,6 +1,6 @@
 # Mesh Field Test Targeted Re-Test Plan
 
-**Purpose:** Provide step-by-step verification instructions for an independent evaluator to re-test all 15 findings (9 unique issues) from Run A and Run B against the built distribution (`dist/mesh_context_layer-0.8.0-py3-none-any.whl`) or the `fix/field-test-findings` branch.
+**Purpose:** Provide step-by-step verification instructions for an independent evaluator to re-test all 15 findings (9 unique issues) from Run A and Run B against the built distribution (`dist/mesh_context_layer-0.8.1b1-py3-none-any.whl`) or the `fix/field-test-findings` branch.
 
 **Hard Safety Rules for Testers:**
 - Every test must use a clean temporary directory.
@@ -21,7 +21,7 @@ Create an isolated test environment:
 python -m venv test_env
 # Windows: test_env\Scripts\activate
 # Linux/macOS: source test_env/bin/activate
-pip install dist/mesh_context_layer-0.8.0-py3-none-any.whl pytest
+pip install dist/mesh_context_layer-0.8.1b1-py3-none-any.whl pytest
 ```
 
 ---

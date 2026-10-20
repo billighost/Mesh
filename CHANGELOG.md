@@ -4,11 +4,11 @@ All notable changes to `mesh-context-layer` are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (pre-1.0: minor versions may include behavior changes).
 
-## [0.8.0] - 2026-10-19
+## [0.8.1b1] - 2026-10-20 (Beta)
 
-Agent Autonomous Adoption & Production Readiness Release: First-class work items, token-budgeted briefs, automated multi-agent installer, progressive disclosure skill, content-free audit telemetry, full-suite benchmarks, and hardened security gates.
+Field Test Findings Resolution: Hardening and fixes from two independent black-box agent evaluations (Run A & Run B).
 
-### Fixed (Independent Field Test Resolutions: Run A & Run B)
+### Fixed
 - **Secret Ingestion Leakage Prevention (A-004, B-005)**: Expanded secret scanner regexes to catch generic API key tokens (`WEBHOOK_KEY_*`, `payment_gateway_key`, etc.) and unquoted passphrase statements, ensuring they are quarantined to `local_only=True` without false-positive leakage into shared or cloud layers.
 - **Installer MCP Arguments & Alias (A-002)**: Configured agent MCP setups to invoke `mesh server` rather than invalid `mesh mcp`, and added `mesh mcp` subcommand alias to `mesh/cli.py` for backward compatibility.
 - **Non-Interactive Install Execution (A-001, B-002)**: Fixed `mesh install --apply --json` (and `--yes --json`) so that automation scripts properly apply and persist configuration changes rather than remaining in dry-run plan mode.
@@ -18,6 +18,10 @@ Agent Autonomous Adoption & Production Readiness Release: First-class work items
 - **Python SDK Method Aliases (A-006, B-004)**: Added `task_create`, `task_update`, `task_complete`, `task_list`, and `log` method aliases on `Mesh` and `MeshStore` mirroring MCP tool names.
 - **Actionable Task ID Error Guidance (A-007)**: Improved unknown work item error messages to provide list of available tasks in the namespace or guidance to create a task first with `mesh_task_create`.
 - **Defunct GCS Tarball Mirror Removed (B-003)**: Removed deprecated GCS fastembed bucket that returned HTTP 403 Forbidden, streamlining clean fallback to HuggingFace mirrors.
+
+## [0.8.0] - 2026-10-19
+
+Agent Autonomous Adoption & Production Readiness Release: First-class work items, token-budgeted briefs, automated multi-agent installer, progressive disclosure skill, content-free audit telemetry, full-suite benchmarks, and hardened security gates.
 
 ### Added
 - **First-class Work Items and Event Log (`work_items`, `work_events`)**:
