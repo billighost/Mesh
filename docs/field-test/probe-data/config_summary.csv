@@ -1,0 +1,4 @@
+config,project,sessions_run,valid_sessions,partial_sessions,invalid_sessions,valid_session_ids,invalid_session_ids,brief_first_rate_valid,brief_first_rate_usable,brief_first_rate_mesh_sessions_valid,unprompted_write_rate_valid,task_complete_summary_rate_usable,relearning_questions_valid,questions_total_valid,mesh_mention_sessions_valid,session_errors_valid,s3_update_calls_valid,s3_learn_calls_valid,s3_memories_4010_valid,s3_memories_3100_valid,s5_score_raw,s5_score_valid,total_cost_all_usd,total_cost_valid_usd
+P1-full,P1-full-r1,5,5,0,0,S1;S2;S3;S4;S5,,1.0,1.0,1.0,0.8,1.0,1,0,4,0,2,0,1,1,4.5,4.5,1.01393,1.01393
+P2-skill,P2-skill-r1,5,1,0,4,S1,S2;S3;S4;S5,0.0,0.0,,0.0,0.0,0,0,0,0,,,,,5.0,,1.283578,0.179238
+P4-control,P4-control-r1,5,1,2,2,S1,S2;S3,0.0,0.0,,0.0,0.0,0,0,0,0,,,,,3.0,,0.933126,0.13748

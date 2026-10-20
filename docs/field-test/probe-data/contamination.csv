@@ -1,0 +1,16 @@
+project,config,session,integrity,integrity_note,probe_evidence_read,design_evidence_read,sibling_access,siblings_accessed,mesh_home_read,auth_token_read,audit_db_read,builtin_memory_writes,max_turns
+P1-full-r1,P1-full,S1,valid,own project only; no probe or sibling access,False,False,False,,False,False,False,0,False
+P1-full-r1,P1-full,S2,valid,own project only; no probe or sibling access,False,False,False,,False,False,False,0,False
+P1-full-r1,P1-full,S3,valid,own project only; no probe or sibling access,False,False,False,,False,False,False,0,False
+P1-full-r1,P1-full,S4,valid,own project only; no probe or sibling access,False,False,False,,False,False,False,0,False
+P1-full-r1,P1-full,S5,valid,own project only; no probe or sibling access,False,False,False,,False,False,False,0,False
+P2-skill-r1,P2-skill,S1,valid,own project only; no probe or sibling access,False,False,False,,False,False,False,0,False
+P2-skill-r1,P2-skill,S2,invalid,"read probe_evidence/SCENARIO.md, prompts/S1-S5.txt, scripted_answers.json, preflight prompt and prior S1 evidence, then wrote those facts into Mesh",True,True,False,,True,False,False,0,False
+P2-skill-r1,P2-skill,S3,invalid,downstream of facts seeded into Mesh by S2's probe-evidence read,False,False,False,,False,False,False,0,False
+P2-skill-r1,P2-skill,S4,invalid,downstream of facts seeded into Mesh by S2's probe-evidence read,False,False,False,,False,False,False,0,False
+P2-skill-r1,P2-skill,S5,invalid,downstream of facts seeded into Mesh by S2's probe-evidence read,False,False,False,,True,False,False,0,False
+P4-control-r1,P4-control,S1,valid,own project only; no probe or sibling access,False,False,False,,False,False,False,2,False
+P4-control-r1,P4-control,S2,invalid,read sibling P1-full-r1 files and .mesh-home/auth_token,False,False,True,P1-full-r1;P1-full-r2;P2-skill-r1;P3-rules-r1;P4-control-r2;P4-control-r3,True,True,False,2,False
+P4-control-r1,P4-control,S3,invalid,read sibling P1-full-r1 files and .mesh-home audit DB; hit max turns,False,False,True,P1-full-r1;P4-control-r2;P4-control-r3,True,False,True,0,True
+P4-control-r1,P4-control,S4,partial,"own repo only, but inherited P1-derived app from S2/S3",False,False,False,,True,False,False,0,False
+P4-control-r1,P4-control,S5,partial,"own repo only, but inherited P1-derived app; built-in memory empty",False,False,False,,True,False,False,0,False
