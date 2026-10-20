@@ -1424,8 +1424,8 @@ _MCP_TOOLS: list[types.Tool] = [
                 },
                 "status": {
                     "type": "string",
-                    "enum": ["todo", "in_progress", "blocked", "done", "cancelled"],
-                    "description": "New lifecycle status.",
+                    "enum": ["todo", "in_progress", "blocked", "done", "cancelled", "reopened"],
+                    "description": "New lifecycle status (use 'reopened' to reactivate a done or cancelled item).",
                 },
                 "priority": {
                     "type": "string",

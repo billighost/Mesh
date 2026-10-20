@@ -4918,15 +4918,25 @@ class MeshStore:
 
                 if status is not None:
                     clean_status = str(status).strip().lower()
-                    if clean_status not in ("todo", "in_progress", "blocked", "done", "cancelled"):
-                        raise ValueError(f"Invalid status '{status}'. Must be todo, in_progress, blocked, done, or cancelled.")
-                    new_status = clean_status
-                    updates.append("status = ?")
-                    params.append(new_status)
-                    event_type = new_status
-                    if new_status == "in_progress" and not item["started_at"]:
-                        updates.append("started_at = ?")
-                        params.append(now_iso)
+                    if clean_status in ("reopened", "reopen"):
+                        new_status = "todo"
+                        updates.append("status = ?")
+                        params.append("todo")
+                        event_type = "reopened"
+                        if item["completed_at"]:
+                            updates.append("completed_at = NULL")
+                        if item["completed_by"]:
+                            updates.append("completed_by = NULL")
+                    elif clean_status not in ("todo", "in_progress", "blocked", "done", "cancelled"):
+                        raise ValueError(f"Invalid status '{status}'. Must be todo, in_progress, blocked, done, cancelled, or reopened.")
+                    else:
+                        new_status = clean_status
+                        updates.append("status = ?")
+                        params.append(new_status)
+                        event_type = new_status
+                        if new_status == "in_progress" and not item["started_at"]:
+                            updates.append("started_at = ?")
+                            params.append(now_iso)
 
                 if priority is not None:
                     clean_priority = str(priority).strip().lower()

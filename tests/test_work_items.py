@@ -138,6 +138,44 @@ def test_invalid_transitions_and_validation(temp_mesh_dir):
         mesh.create_work_item(title="Bad kind", kind="epic")
 
 
+def test_work_item_reopen_status_transition(temp_mesh_dir):
+    """
+    Issue A-005 / B-006 regression:
+    Updating work item with status='reopened' or 'reopen' must transition status to 'todo',
+    clear completed_at, and record an event with event_type='reopened'.
+    """
+    mesh = Mesh(namespace="reopen_test", agent_id="agent-alice")
+    task = mesh.create_work_item(title="Fix bug #123")
+    mesh.complete_work_item(item_id=task["id"], summary="Fixed bug #123")
+
+    completed_task = mesh.get_work_item(task["id"])
+    assert completed_task["status"] == "done"
+    assert completed_task["completed_at"] is not None
+
+    # Reopen using status="reopened"
+    reopened_task = mesh.update_work_item(
+        item_id=task["id"],
+        status="reopened",
+        note="Bug recurred in production",
+    )
+    assert reopened_task["status"] == "todo"
+    assert reopened_task["completed_at"] is None
+
+    events = mesh.get_work_events(item_id=task["id"])
+    reopened_event = [e for e in events if e["event_type"] == "reopened"]
+    assert len(reopened_event) == 1
+    assert reopened_event[0]["old_status"] == "done"
+    assert reopened_event[0]["new_status"] == "todo"
+    assert reopened_event[0]["note"] == "Bug recurred in production"
+
+    # Also test status="reopen"
+    mesh.complete_work_item(item_id=task["id"], summary="Fixed again")
+    reopened2 = mesh.update_work_item(item_id=task["id"], status="reopen")
+    assert reopened2["status"] == "todo"
+    assert reopened2["completed_at"] is None
+
+
+
 def test_work_item_filters_and_ordering(temp_mesh_dir):
     """Test listing work items by status, kind, parent_id, and priority ordering."""
     mesh = Mesh(namespace="filter_test", agent_id="agent-charlie")
