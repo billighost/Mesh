@@ -610,6 +610,7 @@ def install_cmd() -> None:
     parser.add_argument("--scope", default="user", choices=["user", "project"], help="Install scope: user or project (default: user)")
     parser.add_argument("--dir", default=None, help="Target project directory for project scope (default: current directory)")
     parser.add_argument("--namespace", default=None, help="Explicit namespace to bind for project scope")
+    parser.add_argument("--mesh-home", default=None, help="Explicit MESH_HOME storage directory to bind for project scope")
     parser.add_argument("--dry-run", action="store_true", help="Preview plan and diffs without modifying files")
     parser.add_argument("--json", action="store_true", help="Output plan or results as JSON")
     parser.add_argument("--apply", action="store_true", help="Authorize applying changes without interactive prompts")
@@ -632,45 +633,47 @@ def install_cmd() -> None:
         scope=args.scope,
         project_dir=project_dir,
         namespace=args.namespace,
+        mesh_home=args.mesh_home,
     )
 
-    if args.dry_run or args.json:
+    is_authorized = args.apply or args.yes
+
+    if args.dry_run or not is_authorized:
         if args.json:
             ui.json_out({"status": "ok", "mode": "dry_run" if args.dry_run else "plan", "plan": plan})
             return
-        ui.header("Mesh Installation Plan", f"Scope: {args.scope}", f"Agents: {args.agents}")
-        print()
-        for item in plan:
-            print(f"{ui.IND}Agent: {ui.style(item['display_name'], 'brand', 'bold')}")
-            for comp in ("mcp", "skill", "rules"):
-                info = item.get(comp)
-                if not info:
-                    continue
-                if info.get("error"):
-                    print(f"{ui.IND}  {comp.upper()}: {ui.style('ERROR: ' + str(info['error']), 'error')}")
-                elif info.get("changed"):
-                    print(f"{ui.IND}  {comp.upper()}: {ui.style('Would update ' + str(info['path']), 'info')}")
-                    if info.get("diff"):
-                        for line in info["diff"].splitlines()[:15]:
-                            print(f"{ui.IND}    {line}")
-                else:
-                    print(f"{ui.IND}  {comp.upper()}: {ui.style('Already configured / up to date', 'muted')}")
+        if not args.dry_run:
+            if not sys.stdin.isatty():
+                ui.error(
+                    "Non-interactive run requires --apply or --dry-run",
+                    "Mesh will not modify local configuration files without explicit consent.",
+                )
+                sys.exit(2)
+            prompt = f"Apply Mesh configuration for {len(plan)} agent(s) ({args.scope} scope)?"
+            if not ui.confirm(prompt, default=True):
+                ui.info("Installation cancelled by user.")
+                sys.exit(0)
+        else:
+            ui.header("Mesh Installation Plan", f"Scope: {args.scope}", f"Agents: {args.agents}")
             print()
-        ui.note("Dry run complete. No files were modified. Re-run with --apply to execute.")
-        return
-
-    is_authorized = args.apply or args.yes
-    if not is_authorized:
-        if not sys.stdin.isatty():
-            ui.error(
-                "Non-interactive run requires --apply or --dry-run",
-                "Mesh will not modify local configuration files without explicit consent.",
-            )
-            sys.exit(2)
-        prompt = f"Apply Mesh configuration for {len(plan)} agent(s) ({args.scope} scope)?"
-        if not ui.confirm(prompt, default=True):
-            ui.info("Installation cancelled by user.")
-            sys.exit(0)
+            for item in plan:
+                print(f"{ui.IND}Agent: {ui.style(item['display_name'], 'brand', 'bold')}")
+                for comp in ("mcp", "skill", "rules"):
+                    info = item.get(comp)
+                    if not info:
+                        continue
+                    if info.get("error"):
+                        print(f"{ui.IND}  {comp.upper()}: {ui.style('ERROR: ' + str(info['error']), 'error')}")
+                    elif info.get("changed"):
+                        print(f"{ui.IND}  {comp.upper()}: {ui.style('Would update ' + str(info['path']), 'info')}")
+                        if info.get("diff"):
+                            for line in info["diff"].splitlines()[:15]:
+                                print(f"{ui.IND}    {line}")
+                    else:
+                        print(f"{ui.IND}  {comp.upper()}: {ui.style('Already configured / up to date', 'muted')}")
+                print()
+            ui.note("Dry run complete. No files were modified. Re-run with --apply to execute.")
+            return
 
     results = apply_installation(plan, dry_run=False)
     has_errors = any(
@@ -681,7 +684,7 @@ def install_cmd() -> None:
     )
 
     if args.json:
-        ui.json_out({"status": "error" if has_errors else "ok", "results": results})
+        ui.json_out({"status": "error" if has_errors else "ok", "mode": "applied", "results": results})
         if has_errors:
             sys.exit(1)
         return

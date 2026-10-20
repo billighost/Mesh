@@ -5,6 +5,7 @@ and agent adapters across isolated temporary environments.
 import json
 import os
 import shutil
+import sys
 import tempfile
 from pathlib import Path
 
@@ -296,4 +297,86 @@ def test_malformed_json_handling(isolated_env):
     bad_cfg.write_text("{ this is not valid json", encoding="utf-8")
 
     with pytest.raises(ValueError, match="invalid JSON"):
-        update_mcp_config_file(bad_cfg, "/bin/mesh", ["mcp"])
+        update_mcp_config_file(bad_cfg, "/bin/mesh", ["server"])
+
+
+def test_project_scope_binds_mesh_home_and_venv(isolated_env, monkeypatch):
+    """
+    Issue A-003 / B-001 regression:
+    Project-scope installation must bind MESH_HOME in env and prioritize virtualenv binary.
+    """
+    proj_dir = isolated_env["home"] / "my_project"
+    proj_dir.mkdir(parents=True)
+    venv_dir = proj_dir / ".venv"
+    if os.name == "nt":
+        scripts_dir = venv_dir / "Scripts"
+        scripts_dir.mkdir(parents=True)
+        fake_mesh = scripts_dir / "mesh.exe"
+    else:
+        scripts_dir = venv_dir / "bin"
+        scripts_dir.mkdir(parents=True)
+        fake_mesh = scripts_dir / "mesh"
+    fake_mesh.write_text("binary", encoding="utf-8")
+
+    # 1. Plan with project scope and explicit namespace
+    plan = plan_installation(
+        agents=["antigravity"],
+        scope="project",
+        project_dir=proj_dir,
+        namespace="my_ns",
+    )
+    results = apply_installation(plan, dry_run=False)
+    assert len(results) == 1
+
+    cfg_file = proj_dir / ".agents" / "mcp_config.json"
+    assert cfg_file.exists()
+    cfg_data = json.loads(cfg_file.read_text(encoding="utf-8"))
+    mesh_entry = cfg_data["mcpServers"]["mesh"]
+
+    # Verify MESH_HOME is populated in env
+    assert "env" in mesh_entry and mesh_entry["env"] is not None
+    assert "MESH_HOME" in mesh_entry["env"], "MESH_HOME must be set in project-scoped MCP env"
+    expected_mesh_home = str((proj_dir / ".mesh-home").resolve())
+    assert mesh_entry["env"]["MESH_HOME"] == expected_mesh_home
+    assert mesh_entry["env"]["MESH_NAMESPACE"] == "my_ns"
+
+    # Verify command resolves to project venv binary
+    assert str(fake_mesh.resolve()) == mesh_entry["command"]
+    assert mesh_entry["args"] == ["server"]
+
+
+def test_install_apply_with_json_writes_files(isolated_env, monkeypatch, capsys):
+    """
+    Issue A-001 / B-002 regression:
+    mesh install --apply --json must execute modifications and create files, not stay in plan mode.
+    """
+    from mesh.cli import install_cmd
+
+    proj_dir = isolated_env["home"] / "json_apply_proj"
+    proj_dir.mkdir(parents=True)
+
+    test_args = [
+        "mesh",
+        "--scope",
+        "project",
+        "--agents",
+        "antigravity",
+        "--apply",
+        "--json",
+        "--dir",
+        str(proj_dir),
+    ]
+    monkeypatch.setattr(sys, "argv", test_args)
+
+    install_cmd()
+    captured = capsys.readouterr()
+    assert captured.out.strip(), "Expected JSON output on stdout"
+    data = json.loads(captured.out)
+    assert data["status"] == "ok"
+    assert data.get("mode") == "applied", f"Expected mode 'applied', got {data.get('mode')}"
+
+    # Verify files were actually written to disk
+    mcp_file = proj_dir / ".agents" / "mcp_config.json"
+    assert mcp_file.is_file(), f"Expected {mcp_file} to exist on disk after --apply --json"
+    rules_file = proj_dir / "GEMINI.md"
+    assert rules_file.is_file(), f"Expected {rules_file} to exist on disk after --apply --json"

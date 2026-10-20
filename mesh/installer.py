@@ -32,12 +32,36 @@ _SKILLS_DIR = Path(__file__).parent / "skills"
 _VERSION_MARKER_FILE = ".mesh-skill-version"
 
 
-def resolve_mesh_mcp_command() -> tuple[str, list[str]]:
+def resolve_mesh_mcp_command(project_dir: Optional[Path] = None) -> tuple[str, list[str]]:
     """
     Resolve the command to run the Mesh MCP server in the agent's environment:
-      1. Absolute path to 'mesh' or 'mesh.exe' via shutil.which -> with ['server'] argument
-      2. Fallback to sys.executable with ['-m', 'mesh.mcp_server']
+      1. Virtual environment binary if in project_dir/.venv or active sys.prefix != sys.base_prefix
+      2. Absolute path to 'mesh' or 'mesh.exe' via shutil.which -> with ['server'] argument
+      3. Fallback to sys.executable with ['-m', 'mesh.mcp_server']
     """
+    # 1. Check project_dir/.venv or project_dir/venv
+    if project_dir:
+        cand_dirs = [
+            project_dir / ".venv" / ("Scripts" if os.name == "nt" else "bin"),
+            project_dir / "venv" / ("Scripts" if os.name == "nt" else "bin"),
+        ]
+        for cdir in cand_dirs:
+            mesh_bin = cdir / ("mesh.exe" if os.name == "nt" else "mesh")
+            if mesh_bin.is_file():
+                return str(mesh_bin.resolve()), ["server"]
+            py_bin = cdir / ("python.exe" if os.name == "nt" else "python")
+            if py_bin.is_file():
+                return str(py_bin.resolve()), ["-m", "mesh.mcp_server"]
+
+    # 2. Check active virtual environment
+    if sys.prefix != sys.base_prefix:
+        venv_scripts = Path(sys.prefix) / ("Scripts" if os.name == "nt" else "bin")
+        mesh_bin = venv_scripts / ("mesh.exe" if os.name == "nt" else "mesh")
+        if mesh_bin.is_file():
+            return str(mesh_bin.resolve()), ["server"]
+        return str(Path(sys.executable).resolve()), ["-m", "mesh.mcp_server"]
+
+    # 3. Global PATH search
     cmd = shutil.which("mesh")
     if cmd:
         return str(Path(cmd).resolve()), ["server"]
@@ -482,6 +506,7 @@ def plan_installation(
     scope: str = "user",
     project_dir: Optional[Path] = None,
     namespace: Optional[str] = None,
+    mesh_home: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     """
     Build a complete installation plan for selected agents without modifying any files.
@@ -489,11 +514,15 @@ def plan_installation(
     clean_scope = scope.lower().strip()
     target_agents = agents or SUPPORTED_AGENTS
     p_dir = project_dir or Path.cwd()
-    cmd, args = resolve_mesh_mcp_command()
+    cmd, args = resolve_mesh_mcp_command(project_dir=p_dir)
 
     env_vars: Optional[dict[str, str]] = None
-    if clean_scope == "project" and namespace:
-        env_vars = {"MESH_NAMESPACE": namespace}
+    if clean_scope == "project":
+        env_vars = {}
+        if namespace:
+            env_vars["MESH_NAMESPACE"] = namespace
+        target_mesh_home = mesh_home or str((p_dir / ".mesh-home").resolve())
+        env_vars["MESH_HOME"] = target_mesh_home
 
     plan: list[dict[str, Any]] = []
 
@@ -520,6 +549,8 @@ def plan_installation(
                 changed, diff, _ = update_mcp_config_file(mcp_path, cmd, args, env=env_vars, dry_run=True)
                 agent_plan["mcp"] = {
                     "path": str(mcp_path),
+                    "command": cmd,
+                    "args": args,
                     "action": "update" if mcp_path.exists() else "create",
                     "changed": changed,
                     "diff": diff,
@@ -570,7 +601,7 @@ def apply_installation(
     """
     Execute an installation plan, applying backups before any edits.
     """
-    cmd, args = resolve_mesh_mcp_command()
+    default_cmd, default_args = resolve_mesh_mcp_command()
     results: list[dict[str, Any]] = []
 
     for item in plan:
@@ -597,6 +628,8 @@ def apply_installation(
         mcp_info = item.get("mcp")
         if mcp_info and not mcp_info.get("error"):
             path = Path(mcp_info["path"])
+            cmd = mcp_info.get("command") or default_cmd
+            args = mcp_info.get("args") or default_args
             try:
                 changed, diff, bak = update_mcp_config_file(
                     path, cmd, args, env=mcp_info.get("env"), dry_run=dry_run
