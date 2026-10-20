@@ -641,7 +641,18 @@ def _is_plausible_secret_value(
         return True
     has_digit = any(c.isdigit() for c in val)
     has_symbol = any(not c.isalnum() for c in val)
+    has_non_underscore_symbol = any(not c.isalnum() and c != "_" for c in val)
     has_mixed_case = any(c.isupper() for c in val) and any(c.islower() for c in val)
+
+    # For generic 'key' (not api_key, private_key, secret_key), an underscore alone without digits or mixed case
+    # is often a database identifier (e.g. 'foreign key is customer_id'). Require digits, mixed case, non-underscore symbol, or high entropy.
+    if kw_low.endswith("key") and not any(kw_low.endswith(k) for k in ("api_key", "secret_key", "private_key", "access_key", "webhook_key")):
+        if has_digit or has_non_underscore_symbol or has_mixed_case:
+            return True
+        if len(val) >= 14 and _shannon_entropy(val) >= 3.4:
+            return True
+        return False
+
     if has_digit or has_symbol or has_mixed_case:
         # Exclude pure version/port numbers if keyword wasn't password/pin/pwd/secret
         return True
@@ -673,7 +684,10 @@ _KNOWN_API_KEY_RE = re.compile(
     r"sk_(?:live|test)_[0-9a-zA-Z]{12,}|"
     r"pypi-AgEIcHlwaS5vcmc[A-Za-z0-9_-]{20,}|"
     r"npm_[A-Za-z0-9]{20,}|"
-    r"SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}"
+    r"SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}|"
+    r"DEMO_FAKE_[A-Za-z0-9_]+|"
+    r"(?:[A-Z0-9]{2,}_)+(?:KEY|SECRET|TOKEN|PASS|PHRASE|PASSPHRASE|APIKEY|AUTH|CRED|EMBED)_[A-Za-z0-9_-]{4,}|"
+    r"(?:api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token)_[A-Za-z0-9_-]{6,}"
     r")\b"
 )
 
@@ -710,9 +724,8 @@ _YAML_BLOCK_SECRET_RE = re.compile(
 
 # Finding S2 / S3 / S4: Keyword + optional 0..5 context words (`for checkout`) + operator (`is`/`was`/`=`/`:`) + quoted or unquoted value
 _KEYWORD_ASSIGNMENT_RE = re.compile(
-    r"(?i)(?:\b|(?<=_))(password|passwd|passphrase|pwd|pin|secret|api[_\s-]?key|access[_\s-]?token|"
-    r"auth[_\s-]?token|refresh[_\s-]?token|private[_\s-]?key|client[_\s-]?secret|"
-    r"aws_secret_access_key|aws_session_token|token)\b"
+    r"(?i)(?:\b|(?<=_))(password|passwd|passphrase|pwd|pin|secret|client[_\s-]?secret|"
+    r"aws_secret_access_key|aws_session_token|(?:[a-z0-9_-]+[_\s-])?key|(?:[a-z0-9_-]+[_\s-])?token)\b"
     r"(\s+(?:(?:for|of|on|in|to|at|from|the|a|an|our|my|their|this|that)\s+|[a-z0-9_.-]+\s+){0,5}?"
     r"(?:is|was|equals)\s+|['\"]?\s*(?::=|=|:)\s*)"
     r"(?:(['\"])([^\r\n]*?)\3|([^\s,'\"`;\n\r\[]{3,}))"
@@ -722,10 +735,11 @@ _KEYWORD_ASSIGNMENT_RE = re.compile(
 _UNQUOTED_PASSPHRASE_RE = re.compile(
     r"(?i)\b(passphrase|recovery[_\s-]?phrase|seed[_\s-]?phrase|mnemonic)\b"
     r"(\s*(?:is|was|=|:)\s*)"
-    r"(?!\[REDACTED)([A-Za-z0-9]+(?:\s+[A-Za-z0-9]+){2,11})"
+    r"(?!\[REDACTED)([A-Za-z0-9_]+(?:[\s_-]+[A-Za-z0-9_]+){1,11})"
 )
 
 _EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
+
 
 
 def _context_has_benign_subject_noun(intervening_text: str) -> bool:

@@ -566,3 +566,62 @@ def test_n1_n3_n4_n6_n7_n8_deep_dive_regressions(tmp_path, monkeypatch):
     m_n8.learn("Private signing key rotation schedule", local_only=True)
     bundle = m_n8.recall_with_context("Frontend React")
     assert all(not item.get("local_only") for item in bundle["other_possible_memories"])
+
+
+# ==============================================================================
+# Issue A-004 & B-005: Field-Test Planted Secrets Redaction & Quarantine
+# ==============================================================================
+
+
+def test_issue_a004_b005_secret_ingestion_and_quarantine(tmp_path, monkeypatch):
+    """
+    Issue A-004 / B-005 regression:
+    API keys (DEMO_FAKE_KEY_...), passphrases (DEMO_FAKE_PHRASE_...), and embedded tokens
+    must be detected by ingestion guards, redacted from storage, and quarantined to local_only=True.
+    Public export must contain 0 occurrences of the plaintext secret tokens.
+    """
+    from mesh.guards import guard_ingest
+    from mesh.io import export_namespace
+
+    monkeypatch.setenv("MESH_HOME", str(tmp_path))
+    monkeypatch.setenv("MESH_NO_AUTO_DAEMON", "1")
+    ns = "secret_audit_ns"
+    mesh = Mesh(namespace=ns, agent_id="test-agent")
+
+    planted_secrets = [
+        ("DEMO_FAKE_KEY_7F3A91B4E8C21094AA55", "Staging webhook key is DEMO_FAKE_KEY_7F3A91B4E8C21094AA55."),
+        ("DEMO_FAKE_PHRASE_autumn_whisper_velvet_glacier_77", "Backup recovery passphrase: DEMO_FAKE_PHRASE_autumn_whisper_velvet_glacier_77"),
+        ("DEMO_FAKE_SENTENCE_TOKEN_88231", "The staging sentence token is DEMO_FAKE_SENTENCE_TOKEN_88231 for API auth."),
+        ("DEMO_FAKE_EMBED_XY8821Z", "Config contains embedded token DEMO_FAKE_EMBED_XY8821Z inside adapter."),
+        ("DEMO_FAKE_KEY_7F3A91B82C4D6E", "Production payment gateway key: DEMO_FAKE_KEY_7F3A91B82C4D6E"),
+    ]
+
+    for marker, text in planted_secrets:
+        # 1. Guard check
+        res = guard_ingest(text)
+        assert marker not in res.content, f"Marker '{marker}' leaked in guarded content: {res.content}"
+        assert res.local_only is True, f"Marker '{marker}' failed to force local_only=True"
+
+        # 2. Ingest via Mesh.learn()
+        mesh.learn(text)
+
+    # 3. Check SQLite DB directly: raw markers must NOT appear in memories table
+    db_path = tmp_path / f"mesh_{ns}.db"
+    assert db_path.exists()
+    conn = sqlite3.connect(str(db_path))
+    try:
+        rows = conn.execute("SELECT content, local_only FROM memories WHERE namespace = ?", (ns,)).fetchall()
+        for row_content, local_only in rows:
+            for marker, _ in planted_secrets:
+                assert marker not in row_content, f"Marker '{marker}' found in SQLite DB content: {row_content}"
+            assert local_only == 1, f"Memory row was not quarantined to local_only=1: {row_content}"
+    finally:
+        conn.close()
+
+    # 4. Check public export: must be completely free of plaintext secrets
+    export_file = tmp_path / "public_export.json"
+    export_namespace(ns, output_path=str(export_file))
+    assert export_file.exists()
+    export_text = export_file.read_text(encoding="utf-8")
+    for marker, _ in planted_secrets:
+        assert marker not in export_text, f"Marker '{marker}' leaked in public export: {export_text}"
