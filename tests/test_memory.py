@@ -346,3 +346,42 @@ class TestContradictionManagement:
             mesh.resolve_contradiction(cid)
             resolved = mesh.contradictions(resolved=True)
             assert any(c["id"] == cid for c in resolved)
+
+
+class TestSdkMethodAliases:
+    """
+    Issue A-006 / B-004 regression:
+    Verify task_* and log method aliases on Mesh and Store mirroring MCP tools.
+    """
+    def test_mesh_and_store_task_and_log_aliases(self, mesh):
+        # 1. task_create
+        task = mesh.task_create(title="Sdk Task Alias", kind="task", priority="high")
+        assert task["short_id"].startswith("task-")
+        assert task["title"] == "Sdk Task Alias"
+
+        # 2. task_update
+        updated = mesh.task_update(item_id=task["id"], status="in_progress", note="Started")
+        assert updated["status"] == "in_progress"
+
+        # 3. task_list
+        tasks = mesh.task_list()
+        assert len(tasks) >= 1
+        assert any(t["id"] == task["id"] for t in tasks)
+
+        # 4. task_complete
+        completed = mesh.task_complete(item_id=task["id"], summary="Task alias completed", evidence=["file.py"])
+        assert completed["status"] == "done"
+
+        # 5. log
+        log_res = mesh.log(since="7d")
+        assert log_res["completed_count"] >= 1
+        assert "Sdk Task Alias" in log_res["changelog_markdown"]
+
+        # Also verify same aliases exist on mesh.store
+        store = mesh.store
+        assert hasattr(store, "task_create")
+        assert hasattr(store, "task_update")
+        assert hasattr(store, "task_complete")
+        assert hasattr(store, "task_list")
+        assert hasattr(store, "log")
+

@@ -5437,3 +5437,12 @@ class MeshStore:
                 "changelog": changelog_md,
                 "changelog_markdown": changelog_md,
             }
+
+    # Method aliases mirroring MCP tool names (Issue A-006 / B-004)
+    task_create = create_work_item
+    task_update = update_work_item
+    task_complete = complete_work_item
+    task_list = list_work_items
+    task_get = get_work_item
+    log = get_changelog
+
