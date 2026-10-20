@@ -8,6 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 Agent Autonomous Adoption & Production Readiness Release: First-class work items, token-budgeted briefs, automated multi-agent installer, progressive disclosure skill, content-free audit telemetry, full-suite benchmarks, and hardened security gates.
 
+### Fixed (Independent Field Test Resolutions: Run A & Run B)
+- **Secret Ingestion Leakage Prevention (A-004, B-005)**: Expanded secret scanner regexes to catch generic API key tokens (`WEBHOOK_KEY_*`, `payment_gateway_key`, etc.) and unquoted passphrase statements, ensuring they are quarantined to `local_only=True` without false-positive leakage into shared or cloud layers.
+- **Installer MCP Arguments & Alias (A-002)**: Configured agent MCP setups to invoke `mesh server` rather than invalid `mesh mcp`, and added `mesh mcp` subcommand alias to `mesh/cli.py` for backward compatibility.
+- **Non-Interactive Install Execution (A-001, B-002)**: Fixed `mesh install --apply --json` (and `--yes --json`) so that automation scripts properly apply and persist configuration changes rather than remaining in dry-run plan mode.
+- **Project-Scoped Isolation & Virtualenv Resolution (A-003, B-001)**: Bound `MESH_HOME` to `project_dir/.mesh-home` by default in project-scoped MCP configs, added `--mesh-home` flag to `mesh install`, and prioritized project `.venv` binaries.
+- **MCP Server Stderr Cleanliness (A-008, B-007)**: Suppressed background warmup worker confirmation prompt when running non-interactively or with `MESH_NO_AUTO_DAEMON=1`, preventing stderr noise in MCP host environments.
+- **Work Item Reopened Lifecycle Transition (A-005, B-006)**: Accepted `status="reopened"` and `status="reopen"` in `update_work_item`, transitioning item back to `todo`, clearing completion timestamp, and logging a `reopened` event.
+- **Python SDK Method Aliases (A-006, B-004)**: Added `task_create`, `task_update`, `task_complete`, `task_list`, and `log` method aliases on `Mesh` and `MeshStore` mirroring MCP tool names.
+- **Actionable Task ID Error Guidance (A-007)**: Improved unknown work item error messages to provide list of available tasks in the namespace or guidance to create a task first with `mesh_task_create`.
+- **Defunct GCS Tarball Mirror Removed (B-003)**: Removed deprecated GCS fastembed bucket that returned HTTP 403 Forbidden, streamlining clean fallback to HuggingFace mirrors.
+
 ### Added
 - **First-class Work Items and Event Log (`work_items`, `work_events`)**:
   - Deterministic tracking for goals and actionable tasks in SQLite, completely separated from vector decay, dedup, and contradiction detection.
