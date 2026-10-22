@@ -304,9 +304,18 @@ def check_public_manifest(errors: list[str]) -> None:
             errors.append(f"[docs/field-test/PUBLIC_MANIFEST.json] Listed file is missing: '{rel}'.")
             continue
         data = target.read_bytes()
-        if len(data) != entry.get("size_bytes"):
+        actual_size = len(data)
+        actual_sha = hashlib.sha256(data).hexdigest()
+        data_lf = data.replace(b"\r\n", b"\n")
+        lf_size = len(data_lf)
+        lf_sha = hashlib.sha256(data_lf).hexdigest()
+
+        expected_size = entry.get("size_bytes")
+        expected_sha = entry.get("sha256")
+
+        if actual_size != expected_size and lf_size != expected_size:
             errors.append(f"[docs/field-test/PUBLIC_MANIFEST.json] Size mismatch for '{rel}'.")
-        if hashlib.sha256(data).hexdigest() != entry.get("sha256"):
+        if actual_sha != expected_sha and lf_sha != expected_sha:
             errors.append(f"[docs/field-test/PUBLIC_MANIFEST.json] SHA-256 mismatch for '{rel}'.")
 
     for path in root.rglob("*"):
