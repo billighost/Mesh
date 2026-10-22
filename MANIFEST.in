@@ -19,4 +19,5 @@ prune docs
 prune benchmarks
 prune assets
 prune .github
+prune unwanted
 global-exclude *.py[cod] __pycache__ *.so *.dylib *.mp4 *.mp3 *.wav *.png *.jpg
