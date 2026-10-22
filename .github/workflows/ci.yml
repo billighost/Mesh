@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [ main, "chore/*", "feat/*", "fix/*" ]
+    branches: [ main, "chore/*", "feat/*", "fix/*", "docs/*" ]
   pull_request:
     branches: [ main ]
   schedule:
@@ -53,7 +53,6 @@ jobs:
         python-version: ["3.10", "3.11", "3.12", "3.13"]
 
     env:
-      MESH_HOME: ${{ runner.temp }}/.mesh_ci
       MESH_NO_AUTO_DAEMON: "1"
       MESH_AUTO_APPROVE: "0"
 
@@ -72,6 +71,8 @@ jobs:
           pip install .[test,secrets]
 
       - name: Run Pytest Suite with Coverage
+        env:
+          MESH_HOME: ${{ runner.temp }}/.mesh_ci
         run: pytest -v --tb=short
 
   dist-check:
@@ -148,10 +149,12 @@ jobs:
     needs: [dist-check]
     runs-on: ubuntu-latest
     env:
-      MESH_HOME: ${{ runner.temp }}/.mesh_smoke
       MESH_NO_AUTO_DAEMON: "1"
       MESH_AUTO_APPROVE: "0"
     steps:
+      - name: Configure Isolated Environment
+        run: echo "MESH_HOME=${{ runner.temp }}/.mesh_smoke" >> $GITHUB_ENV
+
       - name: Download Build Artifacts
         uses: actions/download-artifact@v4
         with:
