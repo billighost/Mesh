@@ -28,7 +28,8 @@ jobs:
       - name: Install Lint & Security Tools
         run: |
           python -m pip install --upgrade pip
-          python -m pip install ruff bandit
+          pip install ruff bandit
+          pip install -e .
 
       - name: Run Ruff Lint Checks
         run: ruff check .
