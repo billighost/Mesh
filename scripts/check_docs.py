@@ -407,6 +407,7 @@ def main() -> int:
     if errors:
         print(f"\n[FAIL] Documentation verification found {len(errors)} error(s):")
         for err in errors:
+            print(f"::error::{err}")
             print(f"  - {err}")
         return 1
 
