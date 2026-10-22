@@ -566,3 +566,130 @@ def test_n1_n3_n4_n6_n7_n8_deep_dive_regressions(tmp_path, monkeypatch):
     m_n8.learn("Private signing key rotation schedule", local_only=True)
     bundle = m_n8.recall_with_context("Frontend React")
     assert all(not item.get("local_only") for item in bundle["other_possible_memories"])
+
+
+# ==============================================================================
+# Issue A-004 & B-005: Field-Test Planted Secrets Redaction & Quarantine
+# ==============================================================================
+
+
+def test_issue_a004_b005_secret_ingestion_and_quarantine(tmp_path, monkeypatch):
+    """
+    Issue A-004 / B-005 regression:
+    API keys (DEMO_FAKE_KEY_...), passphrases (DEMO_FAKE_PHRASE_...), and embedded tokens
+    must be detected by ingestion guards, redacted from storage, and quarantined to local_only=True.
+    Public export must contain 0 occurrences of the plaintext secret tokens.
+    """
+    from mesh.guards import guard_ingest
+    from mesh.io import export_namespace
+
+    monkeypatch.setenv("MESH_HOME", str(tmp_path))
+    monkeypatch.setenv("MESH_NO_AUTO_DAEMON", "1")
+    ns = "secret_audit_ns"
+    mesh = Mesh(namespace=ns, agent_id="test-agent")
+
+    planted_secrets = [
+        ("DEMO_FAKE_KEY_7F3A91B4E8C21094AA55", "Staging webhook key is DEMO_FAKE_KEY_7F3A91B4E8C21094AA55."),
+        ("DEMO_FAKE_PHRASE_autumn_whisper_velvet_glacier_77", "Backup recovery passphrase: DEMO_FAKE_PHRASE_autumn_whisper_velvet_glacier_77"),
+        ("DEMO_FAKE_SENTENCE_TOKEN_88231", "The staging sentence token is DEMO_FAKE_SENTENCE_TOKEN_88231 for API auth."),
+        ("DEMO_FAKE_EMBED_XY8821Z", "Config contains embedded token DEMO_FAKE_EMBED_XY8821Z inside adapter."),
+        ("DEMO_FAKE_KEY_7F3A91B82C4D6E", "Production payment gateway key: DEMO_FAKE_KEY_7F3A91B82C4D6E"),
+    ]
+
+    for marker, text in planted_secrets:
+        # 1. Guard check
+        res = guard_ingest(text)
+        assert marker not in res.content, f"Marker '{marker}' leaked in guarded content: {res.content}"
+        assert res.local_only is True, f"Marker '{marker}' failed to force local_only=True"
+
+        # 2. Ingest via Mesh.learn()
+        mesh.learn(text)
+
+    # 3. Check SQLite DB directly: raw markers must NOT appear in memories table
+    db_path = tmp_path / f"mesh_{ns}.db"
+    assert db_path.exists()
+    conn = sqlite3.connect(str(db_path))
+    try:
+        rows = conn.execute("SELECT content, local_only FROM memories WHERE namespace = ?", (ns,)).fetchall()
+        for row_content, local_only in rows:
+            for marker, _ in planted_secrets:
+                assert marker not in row_content, f"Marker '{marker}' found in SQLite DB content: {row_content}"
+            assert local_only == 1, f"Memory row was not quarantined to local_only=1: {row_content}"
+    finally:
+        conn.close()
+
+    # 4. Check public export: must be completely free of plaintext secrets
+    export_file = tmp_path / "public_export.json"
+    export_namespace(ns, output_path=str(export_file))
+    assert export_file.exists()
+    export_text = export_file.read_text(encoding="utf-8")
+    for marker, _ in planted_secrets:
+        assert marker not in export_text, f"Marker '{marker}' leaked in public export: {export_text}"
+
+
+def test_issue_t002_secret_detection_and_task_quarantine(tmp_path, monkeypatch):
+    """
+    Issue T-002 regression:
+    1. Single-letter prefix split tokens (T_SPLIT_SECRET_...) and locker codes (8841-blue-zebra-alpha)
+       must be detected, redacted, and quarantined to local_only=True.
+    2. Work items whose notes or completion summaries contain credentials must be quarantined to
+       local_only=1 and completely excluded from public exports.
+    """
+    monkeypatch.setenv("MESH_HOME", str(tmp_path))
+    monkeypatch.setenv("MESH_NO_AUTO_DAEMON", "1")
+    ns = "issue_t002_ns"
+    mesh = Mesh(namespace=ns, agent_id="sec-tester")
+
+    # 1. Split-line token
+    split_text = "Secret split across two lines:\nT_SPLIT_SECRET_PART1_ABCXYZ987\nT_SPLIT_SECRET_PART2_123456789"
+    assert is_credential(split_text) is True
+    redacted_split = redact_secrets_local(split_text)
+    assert "T_SPLIT_SECRET_PART1_ABCXYZ987" not in redacted_split
+    guard_split = guard_ingest(split_text)
+    assert guard_split.local_only is True
+    res_split = mesh.learn(split_text)
+    assert res_split["local_only"] is True
+
+    # 2. Locker code pattern
+    locker_text = "The emergency locker code is 8841-blue-zebra-alpha behind the mirror."
+    assert is_credential(locker_text) is True
+    redacted_locker = redact_secrets_local(locker_text)
+    assert "8841-blue-zebra-alpha" not in redacted_locker
+    guard_locker = guard_ingest(locker_text)
+    assert guard_locker.local_only is True
+    res_locker = mesh.learn(locker_text)
+    assert res_locker["local_only"] is True
+
+    # 3. Task note secret quarantine
+    task1 = mesh.task_create(title="Normal task", description="Initial public description")
+    assert not task1["local_only"]
+    updated1 = mesh.update_work_item(
+        item_id=task1["id"],
+        status="blocked",
+        note="Server room lock PIN is 9472",
+    )
+    assert bool(updated1["local_only"]) is True
+
+    # 4. Task completion summary secret quarantine
+    task2 = mesh.task_create(title="Another normal task", description="Public work")
+    assert not task2["local_only"]
+    comp2 = mesh.complete_work_item(
+        item_id=task2["id"],
+        summary="Completed auth setup with DEMO_FAKE_KEY_7F3A91B4E8C21094AA55",
+        evidence=["auth.py"],
+    )
+    assert bool(comp2["local_only"]) is True
+
+    # 5. Public export verification
+    export_file = tmp_path / "t002_public_export.json"
+    export_namespace(ns, output_path=str(export_file))
+    assert export_file.exists()
+    export_content = export_file.read_text(encoding="utf-8")
+    assert "T_SPLIT_SECRET_PART1_ABCXYZ987" not in export_content
+    assert "8841-blue-zebra-alpha" not in export_content
+    assert "9472" not in export_content
+    assert "DEMO_FAKE_KEY_7F3A91B4E8C21094AA55" not in export_content
+    data = json.loads(export_content)
+    assert len(data.get("work_items", [])) == 0
+    assert data.get("skipped_local_only_work_items", 0) == 2
+

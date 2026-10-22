@@ -1,0 +1,4 @@
+project,config,integrity,score,port,orm_reason,test_framework,deployment_region,rate_limit,relearning,note
+P1-full-r1,P1-full,valid,4.5,1.0,0.5,1.0,1.0,1.0,1,"Port 3100, pytest-only, both abstentions correct. ORM reason not stored; says so and implicitly asks the user to supply it."
+P2-skill-r1,P2-skill,invalid,5.0,1.0,1.0,1.0,1.0,1.0,0,"Raw 5/5, but INVALID: the ORM rationale it recalled was written into Mesh by S2 after S2 read the probe's own S1 prompt and scripted answers."
+P4-control-r1,P4-control,partial,3.0,0.0,0.5,0.5,1.0,1.0,0,"No Mesh and empty built-in memory: no 3100, no rationale, pytest observed not stated. Region/rate correctly abstained. Asks the user to supply values."

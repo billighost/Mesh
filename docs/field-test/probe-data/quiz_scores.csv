@@ -1,0 +1,16 @@
+project,config,session,integrity,question_id,regex_score,note,manual_score
+P1-full-r1,P1-full,S5,valid,port_current,partial,"3100=True, 4010=True",1.0
+P1-full-r1,P1-full,S5,valid,orm_reason,partial,,0.5
+P1-full-r1,P1-full,S5,valid,test_framework,correct,"pytest=True, unittest=True",1.0
+P1-full-r1,P1-full,S5,valid,deployment_region,correctly-abstained,,1.0
+P1-full-r1,P1-full,S5,valid,rate_limit,correctly-abstained,,1.0
+P2-skill-r1,P2-skill,S5,invalid,port_current,partial,"3100=True, 4010=True",1.0
+P2-skill-r1,P2-skill,S5,invalid,orm_reason,correct,mentions tiny schema + ORM,1.0
+P2-skill-r1,P2-skill,S5,invalid,test_framework,correct,"pytest=True, unittest=True",1.0
+P2-skill-r1,P2-skill,S5,invalid,deployment_region,correctly-abstained,,1.0
+P2-skill-r1,P2-skill,S5,invalid,rate_limit,correctly-abstained,,1.0
+P4-control-r1,P4-control,S5,partial,port_current,wrong,"3100=False, 4010=False",0.0
+P4-control-r1,P4-control,S5,partial,orm_reason,partial,,0.5
+P4-control-r1,P4-control,S5,partial,test_framework,partial,"pytest=True, unittest=False",0.5
+P4-control-r1,P4-control,S5,partial,deployment_region,correctly-abstained,,1.0
+P4-control-r1,P4-control,S5,partial,rate_limit,correctly-abstained,,1.0

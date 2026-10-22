@@ -1,7 +1,7 @@
 ---
 name: mesh-context-layer
 description: >-
-  Essential persistent memory and task tracking for AI coding agents (v0.8.0).
+  Essential persistent memory and task tracking for AI coding agents (v0.8.1).
   Applies at the start of EVERY session or conversation in any project or repository,
   before answering questions about project setup, ports, commands, conventions, or history,
   whenever new durable information is learned or an existing fact changes,
@@ -10,7 +10,7 @@ description: >-
   and whenever the user asks what has been done on the project.
 ---
 
-# Mesh Context Layer (v0.8.0)
+# Mesh Context Layer (v0.8.1)
 
 Persistent semantic memory, deterministic work tracking, and project changelogs across sessions and agents.
 
@@ -44,7 +44,8 @@ Follow these numbered steps in every session:
    - If a contradiction warning occurs, inspect with `mesh_contradictions` and resolve with `mesh_resolve_contradiction`.
 5. **TRACK GOALS & TASKS**:
    - Create high-level goals and actionable tasks using `mesh_task_create(title=..., kind="goal"|"task")`.
-   - Update lifecycle state as work proceeds: `mesh_task_update(item_id=..., status="in_progress"|"blocked")`.
+   - Always create a task or goal first before updating or completing it; do not guess task IDs.
+   - Update lifecycle state as work proceeds: `mesh_task_update(item_id=..., status="in_progress"|"blocked"|"reopened")`.
 6. **COMPLETE WITH SUMMARY & EVIDENCE**:
    - When finishing work, mark it done via `mesh_task_complete(item_id=..., summary=..., evidence=[...])`.
    - A descriptive summary of what was completed is required. Evidence (file paths, commit SHAs) is strongly recommended.
@@ -66,6 +67,7 @@ Follow these numbered steps in every session:
 | User sets a multi-step objective | `mesh_task_create(title=..., kind="goal")` | Establish tracked work items. Subdivide into tasks with `parent_id`. |
 | Starting work on a task | `mesh_task_update(item_id=..., status="in_progress")` | Signal active work to other agents and session briefs. |
 | Task blocked by dependency or bug | `mesh_task_update(item_id=..., status="blocked", note="...")` | Record reason and blocker details. |
+| Reopening completed or closed task | `mesh_task_update(item_id=..., status="reopened", note="...")` | Reactivate task to todo state with reopen note. |
 | Task work completed | `mesh_task_complete(item_id=..., summary=..., evidence=[...])` | Complete with detailed summary and file/commit evidence. |
 | User asks "what have we done?" | `mesh_log(since="24h"|"7d")` | Return deterministic, chronological change log. |
 | Ending session or handing off | `mesh_learn(content="Handoff: ...", tags=["handoff"])` | Write next steps and open blockers. |

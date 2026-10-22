@@ -1,0 +1,10 @@
+issue_key,status,notes
+A001_B002_install_apply_json,FIXED,Verified --apply --json applies configuration cleanly
+A002_mcp_subcommand_and_alias,FIXED,resolve_mesh_mcp_command resolves args to ['server']
+A003_B001_project_scope_binding,FIXED,
+A004_B005_secret_ingestion_redaction,FIXED,
+A005_B006_reopened_status_transition,FIXED,
+A006_B004_sdk_method_aliases,FIXED,
+A007_unknown_task_guidance,FIXED,
+A008_B007_mcp_headless_stderr,FIXED,
+B003_defunct_model_mirror_removed,FIXED,

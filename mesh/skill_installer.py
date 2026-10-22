@@ -192,6 +192,26 @@ def _is_already_up_to_date(dst: Path) -> bool:
         return False
 
 
+def _safe_replace_dir(src: Path, dst: Path, max_retries: int = 5, backoff: float = 0.05) -> None:
+    """
+    Atomically replace `dst` with `src` on Windows and POSIX.
+    Handles transient [WinError 5] Access is denied during rapid directory renames
+    caused by Windows file indexers, antivirus locks, or pending handle cleanup (Issue T-001).
+    """
+    for attempt in range(max_retries):
+        try:
+            os.replace(src, dst)
+            return
+        except (PermissionError, OSError):
+            if attempt == max_retries - 1:
+                raise
+            import gc
+            import time
+
+            gc.collect()
+            time.sleep(backoff * (2**attempt))
+
+
 def install_skill(
     target_skills_root: Path,
     *,
@@ -240,20 +260,20 @@ def install_skill(
 
         if _is_symlink_or_junction(dst):
             _remove_path_or_link(dst)
-            os.replace(tmp_dst, dst)
+            _safe_replace_dir(tmp_dst, dst)
         elif dst.exists():
-            os.replace(dst, backup_dst)
+            _safe_replace_dir(dst, backup_dst)
             try:
-                os.replace(tmp_dst, dst)
+                _safe_replace_dir(tmp_dst, dst)
             except Exception:
                 if backup_dst.exists() and not dst.exists():
-                    os.replace(backup_dst, dst)
+                    _safe_replace_dir(backup_dst, dst)
                 raise
             finally:
                 if backup_dst.exists():
                     _remove_path_or_link(backup_dst)
         else:
-            os.replace(tmp_dst, dst)
+            _safe_replace_dir(tmp_dst, dst)
     finally:
         if tmp_dst.exists() or _is_symlink_or_junction(tmp_dst):
             try:

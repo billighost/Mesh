@@ -1424,8 +1424,8 @@ _MCP_TOOLS: list[types.Tool] = [
                 },
                 "status": {
                     "type": "string",
-                    "enum": ["todo", "in_progress", "blocked", "done", "cancelled"],
-                    "description": "New lifecycle status.",
+                    "enum": ["todo", "in_progress", "blocked", "done", "cancelled", "reopened"],
+                    "description": "New lifecycle status (use 'reopened' to reactivate a done or cancelled item).",
                 },
                 "priority": {
                     "type": "string",
@@ -1621,6 +1621,9 @@ def _execute_tool_sync_impl(
                         "status": result["status"],
                         "memory_id": result["memory_id"],
                         "deduplicated": result.get("deduplicated", False),
+                        "local_only": bool(
+                            result.get("local_only", guard_res.local_only or tags_priv)
+                        ),
                         "namespace": mesh.namespace,
                         "total_memories": mesh.count(),
                         "trust_tier": result.get("trust_tier", "agent"),
@@ -2370,11 +2373,16 @@ async def _run() -> None:
 
 def run() -> None:
     """Entry point for: mesh-server"""
+    no_daemon = _env_flag("MESH_NO_AUTO_DAEMON")
     auto_sync = _env_flag("MESH_ENABLE_AUTO_SYNC")
-    if auto_sync:
-        threading.Thread(target=background_sync_worker, daemon=True).start()
-    elif request_user_permission("start the background MCP cache warmup worker"):
-        threading.Thread(target=background_sync_worker, daemon=True).start()
+    auto_approve = _env_flag("MESH_AUTO_APPROVE")
+    is_interactive = hasattr(sys.stdin, "isatty") and sys.stdin.isatty()
+
+    if not no_daemon:
+        if auto_sync or auto_approve:
+            threading.Thread(target=background_sync_worker, daemon=True).start()
+        elif is_interactive and request_user_permission("start the background MCP cache warmup worker"):
+            threading.Thread(target=background_sync_worker, daemon=True).start()
     asyncio.run(_run())
 
 

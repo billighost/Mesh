@@ -32,15 +32,39 @@ _SKILLS_DIR = Path(__file__).parent / "skills"
 _VERSION_MARKER_FILE = ".mesh-skill-version"
 
 
-def resolve_mesh_mcp_command() -> tuple[str, list[str]]:
+def resolve_mesh_mcp_command(project_dir: Optional[Path] = None) -> tuple[str, list[str]]:
     """
     Resolve the command to run the Mesh MCP server in the agent's environment:
-      1. Absolute path to 'mesh' or 'mesh.exe' via shutil.which
-      2. Fallback to sys.executable with ['-m', 'mesh.mcp_server']
+      1. Virtual environment binary if in project_dir/.venv or active sys.prefix != sys.base_prefix
+      2. Absolute path to 'mesh' or 'mesh.exe' via shutil.which -> with ['server'] argument
+      3. Fallback to sys.executable with ['-m', 'mesh.mcp_server']
     """
+    # 1. Check project_dir/.venv or project_dir/venv
+    if project_dir:
+        cand_dirs = [
+            project_dir / ".venv" / ("Scripts" if os.name == "nt" else "bin"),
+            project_dir / "venv" / ("Scripts" if os.name == "nt" else "bin"),
+        ]
+        for cdir in cand_dirs:
+            mesh_bin = cdir / ("mesh.exe" if os.name == "nt" else "mesh")
+            if mesh_bin.is_file():
+                return str(mesh_bin.resolve()), ["server"]
+            py_bin = cdir / ("python.exe" if os.name == "nt" else "python")
+            if py_bin.is_file():
+                return str(py_bin.resolve()), ["-m", "mesh.mcp_server"]
+
+    # 2. Check active virtual environment
+    if sys.prefix != sys.base_prefix:
+        venv_scripts = Path(sys.prefix) / ("Scripts" if os.name == "nt" else "bin")
+        mesh_bin = venv_scripts / ("mesh.exe" if os.name == "nt" else "mesh")
+        if mesh_bin.is_file():
+            return str(mesh_bin.resolve()), ["server"]
+        return str(Path(sys.executable).resolve()), ["-m", "mesh.mcp_server"]
+
+    # 3. Global PATH search
     cmd = shutil.which("mesh")
     if cmd:
-        return str(Path(cmd).resolve()), ["mcp"]
+        return str(Path(cmd).resolve()), ["server"]
     return str(Path(sys.executable).resolve()), ["-m", "mesh.mcp_server"]
 
 
@@ -150,6 +174,9 @@ class AgentAdapter:
     def supports_hooks(self) -> bool:
         return False
 
+    def get_hooks_path(self, scope: str, project_dir: Optional[Path] = None) -> Optional[Path]:
+        return None
+
 
 class ClaudeCodeAdapter(AgentAdapter):
     def __init__(self):
@@ -172,6 +199,11 @@ class ClaudeCodeAdapter(AgentAdapter):
 
     def supports_hooks(self) -> bool:
         return True
+
+    def get_hooks_path(self, scope: str, project_dir: Optional[Path] = None) -> Optional[Path]:
+        if scope == "project" and project_dir:
+            return project_dir / ".claude" / "settings.json"
+        return self.get_user_home() / ".claude" / "settings.json"
 
 
 class ClaudeDesktopAdapter(AgentAdapter):
@@ -210,6 +242,14 @@ class AntigravityAdapter(AgentAdapter):
         if scope == "project" and project_dir:
             return project_dir / "GEMINI.md"
         return self.get_user_home() / ".gemini" / "config" / "rules" / "mesh.md"
+
+    def supports_hooks(self) -> bool:
+        return True
+
+    def get_hooks_path(self, scope: str, project_dir: Optional[Path] = None) -> Optional[Path]:
+        if scope == "project" and project_dir:
+            return project_dir / ".agents" / "hooks.json"
+        return self.get_user_home() / ".gemini" / "config" / "hooks.json"
 
 
 class GeminiCliAdapter(AgentAdapter):
@@ -477,11 +517,162 @@ def uninstall_agent_skill(
     return True, f"removed {dst}"
 
 
+def update_hooks_file(
+    adapter: AgentAdapter,
+    hooks_path: Path,
+    command: str,
+    *,
+    dry_run: bool = False,
+) -> tuple[bool, str, Optional[Path]]:
+    """
+    Safely register Mesh's SessionStart lifecycle hook into the agent's hooks/settings file.
+    Preserves all existing hooks and other configuration keys.
+    """
+    data: dict[str, Any] = {}
+    if hooks_path.exists():
+        try:
+            content = hooks_path.read_text(encoding="utf-8")
+            if content.strip():
+                data = json.loads(content)
+        except Exception as exc:
+            raise ValueError(f"Existing hooks config at {hooks_path} contains invalid JSON: {exc}")
+
+    if not isinstance(data, dict):
+        raise ValueError(f"Existing hooks config at {hooks_path} is not a JSON object.")
+
+    if adapter.agent_id == "claude-code":
+        hooks_dict = data.setdefault("hooks", {})
+        if not isinstance(hooks_dict, dict):
+            raise ValueError(f"Invalid 'hooks' entry in {hooks_path}: expected JSON object.")
+        session_start = hooks_dict.setdefault("SessionStart", [])
+        if not isinstance(session_start, list):
+            raise ValueError(f"Invalid 'SessionStart' entry in {hooks_path}: expected JSON array.")
+
+        # Check if already present and matches
+        for entry in session_start:
+            if isinstance(entry, dict) and "hooks" in entry:
+                for sub_hook in entry.get("hooks", []):
+                    if isinstance(sub_hook, dict) and "mesh" in sub_hook.get("command", "") and "brief" in sub_hook.get("command", ""):
+                        if sub_hook.get("command") == command:
+                            return False, "", None
+                        sub_hook["command"] = command
+                        new_json = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+                        return _atomic_write_with_backup(hooks_path, new_json, dry_run=dry_run)
+
+        # Append new hook
+        new_hook_entry = {
+            "matcher": "*",
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": command,
+                    "timeout": 15,
+                    "statusMessage": "Loading Mesh context brief...",
+                }
+            ],
+        }
+        session_start.append(new_hook_entry)
+
+    elif adapter.agent_id == "antigravity":
+        existing_mesh_hook = data.get("mesh-context-brief")
+        new_hook_def = {
+            "SessionStart": [
+                {
+                    "matcher": "*",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": command,
+                            "timeout": 15,
+                        }
+                    ],
+                }
+            ]
+        }
+        if existing_mesh_hook == new_hook_def:
+            return False, "", None
+        data["mesh-context-brief"] = new_hook_def
+
+    else:
+        return False, "", None
+
+    new_json = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+    return _atomic_write_with_backup(hooks_path, new_json, dry_run=dry_run)
+
+
+def remove_hooks_file_entry(
+    adapter: AgentAdapter,
+    hooks_path: Path,
+    *,
+    dry_run: bool = False,
+) -> tuple[bool, str, Optional[Path]]:
+    """Remove Mesh's hook entry from the agent's hooks/settings file, preserving other settings."""
+    if not hooks_path.exists():
+        return False, "", None
+
+    try:
+        content = hooks_path.read_text(encoding="utf-8")
+        data = json.loads(content)
+    except Exception as exc:
+        raise ValueError(f"Invalid JSON in {hooks_path}: {exc}")
+
+    if not isinstance(data, dict):
+        return False, "", None
+
+    changed = False
+    if adapter.agent_id == "claude-code":
+        hooks_dict = data.get("hooks")
+        if isinstance(hooks_dict, dict):
+            session_start = hooks_dict.get("SessionStart")
+            if isinstance(session_start, list):
+                new_session_start = []
+                for entry in session_start:
+                    if isinstance(entry, dict) and "hooks" in entry:
+                        entry_hooks = [
+                            h
+                            for h in entry.get("hooks", [])
+                            if not ("mesh" in h.get("command", "") and "brief" in h.get("command", ""))
+                        ]
+                        if len(entry_hooks) != len(entry.get("hooks", [])):
+                            changed = True
+                        if entry_hooks:
+                            entry["hooks"] = entry_hooks
+                            new_session_start.append(entry)
+                    else:
+                        new_session_start.append(entry)
+                if changed:
+                    if new_session_start:
+                        hooks_dict["SessionStart"] = new_session_start
+                    else:
+                        del hooks_dict["SessionStart"]
+                    if not hooks_dict:
+                        del data["hooks"]
+
+    elif adapter.agent_id == "antigravity":
+        if "mesh-context-brief" in data:
+            del data["mesh-context-brief"]
+            changed = True
+
+    if not changed:
+        return False, "", None
+
+    if not data:
+        if dry_run:
+            return True, f"would delete empty {hooks_path}", None
+        hooks_path.unlink()
+        return True, f"deleted empty {hooks_path}", None
+
+    new_json = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+    return _atomic_write_with_backup(hooks_path, new_json, dry_run=dry_run)
+
+
 def plan_installation(
     agents: Optional[list[str]] = None,
     scope: str = "user",
     project_dir: Optional[Path] = None,
     namespace: Optional[str] = None,
+    mesh_home: Optional[str] = None,
+    hooks: bool = False,
 ) -> list[dict[str, Any]]:
     """
     Build a complete installation plan for selected agents without modifying any files.
@@ -489,11 +680,15 @@ def plan_installation(
     clean_scope = scope.lower().strip()
     target_agents = agents or SUPPORTED_AGENTS
     p_dir = project_dir or Path.cwd()
-    cmd, args = resolve_mesh_mcp_command()
+    cmd, args = resolve_mesh_mcp_command(project_dir=p_dir)
 
     env_vars: Optional[dict[str, str]] = None
-    if clean_scope == "project" and namespace:
-        env_vars = {"MESH_NAMESPACE": namespace}
+    if clean_scope == "project":
+        env_vars = {}
+        if namespace:
+            env_vars["MESH_NAMESPACE"] = namespace
+        target_mesh_home = mesh_home or str((p_dir / ".mesh-home").resolve())
+        env_vars["MESH_HOME"] = target_mesh_home
 
     plan: list[dict[str, Any]] = []
 
@@ -511,6 +706,7 @@ def plan_installation(
             "mcp": None,
             "skill": None,
             "rules": None,
+            "hooks": None,
         }
 
         # 1. MCP
@@ -520,6 +716,8 @@ def plan_installation(
                 changed, diff, _ = update_mcp_config_file(mcp_path, cmd, args, env=env_vars, dry_run=True)
                 agent_plan["mcp"] = {
                     "path": str(mcp_path),
+                    "command": cmd,
+                    "args": args,
                     "action": "update" if mcp_path.exists() else "create",
                     "changed": changed,
                     "diff": diff,
@@ -556,6 +754,28 @@ def plan_installation(
             except Exception as exc:
                 agent_plan["rules"] = {"path": str(rules_path), "error": str(exc), "changed": False}
 
+        # 4. Hooks (SessionStart brief injection)
+        if hooks and adapter.supports_hooks():
+            hooks_path = adapter.get_hooks_path(clean_scope, p_dir)
+            if hooks_path:
+                if cmd.endswith("mesh") or cmd.endswith("mesh.exe"):
+                    brief_cmd = f'"{cmd}" brief'
+                else:
+                    brief_cmd = f'"{cmd}" -m mesh.cli brief'
+                if clean_scope == "project" and namespace:
+                    brief_cmd += f" --namespace {namespace}"
+                try:
+                    changed, diff, _ = update_hooks_file(adapter, hooks_path, brief_cmd, dry_run=True)
+                    agent_plan["hooks"] = {
+                        "path": str(hooks_path),
+                        "command": brief_cmd,
+                        "action": "update" if hooks_path.exists() else "create",
+                        "changed": changed,
+                        "diff": diff,
+                    }
+                except Exception as exc:
+                    agent_plan["hooks"] = {"path": str(hooks_path), "error": str(exc), "changed": False}
+
         plan.append(agent_plan)
 
     return plan
@@ -570,7 +790,7 @@ def apply_installation(
     """
     Execute an installation plan, applying backups before any edits.
     """
-    cmd, args = resolve_mesh_mcp_command()
+    default_cmd, default_args = resolve_mesh_mcp_command()
     results: list[dict[str, Any]] = []
 
     for item in plan:
@@ -583,6 +803,7 @@ def apply_installation(
             "mcp": None,
             "skill": None,
             "rules": None,
+            "hooks": None,
         }
 
         # Consent check if not dry_run and permission_fn provided
@@ -597,6 +818,8 @@ def apply_installation(
         mcp_info = item.get("mcp")
         if mcp_info and not mcp_info.get("error"):
             path = Path(mcp_info["path"])
+            cmd = mcp_info.get("command") or default_cmd
+            args = mcp_info.get("args") or default_args
             try:
                 changed, diff, bak = update_mcp_config_file(
                     path, cmd, args, env=mcp_info.get("env"), dry_run=dry_run
@@ -639,6 +862,24 @@ def apply_installation(
             except Exception as exc:
                 res["rules"] = {"path": str(path), "error": str(exc), "changed": False}
 
+        # 4. Hooks
+        hooks_info = item.get("hooks")
+        if hooks_info and not hooks_info.get("error"):
+            path = Path(hooks_info["path"])
+            brief_cmd = hooks_info.get("command") or "mesh brief"
+            adapter = ADAPTER_MAP.get(agent_id)
+            if adapter:
+                try:
+                    changed, diff, bak = update_hooks_file(adapter, path, brief_cmd, dry_run=dry_run)
+                    res["hooks"] = {
+                        "path": str(path),
+                        "changed": changed,
+                        "backup": str(bak) if bak else None,
+                        "status": "updated" if changed else "already up to date",
+                    }
+                except Exception as exc:
+                    res["hooks"] = {"path": str(path), "error": str(exc), "changed": False}
+
         results.append(res)
 
     return results
@@ -652,7 +893,7 @@ def uninstall_mesh_agent(
     dry_run: bool = False,
 ) -> list[dict[str, Any]]:
     """
-    Remove Mesh MCP configuration, rules blocks, and skills from target agents.
+    Remove Mesh MCP configuration, rules blocks, skills, and hooks from target agents.
     Restores original files where possible.
     """
     clean_scope = scope.lower().strip()
@@ -672,6 +913,7 @@ def uninstall_mesh_agent(
             "mcp": None,
             "skill": None,
             "rules": None,
+            "hooks": None,
         }
 
         # 1. MCP
@@ -712,6 +954,20 @@ def uninstall_mesh_agent(
                 }
             except Exception as exc:
                 res["skill"] = {"path": str(skill_root / _SKILL_NAME), "error": str(exc), "changed": False}
+
+        # 4. Hooks
+        if adapter.supports_hooks():
+            hooks_path = adapter.get_hooks_path(clean_scope, p_dir)
+            if hooks_path and hooks_path.exists():
+                try:
+                    changed, diff, bak = remove_hooks_file_entry(adapter, hooks_path, dry_run=dry_run)
+                    res["hooks"] = {
+                        "path": str(hooks_path),
+                        "changed": changed,
+                        "status": "removed" if changed else "not found",
+                    }
+                except Exception as exc:
+                    res["hooks"] = {"path": str(hooks_path), "error": str(exc), "changed": False}
 
         results.append(res)
 

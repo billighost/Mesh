@@ -1,0 +1,4 @@
+session,agent_id,role,first_call_brief,facts_recorded,facts_updated,tasks_created,tasks_completed,duration_ms
+1,agent-T-architect,Architect,True,5,0,2,1,1586.34
+2,agent-T-devops,DevOps Engineer,True,3,1,1,2,1082.18
+3,agent-T-security,Security Lead,True,7,0,1,1,975.78

@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [ main, "chore/*", "feat/*", "fix/*" ]
+    branches: [ main, "chore/*", "feat/*", "fix/*", "docs/*" ]
   pull_request:
     branches: [ main ]
   schedule:
@@ -18,17 +18,18 @@ jobs:
     name: Code Quality & Security Scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
       - name: Install Lint & Security Tools
         run: |
           python -m pip install --upgrade pip
-          python -m pip install ruff bandit
+          pip install ruff bandit
+          pip install -e .
 
       - name: Run Ruff Lint Checks
         run: ruff check .
@@ -53,15 +54,14 @@ jobs:
         python-version: ["3.10", "3.11", "3.12", "3.13"]
 
     env:
-      MESH_HOME: ${{ runner.temp }}/.mesh_ci
       MESH_NO_AUTO_DAEMON: "1"
       MESH_AUTO_APPROVE: "0"
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
           cache: "pip"
@@ -72,17 +72,19 @@ jobs:
           pip install .[test,secrets]
 
       - name: Run Pytest Suite with Coverage
-        run: pytest -v --tb=short
+        env:
+          MESH_HOME: ${{ runner.temp }}/.mesh_ci
+        run: python scripts/run_ci_tests.py
 
   dist-check:
     name: Packaging & Cleanliness Verification
     needs: [lint-and-security]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
@@ -137,7 +139,7 @@ jobs:
           "
 
       - name: Upload Build Artifacts for Smoke Test
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: dist-packages
           path: dist/*
@@ -148,18 +150,20 @@ jobs:
     needs: [dist-check]
     runs-on: ubuntu-latest
     env:
-      MESH_HOME: ${{ runner.temp }}/.mesh_smoke
       MESH_NO_AUTO_DAEMON: "1"
       MESH_AUTO_APPROVE: "0"
     steps:
+      - name: Configure Isolated Environment
+        run: echo "MESH_HOME=${{ runner.temp }}/.mesh_smoke" >> $GITHUB_ENV
+
       - name: Download Build Artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           name: dist-packages
           path: dist
 
       - name: Set up Clean Python 3.12
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 

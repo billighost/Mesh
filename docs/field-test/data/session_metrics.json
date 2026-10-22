@@ -1,0 +1,65 @@
+[
+  {
+    "session": 1,
+    "agent_id": "agent-T-architect",
+    "role": "Architect",
+    "task": "Initialize project architecture and core database spec",
+    "first_call_was_brief": true,
+    "calls_by_type": {
+      "mesh_project_brief": 1,
+      "mesh_task_create": 2,
+      "mesh_learn": 5,
+      "mesh_task_complete": 1
+    },
+    "facts_recorded": 5,
+    "facts_updated": 0,
+    "tasks_created": 2,
+    "tasks_completed": 1,
+    "relearning_questions": 0,
+    "errors": 0,
+    "duration_ms": 1586.34
+  },
+  {
+    "session": 2,
+    "agent_id": "agent-T-devops",
+    "role": "DevOps Engineer",
+    "task": "Upgrade infrastructure and rebind database port",
+    "first_call_was_brief": true,
+    "calls_by_type": {
+      "mesh_project_brief": 1,
+      "mesh_recall": 1,
+      "mesh_update": 1,
+      "mesh_task_create": 1,
+      "mesh_task_complete": 2,
+      "mesh_learn": 3
+    },
+    "facts_recorded": 3,
+    "facts_updated": 1,
+    "tasks_created": 1,
+    "tasks_completed": 2,
+    "relearning_questions": 0,
+    "errors": 0,
+    "duration_ms": 1082.18
+  },
+  {
+    "session": 3,
+    "agent_id": "agent-T-security",
+    "role": "Security Lead",
+    "task": "Configure monitoring, logging, and CORS conventions",
+    "first_call_was_brief": true,
+    "calls_by_type": {
+      "mesh_project_brief": 1,
+      "mesh_task_create": 1,
+      "mesh_learn": 7,
+      "mesh_task_complete": 1,
+      "mesh_log": 1
+    },
+    "facts_recorded": 7,
+    "facts_updated": 0,
+    "tasks_created": 1,
+    "tasks_completed": 1,
+    "relearning_questions": 0,
+    "errors": 0,
+    "duration_ms": 975.78
+  }
+]
