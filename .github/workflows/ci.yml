@@ -74,7 +74,7 @@ jobs:
       - name: Run Pytest Suite with Coverage
         env:
           MESH_HOME: ${{ runner.temp }}/.mesh_ci
-        run: pytest -v --tb=short
+        run: python scripts/run_ci_tests.py
 
   dist-check:
     name: Packaging & Cleanliness Verification
