@@ -307,19 +307,26 @@ def check_public_manifest(errors: list[str]) -> None:
         actual_size = len(data)
         actual_sha = hashlib.sha256(data).hexdigest()
         data_lf = data.replace(b"\r\n", b"\n")
-        lf_size = len(data_lf)
-        lf_sha = hashlib.sha256(data_lf).hexdigest()
+        data_crlf = data_lf.replace(b"\n", b"\r\n")
+        valid_sizes = {actual_size, len(data_lf), len(data_crlf)}
+        valid_shas = {
+            actual_sha,
+            hashlib.sha256(data_lf).hexdigest(),
+            hashlib.sha256(data_crlf).hexdigest(),
+        }
 
         expected_size = entry.get("size_bytes")
         expected_sha = entry.get("sha256")
 
-        if actual_size != expected_size and lf_size != expected_size:
+        if expected_size not in valid_sizes:
             errors.append(f"[docs/field-test/PUBLIC_MANIFEST.json] Size mismatch for '{rel}'.")
-        if actual_sha != expected_sha and lf_sha != expected_sha:
+        if expected_sha not in valid_shas:
             errors.append(f"[docs/field-test/PUBLIC_MANIFEST.json] SHA-256 mismatch for '{rel}'.")
 
     for path in root.rglob("*"):
         if not path.is_file():
+            continue
+        if any(part in ("__pycache__", ".DS_Store") for part in path.parts) or path.suffix == ".pyc":
             continue
         rel = path.relative_to(root).as_posix()
         if rel in ("MANIFEST.json", "PUBLIC_MANIFEST.json"):
