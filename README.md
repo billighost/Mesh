@@ -25,12 +25,12 @@ When one agent learns something, another agent in a different session or tool ca
 | **Embeddings** | **Local.** `all-MiniLM-L6-v2` (384-dim) via ONNX Runtime. No external embedding API. A built-in `hash-384` fallback is used until the model is downloaded. |
 | **Default network activity** | **None for normal memory operations.** Three opt-in exceptions: a model download, an explicit PyPI update check, and optional cloud-assisted log capture. See [Privacy & data handling](#privacy-and-data-handling). |
 | **Remote telemetry** | **None.** Mesh writes a local, content-free audit log (timings, tool names, counts — never memory text). Nothing is uploaded. |
-| **Encryption at rest** | **Off by default.** Optional `mesh encrypt-db` (SQLCipher or application-level Fernet), and optional `mesh export --encrypt`. Plain SQLite files and ordinary exports are not encrypted. |
+| **Encryption at rest** | **Off by default.** Optional `mesh encrypt-db` (SQLCipher or application-level AES-256-GCM envelope with stdlib BLAKE2b/HMAC fallback), and optional `mesh export --encrypt`. Plain SQLite files and ordinary exports are not encrypted. |
 | **Install** | `pip install mesh-context-layer` then `mesh install --dry-run` and `mesh install --apply`. |
 | **Supported agents (installer)** | Claude Code, Claude Desktop, Antigravity, Gemini CLI, Cursor, Windsurf, OpenCode, Codex. |
 | **Delete everything** | Back up first, then `mesh namespaces delete <ns>` per namespace, or remove the whole `~/.mesh` directory. See [Delete everything](#delete-everything). |
 | **Security contact** | `bb2010ng@gmail.com` or GitHub private vulnerability reporting. See [SECURITY.md](SECURITY.md). |
-| **Verified against** | Source at commit `5348d00` on **2026-10-20**, package version `0.8.1b2`. |
+| **Verified against** | Field-tested against package `0.8.1b2` (source `5348d00`, 2026-10-20); current codebase incorporates post-0.8.1 field-test fixes F1–F8. |
 
 ---
 
@@ -460,7 +460,7 @@ These replace an earlier README table whose throughput, latency, database-size, 
 
 ### Independent field test — Mesh 0.8.1b2
 
-Wheel `mesh_context_layer-0.8.1b2-py3-none-any.whl`, SHA-256 `e1a7a0af71abe3f51b02150d9a2d5fdc1d9d8a618937e9d41bf899c08ead06ff` — the same version as this source tree. Run on Windows 11, Python 3.14.0, isolated `MESH_HOME`, no cloud calls, `hash-384` fallback active.
+Wheel `mesh_context_layer-0.8.1b2-py3-none-any.whl`, SHA-256 `e1a7a0af71abe3f51b02150d9a2d5fdc1d9d8a618937e9d41bf899c08ead06ff` — baseline test artifact from commit `5348d00`. Run on Windows 11, Python 3.14.0, isolated `MESH_HOME`, no cloud calls, `hash-384` fallback active.
 
 Quoted from [`docs/field-test/PUBLIC_ADDENDUM.md`](docs/field-test/PUBLIC_ADDENDUM.md):
 
@@ -779,4 +779,4 @@ MIT © billighost.
 
 ---
 
-**Last verified:** 2026-10-20 against package `0.8.1b2`, source commit `5348d00`, on Windows 11 Pro (10.0.22000), Python 3.14.0. Field-test evidence refers to the same version and wheel. macOS/Linux were not independently field-tested. See [docs/field-test/](docs/field-test/) for the full public record.
+**Last verified:** Field-test evidence was independently gathered on 2026-10-20 against package `0.8.1b2`, source commit `5348d00`, on Windows 11 Pro (10.0.22000), Python 3.14.0. macOS/Linux were not independently field-tested in that run. The current codebase incorporates post-0.8.1 field-test fixes (F1–F8); see [docs/field-test/](docs/field-test/) for the full record and re-test plan.

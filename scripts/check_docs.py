@@ -278,9 +278,11 @@ def check_field_test_version_labels(errors: list[str]) -> None:
         lower = (heading + "\n" + body).lower()
         if "field test" not in lower and "probe" not in lower:
             continue
-        if number_pattern.search(body) and VERSION not in (heading + "\n" + body):
+        # Field tests were run on 0.8.1b2; accept either current VERSION or the historical 0.8.1b2 label
+        has_version = VERSION in (heading + "\n" + body) or "0.8.1b2" in (heading + "\n" + body)
+        if number_pattern.search(body) and not has_version:
             errors.append(
-                f"[README.md] Field-test section '{heading.strip()[:60]}' quotes numbers without the tested version '{VERSION}'."
+                f"[README.md] Field-test section '{heading.strip()[:60]}' quotes numbers without a verified tested version label."
             )
 
 
@@ -398,6 +400,21 @@ def check_mcp_tool_references(errors: list[str]) -> None:
                 errors.append(f"[{rel_doc}] Unknown MCP tool referenced: '{tool_name}'.")
 
 
+def check_no_fernet_references(errors: list[str]) -> None:
+    """Verify that stale 'Fernet' references do not appear in user-facing documentation."""
+    for doc in CORE_DOCS:
+        if not doc.exists():
+            continue
+        content = doc.read_text(encoding="utf-8")
+        rel_doc = doc.relative_to(REPO_ROOT)
+        for line_no, line in enumerate(content.splitlines(), start=1):
+            if "fernet" in line.lower():
+                errors.append(
+                    f"[{rel_doc}:{line_no}] Stale 'Fernet' reference found. "
+                    "Mesh uses application-level AES-256-GCM envelope (with stdlib BLAKE2b/HMAC Encrypt-then-MAC fallback)."
+                )
+
+
 def main() -> int:
     print(f"Checking Mesh Documentation Consistency (Package version: v{VERSION})...")
     errors: list[str] = []
@@ -410,6 +427,7 @@ def main() -> int:
     check_rules_block(errors)
     check_field_test_version_labels(errors)
     check_public_manifest(errors)
+    check_no_fernet_references(errors)
 
     if errors:
         print(f"\n[FAIL] Documentation verification found {len(errors)} error(s):")

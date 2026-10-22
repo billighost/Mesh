@@ -65,7 +65,7 @@ These are statements about the code in this repository, not a guarantee. Each ha
 ### Encryption at rest
 
 - **Off by default.** Namespace databases are ordinary SQLite files. `local_only` is an access-control flag, not encryption.
-- Optional encryption is available with `mesh encrypt-db` and encrypted exports with `mesh export --encrypt`. Encryption requires the `[crypto]` extra (SQLCipher or Fernet). The key comes from the OS keyring or a passphrase (`MESH_PASSPHRASE`); losing it makes the data unrecoverable.
+- Optional encryption is available with `mesh encrypt-db` and encrypted exports with `mesh export --encrypt`. Encryption requires SQLCipher or application-level AES-256-GCM envelope (with stdlib BLAKE2b/HMAC Encrypt-then-MAC fallback, enhanced when `[crypto]` is installed). The key comes from the OS keyring or a passphrase (`MESH_PASSPHRASE`); losing it makes the data unrecoverable.
 - The FTS index and SQLite WAL live in the same database directory. Encrypt the whole data directory at the OS level if you need a stronger guarantee, and protect backups: an exported plaintext JSON file is not protected by database encryption.
 
 ### Prompt injection and untrusted content
