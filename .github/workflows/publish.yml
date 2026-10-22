@@ -37,7 +37,7 @@ jobs:
       - name: Install Build & QA Tools
         run: |
           python -m pip install --upgrade pip
-          pip install build twine ruff pytest
+          pip install build twine ruff pytest hatchling
 
       - name: Verify Code Quality
         run: ruff check .
