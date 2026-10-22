@@ -9,7 +9,7 @@
     "render": "remotion render MeshAd out/mesh-ad.mp4 --codec=h264"
   },
   "dependencies": {
-    "@remotion/cli": "4.0.291",
+    "@remotion/cli": "4.0.538",
     "@remotion/player": "4.0.291",
     "react": "18.3.1",
     "react-dom": "18.3.1",
