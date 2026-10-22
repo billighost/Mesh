@@ -674,17 +674,127 @@ def _row_needs_healing(row_meta: dict[str, Any], vec: Optional[np.ndarray]) -> b
 
 
 class _PooledConnection(sqlite3.Connection):
+    """A pooled SQLite connection serialized across threads.
+
+    `check_same_thread=False` disables sqlite3's thread check but does not make
+    the connection safe to share: the handle, statement state and row factory
+    are all mutable shared state. A per-connection RLock therefore serializes
+    every ``with store._connect()`` block.
+
+    Checkouts are reference-counted so LRU eviction can *retire* a connection
+    without closing it while another thread is still using it. The physical
+    close happens when the last user checks in.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._mesh_lock = threading.RLock()
+        self._mesh_state_lock = threading.Lock()
+        self._mesh_users = 0
+        self._mesh_retired = False
+        self._mesh_closed = False
+
+    def __enter__(self) -> "_PooledConnection":
+        self._mesh_lock.acquire()
+        try:
+            with self._mesh_state_lock:
+                closed = self._mesh_closed
+            if closed:
+                raise sqlite3.ProgrammingError("Cannot operate on a closed database.")
+            super().__enter__()
+            return self
+        except BaseException:
+            self._mesh_lock.release()
+            raise
+
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> bool:
-        return super().__exit__(exc_type, exc_val, exc_tb)
+        try:
+            return super().__exit__(exc_type, exc_val, exc_tb)
+        finally:
+            self._mesh_lock.release()
 
     def close(self) -> None:
+        # Pooled connections are closed through the checkout/retire lifecycle.
         pass
 
+    def checkout(self) -> None:
+        """Reserve this connection for one caller.
+
+        Must be called while ``_CACHE_LOCK`` is held so LRU eviction cannot
+        retire the connection between lookup and checkout.
+        """
+        with self._mesh_state_lock:
+            if self._mesh_closed or self._mesh_retired:
+                raise sqlite3.ProgrammingError("Cannot operate on a closed database.")
+            self._mesh_users += 1
+
+    def checkin(self) -> None:
+        should_close = False
+        with self._mesh_state_lock:
+            if self._mesh_users > 0:
+                self._mesh_users -= 1
+            if self._mesh_retired and self._mesh_users == 0 and not self._mesh_closed:
+                self._mesh_closed = True
+                should_close = True
+        if should_close:
+            self._close_physical()
+
+    def retire(self) -> None:
+        """Mark for closure; close immediately only when nobody is using it.
+
+        Never waits for an in-flight user: eviction must not block on a thread
+        that is still inside ``with store._connect()``.
+        """
+        should_close = False
+        with self._mesh_state_lock:
+            self._mesh_retired = True
+            if self._mesh_users == 0 and not self._mesh_closed:
+                self._mesh_closed = True
+                should_close = True
+        if should_close:
+            self._close_physical()
+
     def close_pooled(self) -> None:
+        self.retire()
+
+    def _close_physical(self) -> None:
         try:
             super().close()
         except Exception:
             pass
+
+
+class _ConnectionCheckout:
+    """Context manager returned by ``MeshStore._connect()``.
+
+    The reference is taken inside ``_connect()`` while ``_CACHE_LOCK`` is held,
+    so an evicting thread cannot close the connection between checkout and
+    ``__enter__``.
+    """
+
+    __slots__ = ("_conn", "_checked_in")
+
+    def __init__(self, conn: _PooledConnection) -> None:
+        self._conn = conn
+        self._checked_in = False
+
+    def __enter__(self) -> _PooledConnection:
+        try:
+            return self._conn.__enter__()
+        except BaseException:
+            self._checkin()
+            raise
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> bool:
+        try:
+            return self._conn.__exit__(exc_type, exc_val, exc_tb)
+        finally:
+            self._checkin()
+
+    def _checkin(self) -> None:
+        if not self._checked_in:
+            self._checked_in = True
+            self._conn.checkin()
 
 
 def _utc_now() -> datetime:
@@ -1717,18 +1827,23 @@ class MeshStore:
 
     # --- Connection, Content Version & Schema Management ---
 
-    def _connect(self) -> _PooledConnection:
-        """Return a persistent, concurrency-safe SQLite WAL connection for `self.db_path`."""
+    def _connect(self) -> _ConnectionCheckout:
+        """Check out a persistent, thread-safe SQLite WAL connection for `self.db_path`."""
         reject_symlink(self.db_path)
         evicted: list[tuple[Path, Optional[_PooledConnection], Optional[str]]] = []
         with _CACHE_LOCK:
             if not self.create and not self.db_path.exists():
                 raise NamespaceNotFoundError(f"Namespace '{self.namespace}' does not exist.")
             conn = _CONNECTION_POOL.get(self.db_path)
+            if conn is not None and conn._mesh_closed:
+                _CONNECTION_POOL.pop(self.db_path, None)
+                _DB_PATH_NAMESPACES.pop(self.db_path, None)
+                conn = None
             if conn is not None and self.db_path.exists():
                 _CONNECTION_POOL.move_to_end(self.db_path)
                 _DB_PATH_NAMESPACES[self.db_path] = self.namespace
-                return conn
+                conn.checkout()
+                return _ConnectionCheckout(conn)
             if conn is not None:
                 conn.close_pooled()
                 _CONNECTION_POOL.pop(self.db_path, None)
@@ -1758,6 +1873,7 @@ class MeshStore:
             _CONNECTION_POOL[self.db_path] = conn
             _CONNECTION_POOL.move_to_end(self.db_path)
             _DB_PATH_NAMESPACES[self.db_path] = self.namespace
+            conn.checkout()
 
             max_pool = _get_max_pool_size()
             while len(_CONNECTION_POOL) > max_pool:
@@ -1777,14 +1893,15 @@ class MeshStore:
 
         if evicted:
             _finalize_evicted_resources(evicted)
-        return conn
+        return _ConnectionCheckout(conn)
 
     def _get_data_version_locked(self) -> int:
         conn = _CONNECTION_POOL.get(self.db_path)
         if conn is None:
             return 0
         try:
-            row = conn.execute("PRAGMA data_version").fetchone()
+            with conn._mesh_lock:
+                row = conn.execute("PRAGMA data_version").fetchone()
             return int(row[0]) if row else 0
         except Exception:
             return 0
@@ -1794,9 +1911,16 @@ class MeshStore:
         if c is None:
             return None
         try:
-            row = c.execute(
-                "SELECT value FROM mesh_meta WHERE key = 'content_version'"
-            ).fetchone()
+            lock = getattr(c, "_mesh_lock", None)
+            if lock is not None:
+                with lock:
+                    row = c.execute(
+                        "SELECT value FROM mesh_meta WHERE key = 'content_version'"
+                    ).fetchone()
+            else:
+                row = c.execute(
+                    "SELECT value FROM mesh_meta WHERE key = 'content_version'"
+                ).fetchone()
             if row and row[0] is not None:
                 return int(row[0])
         except Exception:
@@ -1828,21 +1952,25 @@ class MeshStore:
             return cached
 
         try:
-            conn = self._connect()
-            cv = self._read_content_version_locked(conn)
-            if cv is not None and cached.content_version is not None and cv == cached.content_version:
-                cnt_row = conn.execute(
-                    "SELECT COUNT(*) FROM memories WHERE namespace = ?",
-                    (self.namespace,),
-                ).fetchone()
-                db_count = int(cnt_row[0]) if cnt_row and cnt_row[0] is not None else 0
-                if db_count == len(cached.all_ids):
-                    cached.update_stamp(stamp, data_version=dv, content_version=cv)
-                    _INITIALIZED_DBS[self.db_path] = stamp
-                    _VECTOR_CACHE.move_to_end(key)
-                    if self.db_path in _CONNECTION_POOL:
-                        _CONNECTION_POOL.move_to_end(self.db_path)
-                    return cached
+            with self._connect() as conn:
+                cv = self._read_content_version_locked(conn)
+                if (
+                    cv is not None
+                    and cached.content_version is not None
+                    and cv == cached.content_version
+                ):
+                    cnt_row = conn.execute(
+                        "SELECT COUNT(*) FROM memories WHERE namespace = ?",
+                        (self.namespace,),
+                    ).fetchone()
+                    db_count = int(cnt_row[0]) if cnt_row and cnt_row[0] is not None else 0
+                    if db_count == len(cached.all_ids):
+                        cached.update_stamp(stamp, data_version=dv, content_version=cv)
+                        _INITIALIZED_DBS[self.db_path] = stamp
+                        _VECTOR_CACHE.move_to_end(key)
+                        if self.db_path in _CONNECTION_POOL:
+                            _CONNECTION_POOL.move_to_end(self.db_path)
+                        return cached
         except Exception:
             pass
         return None
@@ -2480,10 +2608,13 @@ class MeshStore:
         local_only: bool = False,
         embedding_model: Optional[str] = None,
         allow_redacted_public: bool = False,
-    ) -> None:
+    ) -> bool:
         """
         Store or overwrite a memory and its normalized 384-dim vector in a single atomic transaction,
         enforcing `guard_ingest` & `guard_tags` and encrypting at rest when enabled (Findings S5, S8, S11).
+
+        Returns the effective ``local_only`` value persisted after guards so callers can
+        report the stored privacy level (Issue C-002).
         """
         memory_id = validate_memory_id(memory_id)
         self._ensure_initialized()
@@ -2645,6 +2776,7 @@ class MeshStore:
                 old_content=audit_scrub_old_content,
                 local_only=bool(local_flag),
             )
+        return bool(final_local)
 
     def upsert_batch(
         self,
@@ -4774,6 +4906,22 @@ class MeshStore:
                 return dict(rows[0])
         return None
 
+    def _not_found_error_message(self, conn: sqlite3.Connection, item_id: str) -> str:
+        rows = conn.execute(
+            "SELECT short_id, title FROM work_items WHERE namespace = ? ORDER BY created_at DESC LIMIT 5",
+            (self.namespace,),
+        ).fetchall()
+        if not rows:
+            return (
+                f"Work item '{item_id}' not found in namespace '{self.namespace}'. "
+                "No work items exist yet in this namespace; use mesh_task_create to create one first."
+            )
+        available = [f"{r[0]} ({r[1][:30]})" for r in rows]
+        return (
+            f"Work item '{item_id}' not found in namespace '{self.namespace}'. "
+            f"Available work items: {', '.join(available)}."
+        )
+
     def _generate_short_id_locked(self, conn: sqlite3.Connection, kind: str) -> str:
         count_row = conn.execute(
             "SELECT COUNT(*) FROM work_items WHERE namespace = ? AND kind = ?",
@@ -4836,7 +4984,7 @@ class MeshStore:
                 if parent_id:
                     parent_row = self._resolve_work_item_locked(conn, parent_id)
                     if not parent_row:
-                        raise ValueError(f"Parent work item '{parent_id}' not found in namespace '{self.namespace}'.")
+                        raise ValueError(f"Parent {self._not_found_error_message(conn, parent_id)}")
                     resolved_parent = parent_row["id"]
 
                 count_row = conn.execute(
@@ -4907,7 +5055,7 @@ class MeshStore:
                 conn.row_factory = sqlite3.Row
                 item = self._resolve_work_item_locked(conn, item_id)
                 if not item:
-                    raise ValueError(f"Work item '{item_id}' not found in namespace '{self.namespace}'.")
+                    raise ValueError(self._not_found_error_message(conn, item_id))
 
                 full_id = item["id"]
                 updates: list[str] = []
@@ -4918,15 +5066,25 @@ class MeshStore:
 
                 if status is not None:
                     clean_status = str(status).strip().lower()
-                    if clean_status not in ("todo", "in_progress", "blocked", "done", "cancelled"):
-                        raise ValueError(f"Invalid status '{status}'. Must be todo, in_progress, blocked, done, or cancelled.")
-                    new_status = clean_status
-                    updates.append("status = ?")
-                    params.append(new_status)
-                    event_type = new_status
-                    if new_status == "in_progress" and not item["started_at"]:
-                        updates.append("started_at = ?")
-                        params.append(now_iso)
+                    if clean_status in ("reopened", "reopen"):
+                        new_status = "todo"
+                        updates.append("status = ?")
+                        params.append("todo")
+                        event_type = "reopened"
+                        if item["completed_at"]:
+                            updates.append("completed_at = NULL")
+                        if item["completed_by"]:
+                            updates.append("completed_by = NULL")
+                    elif clean_status not in ("todo", "in_progress", "blocked", "done", "cancelled"):
+                        raise ValueError(f"Invalid status '{status}'. Must be todo, in_progress, blocked, done, cancelled, or reopened.")
+                    else:
+                        new_status = clean_status
+                        updates.append("status = ?")
+                        params.append(new_status)
+                        event_type = new_status
+                        if new_status == "in_progress" and not item["started_at"]:
+                            updates.append("started_at = ?")
+                            params.append(now_iso)
 
                 if priority is not None:
                     clean_priority = str(priority).strip().lower()
@@ -4957,14 +5115,16 @@ class MeshStore:
                         updates.append("description = ?")
                         params.append("")
 
-                if updates:
-                    params.append(full_id)
-                    conn.execute(f"UPDATE work_items SET {', '.join(updates)} WHERE id = ?", params)
-
                 clean_note = None
                 if note is not None and str(note).strip():
                     guard_n = guard_ingest(note)
                     clean_note = guard_n.content.strip()
+                    if guard_n.local_only and not item["local_only"]:
+                        updates.append("local_only = 1")
+
+                if updates:
+                    params.append(full_id)
+                    conn.execute(f"UPDATE work_items SET {', '.join(updates)} WHERE id = ?", params)
 
                 conn.execute(
                     """
@@ -5010,6 +5170,7 @@ class MeshStore:
         valid_ev: list[str] = [str(x).strip() for x in (evidence or []) if str(x).strip()]
 
         clean_note = None
+        guard_n = None
         if note is not None and str(note).strip():
             guard_n = guard_ingest(note)
             clean_note = guard_n.content.strip()
@@ -5021,10 +5182,11 @@ class MeshStore:
                 conn.row_factory = sqlite3.Row
                 item = self._resolve_work_item_locked(conn, item_id)
                 if not item:
-                    raise ValueError(f"Work item '{item_id}' not found in namespace '{self.namespace}'.")
+                    raise ValueError(self._not_found_error_message(conn, item_id))
 
                 full_id = item["id"]
                 old_status = item["status"]
+                is_priv = bool(item["local_only"] or guard_s.local_only or (guard_n and guard_n.local_only))
                 conn.execute(
                     """
                     UPDATE work_items
@@ -5032,7 +5194,8 @@ class MeshStore:
                         completed_at = ?,
                         completed_by = ?,
                         summary = ?,
-                        evidence = ?
+                        evidence = ?,
+                        local_only = ?
                     WHERE id = ?
                     """,
                     (
@@ -5040,6 +5203,7 @@ class MeshStore:
                         str(agent_id or "agent"),
                         guard_s.content.strip(),
                         json.dumps(valid_ev),
+                        1 if is_priv else 0,
                         full_id,
                     ),
                 )
@@ -5214,6 +5378,11 @@ class MeshStore:
         include_private: bool = False,
     ) -> dict[str, Any]:
         self._ensure_initialized()
+        open_items = (
+            self.list_work_items(status="open", include_private=include_private, limit=10)
+            if include_work_items
+            else []
+        )
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             total_mems = conn.execute(
@@ -5221,7 +5390,6 @@ class MeshStore:
                 (self.namespace,),
             ).fetchone()[0]
 
-            open_items = self.list_work_items(status="open", include_private=include_private, limit=10) if include_work_items else []
             completed_recent = []
             if include_work_items:
                 two_days_ago = datetime.fromtimestamp(
@@ -5427,3 +5595,12 @@ class MeshStore:
                 "changelog": changelog_md,
                 "changelog_markdown": changelog_md,
             }
+
+    # Method aliases mirroring MCP tool names (Issue A-006 / B-004)
+    task_create = create_work_item
+    task_update = update_work_item
+    task_complete = complete_work_item
+    task_list = list_work_items
+    task_get = get_work_item
+    log = get_changelog
+

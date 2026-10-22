@@ -1,0 +1,6 @@
+scenario,verdict,duration_seconds,parallel_writers,items_per_writer,parallel_readers,reader_loops,total_stored,total_errors,avg_write_ms,avg_read_ms
+exact_run_c,PASS,7.158,4,25,4,30,100,0,277.16,143.98
+heavier_8x25,PASS,17.108,8,25,8,40,200,0,674.24,316.34
+multi_process_4x10,PASS,3.501,4,10,0,0,40,0,0,0
+mixed_2proc_4thread_90items,PASS,4.829,6,15,0,0,90,0,0,0
+mcp_concurrent_8x20,PASS,4.265,8,20,0,0,160,0,0,0

@@ -1,4 +1,4 @@
-# Mesh MCP Tool Reference (v0.8.0)
+# Mesh MCP Tool Reference (v0.8.1)
 
 Complete reference for all 17 Mesh Model Context Protocol (MCP) tools.
 

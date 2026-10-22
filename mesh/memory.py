@@ -100,9 +100,8 @@ def _get_model_status_path() -> Path:
 _ONNX_MODEL_DIR = _get_onnx_model_dir()
 
 # Canonical unquantized ONNX model & tokenizer mirrors + pinned SHA-256 checksums
-_GCS_TARBALL_MIRRORS = [
-    "https://storage.googleapis.com/qdrant-fastembed/sentence-transformers-all-MiniLM-L6-v2.tar.gz",
-]
+# Note: Deprecated GCS bucket (storage.googleapis.com/qdrant-fastembed) was removed (Issue B-003)
+_GCS_TARBALL_MIRRORS: list[str] = []
 _HF_MODEL_REVISION = "1110a243fdf4706b3f48f1d95db1a4f5529b4d41"
 _TOKENIZER_MIRRORS = [
     f"https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/{_HF_MODEL_REVISION}/tokenizer.json",
@@ -938,6 +937,8 @@ def _safe_copy_limited(src: Any, dst: Any, max_bytes: int = _MAX_TAR_EXTRACT_BYT
 
 
 def _download_from_gcs_tarball() -> bool:
+    if not _GCS_TARBALL_MIRRORS:
+        return False
     if _has_local_onnx_pair() is not None:
         return True
     model_dir = _get_onnx_model_dir()
@@ -959,11 +960,12 @@ def _download_from_gcs_tarball() -> bool:
                         tmp_out = target_model.with_suffix(f".tmp.{os.getpid()}")
                         with open(tmp_out, "wb") as out_f:
                             ok = _safe_copy_limited(extracted, out_f, _MAX_TAR_EXTRACT_BYTES)
+                        source_lbl = f"{_GCS_TARBALL_MIRRORS[0]}:{member.name}" if _GCS_TARBALL_MIRRORS else member.name
                         if ok and _verify_sha256(
                             tmp_out,
                             _ALLOWED_MODEL_SHA256,
                             "MESH_MODEL_SHA256",
-                            source_label=f"{_GCS_TARBALL_MIRRORS[0]}:{member.name}",
+                            source_label=source_lbl,
                         ):
                             tmp_out.replace(target_model)
                         else:
@@ -974,11 +976,12 @@ def _download_from_gcs_tarball() -> bool:
                         tmp_out = target_tok.with_suffix(f".tmp.{os.getpid()}")
                         with open(tmp_out, "wb") as out_f:
                             ok = _safe_copy_limited(extracted, out_f, 20 * 1024 * 1024)
+                        source_lbl = f"{_GCS_TARBALL_MIRRORS[0]}:{member.name}" if _GCS_TARBALL_MIRRORS else member.name
                         if ok and _verify_sha256(
                             tmp_out,
                             _ALLOWED_TOKENIZER_SHA256,
                             "MESH_TOKENIZER_SHA256",
-                            source_label=f"{_GCS_TARBALL_MIRRORS[0]}:{member.name}",
+                            source_label=source_lbl,
                         ):
                             tmp_out.replace(target_tok)
                         else:
@@ -2235,7 +2238,7 @@ class Mesh:
                             updated_conf = max(confidence, float(meta.get("confidence", 1.0)))
                             content_changed = clean_content != doc
                             is_priv = bool(local_only or meta.get("local_only"))
-                            self.store.update(
+                            updated = self.store.update(
                                 memory_id=existing_id,
                                 content=clean_content if content_changed else None,
                                 embedding=embedding if content_changed else None,
@@ -2249,6 +2252,9 @@ class Mesh:
                                 embedding_model=emb_model_tag if content_changed else None,
                                 secret_ref=norm_ref if norm_ref is not None else None,
                             )
+                            stored_local_only = (
+                                bool(updated.get("local_only")) if updated else is_priv
+                            )
                             if content_changed and emb_model_tag == "hash-384":
                                 with _PENDING_REEMBED_LOCK:
                                     _PENDING_REEMBED_QUEUE.put(self.namespace, existing_id, clean_content)
@@ -2256,6 +2262,7 @@ class Mesh:
                                 "memory_id": existing_id,
                                 "status": "stored",
                                 "deduplicated": True,
+                                "local_only": stored_local_only,
                                 "conflict": None,
                                 "embedding_backend": active_backend or "hash-fallback",
                                 "embedding_degraded": is_degraded,
@@ -2269,7 +2276,7 @@ class Mesh:
                                 namespace=self.namespace,
                                 agent_id=self.agent_id,
                                 result=dedup_res,
-                                local_only=is_priv,
+                                local_only=stored_local_only,
                             )
                             return dedup_res
 
@@ -2308,29 +2315,31 @@ class Mesh:
                         break
 
             decay_start_at = now if ttl_val is not None else None
-            self.store.upsert(
-                memory_id=memory_id,
-                content=clean_content,
-                embedding=embedding,
-                metadata={
-                    "memory_type": memory_type,
-                    "confidence": confidence,
-                    "source_agent": self.agent_id,
-                    "tags": clean_tags,
-                    "created_at": now,
-                    "updated_at": now,
-                    "accessed_at": now,
-                    "access_count": 0,
-                    "ttl_days": ttl_val,
-                    "decay_start_at": decay_start_at,
-                    "embedding_model": emb_model_tag,
-                    "trust_tier": resolved_trust_tier,
-                    "quarantined": bool(quarantined),
-                    "secret_ref": norm_ref,
-                },
-                local_only=bool(local_only),
-                embedding_model=emb_model_tag,
-                allow_redacted_public=bool(allow_redacted_public and self.trusted_local),
+            stored_local_only = bool(
+                self.store.upsert(
+                    memory_id=memory_id,
+                    content=clean_content,
+                    embedding=embedding,
+                    metadata={
+                        "memory_type": memory_type,
+                        "confidence": confidence,
+                        "source_agent": self.agent_id,
+                        "tags": clean_tags,
+                        "created_at": now,
+                        "updated_at": now,
+                        "accessed_at": now,
+                        "access_count": 0,
+                        "ttl_days": ttl_val,
+                        "decay_start_at": decay_start_at,
+                        "embedding_model": emb_model_tag,
+                        "trust_tier": resolved_trust_tier,
+                        "quarantined": bool(quarantined),
+                        "secret_ref": norm_ref,
+                    },
+                    local_only=bool(local_only),
+                    embedding_model=emb_model_tag,
+                    allow_redacted_public=bool(allow_redacted_public and self.trusted_local),
+                )
             )
             self._ns_existed_before = True
 
@@ -2343,6 +2352,7 @@ class Mesh:
             "memory_id": memory_id,
             "status": "stored_with_conflict" if conflict else "stored",
             "deduplicated": False,
+            "local_only": stored_local_only,
             "conflict": conflict,
             "embedding_backend": active_backend or "hash-fallback",
             "embedding_degraded": is_degraded,
@@ -2362,7 +2372,7 @@ class Mesh:
             namespace=self.namespace,
             agent_id=self.agent_id,
             result=result,
-            local_only=bool(local_only),
+            local_only=stored_local_only,
         )
         return result
 
@@ -3066,6 +3076,14 @@ class Mesh:
             format=format,
             include_private=inc_priv,
         )
+
+    # Method aliases mirroring MCP tool names (Issue A-006 / B-004)
+    task_create = create_work_item
+    task_update = update_work_item
+    task_complete = complete_work_item
+    task_list = list_work_items
+    task_get = get_work_item
+    log = changelog
 
     def close(self) -> None:
         if hasattr(self, "store") and self.store is not None:

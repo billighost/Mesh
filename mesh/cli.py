@@ -610,6 +610,8 @@ def install_cmd() -> None:
     parser.add_argument("--scope", default="user", choices=["user", "project"], help="Install scope: user or project (default: user)")
     parser.add_argument("--dir", default=None, help="Target project directory for project scope (default: current directory)")
     parser.add_argument("--namespace", default=None, help="Explicit namespace to bind for project scope")
+    parser.add_argument("--mesh-home", default=None, help="Explicit MESH_HOME storage directory to bind for project scope")
+    parser.add_argument("--hooks", action="store_true", help="Install lifecycle hooks (SessionStart brief injection) for supporting agents")
     parser.add_argument("--dry-run", action="store_true", help="Preview plan and diffs without modifying files")
     parser.add_argument("--json", action="store_true", help="Output plan or results as JSON")
     parser.add_argument("--apply", action="store_true", help="Authorize applying changes without interactive prompts")
@@ -632,56 +634,82 @@ def install_cmd() -> None:
         scope=args.scope,
         project_dir=project_dir,
         namespace=args.namespace,
+        mesh_home=args.mesh_home,
+        hooks=args.hooks,
     )
 
-    if args.dry_run or args.json:
+    is_authorized = args.apply or args.yes
+
+    if args.dry_run or not is_authorized:
         if args.json:
             ui.json_out({"status": "ok", "mode": "dry_run" if args.dry_run else "plan", "plan": plan})
             return
-        ui.header("Mesh Installation Plan", f"Scope: {args.scope}", f"Agents: {args.agents}")
-        print()
-        for item in plan:
-            print(f"{ui.IND}Agent: {ui.style(item['display_name'], 'brand', 'bold')}")
-            for comp in ("mcp", "skill", "rules"):
-                info = item.get(comp)
-                if not info:
-                    continue
-                if info.get("error"):
-                    print(f"{ui.IND}  {comp.upper()}: {ui.style('ERROR: ' + str(info['error']), 'error')}")
-                elif info.get("changed"):
-                    print(f"{ui.IND}  {comp.upper()}: {ui.style('Would update ' + str(info['path']), 'info')}")
-                    if info.get("diff"):
-                        for line in info["diff"].splitlines()[:15]:
-                            print(f"{ui.IND}    {line}")
-                else:
-                    print(f"{ui.IND}  {comp.upper()}: {ui.style('Already configured / up to date', 'muted')}")
-            print()
-        ui.note("Dry run complete. No files were modified. Re-run with --apply to execute.")
-        return
+        if not args.dry_run:
+            if not sys.stdin.isatty():
+                ui.error(
+                    "Non-interactive run requires --apply or --dry-run",
+                    "Mesh will not modify local configuration files without explicit consent.",
+                )
+                sys.exit(2)
+            prompt = f"Apply Mesh configuration for {len(plan)} agent(s) ({args.scope} scope)?"
+            if not ui.confirm(prompt, default=True):
+                ui.info("Installation cancelled by user.")
+                sys.exit(0)
 
-    is_authorized = args.apply or args.yes
-    if not is_authorized:
-        if not sys.stdin.isatty():
-            ui.error(
-                "Non-interactive run requires --apply or --dry-run",
-                "Mesh will not modify local configuration files without explicit consent.",
-            )
-            sys.exit(2)
-        prompt = f"Apply Mesh configuration for {len(plan)} agent(s) ({args.scope} scope)?"
-        if not ui.confirm(prompt, default=True):
-            ui.info("Installation cancelled by user.")
-            sys.exit(0)
+            if not args.hooks:
+                from .installer import ADAPTER_MAP
+                has_hook_support = any(
+                    ADAPTER_MAP[item["agent"]].supports_hooks()
+                    for item in plan
+                    if item.get("agent") in ADAPTER_MAP
+                )
+                if has_hook_support:
+                    if ui.confirm(
+                        "Also install lifecycle hooks (SessionStart brief injection)?",
+                        default=False,
+                        detail="Runs 'mesh brief' on session start for supported agents (Claude Code, Antigravity).",
+                    ):
+                        plan = plan_installation(
+                            agents=agents_list,
+                            scope=args.scope,
+                            project_dir=project_dir,
+                            namespace=args.namespace,
+                            mesh_home=args.mesh_home,
+                            hooks=True,
+                        )
+        else:
+            ui.header("Mesh Installation Plan", f"Scope: {args.scope}", f"Agents: {args.agents}")
+            print()
+            for item in plan:
+                print(f"{ui.IND}Agent: {ui.style(item['display_name'], 'brand', 'bold')}")
+                for comp in ("mcp", "skill", "rules", "hooks"):
+                    info = item.get(comp)
+                    if not info:
+                        continue
+                    if info.get("error"):
+                        print(f"{ui.IND}  {comp.upper()}: {ui.style('ERROR: ' + str(info['error']), 'error')}")
+                    elif info.get("changed"):
+                        print(f"{ui.IND}  {comp.upper()}: {ui.style('Would update ' + str(info['path']), 'info')}")
+                        if info.get("diff"):
+                            for line in info["diff"].splitlines()[:15]:
+                                print(f"{ui.IND}    {line}")
+                    else:
+                        print(f"{ui.IND}  {comp.upper()}: {ui.style('Already configured / up to date', 'muted')}")
+                print()
+            ui.note("Dry run complete. No files were modified. Re-run with --apply to execute.")
+            return
 
     results = apply_installation(plan, dry_run=False)
     has_errors = any(
         (r.get("mcp") and r["mcp"].get("error")) or
         (r.get("skill") and r["skill"].get("error")) or
-        (r.get("rules") and r["rules"].get("error"))
+        (r.get("rules") and r["rules"].get("error")) or
+        (r.get("hooks") and r["hooks"].get("error"))
         for r in results
     )
 
     if args.json:
-        ui.json_out({"status": "error" if has_errors else "ok", "results": results})
+        ui.json_out({"status": "error" if has_errors else "ok", "mode": "applied", "results": results})
         if has_errors:
             sys.exit(1)
         return
@@ -690,7 +718,7 @@ def install_cmd() -> None:
     print()
     for r in results:
         print(f"{ui.IND}Agent: {ui.style(r['display_name'], 'brand', 'bold')}")
-        for comp in ("mcp", "skill", "rules"):
+        for comp in ("mcp", "skill", "rules", "hooks"):
             info = r.get(comp)
             if not info:
                 continue
@@ -712,7 +740,7 @@ def install_cmd() -> None:
 
 def uninstall_cmd() -> None:
     """Safely uninstall Mesh MCP server, rules, and skills from agents."""
-    parser = _parser("uninstall", "Uninstall Mesh MCP configuration, rules, and skills.")
+    parser = _parser("uninstall", "Uninstall Mesh MCP configuration, rules, skills, and hooks.")
     parser.add_argument("--agents", default="all", help="Comma-separated agent names or 'all' (default: all)")
     parser.add_argument("--scope", default="user", choices=["user", "project"], help="Scope: user or project (default: user)")
     parser.add_argument("--dir", default=None, help="Target project directory for project scope (default: current directory)")
@@ -753,7 +781,7 @@ def uninstall_cmd() -> None:
     print()
     for r in results:
         print(f"{ui.IND}Agent: {ui.style(r['display_name'], 'brand', 'bold')}")
-        for comp in ("mcp", "skill", "rules"):
+        for comp in ("mcp", "skill", "rules", "hooks"):
             info = r.get(comp)
             if not info:
                 continue
@@ -926,12 +954,13 @@ def add_cmd() -> None:
                 ui.fail(str(e))
 
     verb = "Reinforced an existing memory" if result.get("deduplicated") else "Remembered"
+    reported_private = bool(result.get("local_only", final_private))
     print()
     ui.success(f"{verb} in {ui.style(ns, 'bold')}")
     for line in ui.wrap(final_content, ui.term_width() - 6, max_lines=3):
         print(f"{ui.IND}  {ui.style(line, 'muted')}")
     meta = [_type_text(memory_type)]
-    if final_private:
+    if reported_private:
         meta.append(ui.badge("private", "accent"))
     if secret_ref_dict:
         meta.append(ui.style(secret_ref_dict["uri"], "warn"))
@@ -1815,6 +1844,17 @@ def doctor_cmd() -> None:
 
     row("ok", "MCP Server tools", f"{len(_MCP_TOOLS)} tools defined in schema")
 
+    def _declares_mesh(path: Optional[Path]) -> bool:
+        """True when a client config file exists and actually registers the mesh server."""
+        if path is None or not path.exists():
+            return False
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return False
+        servers = data.get("mcpServers") if isinstance(data, dict) else None
+        return isinstance(servers, dict) and "mesh" in servers
+
     for agent_id, adapter in ADAPTER_MAP.items():
         mcp_cfg = adapter.get_mcp_config_path("user")
         if mcp_cfg and mcp_cfg.exists():
@@ -1847,6 +1887,31 @@ def doctor_cmd() -> None:
                     row("ok", f"{adapter.display_name} rules", f"always-on protocol active in {ui.short_path(rules_f)}")
             except Exception:
                 pass
+
+    # 5c. Project-vs-user MCP precedence (read-only)
+    # Clients that support it load the project-scope config for this directory
+    # ahead of the user-scope one, so a stale project entry silently shadows a
+    # correctly installed user entry. Surface that instead of leaving it implicit.
+    project_dir = Path.cwd()
+    for adapter in ADAPTER_MAP.values():
+        if not adapter.supports_scope("project"):
+            continue
+        user_cfg = adapter.get_mcp_config_path("user")
+        project_cfg = adapter.get_mcp_config_path("project", project_dir)
+        if not _declares_mesh(project_cfg):
+            continue
+        if _declares_mesh(user_cfg):
+            row(
+                "ok",
+                f"{adapter.display_name} scope",
+                f"project takes precedence over user  ({ui.short_path(project_cfg)}  {ui.sym('dot')}  {ui.short_path(user_cfg)})",
+            )
+        else:
+            row(
+                "ok",
+                f"{adapter.display_name} scope",
+                f"project config active  ({ui.short_path(project_cfg)})",
+            )
 
     # 6. Namespaces
     ns_list = list_namespaces()
@@ -3009,6 +3074,7 @@ def _get_command_mapping() -> dict[str, Callable[[], None]]:
         "digest": _lazy_digest_cmd,
         "daemon": _lazy_daemon_cmd,
         "server": _lazy_server_cmd,
+        "mcp": _lazy_server_cmd,
         "dashboard": _lazy_dashboard_cmd,
         "http": _lazy_http_cmd,
         "conflicts": conflicts_cmd,
@@ -3023,7 +3089,7 @@ def _get_command_mapping() -> dict[str, Callable[[], None]]:
 
 
 # Commands whose stdout is data (or a long-running server): never add decorative spacing.
-_RAW_OUTPUT_CMDS = {"context", "completion", "server", "http", "dashboard", "shell", "run", "brief", "log"}
+_RAW_OUTPUT_CMDS = {"context", "completion", "server", "mcp", "http", "dashboard", "shell", "run", "brief", "log"}
 
 
 def _silence_broken_pipe() -> None:

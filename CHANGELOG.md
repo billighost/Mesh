@@ -4,6 +4,61 @@ All notable changes to `mesh-context-layer` are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (pre-1.0: minor versions may include behavior changes).
 
+## [0.8.1] - 2026-10-22 (Beta)
+
+Comprehensive documentation refresh and defect resolutions following Run T field-test findings.
+
+### Added
+- **Agent Lifecycle Hooks Feature (T-003)**: Added `--hooks` opt-in flag to `mesh install`. Configures `SessionStart` project brief injection (`mesh brief`) on supported agent runtimes (Claude Code via `.claude/settings.json` and Antigravity via `hooks.json`). Implemented atomic `.bak` file backups and safe merging in `mesh/installer.py`.
+- `DOCS.md`: end-user tutorial and reference covering installation, agent connection, the full CLI, all 17 MCP tools, the HTTP API, Python SDK, dashboard, environment variables, privacy, secrets, troubleshooting, and upgrade/uninstall.
+- `CONTRIBUTING.md`, `AGENTS.md` (instructions for coding agents working on this repository), `llms.txt` (documentation index for LLM tooling), and `examples/README.md`.
+- Public field-test archive under `docs/field-test/` (report addenda, issue list, data tables, and reproduction scripts). Files containing absolute paths, usernames, or planted credentials were deliberately not imported; see `docs/field-test/README.md`.
+- Extended `scripts/check_docs.py` coverage for environment variables, HTTP routes, README rules-block equality, and field-test version labels.
+
+### Changed
+- `README.md` rewritten for readers and AI agents: at-a-glance facts, supported agents with verified status, one-command installer, the always-on protocol, goals/tasks/project log, privacy and network behavior, evidence from `benchmarks/RESULTS.md` and the independent field test, limitations, a grouped FAQ, and upgrade/uninstall instructions.
+- `ARCHITECTURE.md` updated to schema version 3: 17 MCP tools, 10 memory types, work items and events, brief/changelog, installer behavior, audit, concurrency, and trust boundaries.
+- `DEVELOPER_GUIDE.md` updated with isolated test recipes, extension points, documentation checks, release process, and field-test reproduction.
+- `CHANGELOG.md` now records documentation changes separately from release behavior changes.
+
+### Fixed
+- **Windows Skill Replacement Lock Contention (T-001)**: Wrapped `os.replace` in `_safe_replace_dir()` with exponential backoff and explicit garbage collection in `mesh/skill_installer.py` to prevent transient Windows `Access is denied` errors during skill installs.
+- **Secret Detection & Task Quarantine (T-002)**: Expanded `_KNOWN_API_KEY_RE` in `mesh/secrets.py` to match arbitrary prefix token segments, extended `_KEYWORD_ASSIGNMENT_RE` and `_is_plausible_secret_value` for locker/pass codes, and updated `update_work_item` / `complete_work_item` in `mesh/store.py` to quarantine tasks (`local_only=1`) when notes or summaries contain secrets.
+- **Agent Lifecycle Hooks Implementation (T-003)**: Implemented missing hook routines in `mesh/installer.py` and `mesh/cli.py` with full uninstallation and rollback support.
+- Replaced obsolete benchmark figures with the numbers and method recorded in `benchmarks/RESULTS.md`.
+- Corrected the MCP tool count (17), memory-type count (10), and embedding cache size (1024) across the documentation.
+
+## [0.8.1b2] - 2026-10-20 (Beta)
+
+Re-test fixes for issues C-001 and C-002 from the third independent black-box evaluation (Run C), plus two approved diagnostic additions.
+
+### Fixed
+- **Thread-safe pooled SQLite connections (C-001)**: A pooled `sqlite3.Connection` (opened with `check_same_thread=False`) could be entered by several threads at once, producing `sqlite3.InterfaceError: bad parameter or other API misuse`, `IndexError: tuple index out of range` from row conversion, and `sqlite3.ProgrammingError: Cannot operate on a closed database` during pool eviction. Each pooled connection now owns a re-entrant lock serializing its cursor/statement state, uses a separate lifecycle lock so `retire()` never blocks in-flight users, and is reference-counted through checkout/checkin so a connection is only physically closed when the last user leaves. SDK threads, HTTP worker threads, MCP `asyncio.to_thread` calls and pool-eviction races are covered by `tests/test_thread_safety_c001.py` (8 tests, including 4-process concurrency).
+- **SDK `learn()` reports the stored privacy flag (C-002)**: `Mesh.learn()` returned no `local_only` value, so callers could not tell that `guard_ingest` had silently forced a secret-bearing memory private, and could not distinguish public from private writes. `MeshStore.upsert()` now returns the effective value persisted after the ingestion guards; `Mesh.learn()` surfaces it on both the insert and deduplication paths (including the audit log); and the MCP, HTTP, dashboard and CLI surfaces report the stored value instead of the requested one. Covered by `tests/test_learn_local_only_c002.py` (10 tests, each checked against the SQLite row that was written).
+
+### Added
+- **Doctor project-vs-user MCP precedence (optional re-test item)**: `mesh doctor` now reports, read-only, when the project-scope MCP config for the current directory takes precedence over a user-scope config, or is the only active one. Covered by `tests/test_doctor_scope_precedence.py` (6 tests).
+- **Mocked ONNX mirror-fallback coverage (optional re-test item)**: `tests/test_model_download_fallback.py` exercises the existing Hugging Face → `hf-mirror.com` fallback with all HTTP mocked: primary HTTP errors, connection errors, truncation and checksum mismatches fall through to the pinned secondary mirror, and a payload that fails checksum verification on every mirror is never installed. No new network destination was added.
+
+### Verified
+- Full suite: 317 passed. The nine fixes from `0.8.1b1` show no regression (`tests/test_agent_scenarios.py`, `test_installer.py`, `test_memory.py`, `test_security_audit_v08.py`, `test_work_items.py`: 91 passed).
+- Package version bumped to `0.8.1b2`.
+
+## [0.8.1b1] - 2026-10-20 (Beta)
+
+Field Test Findings Resolution: Hardening and fixes from two independent black-box agent evaluations (Run A & Run B).
+
+### Fixed
+- **Secret Ingestion Leakage Prevention (A-004, B-005)**: Expanded secret scanner regexes to catch generic API key tokens (`WEBHOOK_KEY_*`, `payment_gateway_key`, etc.) and unquoted passphrase statements, ensuring they are quarantined to `local_only=True` without false-positive leakage into shared or cloud layers.
+- **Installer MCP Arguments & Alias (A-002)**: Configured agent MCP setups to invoke `mesh server` rather than invalid `mesh mcp`, and added `mesh mcp` subcommand alias to `mesh/cli.py` for backward compatibility.
+- **Non-Interactive Install Execution (A-001, B-002)**: Fixed `mesh install --apply --json` (and `--yes --json`) so that automation scripts properly apply and persist configuration changes rather than remaining in dry-run plan mode.
+- **Project-Scoped Isolation & Virtualenv Resolution (A-003, B-001)**: Bound `MESH_HOME` to `project_dir/.mesh-home` by default in project-scoped MCP configs, added `--mesh-home` flag to `mesh install`, and prioritized project `.venv` binaries.
+- **MCP Server Stderr Cleanliness (A-008, B-007)**: Suppressed background warmup worker confirmation prompt when running non-interactively or with `MESH_NO_AUTO_DAEMON=1`, preventing stderr noise in MCP host environments.
+- **Work Item Reopened Lifecycle Transition (A-005, B-006)**: Accepted `status="reopened"` and `status="reopen"` in `update_work_item`, transitioning item back to `todo`, clearing completion timestamp, and logging a `reopened` event.
+- **Python SDK Method Aliases (A-006, B-004)**: Added `task_create`, `task_update`, `task_complete`, `task_list`, and `log` method aliases on `Mesh` and `MeshStore` mirroring MCP tool names.
+- **Actionable Task ID Error Guidance (A-007)**: Improved unknown work item error messages to provide list of available tasks in the namespace or guidance to create a task first with `mesh_task_create`.
+- **Defunct GCS Tarball Mirror Removed (B-003)**: Removed deprecated GCS fastembed bucket that returned HTTP 403 Forbidden, streamlining clean fallback to HuggingFace mirrors.
+
 ## [0.8.0] - 2026-10-19
 
 Agent Autonomous Adoption & Production Readiness Release: First-class work items, token-budgeted briefs, automated multi-agent installer, progressive disclosure skill, content-free audit telemetry, full-suite benchmarks, and hardened security gates.

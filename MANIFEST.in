@@ -3,6 +3,13 @@ include README.md
 include CHANGELOG.md
 include ARCHITECTURE.md
 include DEVELOPER_GUIDE.md
+include DOCS.md
+include SECURITY.md
+include THREAT_MODEL.md
+include CONTRIBUTING.md
+include AGENTS.md
+include llms.txt
+include RELEASE_NOTES_*.md
 include pyproject.toml
 recursive-include mesh *.py
 recursive-include mesh/skills *.md *.txt *.json

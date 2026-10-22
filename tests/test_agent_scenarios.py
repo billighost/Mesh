@@ -473,3 +473,31 @@ def test_scenario_9_audit_export_timing_and_content_free(isolated_mesh_env):
         # 2. Canary scan: verify CANARY NEVER appears in ANY audit field
         ev_dump = json.dumps(ev)
         assert CANARY not in ev_dump
+
+
+def test_issue_a008_b007_mcp_server_run_suppresses_warmup_prompt(monkeypatch, capsys):
+    """
+    Issue A-008 / B-007 regression:
+    Starting MCP server non-interactively or with MESH_NO_AUTO_DAEMON=1 must not
+    pollute stderr with interactive warmup prompts.
+    """
+    from mesh import mcp_server
+
+    # Case 1: MESH_NO_AUTO_DAEMON=1 must never prompt or start background thread
+    monkeypatch.setenv("MESH_NO_AUTO_DAEMON", "1")
+    monkeypatch.setattr(mcp_server.asyncio, "run", lambda coro: coro.close())
+    mcp_server.run()
+    captured = capsys.readouterr()
+    assert "Needs your approval" not in captured.err
+    assert "warmup worker" not in captured.err
+
+    # Case 2: Non-interactive stdio (not a tty) must never prompt or pollute stderr
+    monkeypatch.delenv("MESH_NO_AUTO_DAEMON", raising=False)
+    monkeypatch.delenv("MESH_ENABLE_AUTO_SYNC", raising=False)
+    monkeypatch.delenv("MESH_AUTO_APPROVE", raising=False)
+    monkeypatch.setattr(mcp_server.sys.stdin, "isatty", lambda: False)
+    monkeypatch.setattr(mcp_server.asyncio, "run", lambda coro: coro.close())
+    mcp_server.run()
+    captured = capsys.readouterr()
+    assert "Needs your approval" not in captured.err
+    assert "warmup worker" not in captured.err

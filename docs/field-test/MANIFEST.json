@@ -1,0 +1,198 @@
+{
+  "generated_at": "2026-10-20T19:52:56.822151+00:00",
+  "package_version": "0.8.1b2",
+  "tested_wheel_sha256": "e1a7a0af71abe3f51b02150d9a2d5fdc1d9d8a618937e9d41bf899c08ead06ff",
+  "tested_sdist_sha256": "83d6cb34e09ac0a759d5d0ebda659e70a414533b9d668c80d1eca4958c9ee91f",
+  "files": [
+    {
+      "path": "PUBLIC_ADDENDUM.md",
+      "size_bytes": 6963,
+      "sha256": "2c8c109c8bcdc84a1c8a432c38d9e27de19e93d2466969bb74fbf021dcddaf51"
+    },
+    {
+      "path": "PUBLIC_ADDENDUM_PROBE.md",
+      "size_bytes": 10549,
+      "sha256": "3e2c3bc30803a26ea8ba73bceac511a2936d1aaee57b2f5a0e2a871dda83bf95"
+    },
+    {
+      "path": "README.md",
+      "size_bytes": 2384,
+      "sha256": "895fb6d75610af3628e84c47187f0072763899435a5219a46f59633e70bad180"
+    },
+    {
+      "path": "TARGETED_RETEST_REPORT.md",
+      "size_bytes": 20324,
+      "sha256": "afd3526f8f0381a66cc45233ce5c5c1cdc59f30e64502cc1eab05609d07abe7a"
+    },
+    {
+      "path": "ground_truth.json",
+      "size_bytes": 9695,
+      "sha256": "d64b64eb882b95fac8148bc66fc4edafc81aefd1555ffcdae9fd2e15a7b58924"
+    },
+    {
+      "path": "issues.md",
+      "size_bytes": 6060,
+      "sha256": "1011077912237c9c05c0ec08bcbff6bf075f6080d62ee1c72256039e18bb570b"
+    },
+    {
+      "path": "data/concurrency_results.csv",
+      "size_bytes": 418,
+      "sha256": "53552ce8e37cead772bd798020b869dd83a9d1d1a4ebbf9b0f9217723f71ceb9"
+    },
+    {
+      "path": "data/concurrency_results.json",
+      "size_bytes": 1999,
+      "sha256": "e24c35e0898da39a7d104eab7d6c5ec20042164919739d2d4bcd41442d8f7884"
+    },
+    {
+      "path": "data/environment.json",
+      "size_bytes": 14044,
+      "sha256": "0d7b18a44f287a246cab9e2a3b044f7cd2e07429a6af0be7e740f4e4981f6bb4"
+    },
+    {
+      "path": "data/installer_uninstall_results.json",
+      "size_bytes": 266,
+      "sha256": "bfa300e16aa85b9c85bdf4a5caf02180c9b0e37bd4c6ae6a7b593b48e527f4c6"
+    },
+    {
+      "path": "data/isolation_audit_results.json",
+      "size_bytes": 1979691,
+      "sha256": "1145f126c8ce8623c81f2e311b481ebc88f00613387f8a33ba013f60d9bd453a"
+    },
+    {
+      "path": "data/pip_list.json",
+      "size_bytes": 2419,
+      "sha256": "28662d065a48b6ae322bd075f9b662c5369b27a9412119311f09354dc1bf7b68"
+    },
+    {
+      "path": "data/quiz_results.csv",
+      "size_bytes": 2028,
+      "sha256": "c68e9eae77761e022ea2b2d4d072555fd44cca8f7ca3f8218bdaf87db4e48a1c"
+    },
+    {
+      "path": "data/quiz_results.json",
+      "size_bytes": 7225,
+      "sha256": "4646543307412df9f4e7f3598e587ebea705d378c6eabaa70513d38a2041eed2"
+    },
+    {
+      "path": "data/regression_sweep.csv",
+      "size_bytes": 486,
+      "sha256": "36881b22421756182a13a7544f9151375bfa0bb73a5b8d8e809ac79170cb12ef"
+    },
+    {
+      "path": "data/regression_sweep_results.json",
+      "size_bytes": 1926,
+      "sha256": "d0c2c38d23950e29667b836b26a084373b9b96382a97b248529e36877341b2eb"
+    },
+    {
+      "path": "data/sdist_info.json",
+      "size_bytes": 224,
+      "sha256": "0bda309079e56ac82f0381aa9d45306556de57de407a7a33925a05055d4134e5"
+    },
+    {
+      "path": "data/secret_audit.csv",
+      "size_bytes": 1163,
+      "sha256": "2cc150fc1ab0469fd0ddcfdc0ce3dbde7f2e481ab7c4016b454c8127cdf43333"
+    },
+    {
+      "path": "data/secret_audit_results.json",
+      "size_bytes": 6983,
+      "sha256": "c1534204b907fd36ca5ae3a8256091df0fa47f0af789d9a7f28a6a54792ac640"
+    },
+    {
+      "path": "data/session_metrics.csv",
+      "size_bytes": 272,
+      "sha256": "7c829554a908b8cb58fbeb2c5f2ce8adf00f806ee365ffe7c1b47461ddc43ad4"
+    },
+    {
+      "path": "data/session_metrics.json",
+      "size_bytes": 1660,
+      "sha256": "5f8bf40d564bb84d1937040118e7890b2a3e2482dc35be7f4810d849ed21f54f"
+    },
+    {
+      "path": "data/wheel_info.json",
+      "size_bytes": 341,
+      "sha256": "487ccf42d297cf9fafca13d5264135bb1fed4861b39f4f135227c83d7d871a34"
+    },
+    {
+      "path": "raw/agent_config_before.json",
+      "size_bytes": 10395695,
+      "sha256": "c13285e544eab450e49461d8f972edbe4835ed47c078e9924106fe672d93c0cb"
+    },
+    {
+      "path": "raw/events.jsonl",
+      "size_bytes": 22333,
+      "sha256": "1026ee783ea9e250778a3197b33600d6e7d6c2fdc4fe3a79d39997a32c544593"
+    },
+    {
+      "path": "raw/mesh_home_before.json",
+      "size_bytes": 230767,
+      "sha256": "c084ed31df9acf881f3774b896d323847a5ae336b9273256868ef4ecea1652cb"
+    },
+    {
+      "path": "raw/mesh_install_apply.txt",
+      "size_bytes": 1309,
+      "sha256": "15c4e5a1f50512fad799e8cd9c9f6bb64587a73faeae7d4b8f0cbaff03da8469"
+    },
+    {
+      "path": "raw/project_files_after_install.json",
+      "size_bytes": 11822,
+      "sha256": "732ae2eea7c84bf8edf79e91d62cc924142e0f030e526b1ef80fef25a64846ad"
+    },
+    {
+      "path": "raw/project_files_before_install.json",
+      "size_bytes": 1532,
+      "sha256": "f0b98e3a4e81e36b1c45f5b272fbd65edb621ef1c4240974572921723851a030"
+    },
+    {
+      "path": "reproduce/README.md",
+      "size_bytes": 3183,
+      "sha256": "97335a57f5f7971e794d2a69f0db99955fc4f70f1fe81cc70af9a93668fb2fa4"
+    },
+    {
+      "path": "reproduce/event_logger.py",
+      "size_bytes": 749,
+      "sha256": "d81d9e522ae0fa60a7a9c0f0e150cd56dd91b2447c5aaae12e5300d1573bc128"
+    },
+    {
+      "path": "reproduce/export_csv_data.py",
+      "size_bytes": 9208,
+      "sha256": "4ba929c012b01feea2ea91ed150e69b9e84d6e3ad0465be5b3b4cf88d5178795"
+    },
+    {
+      "path": "reproduce/generate_manifest.py",
+      "size_bytes": 1480,
+      "sha256": "8fc348dfc433a590f6559d7fce19b22cadb23867ad70b7bcc13456c083e9ce5e"
+    },
+    {
+      "path": "reproduce/run_sessions_and_quiz.py",
+      "size_bytes": 14040,
+      "sha256": "649b18724965762ac314b424ef42122ede7af8aa675affcc3dde6f732fa57d9e"
+    },
+    {
+      "path": "reproduce/snapshot_isolation.py",
+      "size_bytes": 4225,
+      "sha256": "d2be093d72fddd42a3697bc7620a54811f188255a3dbd7db21cf1ed102c857b1"
+    },
+    {
+      "path": "reproduce/test_c001_concurrency.py",
+      "size_bytes": 16862,
+      "sha256": "51867636281101f38d1a43d7350b80287e590b299b1a75e524504003da73e81d"
+    },
+    {
+      "path": "reproduce/test_installer_uninstall.py",
+      "size_bytes": 3266,
+      "sha256": "d005fe1303c319890356ae1b65098b78d77ee2e89c413f7caac5e4dbcad9f26f"
+    },
+    {
+      "path": "reproduce/test_regression_sweep.py",
+      "size_bytes": 12591,
+      "sha256": "bea48dfef38dd65a8fff41d05f9785e7dbbda9b3545f3ab74e635d25a36ed6c3"
+    },
+    {
+      "path": "reproduce/test_secret_audit.py",
+      "size_bytes": 9082,
+      "sha256": "94d233cfa6957ee492d7f6e1dc4864ee5a08e6ef0bb15629548d266410ca310a"
+    }
+  ]
+}
