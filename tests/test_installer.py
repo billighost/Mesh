@@ -208,7 +208,7 @@ def test_dry_run_changes_nothing(isolated_env):
     assert len(results) == 2
 
     # Verify no files were created
-    assert not (proj_dir / ".claude" / "mcp.json").exists()
+    assert not (proj_dir / ".mcp.json").exists()
     assert not (proj_dir / "CLAUDE.md").exists()
     assert not (proj_dir / ".cursor" / "mcp.json").exists()
     assert not (proj_dir / ".cursorrules").exists()
@@ -278,7 +278,7 @@ def test_project_scope_installation_with_dir(isolated_env):
     assert len(results) == 3
 
     # Check Claude Code project config
-    claude_mcp = proj_dir / ".claude" / "mcp.json"
+    claude_mcp = proj_dir / ".mcp.json"
     assert claude_mcp.exists()
     c_data = json.loads(claude_mcp.read_text(encoding="utf-8"))
     assert c_data["mcpServers"]["mesh"]["env"]["MESH_NAMESPACE"] == "custom_ns"
@@ -493,9 +493,11 @@ def test_issue_t003_hooks_antigravity(isolated_env):
 
     data = json.loads(hooks_file.read_text(encoding="utf-8"))
     assert "mesh-context-brief" in data
-    assert "SessionStart" in data["mesh-context-brief"]
-    cmd = data["mesh-context-brief"]["SessionStart"][0]["hooks"][0]["command"]
+    assert "PreInvocation" in data["mesh-context-brief"]
+    cmd = data["mesh-context-brief"]["PreInvocation"][0]["command"]
     assert "brief" in cmd
+    assert "--format antigravity" in cmd
+    assert "--no-private" in cmd
 
     # 3. Uninstall
     un_results = uninstall_mesh_agent(
@@ -577,4 +579,63 @@ def test_interactive_install_hooks_confirmation(isolated_env, monkeypatch):
 
     settings_file2 = proj_dir2 / ".claude" / "settings.json"
     assert not settings_file2.exists()
+
+
+def test_claude_code_legacy_migration(isolated_env):
+    """
+    Issue F1 test:
+    Verify that if a pre-0.8.2 legacy configuration exists at .claude/mcp.json,
+    applying installation creates .mcp.json and removes mesh from the legacy path.
+    """
+    proj_dir = isolated_env["home"] / "legacy_proj"
+    proj_dir.mkdir(parents=True)
+    legacy_mcp = proj_dir / ".claude" / "mcp.json"
+    legacy_mcp.parent.mkdir(parents=True)
+    legacy_mcp.write_text(
+        json.dumps({
+            "mcpServers": {
+                "mesh": {"command": "mesh", "args": ["server"]},
+                "custom": {"command": "custom-tool"},
+            }
+        }),
+        encoding="utf-8",
+    )
+
+    plan = plan_installation(agents=["claude-code"], scope="project", project_dir=proj_dir)
+    assert plan[0]["mcp"]["legacy_migration"] == str(legacy_mcp)
+
+    results = apply_installation(plan, dry_run=False)
+    assert results[0]["mcp"]["status"] == "updated"
+
+    # New config exists
+    new_mcp = proj_dir / ".mcp.json"
+    assert new_mcp.is_file()
+    new_data = json.loads(new_mcp.read_text(encoding="utf-8"))
+    assert "mesh" in new_data["mcpServers"]
+
+    # Legacy config has mesh removed, but custom preserved
+    leg_data = json.loads(legacy_mcp.read_text(encoding="utf-8"))
+    assert "mesh" not in leg_data.get("mcpServers", {})
+    assert "custom" in leg_data["mcpServers"]
+
+
+def test_adapter_verification_status():
+    """Verify that adapters are appropriately marked verified vs unverified."""
+    assert ADAPTER_MAP["claude-code"].verified is True
+    assert ADAPTER_MAP["claude-desktop"].verified is True
+    assert ADAPTER_MAP["antigravity"].verified is True
+    assert ADAPTER_MAP["cursor"].verified is True
+
+    # Community / best-effort adapters are marked unverified
+    for unv in ["windsurf", "gemini-cli", "opencode", "codex"]:
+        assert ADAPTER_MAP[unv].verified is False
+        assert len(ADAPTER_MAP[unv].verification_note) > 0
+
+
+def test_agent_alias_resolution(isolated_env):
+    """Verify 'claude' resolves to 'claude-code' and 'gemini' to 'gemini-cli'."""
+    plan = plan_installation(agents=["claude", "gemini"], scope="user")
+    agent_ids = [item["agent"] for item in plan]
+    assert agent_ids == ["claude-code", "gemini-cli"]
+
 
