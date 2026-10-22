@@ -625,3 +625,71 @@ def test_issue_a004_b005_secret_ingestion_and_quarantine(tmp_path, monkeypatch):
     export_text = export_file.read_text(encoding="utf-8")
     for marker, _ in planted_secrets:
         assert marker not in export_text, f"Marker '{marker}' leaked in public export: {export_text}"
+
+
+def test_issue_t002_secret_detection_and_task_quarantine(tmp_path, monkeypatch):
+    """
+    Issue T-002 regression:
+    1. Single-letter prefix split tokens (T_SPLIT_SECRET_...) and locker codes (8841-blue-zebra-alpha)
+       must be detected, redacted, and quarantined to local_only=True.
+    2. Work items whose notes or completion summaries contain credentials must be quarantined to
+       local_only=1 and completely excluded from public exports.
+    """
+    monkeypatch.setenv("MESH_HOME", str(tmp_path))
+    monkeypatch.setenv("MESH_NO_AUTO_DAEMON", "1")
+    ns = "issue_t002_ns"
+    mesh = Mesh(namespace=ns, agent_id="sec-tester")
+
+    # 1. Split-line token
+    split_text = "Secret split across two lines:\nT_SPLIT_SECRET_PART1_ABCXYZ987\nT_SPLIT_SECRET_PART2_123456789"
+    assert is_credential(split_text) is True
+    redacted_split = redact_secrets_local(split_text)
+    assert "T_SPLIT_SECRET_PART1_ABCXYZ987" not in redacted_split
+    guard_split = guard_ingest(split_text)
+    assert guard_split.local_only is True
+    res_split = mesh.learn(split_text)
+    assert res_split["local_only"] is True
+
+    # 2. Locker code pattern
+    locker_text = "The emergency locker code is 8841-blue-zebra-alpha behind the mirror."
+    assert is_credential(locker_text) is True
+    redacted_locker = redact_secrets_local(locker_text)
+    assert "8841-blue-zebra-alpha" not in redacted_locker
+    guard_locker = guard_ingest(locker_text)
+    assert guard_locker.local_only is True
+    res_locker = mesh.learn(locker_text)
+    assert res_locker["local_only"] is True
+
+    # 3. Task note secret quarantine
+    task1 = mesh.task_create(title="Normal task", description="Initial public description")
+    assert not task1["local_only"]
+    updated1 = mesh.update_work_item(
+        item_id=task1["id"],
+        status="blocked",
+        note="Server room lock PIN is 9472",
+    )
+    assert bool(updated1["local_only"]) is True
+
+    # 4. Task completion summary secret quarantine
+    task2 = mesh.task_create(title="Another normal task", description="Public work")
+    assert not task2["local_only"]
+    comp2 = mesh.complete_work_item(
+        item_id=task2["id"],
+        summary="Completed auth setup with DEMO_FAKE_KEY_7F3A91B4E8C21094AA55",
+        evidence=["auth.py"],
+    )
+    assert bool(comp2["local_only"]) is True
+
+    # 5. Public export verification
+    export_file = tmp_path / "t002_public_export.json"
+    export_namespace(ns, output_path=str(export_file))
+    assert export_file.exists()
+    export_content = export_file.read_text(encoding="utf-8")
+    assert "T_SPLIT_SECRET_PART1_ABCXYZ987" not in export_content
+    assert "8841-blue-zebra-alpha" not in export_content
+    assert "9472" not in export_content
+    assert "DEMO_FAKE_KEY_7F3A91B4E8C21094AA55" not in export_content
+    data = json.loads(export_content)
+    assert len(data.get("work_items", [])) == 0
+    assert data.get("skipped_local_only_work_items", 0) == 2
+

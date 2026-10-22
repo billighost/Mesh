@@ -5115,14 +5115,16 @@ class MeshStore:
                         updates.append("description = ?")
                         params.append("")
 
-                if updates:
-                    params.append(full_id)
-                    conn.execute(f"UPDATE work_items SET {', '.join(updates)} WHERE id = ?", params)
-
                 clean_note = None
                 if note is not None and str(note).strip():
                     guard_n = guard_ingest(note)
                     clean_note = guard_n.content.strip()
+                    if guard_n.local_only and not item["local_only"]:
+                        updates.append("local_only = 1")
+
+                if updates:
+                    params.append(full_id)
+                    conn.execute(f"UPDATE work_items SET {', '.join(updates)} WHERE id = ?", params)
 
                 conn.execute(
                     """
@@ -5168,6 +5170,7 @@ class MeshStore:
         valid_ev: list[str] = [str(x).strip() for x in (evidence or []) if str(x).strip()]
 
         clean_note = None
+        guard_n = None
         if note is not None and str(note).strip():
             guard_n = guard_ingest(note)
             clean_note = guard_n.content.strip()
@@ -5183,6 +5186,7 @@ class MeshStore:
 
                 full_id = item["id"]
                 old_status = item["status"]
+                is_priv = bool(item["local_only"] or guard_s.local_only or (guard_n and guard_n.local_only))
                 conn.execute(
                     """
                     UPDATE work_items
@@ -5190,7 +5194,8 @@ class MeshStore:
                         completed_at = ?,
                         completed_by = ?,
                         summary = ?,
-                        evidence = ?
+                        evidence = ?,
+                        local_only = ?
                     WHERE id = ?
                     """,
                     (
@@ -5198,6 +5203,7 @@ class MeshStore:
                         str(agent_id or "agent"),
                         guard_s.content.strip(),
                         json.dumps(valid_ev),
+                        1 if is_priv else 0,
                         full_id,
                     ),
                 )

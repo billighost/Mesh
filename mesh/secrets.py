@@ -653,6 +653,15 @@ def _is_plausible_secret_value(
             return True
         return False
 
+    if kw_low.endswith("code"):
+        if any(kw_low.endswith(k) for k in ("status_code", "status code", "response code", "http code", "exit code", "error code", "area code", "zip code", "country code", "postal code")):
+            return False
+        if has_digit or has_symbol or has_mixed_case:
+            return True
+        if len(val) >= 14 and _shannon_entropy(val) >= 3.4:
+            return True
+        return False
+
     if has_digit or has_symbol or has_mixed_case:
         # Exclude pure version/port numbers if keyword wasn't password/pin/pwd/secret
         return True
@@ -686,7 +695,7 @@ _KNOWN_API_KEY_RE = re.compile(
     r"npm_[A-Za-z0-9]{20,}|"
     r"SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}|"
     r"DEMO_FAKE_[A-Za-z0-9_]+|"
-    r"(?:[A-Z0-9]{2,}_)+(?:KEY|SECRET|TOKEN|PASS|PHRASE|PASSPHRASE|APIKEY|AUTH|CRED|EMBED)_[A-Za-z0-9_-]{4,}|"
+    r"(?:[A-Z0-9]+_)+(?:KEY|SECRET|TOKEN|PASS|PHRASE|PASSPHRASE|APIKEY|AUTH|CRED|EMBED)_[A-Za-z0-9_-]{4,}|"
     r"(?:api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token)_[A-Za-z0-9_-]{6,}"
     r")\b"
 )
@@ -725,6 +734,7 @@ _YAML_BLOCK_SECRET_RE = re.compile(
 # Finding S2 / S3 / S4: Keyword + optional 0..5 context words (`for checkout`) + operator (`is`/`was`/`=`/`:`) + quoted or unquoted value
 _KEYWORD_ASSIGNMENT_RE = re.compile(
     r"(?i)(?:\b|(?<=_))(password|passwd|passphrase|pwd|pin|secret|client[_\s-]?secret|"
+    r"(?:[a-z0-9_-]+[_\s-])?code|passcode|"
     r"aws_secret_access_key|aws_session_token|(?:[a-z0-9_-]+[_\s-])?key|(?:[a-z0-9_-]+[_\s-])?token)\b"
     r"(\s+(?:(?:for|of|on|in|to|at|from|the|a|an|our|my|their|this|that)\s+|[a-z0-9_.-]+\s+){0,5}?"
     r"(?:is|was|equals)\s+|['\"]?\s*(?::=|=|:)\s*)"

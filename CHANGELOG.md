@@ -4,6 +4,30 @@ All notable changes to `mesh-context-layer` are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (pre-1.0: minor versions may include behavior changes).
 
+## [0.8.1] - 2026-10-22 (Beta)
+
+Comprehensive documentation refresh and defect resolutions following Run T field-test findings.
+
+### Added
+- **Agent Lifecycle Hooks Feature (T-003)**: Added `--hooks` opt-in flag to `mesh install`. Configures `SessionStart` project brief injection (`mesh brief`) on supported agent runtimes (Claude Code via `.claude/settings.json` and Antigravity via `hooks.json`). Implemented atomic `.bak` file backups and safe merging in `mesh/installer.py`.
+- `DOCS.md`: end-user tutorial and reference covering installation, agent connection, the full CLI, all 17 MCP tools, the HTTP API, Python SDK, dashboard, environment variables, privacy, secrets, troubleshooting, and upgrade/uninstall.
+- `CONTRIBUTING.md`, `AGENTS.md` (instructions for coding agents working on this repository), `llms.txt` (documentation index for LLM tooling), and `examples/README.md`.
+- Public field-test archive under `docs/field-test/` (report addenda, issue list, data tables, and reproduction scripts). Files containing absolute paths, usernames, or planted credentials were deliberately not imported; see `docs/field-test/README.md`.
+- Extended `scripts/check_docs.py` coverage for environment variables, HTTP routes, README rules-block equality, and field-test version labels.
+
+### Changed
+- `README.md` rewritten for readers and AI agents: at-a-glance facts, supported agents with verified status, one-command installer, the always-on protocol, goals/tasks/project log, privacy and network behavior, evidence from `benchmarks/RESULTS.md` and the independent field test, limitations, a grouped FAQ, and upgrade/uninstall instructions.
+- `ARCHITECTURE.md` updated to schema version 3: 17 MCP tools, 10 memory types, work items and events, brief/changelog, installer behavior, audit, concurrency, and trust boundaries.
+- `DEVELOPER_GUIDE.md` updated with isolated test recipes, extension points, documentation checks, release process, and field-test reproduction.
+- `CHANGELOG.md` now records documentation changes separately from release behavior changes.
+
+### Fixed
+- **Windows Skill Replacement Lock Contention (T-001)**: Wrapped `os.replace` in `_safe_replace_dir()` with exponential backoff and explicit garbage collection in `mesh/skill_installer.py` to prevent transient Windows `Access is denied` errors during skill installs.
+- **Secret Detection & Task Quarantine (T-002)**: Expanded `_KNOWN_API_KEY_RE` in `mesh/secrets.py` to match arbitrary prefix token segments, extended `_KEYWORD_ASSIGNMENT_RE` and `_is_plausible_secret_value` for locker/pass codes, and updated `update_work_item` / `complete_work_item` in `mesh/store.py` to quarantine tasks (`local_only=1`) when notes or summaries contain secrets.
+- **Agent Lifecycle Hooks Implementation (T-003)**: Implemented missing hook routines in `mesh/installer.py` and `mesh/cli.py` with full uninstallation and rollback support.
+- Replaced obsolete benchmark figures with the numbers and method recorded in `benchmarks/RESULTS.md`.
+- Corrected the MCP tool count (17), memory-type count (10), and embedding cache size (1024) across the documentation.
+
 ## [0.8.1b2] - 2026-10-20 (Beta)
 
 Re-test fixes for issues C-001 and C-002 from the third independent black-box evaluation (Run C), plus two approved diagnostic additions.

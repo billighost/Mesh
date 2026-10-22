@@ -32,6 +32,7 @@ playwright-report/
 qa-*.png
 hero-light*.png
 /*.png
+!/mesh-logo.png
 marketing/qa_stills/
 marketing/**/out/
 landing/*.png
@@ -56,3 +57,4 @@ desktop.ini
 
 # Scratch / local work
 .work/
+.claude/

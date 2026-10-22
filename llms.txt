@@ -1,0 +1,35 @@
+# Mesh (mesh-context-layer)
+
+> Local-first, shared semantic memory and task tracking for AI agents. Python package, MIT license, Beta v0.8.1. Memories are stored in SQLite per namespace; embeddings run locally with ONNX. Mesh exposes 17 MCP tools, a CLI, a loopback HTTP API, a dashboard, and a Python SDK. No telemetry by default. Optional cloud capture/sync requires explicit opt-in.
+
+## Start here
+
+- [README.md](https://github.com/billighost/mesh/blob/main/README.md): what Mesh is, at-a-glance facts, supported agents, quickstart, privacy, evidence, FAQ, limitations.
+- [DOCS.md](https://github.com/billighost/mesh/blob/main/DOCS.md): full user guide — install, first run, agent connection, CLI reference, MCP tools, HTTP API, SDK, configuration, troubleshooting.
+- [ARCHITECTURE.md](https://github.com/billighost/mesh/blob/main/ARCHITECTURE.md): module map, storage schema, data flows, hybrid search, concurrency, trust boundaries.
+- [DEVELOPER_GUIDE.md](https://github.com/billighost/mesh/blob/main/DEVELOPER_GUIDE.md): development setup, tests, benchmarks, extension points, release process.
+- [CONTRIBUTING.md](https://github.com/billighost/mesh/blob/main/CONTRIBUTING.md): contribution workflow.
+- [AGENTS.md](https://github.com/billighost/mesh/blob/main/AGENTS.md): instructions for coding agents modifying this repository.
+
+## Security and trust
+
+- [SECURITY.md](https://github.com/billighost/mesh/blob/main/SECURITY.md): reporting, supported versions, current security properties, hardening checklist.
+- [THREAT_MODEL.md](https://github.com/billighost/mesh/blob/main/THREAT_MODEL.md): assets, trust boundaries, adversaries, threat scenarios, non-goals.
+
+## Evidence
+
+- [benchmarks/RESULTS.md](https://github.com/billighost/mesh/blob/main/benchmarks/RESULTS.md): measured latency, scale, and memory results with the method and hardware.
+- [docs/field-test/README.md](https://github.com/billighost/mesh/blob/main/docs/field-test/README.md): independent field-test archive and how to read it.
+- [docs/field-test/PUBLIC_ADDENDUM.md](https://github.com/billighost/mesh/blob/main/docs/field-test/PUBLIC_ADDENDUM.md): targeted re-test results (C-001, C-002, regressions, secret audit).
+- [docs/field-test/PUBLIC_ADDENDUM_PROBE.md](https://github.com/billighost/mesh/blob/main/docs/field-test/PUBLIC_ADDENDUM_PROBE.md): agent-behavior probe results and limits.
+- [docs/field-test/issues.md](https://github.com/billighost/mesh/blob/main/docs/field-test/issues.md): field-test issues T-001, T-002, T-003 and resolutions.
+
+## Project
+
+- [CHANGELOG.md](https://github.com/billighost/mesh/blob/main/CHANGELOG.md): release history, documentation updates, and bug fixes.
+- [examples/README.md](https://github.com/billighost/mesh/blob/main/examples/README.md): runnable SDK examples.
+
+## Optional
+
+- [docs/releases](https://github.com/billighost/mesh/tree/main/docs/releases): historical release notes.
+- [mesh/skills/mesh-context-layer/SKILL.md](https://github.com/billighost/mesh/blob/main/mesh/skills/mesh-context-layer/SKILL.md): the agent skill installed by `mesh install` (source of truth; do not edit casually).

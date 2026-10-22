@@ -1,4 +1,4 @@
-# Mesh Usage Examples (v0.8.1b2)
+# Mesh Usage Examples (v0.8.1)
 
 Practical patterns for AI coding agents interacting with Mesh.
 

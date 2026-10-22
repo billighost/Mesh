@@ -611,6 +611,7 @@ def install_cmd() -> None:
     parser.add_argument("--dir", default=None, help="Target project directory for project scope (default: current directory)")
     parser.add_argument("--namespace", default=None, help="Explicit namespace to bind for project scope")
     parser.add_argument("--mesh-home", default=None, help="Explicit MESH_HOME storage directory to bind for project scope")
+    parser.add_argument("--hooks", action="store_true", help="Install lifecycle hooks (SessionStart brief injection) for supporting agents")
     parser.add_argument("--dry-run", action="store_true", help="Preview plan and diffs without modifying files")
     parser.add_argument("--json", action="store_true", help="Output plan or results as JSON")
     parser.add_argument("--apply", action="store_true", help="Authorize applying changes without interactive prompts")
@@ -634,6 +635,7 @@ def install_cmd() -> None:
         project_dir=project_dir,
         namespace=args.namespace,
         mesh_home=args.mesh_home,
+        hooks=args.hooks,
     )
 
     is_authorized = args.apply or args.yes
@@ -653,12 +655,34 @@ def install_cmd() -> None:
             if not ui.confirm(prompt, default=True):
                 ui.info("Installation cancelled by user.")
                 sys.exit(0)
+
+            if not args.hooks:
+                from .installer import ADAPTER_MAP
+                has_hook_support = any(
+                    ADAPTER_MAP[item["agent"]].supports_hooks()
+                    for item in plan
+                    if item.get("agent") in ADAPTER_MAP
+                )
+                if has_hook_support:
+                    if ui.confirm(
+                        "Also install lifecycle hooks (SessionStart brief injection)?",
+                        default=False,
+                        detail="Runs 'mesh brief' on session start for supported agents (Claude Code, Antigravity).",
+                    ):
+                        plan = plan_installation(
+                            agents=agents_list,
+                            scope=args.scope,
+                            project_dir=project_dir,
+                            namespace=args.namespace,
+                            mesh_home=args.mesh_home,
+                            hooks=True,
+                        )
         else:
             ui.header("Mesh Installation Plan", f"Scope: {args.scope}", f"Agents: {args.agents}")
             print()
             for item in plan:
                 print(f"{ui.IND}Agent: {ui.style(item['display_name'], 'brand', 'bold')}")
-                for comp in ("mcp", "skill", "rules"):
+                for comp in ("mcp", "skill", "rules", "hooks"):
                     info = item.get(comp)
                     if not info:
                         continue
@@ -679,7 +703,8 @@ def install_cmd() -> None:
     has_errors = any(
         (r.get("mcp") and r["mcp"].get("error")) or
         (r.get("skill") and r["skill"].get("error")) or
-        (r.get("rules") and r["rules"].get("error"))
+        (r.get("rules") and r["rules"].get("error")) or
+        (r.get("hooks") and r["hooks"].get("error"))
         for r in results
     )
 
@@ -693,7 +718,7 @@ def install_cmd() -> None:
     print()
     for r in results:
         print(f"{ui.IND}Agent: {ui.style(r['display_name'], 'brand', 'bold')}")
-        for comp in ("mcp", "skill", "rules"):
+        for comp in ("mcp", "skill", "rules", "hooks"):
             info = r.get(comp)
             if not info:
                 continue
@@ -715,7 +740,7 @@ def install_cmd() -> None:
 
 def uninstall_cmd() -> None:
     """Safely uninstall Mesh MCP server, rules, and skills from agents."""
-    parser = _parser("uninstall", "Uninstall Mesh MCP configuration, rules, and skills.")
+    parser = _parser("uninstall", "Uninstall Mesh MCP configuration, rules, skills, and hooks.")
     parser.add_argument("--agents", default="all", help="Comma-separated agent names or 'all' (default: all)")
     parser.add_argument("--scope", default="user", choices=["user", "project"], help="Scope: user or project (default: user)")
     parser.add_argument("--dir", default=None, help="Target project directory for project scope (default: current directory)")
@@ -756,7 +781,7 @@ def uninstall_cmd() -> None:
     print()
     for r in results:
         print(f"{ui.IND}Agent: {ui.style(r['display_name'], 'brand', 'bold')}")
-        for comp in ("mcp", "skill", "rules"):
+        for comp in ("mcp", "skill", "rules", "hooks"):
             info = r.get(comp)
             if not info:
                 continue

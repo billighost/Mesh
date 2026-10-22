@@ -1,0 +1,162 @@
+{
+  "run_label": "T",
+  "methodology": "SIMULATED - LLM behavior not tested",
+  "total_questions": 15,
+  "mesh_score": 15.0,
+  "mesh_accuracy_percent": 100.0,
+  "control_score": 3.0,
+  "control_accuracy_percent": 20.0,
+  "net_advantage_percent": 80.0,
+  "results": [
+    {
+      "qid": "Q-01",
+      "question": "What framework and language powers the TaskFlow T backend?",
+      "target_fact": "F-01",
+      "expected_answer": "FastAPI with Python 3.12+",
+      "retrieved_snippet": "TaskFlow T backend is built with FastAPI and runs on Python 3.12+. CORS policy restricts allowed origins to https://app.taskflow-t.internal. Production deployment target is Kubernetes namespace 'taskf",
+      "score": 1.0,
+      "reason": "Found FastAPI and Python",
+      "latency_ms": 72.05
+    },
+    {
+      "qid": "Q-02",
+      "question": "What is the current database port after the infrastructure upgrade?",
+      "target_fact": "F-02",
+      "expected_answer": "5433 (changed from 5432)",
+      "retrieved_snippet": "Database port has been upgraded and changed from 5432 to 5433 for security and isolation. Redis cache runs in cluster mode on ports 7000 to 7005. Primary database engine is PostgreSQL 16 with pgvector",
+      "score": 1.0,
+      "reason": "Correctly retrieved updated port 5433",
+      "latency_ms": 100.18
+    },
+    {
+      "qid": "Q-03",
+      "question": "What database engine and extension does the primary database use?",
+      "target_fact": "F-03",
+      "expected_answer": "PostgreSQL 16 with pgvector",
+      "retrieved_snippet": "Primary database engine is PostgreSQL 16 with pgvector extension. Database migrations are managed via Alembic and run automatically on container boot. Database port has been upgraded and changed from ",
+      "score": 1.0,
+      "reason": "Found PostgreSQL",
+      "latency_ms": 86.61
+    },
+    {
+      "qid": "Q-04",
+      "question": "What algorithm and expiration time are configured for auth JWTs?",
+      "target_fact": "F-04",
+      "expected_answer": "RS256 with 15-minute expiration",
+      "retrieved_snippet": "Authentication tokens use RS256 JWTs with a 15-minute expiration time.",
+      "score": 1.0,
+      "reason": "Found RS256 and 15-min expiration",
+      "latency_ms": 65.76
+    },
+    {
+      "qid": "Q-05",
+      "question": "On which ports does the Redis cache cluster run?",
+      "target_fact": "F-05",
+      "expected_answer": "Ports 7000 to 7005",
+      "retrieved_snippet": "Redis cache runs in cluster mode on ports 7000 to 7005. Background jobs are processed using Celery with Redis broker. Database port has been upgraded and changed from 5432 to 5433 for security and iso",
+      "score": 1.0,
+      "reason": "Found Redis ports 7000-7005",
+      "latency_ms": 86.28
+    },
+    {
+      "qid": "Q-06",
+      "question": "Which tool processes background worker jobs and what broker is used?",
+      "target_fact": "F-06",
+      "expected_answer": "Celery with Redis broker",
+      "retrieved_snippet": "Background jobs are processed using Celery with Redis broker.",
+      "score": 1.0,
+      "reason": "Found Celery and Redis broker",
+      "latency_ms": 66.36
+    },
+    {
+      "qid": "Q-07",
+      "question": "What prefix must all API routes adhere to?",
+      "target_fact": "F-07",
+      "expected_answer": "/api/v2/",
+      "retrieved_snippet": "All API endpoints must be prefixed with /api/v2/ and return JSON. API rate limit is 120 requests per minute per IP address.",
+      "score": 1.0,
+      "reason": "Found /api/v2/ prefix",
+      "latency_ms": 108.46
+    },
+    {
+      "qid": "Q-08",
+      "question": "How are database migrations handled in TaskFlow T?",
+      "target_fact": "F-08",
+      "expected_answer": "Alembic, executed automatically on container boot",
+      "retrieved_snippet": "Database migrations are managed via Alembic and run automatically on container boot. Primary database engine is PostgreSQL 16 with pgvector extension. Database port has been upgraded and changed from ",
+      "score": 1.0,
+      "reason": "Found Alembic",
+      "latency_ms": 132.74
+    },
+    {
+      "qid": "Q-09",
+      "question": "What test runner and plugin execute the integration tests?",
+      "target_fact": "F-09",
+      "expected_answer": "pytest and pytest-asyncio",
+      "retrieved_snippet": "Unit and integration tests are executed with pytest and pytest-asyncio.",
+      "score": 1.0,
+      "reason": "Found pytest",
+      "latency_ms": 108.41
+    },
+    {
+      "qid": "Q-10",
+      "question": "What Kubernetes namespace hosts the production deployment?",
+      "target_fact": "F-10",
+      "expected_answer": "taskflow-prod",
+      "retrieved_snippet": "Production deployment target is Kubernetes namespace 'taskflow-prod'.",
+      "score": 1.0,
+      "reason": "Found taskflow-prod",
+      "latency_ms": 160.39
+    },
+    {
+      "qid": "Q-11",
+      "question": "Where and in what format are application logs shipped?",
+      "target_fact": "F-11",
+      "expected_answer": "JSON format shipped to Grafana Loki via Promtail",
+      "retrieved_snippet": "Application logs are exported in JSON format to Grafana Loki via Promtail.",
+      "score": 1.0,
+      "reason": "Found Loki / Promtail",
+      "latency_ms": 85.94
+    },
+    {
+      "qid": "Q-12",
+      "question": "On what port and path are Prometheus metrics exposed?",
+      "target_fact": "F-12",
+      "expected_answer": "Port 9090 at /metrics",
+      "retrieved_snippet": "Prometheus metrics are exposed on port 9090 at /metrics. Redis cache runs in cluster mode on ports 7000 to 7005. Database port has been upgraded and changed from 5432 to 5433 for security and isolatio",
+      "score": 1.0,
+      "reason": "Found port 9090 and /metrics",
+      "latency_ms": 180.44
+    },
+    {
+      "qid": "Q-13",
+      "question": "What bucket name and storage system store user asset uploads?",
+      "target_fact": "F-13",
+      "expected_answer": "MinIO bucket 'taskflow-assets'",
+      "retrieved_snippet": "User asset uploads are stored in an S3-compatible MinIO bucket named 'taskflow-assets'.",
+      "score": 1.0,
+      "reason": "Found MinIO / taskflow-assets",
+      "latency_ms": 155.61
+    },
+    {
+      "qid": "Q-14",
+      "question": "What origin URL is authorized by the CORS policy?",
+      "target_fact": "F-14",
+      "expected_answer": "https://app.taskflow-t.internal",
+      "retrieved_snippet": "CORS policy restricts allowed origins to https://app.taskflow-t.internal. Production deployment target is Kubernetes namespace 'taskflow-prod'.",
+      "score": 1.0,
+      "reason": "Found CORS origin URL",
+      "latency_ms": 181.83
+    },
+    {
+      "qid": "Q-15",
+      "question": "What is the configured API rate limit per IP address?",
+      "target_fact": "F-15",
+      "expected_answer": "120 requests per minute",
+      "retrieved_snippet": "API rate limit is 120 requests per minute per IP address. All API endpoints must be prefixed with /api/v2/ and return JSON.",
+      "score": 1.0,
+      "reason": "Found 120 req/min limit",
+      "latency_ms": 205.25
+    }
+  ]
+}

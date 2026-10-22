@@ -1,0 +1,16 @@
+qid,target_fact,score,latency_ms,question,expected,reason
+Q-01,F-01,1.0,72.05,What framework and language powers the TaskFlow T backend?,FastAPI with Python 3.12+,Found FastAPI and Python
+Q-02,F-02,1.0,100.18,What is the current database port after the infrastructure upgrade?,5433 (changed from 5432),Correctly retrieved updated port 5433
+Q-03,F-03,1.0,86.61,What database engine and extension does the primary database use?,PostgreSQL 16 with pgvector,Found PostgreSQL
+Q-04,F-04,1.0,65.76,What algorithm and expiration time are configured for auth JWTs?,RS256 with 15-minute expiration,Found RS256 and 15-min expiration
+Q-05,F-05,1.0,86.28,On which ports does the Redis cache cluster run?,Ports 7000 to 7005,Found Redis ports 7000-7005
+Q-06,F-06,1.0,66.36,Which tool processes background worker jobs and what broker is used?,Celery with Redis broker,Found Celery and Redis broker
+Q-07,F-07,1.0,108.46,What prefix must all API routes adhere to?,/api/v2/,Found /api/v2/ prefix
+Q-08,F-08,1.0,132.74,How are database migrations handled in TaskFlow T?,"Alembic, executed automatically on container boot",Found Alembic
+Q-09,F-09,1.0,108.41,What test runner and plugin execute the integration tests?,pytest and pytest-asyncio,Found pytest
+Q-10,F-10,1.0,160.39,What Kubernetes namespace hosts the production deployment?,taskflow-prod,Found taskflow-prod
+Q-11,F-11,1.0,85.94,Where and in what format are application logs shipped?,JSON format shipped to Grafana Loki via Promtail,Found Loki / Promtail
+Q-12,F-12,1.0,180.44,On what port and path are Prometheus metrics exposed?,Port 9090 at /metrics,Found port 9090 and /metrics
+Q-13,F-13,1.0,155.61,What bucket name and storage system store user asset uploads?,MinIO bucket 'taskflow-assets',Found MinIO / taskflow-assets
+Q-14,F-14,1.0,181.83,What origin URL is authorized by the CORS policy?,https://app.taskflow-t.internal,Found CORS origin URL
+Q-15,F-15,1.0,205.25,What is the configured API rate limit per IP address?,120 requests per minute,Found 120 req/min limit
