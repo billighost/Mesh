@@ -1,6 +1,6 @@
 # Mesh User Documentation
 
-Complete user guide for **Mesh** (`mesh-context-layer`) **0.8.1** (Beta): installation, agent setup, the memory and task model, the full CLI/MCP/HTTP/Python reference, privacy, encryption, performance evidence, and troubleshooting.
+Complete user guide for **Mesh** (`mesh-context-layer`) **0.8.2** (Beta): installation, agent setup, the memory and task model, the full CLI/MCP/HTTP/Python reference, privacy, encryption, performance evidence, and troubleshooting.
 
 - New here? Start with [Install](#1-install) and the [60-minute tutorial](#2-first-run-tutorial).
 - Evaluating? Read [Privacy and data handling](#12-privacy-data-and-network) and [Evidence](#14-performance-and-evidence).
@@ -55,7 +55,7 @@ pip install "mesh-context-layer[secrets,crypto]"
 ### Verify the install
 
 ```bash
-mesh version           # -> mesh 0.8.1
+mesh version           # -> mesh 0.8.2
 mesh doctor            # storage, SQLite/FTS5, model, daemon, MCP configs, 17 tools
 mesh status --json     # machine-readable state
 ```
@@ -98,7 +98,7 @@ mesh doctor
 Expected shape (values vary):
 
 ```text
-Doctor  mesh v0.8.1 - Windows AMD64 - Python 3.14.0
+Doctor  mesh v0.8.2 - Windows AMD64 - Python 3.14.0
 Data directory    ~/.mesh
 SQLite + FTS5     SQLite 3.50.4 with Porter stemming
 Daemon            not running (optional)
@@ -678,7 +678,7 @@ for item in agent_b.recall("what port does production postgres use?", n=3):
     print(item["similarity"], item["content"], item["source_agent"])
 ```
 
-Public methods on `Mesh` (0.8.1):
+Public methods on `Mesh` (0.8.2):
 
 | Method | Purpose |
 |---|---|

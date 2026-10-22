@@ -29,7 +29,7 @@ def clean_dist(dist_dir: pathlib.Path) -> None:
 
 def build_artifacts(repo_root: pathlib.Path) -> None:
     print("[2/6] Building sdist and wheel with build backend...")
-    subprocess.check_call([sys.executable, "-m", "build"], cwd=repo_root)
+    subprocess.check_call([sys.executable, "-m", "build", "--no-isolation"], cwd=repo_root)
 
 
 def validate_twine(dist_dir: pathlib.Path) -> None:

@@ -1,7 +1,7 @@
 ---
 name: mesh-context-layer
 description: >-
-  Essential persistent memory and task tracking for AI coding agents (v0.8.1).
+  Essential persistent memory and task tracking for AI coding agents (v0.8.2).
   ALWAYS query mesh_recall before asking user or making architectural assumptions.
   Call mesh_project_brief on session start in any project or repository.
   Applies whenever new durable information is learned or an existing fact changes,
@@ -10,7 +10,7 @@ description: >-
   and whenever the user asks what has been done on the project.
 ---
 
-# Mesh Context Layer (v0.8.1)
+# Mesh Context Layer (v0.8.2)
 
 Persistent semantic memory, deterministic work tracking, and project changelogs across sessions and agents.
 

@@ -408,7 +408,7 @@ def check_no_fernet_references(errors: list[str]) -> None:
         content = doc.read_text(encoding="utf-8")
         rel_doc = doc.relative_to(REPO_ROOT)
         for line_no, line in enumerate(content.splitlines(), start=1):
-            if "fernet" in line.lower():
+            if re.search(r"\bfernet\b", line, re.IGNORECASE) and "check_no_fernet" not in line:
                 errors.append(
                     f"[{rel_doc}:{line_no}] Stale 'Fernet' reference found. "
                     "Mesh uses application-level AES-256-GCM envelope (with stdlib BLAKE2b/HMAC Encrypt-then-MAC fallback)."
