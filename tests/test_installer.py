@@ -639,3 +639,18 @@ def test_agent_alias_resolution(isolated_env):
     assert agent_ids == ["claude-code", "gemini-cli"]
 
 
+def test_safe_replace_dir_exhaustion(tmp_path):
+    """Verify _safe_replace_dir raises PermissionError when all retries are exhausted."""
+    from mesh.skill_installer import _safe_replace_dir
+
+    src_dir = tmp_path / "src_exhaust"
+    src_dir.mkdir()
+    (src_dir / "SKILL.md").write_text("# Skill", encoding="utf-8")
+    dst_dir = tmp_path / "dst_exhaust"
+
+    with patch("os.replace", side_effect=PermissionError(5, "Access is denied")):
+        with pytest.raises(PermissionError):
+            _safe_replace_dir(src_dir, dst_dir, max_retries=3, backoff=0.001)
+
+
+

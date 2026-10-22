@@ -702,10 +702,10 @@ _KNOWN_API_KEY_RE = re.compile(
 
 # Finding S2: Authorization / Bearer headers supporting optional quotes around the token
 _AUTH_HEADER_RE = re.compile(
-    r"(?i)\b(authorization\s*[:=]\s*(?:basic|bearer|token)\s+)(['\"]?)([^\s'\"`;\n]{4,})\2"
+    r"(?i)\b(authorization\s*[:=]\s*(?:basic|bearer|token)\s+)(['\"]?)(?!\[(?:REDACTED|SECRET_REF))([^\s'\"`;\n]{4,})\2"
 )
 _BEARER_TOKEN_RE = re.compile(
-    r"(?i)\b(Bearer\s+)(['\"]?)(?!\[REDACTED)([A-Za-z0-9_\-./+=]{8,})\2"
+    r"(?i)\b(Bearer\s+)(['\"]?)(?!\[(?:REDACTED|SECRET_REF))([A-Za-z0-9_\-./+=]{8,})\2"
 )
 
 # Finding N2: URL userinfo credentials bounded so they never cross quotes/commas or match `localhost:8080/v1`
@@ -793,8 +793,10 @@ def is_credential(text: str) -> bool:
         return True
     if _BEARER_TOKEN_RE.search(norm):
         return True
-    if _YAML_BLOCK_SECRET_RE.search(norm):
-        return True
+    for m in _YAML_BLOCK_SECRET_RE.finditer(norm):
+        yaml_content = m.group(3).strip()
+        if not yaml_content.startswith(("[REDACTED", "[SECRET_REF:")):
+            return True
     if _UNQUOTED_PASSPHRASE_RE.search(norm):
         return True
 
