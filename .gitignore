@@ -32,7 +32,6 @@ playwright-report/
 qa-*.png
 hero-light*.png
 /*.png
-!/mesh-logo.png
 marketing/qa_stills/
 marketing/**/out/
 landing/*.png
