@@ -9,7 +9,7 @@ When one agent learns something, another agent in a different session or tool ca
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 ![Status: Beta](https://img.shields.io/badge/status-beta-orange.svg)
 
-> **Beta.** Version `0.8.1`. Interfaces may change between beta releases. Read [Status & versioning](#status-versioning-and-roadmap) before depending on it in production.
+> **Beta.** Version `0.8.2`. Interfaces may change between beta releases. Read [Status & versioning](#status-versioning-and-roadmap) before depending on it in production.
 
 ---
 
@@ -18,19 +18,19 @@ When one agent learns something, another agent in a different session or tool ca
 | Question | Answer |
 |---|---|
 | **What it is** | A local MCP server + CLI + HTTP API that gives multiple AI agents one shared, searchable memory and a deterministic task ledger per project namespace. |
-| **Current version** | `0.8.1` (Beta), MIT, maintained by [billighost](https://github.com/billighost). |
+| **Current version** | `0.8.2` (Beta), MIT, maintained by [billighost](https://github.com/billighost). |
 | **Python** | Requires Python **3.10+**. Package classifiers cover 3.10–3.13; the 0.8.1b2 field test ran on Python 3.14.0. |
 | **Operating systems** | Windows, macOS, and Linux code paths exist. The 0.8.1b2 independent field test ran on **Windows 11 only**; macOS/Linux were not independently field-tested in that run. |
 | **Where data lives** | `~/.mesh/` by default (`%USERPROFILE%\.mesh` on Windows). Override with `MESH_HOME` or `MESH_DIR`. One SQLite database per namespace: `mesh_<namespace>.db`, plus `audit_<namespace>.db`. |
 | **Embeddings** | **Local.** `all-MiniLM-L6-v2` (384-dim) via ONNX Runtime. No external embedding API. A built-in `hash-384` fallback is used until the model is downloaded. |
 | **Default network activity** | **None for normal memory operations.** Three opt-in exceptions: a model download, an explicit PyPI update check, and optional cloud-assisted log capture. See [Privacy & data handling](#privacy-and-data-handling). |
 | **Remote telemetry** | **None.** Mesh writes a local, content-free audit log (timings, tool names, counts — never memory text). Nothing is uploaded. |
-| **Encryption at rest** | **Off by default.** Optional `mesh encrypt-db` (SQLCipher or application-level Fernet), and optional `mesh export --encrypt`. Plain SQLite files and ordinary exports are not encrypted. |
+| **Encryption at rest** | **Off by default.** Optional `mesh encrypt-db` (SQLCipher or application-level AES-256-GCM envelope with stdlib BLAKE2b/HMAC fallback), and optional `mesh export --encrypt`. Plain SQLite files and ordinary exports are not encrypted. |
 | **Install** | `pip install mesh-context-layer` then `mesh install --dry-run` and `mesh install --apply`. |
 | **Supported agents (installer)** | Claude Code, Claude Desktop, Antigravity, Gemini CLI, Cursor, Windsurf, OpenCode, Codex. |
 | **Delete everything** | Back up first, then `mesh namespaces delete <ns>` per namespace, or remove the whole `~/.mesh` directory. See [Delete everything](#delete-everything). |
 | **Security contact** | `bb2010ng@gmail.com` or GitHub private vulnerability reporting. See [SECURITY.md](SECURITY.md). |
-| **Verified against** | Source at commit `5348d00` on **2026-10-20**, package version `0.8.1b2`. |
+| **Verified against** | Field-tested against package `0.8.1b2` (source `5348d00`, 2026-10-20); current codebase incorporates post-0.8.1 field-test fixes F1–F8. |
 
 ---
 
@@ -210,8 +210,8 @@ The text below is copied verbatim from [`mesh/skills/mesh-context-layer/rules_bl
 # Mesh Memory & Task Protocol (Always-On)
 1. SESSION START: Call `mesh_project_brief(max_tokens=500)` immediately to load open tasks, recent completions, and facts.
 2. RECALL FIRST: Before asking the user or assuming conventions/ports/commands, query `mesh_recall` with targeted keywords.
-3. RECORD IMMEDIATELY: Store durable architectural decisions, ports, commands, and conventions via `mesh_learn`.
-4. UPDATE, DON'T DUPLICATE: When a known fact changes, locate it via `mesh_recall` and update with `mesh_update`.
+3. RECORD WITH RATIONALE: Store durable architectural decisions WITH their reason ("because <reason>"), ports, commands, and conventions via `mesh_learn`.
+4. UPDATE IN PLACE: When a known fact/port changes, locate it via `mesh_recall` and update with `mesh_update`; never create duplicates.
 5. TRACK WORK: Break goals into tasks with `mesh_task_create`; update status (`in_progress`, `blocked`, `done`).
 6. COMPLETE WITH SUMMARY: When marking work done via `mesh_task_complete`, always provide a summary of changes and evidence.
 7. PROJECT CHANGELOG: When asked what was done or for progress reports, call `mesh_log`.
@@ -460,7 +460,7 @@ These replace an earlier README table whose throughput, latency, database-size, 
 
 ### Independent field test — Mesh 0.8.1b2
 
-Wheel `mesh_context_layer-0.8.1b2-py3-none-any.whl`, SHA-256 `e1a7a0af71abe3f51b02150d9a2d5fdc1d9d8a618937e9d41bf899c08ead06ff` — the same version as this source tree. Run on Windows 11, Python 3.14.0, isolated `MESH_HOME`, no cloud calls, `hash-384` fallback active.
+Wheel `mesh_context_layer-0.8.1b2-py3-none-any.whl`, SHA-256 `e1a7a0af71abe3f51b02150d9a2d5fdc1d9d8a618937e9d41bf899c08ead06ff` — baseline test artifact from commit `5348d00`. Run on Windows 11, Python 3.14.0, isolated `MESH_HOME`, no cloud calls, `hash-384` fallback active.
 
 Quoted from [`docs/field-test/PUBLIC_ADDENDUM.md`](docs/field-test/PUBLIC_ADDENDUM.md):
 
@@ -691,9 +691,9 @@ Full detail: [THREAT_MODEL.md](THREAT_MODEL.md). Report vulnerabilities privatel
 
 ### Project and maintenance
 
-**What version is this?** `0.8.1`, Beta.
+**What version is this?** `0.8.2`, Beta.
 
-**Will the API change?** Beta releases may change interfaces. Pin `mesh-context-layer==0.8.1` if you need reproducibility.
+**Will the API change?** Beta releases may change interfaces. Pin `mesh-context-layer==0.8.2` if you need reproducibility.
 
 **Who maintains it?** billighost. See the repository and PyPI project.
 
@@ -753,7 +753,7 @@ Private memories are never exported, so deleting them cannot be undone from an e
 
 ## Status, versioning, and roadmap
 
-**Current status: Beta (`0.8.1`).**
+**Current status: Beta (`0.8.2`).**
 
 Implemented and documented here: namespaced memory, hybrid recall, deduplication, contradiction tracking, TTL decay, goals/tasks with mandatory completion summaries, session brief, project changelog, installer/uninstaller for eight agents, skill and rules block, local audit, quarantine/approval, secret references, optional encryption, daemon/HTTP/dashboard.
 
@@ -779,4 +779,4 @@ MIT © billighost.
 
 ---
 
-**Last verified:** 2026-10-20 against package `0.8.1b2`, source commit `5348d00`, on Windows 11 Pro (10.0.22000), Python 3.14.0. Field-test evidence refers to the same version and wheel. macOS/Linux were not independently field-tested. See [docs/field-test/](docs/field-test/) for the full public record.
+**Last verified:** Field-test evidence was independently gathered on 2026-10-20 against package `0.8.1b2`, source commit `5348d00`, on Windows 11 Pro (10.0.22000), Python 3.14.0. macOS/Linux were not independently field-tested in that run. The current codebase incorporates post-0.8.1 field-test fixes (F1–F8); see [docs/field-test/](docs/field-test/) for the full record and re-test plan.

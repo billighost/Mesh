@@ -1,6 +1,6 @@
 # Threat Model
 
-This document describes what Mesh (`mesh-context-layer` v0.8.1, Beta) is designed to protect, what it does not protect, and the assumptions behind those choices. It is written for security reviewers and for operators deciding whether Mesh is appropriate for their environment.
+This document describes what Mesh (`mesh-context-layer` v0.8.2, Beta) is designed to protect, what it does not protect, and the assumptions behind those choices. It is written for security reviewers and for operators deciding whether Mesh is appropriate for their environment.
 
 Companion documents: [SECURITY.md](SECURITY.md) (reporting and supported versions), [ARCHITECTURE.md](ARCHITECTURE.md) (trust boundaries and data flow), [DOCS.md](DOCS.md#12-privacy-data-and-network) (every network path).
 

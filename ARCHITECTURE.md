@@ -1,4 +1,4 @@
-# Mesh Architecture (v0.8.1)
+# Mesh Architecture (v0.8.2)
 
 This document describes how Mesh is put together: modules, data flows, storage schema, search, work items, the installer, concurrency, security boundaries, configuration, and known limitations. It reflects source at commit `5348d00` (2026-10-20). User-facing instructions are in [DOCS.md](DOCS.md); development workflows are in [DEVELOPER_GUIDE.md](DEVELOPER_GUIDE.md).
 

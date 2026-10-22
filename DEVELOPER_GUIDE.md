@@ -1,4 +1,4 @@
-# Mesh Developer Guide (v0.8.1)
+# Mesh Developer Guide (v0.8.2)
 
 How to work on Mesh safely: isolated setup, tests, benchmarks, documentation checks, extension points, release, and field-test reproduction.
 
@@ -359,8 +359,8 @@ Logging: `MESH_LOG_LEVEL=DEBUG`. Audit: `mesh why`, `mesh audit export --json`. 
    /tmp/mesh-release-test/bin/pip install dist/*.whl
    /tmp/mesh-release-test/bin/mesh version
    ```
-6. Commit, tag `v<version>`, and publish a GitHub release.
-7. `.github/workflows/publish.yml` publishes via **PyPI Trusted Publishing (OIDC)** on release or tag. It builds, smoke-tests the wheel, uploads artifacts, and publishes with `id-token: write`. No API token is stored in the workflow.
+6. Commit, tag `v<version>`, and publish a GitHub release via the GitHub UI or `gh release create`.
+7. `.github/workflows/publish.yml` publishes via **PyPI Trusted Publishing (OIDC)** upon an approved `release: [published]` event (or manual `workflow_dispatch`). Automatic publication on simple tag-push is disabled to ensure human release authorization. It builds, smoke-tests the wheel, uploads artifacts, and publishes with `id-token: write`. No API token is stored in the workflow.
 
 Do not push, force-push, or rewrite history unless the maintainer asks. Do not publish a release from a dirty tree.
 

@@ -1,16 +1,16 @@
 ---
 name: mesh-context-layer
 description: >-
-  Essential persistent memory and task tracking for AI coding agents (v0.8.1).
-  Applies at the start of EVERY session or conversation in any project or repository,
-  before answering questions about project setup, ports, commands, conventions, or history,
-  whenever new durable information is learned or an existing fact changes,
+  Essential persistent memory and task tracking for AI coding agents (v0.8.2).
+  ALWAYS query mesh_recall before asking user or making architectural assumptions.
+  Call mesh_project_brief on session start in any project or repository.
+  Applies whenever new durable information is learned or an existing fact changes,
   whenever a goal or task is created, progressed, or completed,
   when ending a session or handing off work to another agent,
   and whenever the user asks what has been done on the project.
 ---
 
-# Mesh Context Layer (v0.8.1)
+# Mesh Context Layer (v0.8.2)
 
 Persistent semantic memory, deterministic work tracking, and project changelogs across sessions and agents.
 
@@ -36,11 +36,13 @@ Follow these numbered steps in every session:
 2. **RECALL FIRST**:
    - Before asking the user about architecture, conventions, ports, test commands, or past decisions, query `mesh_recall(query=...)`.
    - Use targeted keywords and synonyms (e.g. `mesh_recall(query="test command postgres port")`).
-3. **RECORD IMMEDIATELY**:
-   - Store durable facts as soon as learned via `mesh_learn`.
+3. **RECORD WITH RATIONALE**:
+   - Store durable facts and architectural decisions as soon as learned via `mesh_learn`.
+   - Every architectural decision MUST include a causal rationale (e.g. "Decided X because Y").
    - Phrase as one concise, self-contained statement with subject, value, and tags.
-4. **UPDATE, DON'T DUPLICATE**:
-   - When a known fact changes or is corrected, find its ID with `mesh_recall` and update in-place with `mesh_update`.
+4. **UPDATE IN PLACE (UPDATE, DON'T DUPLICATE)**:
+   - When a known fact, port, or convention changes or is corrected, find its ID with `mesh_recall` and update in-place with `mesh_update`.
+   - Example: If port 8080 changes to 8081, call `mesh_update(memory_id=..., content="Dev server runs on port 8081 because 8080 conflicted with metrics")`; NEVER call `mesh_learn` with a duplicate port fact.
    - If a contradiction warning occurs, inspect with `mesh_contradictions` and resolve with `mesh_resolve_contradiction`.
 5. **TRACK GOALS & TASKS**:
    - Create high-level goals and actionable tasks using `mesh_task_create(title=..., kind="goal"|"task")`.
@@ -62,7 +64,7 @@ Follow these numbered steps in every session:
 |---|---|---|
 | Session start / new prompt in repo | `mesh_project_brief(max_tokens=500)` | Load namespace health, open tasks, recent completions, and core facts. |
 | User asks about setup, ports, commands | `mesh_recall(query="...")` | Check Mesh first before asking the user or guessing defaults. |
-| Learned durable fact, decision, or fix | `mesh_learn(content=..., memory_type=..., tags=[...])` | Record immediately. One fact per memory. |
+| Learned durable fact, decision, or fix | `mesh_learn(content=..., memory_type=..., tags=[...])` | Record immediately with reason ("because ..."). One fact per memory. |
 | Existing fact or port changed | `mesh_recall` then `mesh_update(memory_id=...)` | Update in-place to avoid duplicate memories or contradictions. |
 | User sets a multi-step objective | `mesh_task_create(title=..., kind="goal")` | Establish tracked work items. Subdivide into tasks with `parent_id`. |
 | Starting work on a task | `mesh_task_update(item_id=..., status="in_progress")` | Signal active work to other agents and session briefs. |
@@ -132,9 +134,9 @@ mesh_task_create({"title": "Run migration script", "kind": "task", "parent_id": 
 // 4. Starting task
 mesh_task_update({"item_id": "task-2", "status": "in_progress"})
 
-// 5. Recording durable architectural decision
+// 5. Recording durable architectural decision with rationale
 mesh_learn({
-  "content": "Decision: Added work_items table with WAL mode for concurrent agent task tracking.",
+  "content": "Decision: Added work_items table with WAL mode because concurrent agent task tracking requires non-blocking reads.",
   "memory_type": "decision",
   "tags": ["db", "architecture"]
 })

@@ -5477,7 +5477,13 @@ class MeshStore:
             if key_mems:
                 lines.append("## Key Project Facts & Decisions")
                 for km in key_mems[:4]:
-                    lines.append(f"- [{km['type']}] {km['content']}")
+                    extra_hint = ""
+                    if km["type"] == "decision":
+                        content_low = km["content"].lower()
+                        causal_markers = ("because", "since", "due to", "as ", "rationale:", "reason:")
+                        if not any(marker in content_low for marker in causal_markers):
+                            extra_hint = " *(needs rationale — add 'because <reason>')*"
+                    lines.append(f"- [{km['type']}] {km['content']}{extra_hint}")
                 lines.append("")
 
             if contradictions_count > 0:

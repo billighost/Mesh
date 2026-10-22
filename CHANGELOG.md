@@ -4,6 +4,27 @@ All notable changes to `mesh-context-layer` are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (pre-1.0: minor versions may include behavior changes).
 
+## [0.8.2] - 2026-10-22 (Beta)
+
+Patch release verifying and resolving findings following the 0.8.1 release (F1–F8).
+
+### Fixed
+- **Claude Code MCP Configuration Path & Legacy Migration (F1)**: Updated `ClaudeCodeAdapter` to use repository-root `.mcp.json` for project scope (aligned with Claude Code specification) and `~/.claude.json` for user scope. Added automatic detection and migration of legacy `.claude/mcp.json` files with user notification. Added agent aliases `claude` (mapping to `claude-code`) and `gemini` (mapping to `gemini-cli`), and marked unverified agent adapters in installer and doctor outputs.
+- **Hook Contract, Silent Brief Handling & Credential Redaction Idempotence (F8)**: Configured Antigravity hook integration to output JSON `{"injectSteps": [{"ephemeralMessage": ...}]}` under the `PreInvocation` event. Updated `mesh brief` to include untrusted reference data banners and gracefully handle unexpected storage exceptions without breaking host agent sessions. Fixed `_AUTH_HEADER_RE` and `_YAML_BLOCK_SECRET_RE` regexes to exclude `[REDACTED_...` and `[SECRET_REF:...` placeholders to ensure secret redaction is strictly idempotent. Added exhaustion handling and exponential backoff retry test for `_safe_replace_dir`.
+- **Cryptographic Specifications & Provenance Alignment (F3)**: Corrected stale encryption references in `README.md` and `SECURITY.md` to accurately describe Mesh's true implementation: application-level AES-256-GCM envelope (with stdlib BLAKE2b/HMAC Encrypt-then-MAC fallback). Clarified verification metadata and field-test provenance in `README.md`. Added automated `check_no_fernet_references` test in `scripts/check_docs.py`.
+
+### Added
+- **Decision Rationale Tracking & Flagging (F2)**: Added causal rationale requirement for architectural decisions to `rules_block.md` (Rules 3 & 4) and `SKILL.md`. Updated `get_project_brief` in `mesh/store.py` to annotate decision memories lacking causal markers (e.g. `because`, `due to`) with ` *(needs rationale — add 'because <reason>')*` without modifying the database schema.
+- **Security Corpus Test Suite (F8)**: Added `tests/test_secrets_corpus.py` covering 8 distinct scenarios: PINs, unquoted passphrases, multiline PEM certificates, tokens, JSON/YAML payload redactions, task updates, benign look-alikes, and hook contracts.
+- **Repository Codeowners (F6)**: Added `.github/CODEOWNERS` declaring `@billighost` as repository code owner.
+
+### Changed
+- **Restricted PyPI Publication Trigger (F5)**: Hardened `.github/workflows/publish.yml` to remove automatic wildcard tag triggers (`push: tags: ['v*']`), restricting PyPI Trusted Publishing strictly to explicit GitHub release publications (`release: [published]`) and manual `workflow_dispatch`. Updated release guidelines in `DEVELOPER_GUIDE.md`.
+
+### Removed
+- **Redundant CI Workflow (F7)**: Removed obsolete `.github/workflows/test.yml` in favor of consolidated matrix testing in `.github/workflows/ci.yml`.
+- **Repository Hygiene Cleanup (F6)**: Removed untracked and stale `unwanted/progress.md` file and `unwanted/` directory.
+
 ## [0.8.1] - 2026-10-22 (Beta)
 
 Comprehensive documentation refresh and defect resolutions following Run T field-test findings.

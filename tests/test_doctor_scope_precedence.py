@@ -61,8 +61,8 @@ def _write_mcp(path: Path, command: str | None = sys.executable, with_mesh: bool
 
 def test_project_config_precedence_is_reported(doctor_env, capsys):
     home, project = doctor_env
-    _write_mcp(home / ".claude" / "mcp.json")
-    _write_mcp(project / ".claude" / "mcp.json")
+    _write_mcp(home / ".claude.json")
+    _write_mcp(project / ".mcp.json")
 
     cli.doctor_cmd()
     out = capsys.readouterr().out
@@ -73,7 +73,7 @@ def test_project_config_precedence_is_reported(doctor_env, capsys):
 
 def test_project_only_config_is_reported_as_active(doctor_env, capsys):
     _home, project = doctor_env
-    _write_mcp(project / ".claude" / "mcp.json")
+    _write_mcp(project / ".mcp.json")
 
     cli.doctor_cmd()
     out = capsys.readouterr().out
@@ -84,7 +84,7 @@ def test_project_only_config_is_reported_as_active(doctor_env, capsys):
 
 def test_user_only_config_does_not_claim_project_precedence(doctor_env, capsys):
     home, _project = doctor_env
-    _write_mcp(home / ".claude" / "mcp.json")
+    _write_mcp(home / ".claude.json")
 
     cli.doctor_cmd()
     out = capsys.readouterr().out
@@ -97,8 +97,8 @@ def test_user_only_config_does_not_claim_project_precedence(doctor_env, capsys):
 
 def test_project_config_without_mesh_entry_is_ignored(doctor_env, capsys):
     home, project = doctor_env
-    _write_mcp(home / ".claude" / "mcp.json")
-    _write_mcp(project / ".claude" / "mcp.json", with_mesh=False)
+    _write_mcp(home / ".claude.json")
+    _write_mcp(project / ".mcp.json", with_mesh=False)
 
     cli.doctor_cmd()
     out = capsys.readouterr().out
@@ -109,8 +109,8 @@ def test_project_config_without_mesh_entry_is_ignored(doctor_env, capsys):
 
 def test_unreadable_project_config_is_ignored(doctor_env, capsys):
     home, project = doctor_env
-    _write_mcp(home / ".claude" / "mcp.json")
-    broken = project / ".claude" / "mcp.json"
+    _write_mcp(home / ".claude.json")
+    broken = project / ".mcp.json"
     broken.parent.mkdir(parents=True, exist_ok=True)
     broken.write_text("{not valid json", encoding="utf-8")
 
@@ -123,8 +123,8 @@ def test_unreadable_project_config_is_ignored(doctor_env, capsys):
 
 def test_doctor_does_not_modify_scope_configs(doctor_env, capsys):
     home, project = doctor_env
-    user_cfg = home / ".claude" / "mcp.json"
-    project_cfg = project / ".claude" / "mcp.json"
+    user_cfg = home / ".claude.json"
+    project_cfg = project / ".mcp.json"
     _write_mcp(user_cfg)
     _write_mcp(project_cfg)
     before = {p: p.read_bytes() for p in (user_cfg, project_cfg)}
@@ -133,3 +133,14 @@ def test_doctor_does_not_modify_scope_configs(doctor_env, capsys):
     capsys.readouterr()
 
     assert {p: p.read_bytes() for p in (user_cfg, project_cfg)} == before
+
+
+def test_legacy_claude_config_triggers_doctor_warning(doctor_env, capsys):
+    home, project = doctor_env
+    legacy_cfg = project / ".claude" / "mcp.json"
+    _write_mcp(legacy_cfg)
+
+    cli.doctor_cmd()
+    out = capsys.readouterr().out
+
+    assert "legacy project config detected" in out
