@@ -497,3 +497,29 @@ def test_work_items_export_import(temp_mesh_dir):
     assert len(dst_tasks) == 1
     assert dst_tasks[0]["title"] == "Public work item in src_ns"
     assert dst_tasks[0]["status"] == "done"
+
+
+def test_brief_decision_rationale_flagging(temp_mesh_dir):
+    """
+    Finding F2 test:
+    Verify that decisions lacking causal rationale are flagged with a hint in the project brief,
+    while decisions containing reasons ('because', 'since', etc.) are cleanly displayed.
+    """
+    mesh = Mesh(namespace="rationale_test", agent_id="agent-dec")
+
+    # 1. Decision without rationale
+    mesh.learn("Decided to switch from REST to gRPC for microservices", memory_type="decision")
+    # 2. Decision with rationale
+    mesh.learn(
+        "Decided to use SQLite with WAL mode because concurrency requires non-blocking reads",
+        memory_type="decision",
+    )
+
+    brief = mesh.project_brief()
+    md = brief["brief_markdown"]
+
+    # Decision without reason should have the hint
+    assert "needs rationale — add 'because <reason>'" in md
+    # Decision with reason should be present without duplicated hint
+    assert "Decided to use SQLite with WAL mode because concurrency requires non-blocking reads" in md
+
