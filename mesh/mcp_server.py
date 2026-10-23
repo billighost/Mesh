@@ -40,7 +40,7 @@ import threading
 import time
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Iterator, Mapping, Optional
 
 from mcp import types
 from mcp.server import Server
@@ -295,7 +295,7 @@ def _remember_log_watermark(
         _persist_watermarks_locked()
 
 
-def _commit_log_watermarks(pending: dict[str, tuple[int, ...]]) -> None:
+def _commit_log_watermarks(pending: Mapping[str, tuple[int, ...]]) -> None:
     if not pending:
         return
     with _LOG_WATERMARKS_LOCK:
@@ -1694,13 +1694,13 @@ def _execute_tool_sync_impl(
                     return res
 
                 elif name == "mesh_update":
-                    req_local_only = _parse_arg_bool(arguments, "local_only", None)
+                    update_local_only = _parse_arg_bool(arguments, "local_only", None)
                     req_clear_ttl = bool(_parse_arg_bool(arguments, "clear_ttl", False))
                     guard_res = None
                     if arguments.get("content") is not None:
                         guard_res = guard_ingest(
                             str(arguments.get("content")),
-                            local_only=bool(req_local_only),
+                            local_only=bool(update_local_only),
                         )
                         if guard_res.rejected:
                             return {
@@ -1708,15 +1708,16 @@ def _execute_tool_sync_impl(
                                 "error": f"Memory rejected: {guard_res.reason}",
                                 "namespace": validated_ns,
                             }
-                    clean_tags = arguments.get("tags")
-                    tag_warns: tuple[str, ...] = ()
+                    raw_tags = arguments.get("tags")
+                    update_clean_tags: Optional[list[str]] = None
+                    update_tag_warns: tuple[str, ...] = ()
                     tags_priv = False
-                    if clean_tags is not None:
+                    if raw_tags is not None:
                         try:
-                            clean_tags, tags_priv, tag_warns = guard_tags(
-                                clean_tags,
+                            update_clean_tags, tags_priv, update_tag_warns = guard_tags(
+                                raw_tags,
                                 local_only=bool(
-                                    (guard_res.local_only if guard_res else False) or req_local_only
+                                    (guard_res.local_only if guard_res else False) or update_local_only
                                 ),
                             )
                         except ValueError as tag_exc:
@@ -1739,13 +1740,13 @@ def _execute_tool_sync_impl(
                         content=guard_res.content if guard_res else arguments.get("content"),
                         memory_type=arguments.get("memory_type"),
                         confidence=arguments.get("confidence"),
-                        tags=clean_tags,
+                        tags=update_clean_tags,
                         ttl_days=arguments.get("ttl_days"),
                         clear_ttl=req_clear_ttl,
                         local_only=(
                             True
                             if ((guard_res is not None and guard_res.local_only) or tags_priv)
-                            else req_local_only
+                            else update_local_only
                         ),
                         secret_ref=arguments.get("secret_ref"),
                     )
@@ -1755,7 +1756,7 @@ def _execute_tool_sync_impl(
                         "namespace": mesh.namespace,
                         "memory": updated["memory"],
                     }
-                    all_warnings = tuple([*(guard_res.warnings if guard_res else ()), *tag_warns])
+                    all_warnings = tuple([*(guard_res.warnings if guard_res else ()), *update_tag_warns])
                     if all_warnings:
                         update_resp["warnings"] = all_warnings
                     return update_resp
@@ -1948,7 +1949,7 @@ def _execute_tool_sync_impl(
                         or _parse_arg_bool(arguments, "all", False)
                     )
                     quarantine_arg = _parse_arg_bool(arguments, "quarantine", None)
-                    mesh: Optional[Mesh] = None
+                    sync_mesh: Optional[Mesh] = None
                     if summary_text:
                         guard_res = guard_ingest(summary_text, local_only=False)
                         if guard_res.rejected:
@@ -1957,8 +1958,8 @@ def _execute_tool_sync_impl(
                                 "error": f"Memory rejected: {guard_res.reason}",
                                 "namespace": validated_ns,
                             }
-                        mesh = get_mesh(namespace=validated_ns, agent_id=agent_id, create=True)
-                        mesh.learn(
+                        sync_mesh = get_mesh(namespace=validated_ns, agent_id=agent_id, create=True)
+                        sync_mesh.learn(
                             content=guard_res.content,
                             memory_type="result",
                             tags=["session-sync"],
@@ -1973,14 +1974,14 @@ def _execute_tool_sync_impl(
                     )
                     sync_status = get_sync_status()
                     if not allow_log_sync:
-                        if mesh is None:
+                        if sync_mesh is None:
                             try:
-                                mesh = get_mesh(namespace=validated_ns, agent_id=agent_id, create=False)
-                                total_mems = mesh.count()
+                                sync_mesh = get_mesh(namespace=validated_ns, agent_id=agent_id, create=False)
+                                total_mems = sync_mesh.count()
                             except NamespaceNotFoundError:
                                 total_mems = 0
                         else:
-                            total_mems = mesh.count()
+                            total_mems = sync_mesh.count()
                         return {
                             "status": "synchronized",
                             "namespace": validated_ns,
@@ -2019,8 +2020,8 @@ def _execute_tool_sync_impl(
                     extraction_err: Optional[str] = None
 
                     if log_text:
-                        if mesh is None:
-                            mesh = get_mesh(namespace=validated_ns, agent_id=agent_id, create=True)
+                        if sync_mesh is None:
+                            sync_mesh = get_mesh(namespace=validated_ns, agent_id=agent_id, create=True)
                         allow_cloud = _ctx_flag(
                             context, "allow_cloud_sync", _env_flag("MESH_ALLOW_CLOUD_SYNC")
                         )
@@ -2028,7 +2029,7 @@ def _execute_tool_sync_impl(
                             capture_res = extract_memories_from_log(
                                 log_text,
                                 namespace=validated_ns,
-                                agent_id=mesh.agent_id,
+                                agent_id=sync_mesh.agent_id,
                                 force_local=not allow_cloud,
                                 assume_yes=allow_cloud,
                                 default_local_only=not allow_cloud,
@@ -2053,14 +2054,14 @@ def _execute_tool_sync_impl(
                     elif pending_wm:
                         _commit_log_watermarks(pending_wm)
 
-                    if mesh is None:
+                    if sync_mesh is None:
                         try:
-                            mesh = get_mesh(namespace=validated_ns, agent_id=agent_id, create=False)
-                            total_mems = mesh.count()
+                            sync_mesh = get_mesh(namespace=validated_ns, agent_id=agent_id, create=False)
+                            total_mems = sync_mesh.count()
                         except NamespaceNotFoundError:
                             total_mems = 0
                     else:
-                        total_mems = mesh.count()
+                        total_mems = sync_mesh.count()
 
                     sync_status = get_sync_status()
                     return {
@@ -2292,10 +2293,10 @@ def _execute_tool_sync(
 class MeshCallToolResult(types.CallToolResult):
     """Subclass of types.CallToolResult that supports indexing and iteration for backwards compatibility."""
 
-    def __getitem__(self, item: int) -> types.TextContent:
+    def __getitem__(self, item: int) -> Any:
         return self.content[item]
 
-    def __iter__(self):
+    def __iter__(self) -> Any:  # pyright: ignore[reportIncompatibleMethodOverride]
         return iter(self.content)
 
     def __len__(self) -> int:
@@ -2308,7 +2309,7 @@ async def call_tool(name: str, arguments: Optional[dict[str, Any]]) -> MeshCallT
     t0 = time.perf_counter()
     status_code = "ok"
     try:
-        payload = await asyncio.to_thread(_execute_tool_sync, name, args)
+        payload = _execute_tool_sync(name, args)
         is_error = False
         if isinstance(payload, dict):
             if payload.get("status") in ("rejected", "error") or (

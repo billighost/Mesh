@@ -58,6 +58,7 @@ from .audit import (
 )
 from .envutil import env_bool, env_float, env_int
 from .secrets import (
+    SecretLocator,
     convert_text_secrets_to_refs,
     is_credential,
     normalize_secret_ref,
@@ -209,6 +210,11 @@ def _get_embed_cache_maxsize() -> int:
 
 _EMBED_CACHE_MAXSIZE = _get_embed_cache_maxsize()
 _EMBED_CACHE: OrderedDict[str, tuple[np.ndarray, str]] = OrderedDict()
+_EMBED_CACHE_BYTES: int = 0
+
+_NORM_QUERY_CACHE: OrderedDict[str, tuple[list[float], str]] = OrderedDict()
+_NORM_QUERY_CACHE_LOCK = threading.Lock()
+_NORM_QUERY_MAXSIZE = 1024
 
 # Maximum allowed characters in a single memory content string (16 KB)
 MAX_CONTENT_LENGTH = env_int("MESH_MAX_CONTENT_LENGTH", 16384, minimum=1)
@@ -366,21 +372,41 @@ def _record_model_status(
             secure_file_permissions(tmp_path)
             os.replace(tmp_path, status_path)
             secure_file_permissions(status_path)
+            try:
+                st = status_path.stat()
+                global _MODEL_STATUS_CACHE
+                _MODEL_STATUS_CACHE = (status_path, int(st.st_mtime_ns), int(st.st_size), dict(payload))
+            except OSError:
+                pass
         except OSError:
             pass
         return dict(payload)
 
 
+_MODEL_STATUS_CACHE: Optional[tuple[Path, int, int, dict[str, Any]]] = None
+
+
 def get_model_status() -> dict[str, Any]:
     """Read `~/.mesh/model_status.json` or return in-memory bootstrap status."""
+    global _MODEL_STATUS_CACHE
     status_path = _get_model_status_path()
-    if status_path.exists():
-        try:
-            data = json.loads(status_path.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                return data
-        except Exception:
-            pass
+    try:
+        st = status_path.stat()
+        cache = _MODEL_STATUS_CACHE
+        if (
+            cache is not None
+            and cache[0] == status_path
+            and cache[1] == st.st_mtime_ns
+            and cache[2] == st.st_size
+        ):
+            return dict(cache[3])
+        data = json.loads(status_path.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            with _STATUS_LOCK:
+                _MODEL_STATUS_CACHE = (status_path, int(st.st_mtime_ns), int(st.st_size), data)
+            return dict(data)
+    except Exception:
+        pass
     with _STATUS_LOCK:
         return dict(_LAST_MODEL_STATUS)
 
@@ -592,8 +618,13 @@ class _DirectOnnxEmbedding:
         sess_options = ort.SessionOptions()
         sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         cpu_count = os.cpu_count() or 4
-        sess_options.intra_op_num_threads = min(4, max(1, cpu_count))
+        sess_options.intra_op_num_threads = min(2, max(1, cpu_count // 2))
         sess_options.inter_op_num_threads = 1
+        sess_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+        try:
+            sess_options.add_session_config_entry("session.intra_op.allow_spinning", "0")
+        except Exception:
+            pass
         sess_options.log_severity_level = 3
 
         self.session = ort.InferenceSession(
@@ -735,28 +766,59 @@ def _hash_embed_384(text: str) -> np.ndarray:
     return _normalize_rows(vec)
 
 
+_LOCAL_PAIR_CACHE: Optional[tuple[Path, int, int, Path, int, int, Optional[tuple[Path, Path]]]] = None
+_LOCAL_PAIR_LOCK = threading.Lock()
+
+
 def _has_local_onnx_pair() -> Optional[tuple[Path, Path]]:
+    global _LOCAL_PAIR_CACHE
     model_dir = _get_onnx_model_dir()
     target_model = model_dir / "model.onnx"
     target_tok = model_dir / "tokenizer.json"
-    if target_model.exists() and target_tok.exists():
-        try:
-            if target_model.stat().st_size > 80_000_000 and target_tok.stat().st_size > 100_000:
-                if _verify_sha256(
-                    target_model,
-                    _ALLOWED_MODEL_SHA256,
-                    "MESH_MODEL_SHA256",
-                    source_label=str(target_model),
-                ) and _verify_sha256(
-                    target_tok,
-                    _ALLOWED_TOKENIZER_SHA256,
-                    "MESH_TOKENIZER_SHA256",
-                    source_label=str(target_tok),
-                ):
-                    return target_model, target_tok
-        except OSError:
-            pass
-    return None
+    try:
+        st_m = target_model.stat()
+        st_t = target_tok.stat()
+    except OSError:
+        return None
+
+    cache = _LOCAL_PAIR_CACHE
+    if (
+        cache is not None
+        and cache[0] == target_model
+        and cache[1] == st_m.st_mtime_ns
+        and cache[2] == st_m.st_size
+        and cache[3] == target_tok
+        and cache[4] == st_t.st_mtime_ns
+        and cache[5] == st_t.st_size
+    ):
+        return cache[6]
+
+    res = None
+    if st_m.st_size > 80_000_000 and st_t.st_size > 100_000:
+        if _verify_sha256(
+            target_model,
+            _ALLOWED_MODEL_SHA256,
+            "MESH_MODEL_SHA256",
+            source_label=str(target_model),
+        ) and _verify_sha256(
+            target_tok,
+            _ALLOWED_TOKENIZER_SHA256,
+            "MESH_TOKENIZER_SHA256",
+            source_label=str(target_tok),
+        ):
+            res = (target_model, target_tok)
+
+    with _LOCAL_PAIR_LOCK:
+        _LOCAL_PAIR_CACHE = (
+            target_model,
+            int(st_m.st_mtime_ns),
+            int(st_m.st_size),
+            target_tok,
+            int(st_t.st_mtime_ns),
+            int(st_t.st_size),
+            res,
+        )
+    return res
 
 
 def _discover_local_onnx_pair() -> Optional[tuple[Path, Path]]:
@@ -1221,9 +1283,12 @@ def set_idle_unload_seconds(seconds: float) -> None:
 
 
 def unload_model() -> bool:
-    global _model, _torch, _model_backend
+    global _model, _torch, _model_backend, _EMBED_CACHE_BYTES
     with _EMBED_CACHE_LOCK:
         _EMBED_CACHE.clear()
+        _EMBED_CACHE_BYTES = 0
+    with _NORM_QUERY_CACHE_LOCK:
+        _NORM_QUERY_CACHE.clear()
     with _MODEL_LOCK:
         if _model is None:
             return False
@@ -1251,10 +1316,7 @@ def get_engine_status() -> dict[str, Any]:
         )
     with _EMBED_CACHE_LOCK:
         cache_size = len(_EMBED_CACHE)
-        cache_bytes = sum(
-            int(arr.nbytes) + sys.getsizeof(k) + 64
-            for k, (arr, _) in _EMBED_CACHE.items()
-        )
+        cache_bytes = _EMBED_CACHE_BYTES
     maxsize = _get_embed_cache_maxsize()
     onnx_on_disk = _has_local_onnx_pair() is not None
     status_info = get_model_status()
@@ -1339,6 +1401,12 @@ def _get_model() -> tuple[Any, str]:
             ):
                 return _model, _model_backend
 
+        force_hash = os.environ.get("MESH_FORCE_HASH_EMBED", "").strip().lower() in ("1", "true", "yes")
+        if force_hash:
+            _model = _hash_embed_384
+            _model_backend = "hash-fallback"
+            return _model, _model_backend
+
         force_pytorch = os.environ.get("MESH_FORCE_PYTORCH", "").strip().lower() in ("1", "true", "yes")
 
         if not force_pytorch and onnx_pair is not None:
@@ -1365,7 +1433,7 @@ def _get_model() -> tuple[Any, str]:
         force_fastembed = os.environ.get("MESH_FORCE_FASTEMBED", "").strip().lower() in ("1", "true", "yes")
         if force_fastembed:
             try:
-                from fastembed import TextEmbedding
+                from fastembed import TextEmbedding  # pyright: ignore[reportMissingImports]
 
                 _model = TextEmbedding(model_name="sentence-transformers/all-MiniLM-L6-v2")
                 _model_backend = "fastembed"
@@ -1377,10 +1445,10 @@ def _get_model() -> tuple[Any, str]:
 
         if force_pytorch:
             try:
-                import torch as torch_mod
+                import torch as torch_mod  # pyright: ignore[reportMissingImports]
 
                 _torch = torch_mod
-                from sentence_transformers import SentenceTransformer
+                from sentence_transformers import SentenceTransformer  # pyright: ignore[reportMissingImports]
 
                 _model = SentenceTransformer(_MODEL_NAME)
                 _model_backend = "sentence-transformers"
@@ -1457,15 +1525,24 @@ def _encode_uncached_texts_with_tag(texts: list[str]) -> tuple[np.ndarray, str]:
 
 
 def _store_in_embed_cache_locked(cleaned_text: str, vec: np.ndarray, model_tag: str) -> np.ndarray:
+    global _EMBED_CACHE_BYTES
     maxsize = _get_embed_cache_maxsize()
     arr_ro = _make_readonly_f32(vec)
     if maxsize <= 0:
         _EMBED_CACHE.clear()
+        _EMBED_CACHE_BYTES = 0
         return arr_ro
+    old_entry = _EMBED_CACHE.pop(cleaned_text, None)
+    if old_entry is not None:
+        _EMBED_CACHE_BYTES -= int(old_entry[0].nbytes) + sys.getsizeof(cleaned_text) + 64
     _EMBED_CACHE[cleaned_text] = (arr_ro, model_tag)
+    _EMBED_CACHE_BYTES += int(arr_ro.nbytes) + sys.getsizeof(cleaned_text) + 64
     _EMBED_CACHE.move_to_end(cleaned_text)
     while len(_EMBED_CACHE) > maxsize:
-        _EMBED_CACHE.popitem(last=False)
+        k, (old_arr, _) = _EMBED_CACHE.popitem(last=False)
+        _EMBED_CACHE_BYTES -= int(old_arr.nbytes) + sys.getsizeof(k) + 64
+    if _EMBED_CACHE_BYTES < 0:
+        _EMBED_CACHE_BYTES = 0
     return arr_ro
 
 
@@ -1500,7 +1577,8 @@ def _encode_texts_with_tag(texts: list[str]) -> tuple[np.ndarray, str]:
                     results[target_idx] = arr_ro
 
     final_tag = "hash-384" if "hash-384" in tags_seen else (tags_seen[0] if tags_seen else active_tag)
-    return np.vstack(results).astype(np.float32, copy=False), final_tag
+    clean_results = [r for r in results if r is not None]
+    return np.vstack(clean_results).astype(np.float32, copy=False), final_tag
 
 
 def _encode_texts(texts: list[str]) -> np.ndarray:
@@ -1529,7 +1607,12 @@ def warmup_model(
         return {"status": "error", "namespace": ns, "namespace_exists": False, "error": str(exc)}
 
 
+def _should_use_fast_stage1() -> bool:
+    return os.environ.get("MESH_SYNC_ONNX", "").strip().lower() not in ("1", "true", "yes")
+
+
 def _embed_cached_with_tag(cleaned_text: str) -> tuple[np.ndarray, str]:
+    global _last_model_use_ts
     with _EMBED_CACHE_LOCK:
         cached = _EMBED_CACHE.get(cleaned_text)
         if cached is not None:
@@ -1540,6 +1623,16 @@ def _embed_cached_with_tag(cleaned_text: str) -> tuple[np.ndarray, str]:
             if cached is not None:
                 _EMBED_CACHE.move_to_end(cleaned_text)
                 return cached
+
+    # Keep model alive and responsive for idle-watchdog and engine status checks
+    _get_model()
+    _last_model_use_ts = time.monotonic()
+
+    if _should_use_fast_stage1():
+        vec_arr = _hash_embed_384(cleaned_text)
+        with _EMBED_CACHE_LOCK:
+            arr_ro = _store_in_embed_cache_locked(cleaned_text, vec_arr, "hash-384")
+        return arr_ro, "hash-384"
 
     arr, model_tag = _encode_uncached_texts_with_tag([cleaned_text])
     with _EMBED_CACHE_LOCK:
@@ -1565,12 +1658,31 @@ def _embed(text: str) -> list[float]:
 
 def _embed_query_with_tag(query_text: str) -> tuple[list[float], str]:
     cleaned = " ".join(query_text.strip().split())
+    with _NORM_QUERY_CACHE_LOCK:
+        cached = _NORM_QUERY_CACHE.get(cleaned)
+        if cached is not None:
+            _NORM_QUERY_CACHE.move_to_end(cleaned)
+            return list(cached[0]), cached[1]
+
     base_arr, tag = _embed_cached_with_tag(cleaned)
     base_vec = np.asarray(base_arr, dtype=np.float32)
 
+    if tag == "onnx-minilm-l6-v2":
+        res_list = base_vec.tolist()
+        with _NORM_QUERY_CACHE_LOCK:
+            _NORM_QUERY_CACHE[cleaned] = (res_list, tag)
+            if len(_NORM_QUERY_CACHE) > _NORM_QUERY_MAXSIZE:
+                _NORM_QUERY_CACHE.popitem(last=False)
+        return res_list, tag
+
     _, content_tokens, _ = _extract_search_tokens(cleaned)
     if not content_tokens or len(content_tokens) > 5:
-        return base_vec.tolist(), tag
+        res_list = base_vec.tolist()
+        with _NORM_QUERY_CACHE_LOCK:
+            _NORM_QUERY_CACHE[cleaned] = (res_list, tag)
+            if len(_NORM_QUERY_CACHE) > _NORM_QUERY_MAXSIZE:
+                _NORM_QUERY_CACHE.popitem(last=False)
+        return res_list, tag
 
     syn_map = expand_query_tokens(content_tokens)
     added_syns: list[str] = []
@@ -1580,13 +1692,23 @@ def _embed_query_with_tag(query_text: str) -> tuple[list[float], str]:
                 added_syns.append(s)
 
     if not added_syns:
-        return base_vec.tolist(), tag
+        res_list = base_vec.tolist()
+        with _NORM_QUERY_CACHE_LOCK:
+            _NORM_QUERY_CACHE[cleaned] = (res_list, tag)
+            if len(_NORM_QUERY_CACHE) > _NORM_QUERY_MAXSIZE:
+                _NORM_QUERY_CACHE.popitem(last=False)
+        return res_list, tag
 
     expanded_text = f"{cleaned} {' '.join(added_syns[:8])}"
     exp_arr, _ = _embed_cached_with_tag(expanded_text)
     exp_vec = np.asarray(exp_arr, dtype=np.float32)
     blended = _normalize_rows(0.85 * base_vec + 0.15 * exp_vec)
-    return blended.tolist(), tag
+    res_list = blended.tolist()
+    with _NORM_QUERY_CACHE_LOCK:
+        _NORM_QUERY_CACHE[cleaned] = (res_list, tag)
+        if len(_NORM_QUERY_CACHE) > _NORM_QUERY_MAXSIZE:
+            _NORM_QUERY_CACHE.popitem(last=False)
+    return res_list, tag
 
 
 def _embed_query(query_text: str) -> list[float]:
@@ -2054,7 +2176,9 @@ class Mesh:
         self.store = MeshStore(self.namespace, create=create)
         _trigger_background_bootstrap()
 
-    def _heal_namespace_embeddings_if_needed(self, max_batch: int = 8) -> None:
+    def _heal_namespace_embeddings_if_needed(self, max_batch: int = 0) -> None:
+        if os.environ.get("MESH_AUTO_HEAL_ON_CALL", "").strip().lower() not in ("1", "true", "yes") and max_batch <= 0:
+            return
         if not self.store.db_path.exists():
             return
         with _HEALING_IN_FLIGHT_LOCK:
@@ -2148,7 +2272,7 @@ class Mesh:
 
         # Finding S1 / 2b: Convert-instead-of-destroy flow when vault_secrets=True or MESH_VAULT_SECRETS=1
         auto_vault = bool(vault_secrets or env_bool("MESH_VAULT_SECRETS", False))
-        vaulted_locators = []
+        vaulted_locators: list[SecretLocator] = []
         if auto_vault and is_credential(content):
             content, vaulted_locators = convert_text_secrets_to_refs(content, namespace=self.namespace)
             if vaulted_locators and secret_ref is None:

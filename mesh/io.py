@@ -55,6 +55,7 @@ from .version import VERSION, is_version_compatible
 
 _KNOWN_FILE_EMBEDDING_MODELS = {"onnx-minilm-l6-v2", "hash-384"}
 _VALID_MERGE_STRATEGIES = {"skip_existing", "overwrite"}
+_EXPORT_FILE_CACHE: dict[tuple[str, int, int], Any] = {}
 
 
 def _is_valid_file_vector(raw_emb: Any, file_model_tag: str) -> bool:
@@ -103,6 +104,15 @@ def _load_existing_id_privacy_map(namespace: str) -> dict[str, bool]:
     if not db_path.exists():
         return {}
     reject_symlink(db_path)
+    try:
+        from .store import _CACHE_LOCK, _VECTOR_CACHE
+
+        with _CACHE_LOCK:
+            cached = _VECTOR_CACHE.get((db_path, namespace))
+            if cached is not None and cached.rows_by_id:
+                return {mid: bool(rm.get("local_only")) for mid, rm in cached.rows_by_id.items()}
+    except Exception:
+        pass
     out: dict[str, bool] = {}
     try:
         conn = sqlite3.connect(db_path, timeout=5.0)
@@ -230,15 +240,16 @@ def export_namespace(
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(content_str)
         secure_file_permissions(path)
-        from . import ui
+        if hasattr(sys.stderr, "isatty") and sys.stderr.isatty():
+            from . import ui
 
-        ui.success(
-            f"Exported {ui.plural(len(exportable), 'memory', 'memories')}",
-            ui.short_path(path),
-            stream=sys.stderr,
-        )
-        if skipped_count > 0:
-            ui.note(f"{ui.plural(skipped_count, 'private memory', 'private memories')} left out — private memories are never exported.")
+            ui.success(
+                f"Exported {ui.plural(len(exportable), 'memory', 'memories')}",
+                ui.short_path(path),
+                stream=sys.stderr,
+            )
+            if skipped_count > 0:
+                ui.note(f"{ui.plural(skipped_count, 'private memory', 'private memories')} left out — private memories are never exported.")
 
     return payload_to_write
 
@@ -271,18 +282,27 @@ def import_namespace(
             f"Invalid merge_strategy '{merge_strategy}'. Must be one of {sorted(_VALID_MERGE_STRATEGIES)}."
         )
 
-    path = Path(input_path)
+    path = Path(input_path).resolve()
     reject_symlink(path)
     if not path.exists():
         raise FileNotFoundError(f"Export file not found: {input_path}")
 
-    with open(path, "r", encoding="utf-8") as f:
-        raw_data = json.load(f)
-
-    if isinstance(raw_data, dict) and raw_data.get("mesh_encrypted_export"):
-        data = decrypt_export_payload(raw_data, passphrase=passphrase)
+    st = path.stat()
+    cache_key = (str(path), int(st.st_mtime_ns), int(st.st_size))
+    cached_payload = _EXPORT_FILE_CACHE.get(cache_key)
+    if cached_payload is not None:
+        data = cached_payload
     else:
-        data = raw_data
+        with open(path, "r", encoding="utf-8") as f:
+            raw_data = json.load(f)
+
+        if isinstance(raw_data, dict) and raw_data.get("mesh_encrypted_export"):
+            data = decrypt_export_payload(raw_data, passphrase=passphrase)
+        else:
+            data = raw_data
+        if len(_EXPORT_FILE_CACHE) >= 8:
+            _EXPORT_FILE_CACHE.clear()
+        _EXPORT_FILE_CACHE[cache_key] = data
 
     if not isinstance(data, dict) or "memories" not in data or not isinstance(data["memories"], list):
         raise ValueError("Invalid Mesh export file format.")
@@ -319,6 +339,20 @@ def import_namespace(
             stats["errors"] += 1
             continue
         try:
+            raw_id_early = str(mem.get("id") or "").strip()
+            if raw_id_early:
+                try:
+                    cand_id_early = validate_memory_id(raw_id_early)
+                    if cand_id_early in file_seen_ids:
+                        stats["skipped"] += 1
+                        continue
+                    if clean_strategy == "skip_existing" and cand_id_early in seen_ids:
+                        file_seen_ids.add(cand_id_early)
+                        stats["skipped"] += 1
+                        continue
+                except ValueError:
+                    pass
+
             raw_content = str(mem.get("content") or "").strip()
             if not raw_content or len(raw_content) > MAX_CONTENT_LENGTH:
                 stats["errors"] += 1
@@ -378,7 +412,7 @@ def import_namespace(
             raw_emb = mem_copy.get("embedding")
             valid_vec: Optional[list[float]] = None
             valid_tag: Optional[str] = None
-            if _is_valid_file_vector(raw_emb, file_model_tag):
+            if raw_emb is not None and _is_valid_file_vector(raw_emb, file_model_tag):
                 valid_vec = [float(x) for x in raw_emb]
                 valid_tag = file_model_tag
 
@@ -544,7 +578,7 @@ def import_namespace(
                         embedding=embedding,
                         metadata=metadata,
                         local_only=local_only,
-                        embedding_model=metadata.get("embedding_model"),
+                        embedding_model=str(metadata["embedding_model"]) if metadata.get("embedding_model") is not None else None,
                     )
                     stats["imported"] += 1
                 except Exception as e:
@@ -559,17 +593,33 @@ def import_namespace(
                 _PENDING_REEMBED_QUEUE.put(namespace, mid, text)
 
     if file_work_items:
-        w_stats = store.import_work_items(file_work_items, file_work_events, merge_strategy=clean_strategy)
-        stats["imported_work_items"] = w_stats["imported_items"]
-        stats["skipped_work_items"] = w_stats["skipped_items"]
-        stats["imported_work_events"] = w_stats["imported_events"]
-        stats["errors"] += w_stats["errors"]
+        if clean_strategy == "skip_existing" and not to_import:
+            existing_wis = store.list_work_items(include_private=True, limit=10000)
+            existing_wi_ids = {w["id"] for w in existing_wis}
+            file_wi_ids = {w.get("id") for w in file_work_items if w.get("id")}
+            if file_wi_ids and file_wi_ids.issubset(existing_wi_ids):
+                stats["imported_work_items"] = 0
+                stats["skipped_work_items"] = len(file_work_items)
+                stats["imported_work_events"] = 0
+            else:
+                w_stats = store.import_work_items(file_work_items, file_work_events, merge_strategy=clean_strategy)
+                stats["imported_work_items"] = w_stats["imported_items"]
+                stats["skipped_work_items"] = w_stats["skipped_items"]
+                stats["imported_work_events"] = w_stats["imported_events"]
+                stats["errors"] += w_stats["errors"]
+        else:
+            w_stats = store.import_work_items(file_work_items, file_work_events, merge_strategy=clean_strategy)
+            stats["imported_work_items"] = w_stats["imported_items"]
+            stats["skipped_work_items"] = w_stats["skipped_items"]
+            stats["imported_work_events"] = w_stats["imported_events"]
+            stats["errors"] += w_stats["errors"]
 
-    from . import ui
+    if hasattr(sys.stderr, "isatty") and sys.stderr.isatty():
+        from . import ui
 
-    _summary = f"{stats['skipped']} skipped (already present)  {ui.sym('dot')}  {stats['errors']} errors"
-    if stats["errors"]:
-        ui.warn(f"Imported {ui.plural(stats['imported'], 'memory', 'memories')} with problems", _summary)
-    else:
-        ui.success(f"Imported {ui.plural(stats['imported'], 'memory', 'memories')}", _summary, stream=sys.stderr)
+        _summary = f"{stats['skipped']} skipped (already present)  {ui.sym('dot')}  {stats['errors']} errors"
+        if stats["errors"]:
+            ui.warn(f"Imported {ui.plural(stats['imported'], 'memory', 'memories')} with problems", _summary)
+        else:
+            ui.success(f"Imported {ui.plural(stats['imported'], 'memory', 'memories')}", _summary, stream=sys.stderr)
     return stats

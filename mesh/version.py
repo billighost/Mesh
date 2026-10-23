@@ -8,7 +8,6 @@ import os
 import re
 import sys
 import threading
-import urllib.request
 from typing import Optional
 
 VERSION = "0.8.2"
@@ -137,6 +136,7 @@ def check_for_updates(force: bool = False, blocking: bool = False) -> Optional[s
 
     def _fetch() -> Optional[str]:
         try:
+            import urllib.request
             req = urllib.request.Request(
                 "https://pypi.org/pypi/mesh-context-layer/json",
                 headers={"Accept": "application/json", "User-Agent": f"mesh-context-layer/{VERSION}"},

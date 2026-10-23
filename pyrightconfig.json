@@ -1,0 +1,17 @@
+{
+  "include": [
+    "mesh"
+  ],
+  "exclude": [
+    "**/node_modules",
+    "**/__pycache__",
+    ".venv",
+    "tests",
+    "benchmarks",
+    "marketing",
+    "landing"
+  ],
+  "venvPath": ".",
+  "venv": ".venv",
+  "pythonVersion": "3.10"
+}

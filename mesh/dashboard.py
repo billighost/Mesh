@@ -33,7 +33,7 @@ import threading
 import time
 import webbrowser
 from collections import OrderedDict
-from typing import Any, List, Optional
+from typing import Any, List, NoReturn, Optional
 from urllib.parse import urlparse
 
 import uvicorn
@@ -178,7 +178,7 @@ def evict_dashboard_mesh_cache(namespace: Optional[str] = None) -> None:
             _mesh = None
 
 
-def _raise_dashboard_http_error(exc: BaseException, endpoint: str) -> None:
+def _raise_dashboard_http_error(exc: BaseException, endpoint: str) -> NoReturn:
     if isinstance(exc, HTTPException):
         raise exc
     if isinstance(exc, NamespaceLimitExceededError):
@@ -508,18 +508,25 @@ def get_stats(namespace: Optional[str] = None) -> dict[str, Any]:
                 "unused_memories": 0,
                 "engine": get_engine_status(),
             }
-        patterns = mesh.patterns(include_private=False)
+        cache = mesh.store._get_vector_cache()
+        rows = list(cache.rows_by_id.values())
         contradictions = mesh.contradictions()
-        quarantined_cnt = len(mesh.inspect(limit=500, quarantined_only=True))
+        total_memories = len(rows)
+        quarantined_cnt = sum(1 for r in rows if r.get("quarantined"))
+        unused_cnt = sum(1 for r in rows if not r.get("access_count"))
+        from .store import _compute_row_effective_confidence, _utc_now
+        now = _utc_now()
+        stale_cnt = sum(1 for r in rows if _compute_row_effective_confidence(r, now=now)[1])
+        patterns = mesh.patterns(include_private=False)
         return {
             "namespace": mesh.namespace,
             "namespace_exists": True,
-            "total_memories": mesh.count(),
+            "total_memories": total_memories,
             "quarantined_memories": quarantined_cnt,
             "open_contradictions": len(contradictions),
-            "memory_gaps": len(patterns["memory_gaps"]),
-            "stale_memories": len(patterns["stale_memories"]),
-            "unused_memories": len(patterns["unused_memories"]),
+            "memory_gaps": len(patterns.get("memory_gaps", [])),
+            "stale_memories": stale_cnt,
+            "unused_memories": unused_cnt,
             "engine": get_engine_status(),
         }
     except Exception as e:

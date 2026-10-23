@@ -12,6 +12,7 @@ Security & Integrity:
 """
 from __future__ import annotations
 
+from collections import Counter
 import gc
 import logging
 import shutil
@@ -32,6 +33,7 @@ from .audit import (
     validate_namespace,
 )
 from .store import (
+    MeshStore,
     NamespaceNotFoundError,
     _CACHE_LOCK,
     _CONNECTION_POOL,
@@ -208,6 +210,13 @@ def _evict_namespace_caches(namespace: str, db_path: Optional[Path] = None) -> N
         except Exception:
             pass
 
+    cli_mod = sys.modules.get("mesh.cli")
+    if cli_mod is not None and hasattr(cli_mod, "evict_cli_mesh_cache"):
+        try:
+            cli_mod.evict_cli_mesh_cache(clean_ns)
+        except Exception:
+            pass
+
 
 def evict_lru_namespace(exclude_namespace: Optional[str] = None) -> Optional[str]:
     """
@@ -274,11 +283,42 @@ def list_namespaces() -> list[dict[str, Any]]:
             clean_ns = validate_namespace(namespace)
         except ValueError:
             continue
+        cached_entry = None
+        try:
+            with _CACHE_LOCK:
+                c = _VECTOR_CACHE.get((db_path, clean_ns))
+                if c is not None and c.rows_by_id:
+                    cached_entry = c
+        except Exception:
+            pass
+
+        if cached_entry is not None:
+            rows = cached_entry.rows_by_id
+            total = len(rows)
+            local_only = sum(1 for r in rows.values() if r.get("local_only"))
+            last_ts = max(
+                (
+                    str(r.get("updated_at") or r.get("accessed_at") or r.get("created_at") or "")
+                    for r in rows.values()
+                ),
+                default="never",
+            )
+            last_updated = last_ts if last_ts else "never"
+            results.append(
+                {
+                    "namespace": clean_ns,
+                    "memory_count": total,
+                    "local_only_count": local_only,
+                    "last_updated": last_updated,
+                    "updated_at": last_updated,
+                }
+            )
+            continue
+
         try:
             reject_symlink(db_path)
-            conn = sqlite3.connect(db_path, timeout=5.0)
-            conn.row_factory = sqlite3.Row
-            try:
+            store = MeshStore(namespace=clean_ns, create=False)
+            with store._connect() as conn:
                 cursor = conn.cursor()
                 cols = {r[1] for r in cursor.execute("PRAGMA table_info(memories)").fetchall()}
                 if not cols:
@@ -321,8 +361,6 @@ def list_namespaces() -> list[dict[str, Any]]:
                 row = cursor.fetchone()
                 last_updated = row["last"] if row and row["last"] else "never"
                 cursor.close()
-            finally:
-                conn.close()
             entry: dict[str, Any] = {
                 "namespace": clean_ns,
                 "memory_count": total,
@@ -537,9 +575,59 @@ def namespace_stats(namespace: str) -> dict[str, Any]:
         raise NamespaceNotFoundError(f"Namespace '{namespace}' does not exist")
 
     now = _utc_now()
-    conn = sqlite3.connect(db_path, timeout=5.0)
-    conn.row_factory = sqlite3.Row
+    cached_entry = None
     try:
+        with _CACHE_LOCK:
+            c = _VECTOR_CACHE.get((db_path, clean_ns))
+            if c is not None and c.rows_by_id:
+                cached_entry = c
+    except Exception:
+        pass
+
+    if cached_entry is not None:
+        rows = list(cached_entry.rows_by_id.values())
+        total = len(rows)
+        local_only = sum(1 for r in rows if r.get("local_only"))
+        cached_type_breakdown = Counter(str(r.get("memory_type", "fact")) for r in rows)
+        avg_conf = (
+            round(sum(float(r.get("confidence", 1.0)) for r in rows) / total, 4)
+            if total > 0
+            else 0.0
+        )
+        total_recalls = sum(int(r.get("access_count") or 0) for r in rows)
+        created_times = [str(r.get("created_at") or "") for r in rows if r.get("created_at")]
+        oldest = min(created_times) if created_times else "none"
+        newest = max(created_times) if created_times else "none"
+        stale = 0
+        for r in rows:
+            _, is_stale = _compute_row_effective_confidence(r, now=now)
+            if is_stale:
+                stale += 1
+
+        total_searches = 0
+        try:
+            store = MeshStore(namespace=clean_ns, create=False)
+            with store._connect() as conn_q:
+                row_q = conn_q.execute("SELECT COUNT(*) FROM queries WHERE namespace = ?", (clean_ns,)).fetchone()
+                total_searches = int(row_q[0] or 0) if row_q else 0
+        except Exception:
+            total_searches = 0
+
+        return {
+            "memory_count": total,
+            "local_only_count": local_only,
+            "exportable_count": total - local_only,
+            "type_breakdown": dict(cached_type_breakdown),
+            "avg_confidence": avg_conf,
+            "total_recalls": total_recalls,
+            "total_searches": total_searches,
+            "oldest_memory": oldest,
+            "newest_memory": newest,
+            "stale_count": stale,
+        }
+
+    store = MeshStore(namespace=clean_ns, create=False)
+    with store._connect() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) as c FROM memories WHERE namespace = ?", (clean_ns,))
         total = int(cursor.fetchone()["c"] or 0)
@@ -597,8 +685,6 @@ def namespace_stats(namespace: str) -> dict[str, Any]:
                 stale += 1
 
         cursor.close()
-    finally:
-        conn.close()
 
     return {
         "memory_count": total,

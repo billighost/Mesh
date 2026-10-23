@@ -408,7 +408,7 @@ def _cell_parts(cell: Cell) -> tuple[str, tuple[str, ...]]:
 
 def table(
     headers: Sequence[str],
-    rows: Sequence[Sequence[Cell]],
+    rows: Sequence[Sequence[Any]],
     *,
     aligns: Optional[Sequence[str]] = None,
     flex: Optional[int] = None,
