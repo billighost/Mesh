@@ -23,6 +23,7 @@ from typing import Any
 
 from .audit import (
     REDACTED_CONTENT_PLACEHOLDER,
+    _connect_audit,
     _get_audit_db_path,
     ensure_secure_mesh_dir,
     reject_symlink,
@@ -30,6 +31,7 @@ from .audit import (
 )
 from .crypto import decrypt_text_if_encrypted
 from .store import (
+    MeshStore,
     _compute_row_effective_confidence,
     _parse_iso_utc,
     _utc_now,
@@ -83,130 +85,143 @@ def generate_digest(
     read_errors: list[str] = []
 
     if namespace_exists:
-        conn = sqlite3.connect(db_path, timeout=5.0)
-        conn.row_factory = sqlite3.Row
+        store = None
+        all_rows = []
         try:
-            if _has_table(conn, "memories"):
-                cols = {r[1] for r in conn.execute("PRAGMA table_info(memories)").fetchall()}
-                select_cols = (
-                    "id, content, memory_type, source_agent, confidence, "
-                    "created_at, decay_start_at, ttl_days, local_only"
+            store = MeshStore(namespace=clean_ns, create=False)
+            cache = store._get_vector_cache()
+            if cache is not None and cache.rows_by_id:
+                all_rows = sorted(
+                    [dict(r) for r in cache.rows_by_id.values()],
+                    key=lambda r: str(r.get("created_at") or ""),
+                    reverse=True,
                 )
-                if "quarantined" in cols:
-                    select_cols += ", quarantined"
-                if "trust_tier" in cols:
-                    select_cols += ", trust_tier"
-                cursor = conn.cursor()
-                cursor.execute(
-                    f"""
-                    SELECT {select_cols}
-                    FROM memories
-                    WHERE namespace = ?
-                    ORDER BY created_at DESC
-                    """,
-                    (clean_ns,),
+        except Exception:
+            store = None
+            all_rows = []
+
+        try:
+            if store is not None and not all_rows:
+                with store._connect() as conn:
+                    if _has_table(conn, "memories"):
+                        cols = {r[1] for r in conn.execute("PRAGMA table_info(memories)").fetchall()}
+                        select_cols = (
+                            "id, content, memory_type, source_agent, confidence, "
+                            "created_at, decay_start_at, ttl_days, local_only"
+                        )
+                        if "quarantined" in cols:
+                            select_cols += ", quarantined"
+                        if "trust_tier" in cols:
+                            select_cols += ", trust_tier"
+                        cursor = conn.cursor()
+                        cursor.execute(
+                            f"""
+                            SELECT {select_cols}
+                            FROM memories
+                            WHERE namespace = ?
+                            ORDER BY created_at DESC
+                            """,
+                            (clean_ns,),
+                        )
+                        all_rows = [dict(r) for r in cursor.fetchall()]
+                        cursor.close()
+
+            for row in all_rows:
+                is_quarantined = bool(row.get("quarantined", 0))
+                if is_quarantined:
+                    quarantined_count += 1
+                    if not include_quarantined:
+                        continue
+
+                mid = str(row.get("id") or "")
+                short_id = mid[:8]
+                is_priv = bool(row.get("local_only"))
+                plain_content = decrypt_text_if_encrypted(row.get("content", ""))
+                display_content = (
+                    REDACTED_CONTENT_PLACEHOLDER
+                    if (is_priv and not include_private)
+                    else plain_content
                 )
-                all_rows = [dict(r) for r in cursor.fetchall()]
-                cursor.close()
 
-                for row in all_rows:
-                    is_quarantined = bool(row.get("quarantined", 0))
-                    if is_quarantined:
-                        quarantined_count += 1
-                        if not include_quarantined:
-                            continue
-
-                    mid = str(row.get("id") or "")
-                    short_id = mid[:8]
-                    is_priv = bool(row.get("local_only"))
-                    plain_content = decrypt_text_if_encrypted(row.get("content", ""))
-                    display_content = (
-                        REDACTED_CONTENT_PLACEHOLDER
-                        if (is_priv and not include_private)
-                        else plain_content
+                created_dt = _parse_iso_utc(row.get("created_at"))
+                if created_dt is None:
+                    unparseable_count += 1
+                elif created_dt >= since_dt:
+                    new_memories.append(
+                        {
+                            "id": mid,
+                            "short_id": short_id,
+                            "content": display_content,
+                            "memory_type": row.get("memory_type", "fact"),
+                            "source_agent": row.get("source_agent", "unknown"),
+                            "confidence": float(row.get("confidence", 1.0)),
+                            "created_at": row.get("created_at", ""),
+                            "local_only": is_priv,
+                            "trust_tier": row.get("trust_tier", "user"),
+                            "quarantined": is_quarantined,
+                        }
                     )
 
-                    created_dt = _parse_iso_utc(row.get("created_at"))
-                    if created_dt is None:
-                        unparseable_count += 1
-                    elif created_dt >= since_dt:
-                        new_memories.append(
-                            {
-                                "id": mid,
-                                "short_id": short_id,
-                                "content": display_content,
-                                "memory_type": row.get("memory_type", "fact"),
-                                "source_agent": row.get("source_agent", "unknown"),
-                                "confidence": float(row.get("confidence", 1.0)),
-                                "created_at": row.get("created_at", ""),
-                                "local_only": is_priv,
-                                "trust_tier": row.get("trust_tier", "user"),
-                                "quarantined": is_quarantined,
-                            }
-                        )
+                eff_conf, is_stale = _compute_row_effective_confidence(row, now=now)
+                if is_stale:
+                    if filter_stale_by_window and (created_dt is None or created_dt < since_dt):
+                        continue
+                    stale_memories.append(
+                        {
+                            "id": mid,
+                            "short_id": short_id,
+                            "content": display_content,
+                            "memory_type": row.get("memory_type", "fact"),
+                            "created_at": row.get("created_at", ""),
+                            "decay_start_at": row.get("decay_start_at"),
+                            "ttl_days": row.get("ttl_days"),
+                            "confidence": float(row.get("confidence", 1.0)),
+                            "effective_confidence": eff_conf,
+                            "local_only": is_priv,
+                        }
+                    )
 
-                    eff_conf, is_stale = _compute_row_effective_confidence(row, now=now)
-                    if is_stale:
-                        if filter_stale_by_window and (created_dt is None or created_dt < since_dt):
-                            continue
-                        stale_memories.append(
-                            {
-                                "id": mid,
-                                "short_id": short_id,
-                                "content": display_content,
-                                "memory_type": row.get("memory_type", "fact"),
-                                "created_at": row.get("created_at", ""),
-                                "decay_start_at": row.get("decay_start_at"),
-                                "ttl_days": row.get("ttl_days"),
-                                "confidence": float(row.get("confidence", 1.0)),
-                                "effective_confidence": eff_conf,
-                                "local_only": is_priv,
-                            }
+            if store is not None:
+                with store._connect() as conn:
+                    if _has_table(conn, "contradictions"):
+                        has_contradictions_table = True
+                        c_cur = conn.execute(
+                            """
+                            SELECT id, new_content, existing_content, detected_at
+                            FROM contradictions
+                            WHERE namespace = ? AND COALESCE(resolved, 0) = 0
+                            ORDER BY detected_at DESC
+                            """,
+                            (clean_ns,),
                         )
-
-            # Finding S12: Prefer unresolved records in `contradictions` over raw `audit_log`
-            # so resolved or deleted contradictions are not reported as active conflicts.
-            if _has_table(conn, "contradictions"):
-                has_contradictions_table = True
-                c_cur = conn.execute(
-                    """
-                    SELECT id, new_content, existing_content, detected_at
-                    FROM contradictions
-                    WHERE namespace = ? AND COALESCE(resolved, 0) = 0
-                    ORDER BY detected_at DESC
-                    """,
-                    (clean_ns,),
-                )
-                for cr in c_cur.fetchall():
-                    det_dt = _parse_iso_utc(cr["detected_at"])
-                    if det_dt is not None and det_dt >= since_dt:
-                        new_c = decrypt_text_if_encrypted(cr["new_content"])
-                        if not include_private and new_c == REDACTED_CONTENT_PLACEHOLDER:
-                            display_c = REDACTED_CONTENT_PLACEHOLDER
-                        else:
-                            display_c = new_c
-                        contradictions.append(
-                            {
-                                "id": cr["id"],
-                                "content": display_c,
-                                "agent_id": "memory-store",
-                                "timestamp": cr["detected_at"],
-                            }
-                        )
-                c_cur.close()
+                        for cr in c_cur.fetchall():
+                            det_dt = _parse_iso_utc(cr["detected_at"])
+                            if det_dt is not None and det_dt >= since_dt:
+                                new_c = decrypt_text_if_encrypted(cr["new_content"])
+                                if not include_private and new_c == REDACTED_CONTENT_PLACEHOLDER:
+                                    display_c = REDACTED_CONTENT_PLACEHOLDER
+                                else:
+                                    display_c = new_c
+                                contradictions.append(
+                                    {
+                                        "id": cr["id"],
+                                        "content": display_c,
+                                        "agent_id": "memory-store",
+                                        "timestamp": cr["detected_at"],
+                                    }
+                                )
+                        c_cur.close()
         except sqlite3.Error as exc:
             read_errors.append(f"memory database: {exc}")
-        finally:
-            conn.close()
 
     audit_db = _get_audit_db_path(clean_ns)
     recalls = 0
     agents_active: list[str] = []
 
     if audit_db.exists():
-        conn = sqlite3.connect(audit_db, timeout=5.0)
-        conn.row_factory = sqlite3.Row
         try:
+            conn = _connect_audit(audit_db)
+            conn.row_factory = sqlite3.Row
             if _has_table(conn, "audit_log"):
                 cursor = conn.cursor()
                 sql_floor = (since_dt - timedelta(days=1)).strftime("%Y-%m-%d")
@@ -246,8 +261,6 @@ def generate_digest(
                 agents_active = sorted(active_set)
         except sqlite3.Error as exc:
             read_errors.append(f"audit log: {exc}")
-        finally:
-            conn.close()
 
     return {
         "namespace": clean_ns,

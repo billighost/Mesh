@@ -89,10 +89,12 @@ def _write_atomic_private_bytes(path: Path, data: bytes) -> None:
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     fd = os.open(str(tmp_path), flags, stat.S_IRUSR | stat.S_IWUSR)
-    try:
-        os.fchmod(fd, stat.S_IRUSR | stat.S_IWUSR)
-    except (AttributeError, OSError):
-        pass
+    fchmod = getattr(os, "fchmod", None)
+    if fchmod is not None:
+        try:
+            fchmod(fd, stat.S_IRUSR | stat.S_IWUSR)
+        except (AttributeError, OSError):
+            pass
     with os.fdopen(fd, "wb") as f:
         f.write(data)
         f.flush()

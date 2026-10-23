@@ -22,10 +22,11 @@ import sqlite3
 import stat
 import subprocess
 import threading
+import time
 from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from .envutil import env_int
 
@@ -40,6 +41,7 @@ def get_mesh_dir() -> Path:
 
 _AUDIT_LOCK = threading.RLock()
 _INITIALIZED_AUDIT_DBS: dict[Path, tuple[int, int, int, int]] = {}
+_AUDIT_INITIALIZED_FILES: set[Path] = set()
 _AUDIT_CONNECTION_POOL: OrderedDict[Path, "_ManagedAuditConnection"] = OrderedDict()
 _AUDIT_WRITE_COUNTS: dict[Path, int] = {}
 _MAX_AUDIT_POOL_SIZE = 64
@@ -48,6 +50,24 @@ _DEFAULT_MAX_NAMESPACES = 256
 # Finding N5: Memoize Windows ACL application by resolved path so we don't spawn icacls repeatedly
 _WIN_ACL_LOCK = threading.Lock()
 _WIN_ACL_APPLIED: set[str] = set()
+
+# Memoize secure_file_permissions and ensure_secure_mesh_dir
+_SECURED_PATHS: dict[Path, int] = {}
+_SECURED_LOCK = threading.Lock()
+
+# ---------------------------------------------------------------------------
+# Phase 1 – Write-Behind Async Audit Queue
+# Audit entries for recall/learn/update/forget/log_audit_event are enqueued
+# in _AUDIT_PENDING and written by a single background daemon thread so the hot path
+# never waits on a SQLite commit. scrub_* and purge_* remain synchronous.
+# ---------------------------------------------------------------------------
+
+_AUDIT_PENDING: dict[str, list[tuple[str, tuple[Any, ...]]]] = {}
+_AUDIT_QUEUE_LOCK = threading.Lock()
+_AUDIT_FLUSH_LOCK = threading.Lock()
+_AUDIT_WAKE_EVENT = threading.Event()
+_AUDIT_DRAIN_THREAD: Optional[threading.Thread] = None
+_AUDIT_DRAIN_LOCK = threading.Lock()
 
 _VALID_NAMESPACE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
@@ -104,7 +124,8 @@ def _is_symlink_or_reparse(path: Path) -> bool:
     try:
         if path.is_symlink():
             return True
-        if hasattr(path, "is_junction") and path.is_junction():
+        is_junc = getattr(path, "is_junction", None)
+        if is_junc is not None and is_junc():
             return True
         if os.name == "nt" and path.exists():
             st = path.lstat()
@@ -136,13 +157,25 @@ def _apply_windows_owner_acl(target: Path) -> None:
     if os.environ.get("MESH_SKIP_WINDOWS_ACL", "").strip().lower() in ("1", "true", "yes"):
         return
     try:
-        key = str(target.resolve())
+        resolved = target.resolve()
+        key = str(resolved)
     except OSError:
         return
     with _WIN_ACL_LOCK:
         if key in _WIN_ACL_APPLIED:
             return
         _WIN_ACL_APPLIED.add(key)
+
+    if target.is_file():
+        parent_key = str(resolved.parent)
+        with _WIN_ACL_LOCK:
+            if parent_key in _WIN_ACL_APPLIED or (resolved.parent / ".acl_applied").exists():
+                return
+    elif target.is_dir():
+        marker = resolved / ".acl_applied"
+        if marker.exists():
+            return
+
     username = (os.environ.get("USERNAME") or "").strip()
     if not username:
         return
@@ -150,7 +183,7 @@ def _apply_windows_owner_acl(target: Path) -> None:
     principal = f"{userdomain}\\{username}" if userdomain else username
     grant_perm = f"{principal}:(OI)(CI)F" if target.is_dir() else f"{principal}:F"
     try:
-        subprocess.run(
+        res = subprocess.run(
             ["icacls", str(target), "/inheritance:r", "/grant:r", grant_perm],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -158,6 +191,11 @@ def _apply_windows_owner_acl(target: Path) -> None:
             timeout=2.5,
             check=False,
         )
+        if res.returncode == 0 and target.is_dir():
+            try:
+                (resolved / ".acl_applied").touch(exist_ok=True)
+            except Exception:
+                pass
     except Exception:
         pass
 
@@ -168,6 +206,14 @@ def ensure_secure_mesh_dir(path: Optional[Path] = None) -> Path:
     """
     target = path if path is not None else get_mesh_dir()
     reject_symlink(target)
+    try:
+        resolved = target.resolve()
+        with _SECURED_LOCK:
+            if resolved in _SECURED_PATHS and target.exists():
+                return target
+    except OSError:
+        resolved = target
+
     if not target.exists():
         target.mkdir(parents=True, exist_ok=True, mode=0o700)
     if os.name != "nt":
@@ -179,6 +225,9 @@ def ensure_secure_mesh_dir(path: Optional[Path] = None) -> Path:
             pass
     else:
         _apply_windows_owner_acl(target)
+
+    with _SECURED_LOCK:
+        _SECURED_PATHS[resolved] = 1
     return target
 
 
@@ -187,6 +236,17 @@ def secure_file_permissions(file_path: Path) -> None:
     Enforce 0600 permissions on POSIX and owner-only ACLs on Windows for a database
     and any WAL/SHM sidecar files, rejecting symlinks first (Findings N5, N6).
     """
+    try:
+        resolved_base = file_path.resolve()
+        with _SECURED_LOCK:
+            cached_stamp = _SECURED_PATHS.get(resolved_base)
+        if cached_stamp is not None and file_path.exists():
+            curr_stamp = int(file_path.stat().st_mtime_ns)
+            if curr_stamp == cached_stamp:
+                return
+    except OSError:
+        resolved_base = file_path
+
     for suffix in ("", "-wal", "-shm"):
         candidate = Path(f"{file_path}{suffix}")
         if _is_symlink_or_reparse(candidate):
@@ -201,6 +261,14 @@ def secure_file_permissions(file_path: Path) -> None:
                         os.chmod(candidate, stat.S_IRUSR | stat.S_IWUSR)
                 except OSError:
                     pass
+
+    try:
+        if file_path.exists():
+            new_stamp = int(file_path.stat().st_mtime_ns)
+            with _SECURED_LOCK:
+                _SECURED_PATHS[resolved_base] = new_stamp
+    except OSError:
+        pass
 
 
 def validate_namespace(namespace: str) -> str:
@@ -238,8 +306,9 @@ class _ManagedAuditConnection(sqlite3.Connection):
     without closing the file handle until explicitly evicted.
     """
 
-    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> bool:
-        return super().__exit__(exc_type, exc_val, exc_tb)
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> Literal[False]:
+        super().__exit__(exc_type, exc_val, exc_tb)
+        return False
 
     def close(self) -> None:
         pass
@@ -251,8 +320,82 @@ class _ManagedAuditConnection(sqlite3.Connection):
             pass
 
 
+def flush_audit_log(namespace: Optional[str] = None) -> None:
+    """Synchronously drain pending audit queue entries for `namespace` (or all namespaces)."""
+    with _AUDIT_FLUSH_LOCK:
+        with _AUDIT_QUEUE_LOCK:
+            if namespace is not None:
+                try:
+                    clean_ns = validate_namespace(namespace)
+                    items = _AUDIT_PENDING.pop(clean_ns, [])
+                    work = [(clean_ns, items)] if items else []
+                except ValueError:
+                    return
+            else:
+                work = list(_AUDIT_PENDING.items())
+                _AUDIT_PENDING.clear()
+
+        if not work:
+            return
+
+        for ns, items in work:
+            if not items:
+                continue
+            try:
+                db_path = _get_audit_db_path(ns)
+                with _AUDIT_LOCK:
+                    stamp = _get_audit_db_stamp(db_path)
+                    needs_init = stamp is None or _INITIALIZED_AUDIT_DBS.get(db_path) != stamp
+                    write_count = _AUDIT_WRITE_COUNTS.get(db_path, 0) + len(items)
+                    _AUDIT_WRITE_COUNTS[db_path] = write_count
+                    with _connect_audit(db_path) as conn:
+                        if needs_init:
+                            _apply_audit_schema(conn)
+                        for sql, params in items:
+                            conn.execute(sql, params)
+                        if needs_init or (write_count % 100 < len(items)):
+                            _prune_audit_log_locked(conn, _max_audit_rows())
+                        conn.commit()
+                    secure_file_permissions(db_path)
+                    new_stamp = _get_audit_db_stamp(db_path)
+                    if new_stamp is not None:
+                        _INITIALIZED_AUDIT_DBS[db_path] = new_stamp
+            except Exception:
+                pass
+
+
+flush_pending_audit_writes = flush_audit_log
+
+
+def _audit_drain_worker() -> None:
+    """Background daemon thread: drain _AUDIT_PENDING in batches with debounce."""
+    while True:
+        _AUDIT_WAKE_EVENT.wait(timeout=0.5)
+        _AUDIT_WAKE_EVENT.clear()
+        time.sleep(0.025)
+        flush_audit_log(None)
+
+
+def _ensure_audit_drain_thread() -> None:
+    global _AUDIT_DRAIN_THREAD
+    with _AUDIT_DRAIN_LOCK:
+        if _AUDIT_DRAIN_THREAD is not None and _AUDIT_DRAIN_THREAD.is_alive():
+            return
+        t = threading.Thread(
+            target=_audit_drain_worker,
+            name="mesh-audit-drain",
+            daemon=True,
+        )
+        t.start()
+        _AUDIT_DRAIN_THREAD = t
+
+
 @atexit.register
 def _close_all_audit_connections() -> None:
+    try:
+        flush_audit_log(None)
+    except Exception:
+        pass
     with _AUDIT_LOCK:
         for conn in list(_AUDIT_CONNECTION_POOL.values()):
             conn.close_pooled()
@@ -314,10 +457,14 @@ def evict_audit_cache(namespace: str) -> None:
     """Evict tracked initialization state and close pooled connections for a namespace's audit DB."""
     try:
         clean_ns = validate_namespace(namespace)
+        flush_audit_log(clean_ns)
         base_dir = get_mesh_dir().resolve()
         db_path = (base_dir / f"audit_{clean_ns}.db").resolve()
     except ValueError:
         return
+    with _SECURED_LOCK:
+        _SECURED_PATHS.pop(db_path, None)
+    _AUDIT_INITIALIZED_FILES.discard(db_path)
     with _AUDIT_LOCK:
         _INITIALIZED_AUDIT_DBS.pop(db_path, None)
         _AUDIT_WRITE_COUNTS.pop(db_path, None)
@@ -366,7 +513,12 @@ def _connect_audit(db_path: Path) -> _ManagedAuditConnection:
             factory=_ManagedAuditConnection,
         )
         conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
+        sync_mode = "NORMAL" if os.environ.get("MESH_STRICT_FSYNC") == "1" else "OFF"
+        conn.execute(f"PRAGMA synchronous={sync_mode}")
+        try:
+            conn.execute("PRAGMA mmap_size=67108864")
+        except sqlite3.OperationalError:
+            pass
         conn.execute("PRAGMA temp_store=MEMORY")
         conn.execute("PRAGMA busy_timeout=3000")
         conn.execute("PRAGMA secure_delete=ON")
@@ -471,10 +623,10 @@ def _sanitize_audit_text(text: Optional[str]) -> Optional[str]:
     return text
 
 
-def _write_audit_entry(namespace: str, sql: str, params: tuple[Any, ...]) -> None:
+def _write_audit_entry_sync(namespace: str, sql: str, params: tuple[Any, ...]) -> None:
     """
-    Execute an audit log statement on the pooled connection, enforce retention limits,
-    and refresh the tracked file stamp so subsequent writes never re-run schema initialization.
+    Execute an audit log statement synchronously on the pooled connection.
+    Called by the background drain thread or by flush_pending_audit_writes().
     """
     namespace = validate_namespace(namespace)
     db_path = _get_audit_db_path(namespace)
@@ -494,6 +646,36 @@ def _write_audit_entry(namespace: str, sql: str, params: tuple[Any, ...]) -> Non
         new_stamp = _get_audit_db_stamp(db_path)
         if new_stamp is not None:
             _INITIALIZED_AUDIT_DBS[db_path] = new_stamp
+
+
+def _write_audit_entry(namespace: str, sql: str, params: tuple[Any, ...]) -> None:
+    """
+    Enqueue an audit log entry for asynchronous write by the background drain thread.
+    Returns immediately; the caller's hot path is never blocked on a SQLite commit.
+    First row for a new DB is committed synchronously so audit_<ns>.db is guaranteed to exist.
+    """
+    try:
+        clean_ns = validate_namespace(namespace)
+        db_path = _get_audit_db_path(clean_ns)
+    except Exception:
+        return
+
+    if db_path not in _AUDIT_INITIALIZED_FILES and not db_path.exists():
+        try:
+            with _AUDIT_LOCK:
+                _connect_audit(db_path)
+            _AUDIT_INITIALIZED_FILES.add(db_path)
+        except Exception:
+            pass
+    else:
+        _AUDIT_INITIALIZED_FILES.add(db_path)
+
+    _ensure_audit_drain_thread()
+    with _AUDIT_QUEUE_LOCK:
+        if clean_ns not in _AUDIT_PENDING:
+            _AUDIT_PENDING[clean_ns] = []
+        _AUDIT_PENDING[clean_ns].append((sql, params))
+    _AUDIT_WAKE_EVENT.set()
 
 
 def log_recall(
@@ -598,44 +780,54 @@ def _scrub_audit_columns_locked(
     including encrypted rows when at-rest encryption is active (Findings S5, S12).
     """
     enc_placeholder = _maybe_encrypt_audit_field(placeholder) or placeholder
+    clean_needle = (needle_text or "").strip()
+    if not clean_needle:
+        conn.execute(
+            """
+            UPDATE audit_log
+            SET content = ?
+            WHERE namespace = ? AND memory_id = ? AND action IN ('learn', 'update')
+            """,
+            (enc_placeholder, namespace, memory_id),
+        )
+        return
+
+    needle_low = clean_needle.lower()
     conn.execute(
         """
         UPDATE audit_log
-        SET content = ?
-        WHERE namespace = ? AND memory_id = ? AND action IN ('learn', 'update')
+        SET
+            content = CASE WHEN (memory_id = ? AND action IN ('learn', 'update')) OR (content IS NOT NULL AND INSTR(LOWER(content), ?) > 0) THEN ? ELSE content END,
+            top_result = CASE WHEN top_result IS NOT NULL AND INSTR(LOWER(top_result), ?) > 0 THEN ? ELSE top_result END,
+            query = CASE WHEN query IS NOT NULL AND INSTR(LOWER(query), ?) > 0 THEN ? ELSE query END
+        WHERE namespace = ?
         """,
-        (enc_placeholder, namespace, memory_id),
+        (memory_id, needle_low, enc_placeholder, needle_low, enc_placeholder, needle_low, enc_placeholder, namespace),
     )
-    clean_needle = (needle_text or "").strip()
-    if not clean_needle:
-        return
-    needle_low = clean_needle.lower()
-    for col in ("content", "top_result", "query"):
-        conn.execute(
-            f"UPDATE audit_log SET {col} = ? "
-            f"WHERE namespace = ? AND {col} IS NOT NULL "
-            f"AND (LOWER({col}) = ? OR INSTR(LOWER({col}), ?) > 0)",
-            (enc_placeholder, namespace, needle_low, needle_low),
-        )
 
-    # Also inspect any encrypted rows (`enc:v1:...`) in Python so encrypted side channels are scrubbed
-    rows = conn.execute(
-        "SELECT id, query, content, top_result FROM audit_log "
-        "WHERE namespace = ? AND (query LIKE 'enc:v1:%' OR content LIKE 'enc:v1:%' OR top_result LIKE 'enc:v1:%')",
-        (namespace,),
-    ).fetchall()
-    for row_id, q_val, c_val, top_val in rows:
-        dec_q = _maybe_decrypt_audit_field(q_val)
-        dec_c = _maybe_decrypt_audit_field(c_val)
-        dec_top = _maybe_decrypt_audit_field(top_val)
-        new_q = enc_placeholder if (dec_q and needle_low in dec_q.lower()) else q_val
-        new_c = enc_placeholder if (dec_c and needle_low in dec_c.lower()) else c_val
-        new_top = enc_placeholder if (dec_top and needle_low in dec_top.lower()) else top_val
-        if (new_q, new_c, new_top) != (q_val, c_val, top_val):
-            conn.execute(
-                "UPDATE audit_log SET query = ?, content = ?, top_result = ? WHERE id = ?",
-                (new_q, new_c, new_top, row_id),
-            )
+    try:
+        from .crypto import is_encryption_enabled
+
+        if is_encryption_enabled():
+            rows = conn.execute(
+                "SELECT id, query, content, top_result FROM audit_log "
+                "WHERE namespace = ? AND (query LIKE 'enc:v1:%' OR content LIKE 'enc:v1:%' OR top_result LIKE 'enc:v1:%')",
+                (namespace,),
+            ).fetchall()
+            for row_id, q_val, c_val, top_val in rows:
+                dec_q = _maybe_decrypt_audit_field(q_val)
+                dec_c = _maybe_decrypt_audit_field(c_val)
+                dec_top = _maybe_decrypt_audit_field(top_val)
+                new_q = enc_placeholder if (dec_q and needle_low in dec_q.lower()) else q_val
+                new_c = enc_placeholder if (dec_c and needle_low in dec_c.lower()) else c_val
+                new_top = enc_placeholder if (dec_top and needle_low in dec_top.lower()) else top_val
+                if (new_q, new_c, new_top) != (q_val, c_val, top_val):
+                    conn.execute(
+                        "UPDATE audit_log SET query = ?, content = ?, top_result = ? WHERE id = ?",
+                        (new_q, new_c, new_top, row_id),
+                    )
+    except Exception:
+        pass
 
 
 def scrub_memory_update_from_audit(
@@ -650,6 +842,7 @@ def scrub_memory_update_from_audit(
     """
     try:
         namespace = validate_namespace(namespace)
+        flush_audit_log(namespace)
         db_path = _get_audit_db_path(namespace)
         if not db_path.exists() or _get_audit_db_stamp(db_path) is None:
             return
@@ -665,10 +858,6 @@ def scrub_memory_update_from_audit(
                         placeholder=placeholder,
                     )
                 conn.commit()
-                try:
-                    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                except sqlite3.OperationalError:
-                    pass
             new_stamp = _get_audit_db_stamp(db_path)
             if new_stamp is not None:
                 _INITIALIZED_AUDIT_DBS[db_path] = new_stamp
@@ -730,6 +919,7 @@ def purge_memory_from_audit(
     """
     try:
         namespace = validate_namespace(namespace)
+        flush_audit_log(namespace)
         db_path = _get_audit_db_path(namespace)
         if not db_path.exists() or _get_audit_db_stamp(db_path) is None:
             return
@@ -743,10 +933,6 @@ def purge_memory_from_audit(
                     placeholder=PURGED_CONTENT_PLACEHOLDER,
                 )
                 conn.commit()
-                try:
-                    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                except sqlite3.OperationalError:
-                    pass
             new_stamp = _get_audit_db_stamp(db_path)
             if new_stamp is not None:
                 _INITIALIZED_AUDIT_DBS[db_path] = new_stamp
@@ -761,7 +947,9 @@ def clear_audit_log(namespace: str) -> None:
     """
     try:
         clean_ns = validate_namespace(namespace)
+        flush_audit_log(clean_ns)
         db_path = _get_audit_db_path(clean_ns)
+        _AUDIT_INITIALIZED_FILES.discard(db_path)
         if not db_path.exists():
             return
         with _AUDIT_LOCK:
@@ -816,6 +1004,7 @@ def get_audit_log(
     """
     Return recent audit entries for a namespace, most recent first, decrypting fields if encrypted.
     """
+    flush_pending_audit_writes()
     clean_ns = validate_namespace(namespace)
     db_path = _get_audit_db_path(clean_ns)
     clean_filter = (action_filter or "all").strip().lower()
@@ -866,6 +1055,7 @@ def get_audit_log(
 
 def get_audit_stats(namespace: str) -> dict[str, Any]:
     """Return aggregate stats from the audit log in a minimal query pass."""
+    flush_pending_audit_writes()
     clean_ns = validate_namespace(namespace)
     db_path = _get_audit_db_path(clean_ns)
     if not db_path.exists() or _get_audit_db_stamp(db_path) is None:
@@ -962,6 +1152,7 @@ def export_content_free_audit(
     Export content-free audit events (timing, surface, command, status, sizes, NEVER memory text).
     Aggregates events across all tracked namespaces if namespace is None.
     """
+    flush_audit_log(None)
     base_dir = ensure_secure_mesh_dir().resolve()
     target_dbs: list[tuple[str, Path]] = []
     if namespace:

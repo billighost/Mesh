@@ -15,6 +15,7 @@ Addresses Findings:
 """
 from __future__ import annotations
 
+from collections import OrderedDict
 import dataclasses
 import hashlib
 import json
@@ -27,6 +28,25 @@ import threading
 import unicodedata
 from pathlib import Path
 from typing import Any, Callable, Optional
+
+_KEYRING_STATUS: Optional[bool] = None
+_KEYRING_LOCK = threading.Lock()
+_LOCAL_VAULT_CACHE: dict[Path, tuple[int, int, dict[str, str]]] = {}
+_LOCAL_VAULT_CACHE_LOCK = threading.Lock()
+
+_IS_CRED_CACHE: OrderedDict[str, bool] = OrderedDict()
+_IS_CRED_LOCK = threading.Lock()
+_MAX_IS_CRED_CACHE = 2048
+
+
+def clear_secrets_caches() -> None:
+    global _KEYRING_STATUS
+    with _KEYRING_LOCK:
+        _KEYRING_STATUS = None
+    with _LOCAL_VAULT_CACHE_LOCK:
+        _LOCAL_VAULT_CACHE.clear()
+    with _IS_CRED_LOCK:
+        _IS_CRED_CACHE.clear()
 
 from .audit import ensure_secure_mesh_dir, secure_file_permissions, validate_namespace
 
@@ -304,10 +324,36 @@ def _use_isolated_local_vault() -> bool:
     return False
 
 
+def _is_keyring_functional() -> bool:
+    global _KEYRING_STATUS
+    if _use_isolated_local_vault():
+        return False
+    with _KEYRING_LOCK:
+        if _KEYRING_STATUS is not None:
+            return _KEYRING_STATUS
+        try:
+            import keyring  # type: ignore[import-not-found]
+
+            _KEYRING_STATUS = keyring.get_keyring() is not None
+        except Exception:
+            _KEYRING_STATUS = False
+        return _KEYRING_STATUS
+
+
 def _read_local_vault_locked() -> dict[str, str]:
     vault_file = _local_vault_path()
     if not vault_file.exists():
         return {}
+    try:
+        st = vault_file.stat()
+        stamp = (st.st_mtime_ns, st.st_size)
+        with _LOCAL_VAULT_CACHE_LOCK:
+            cached = _LOCAL_VAULT_CACHE.get(vault_file)
+            if cached and cached[0] == stamp[0] and cached[1] == stamp[1]:
+                return dict(cached[2])
+    except OSError:
+        return {}
+
     try:
         raw = vault_file.read_text(encoding="utf-8")
         try:
@@ -318,7 +364,10 @@ def _read_local_vault_locked() -> dict[str, str]:
             pass
         data = json.loads(raw)
         if isinstance(data, dict):
-            return {str(k): str(v) for k, v in data.items()}
+            res = {str(k): str(v) for k, v in data.items()}
+            with _LOCAL_VAULT_CACHE_LOCK:
+                _LOCAL_VAULT_CACHE[vault_file] = (stamp[0], stamp[1], dict(res))
+            return res
     except Exception:
         pass
     return {}
@@ -340,6 +389,12 @@ def _write_local_vault_locked(data: dict[str, str]) -> None:
         tmp_path.write_text(serialized, encoding="utf-8")
         os.replace(tmp_path, vault_file)
         secure_file_permissions(vault_file)
+        try:
+            st = vault_file.stat()
+            with _LOCAL_VAULT_CACHE_LOCK:
+                _LOCAL_VAULT_CACHE[vault_file] = (st.st_mtime_ns, st.st_size, dict(data))
+        except OSError:
+            pass
         return
     flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
     if hasattr(os, "O_NOFOLLOW"):
@@ -349,6 +404,12 @@ def _write_local_vault_locked(data: dict[str, str]) -> None:
         f.write(serialized)
     os.replace(tmp_path, vault_file)
     secure_file_permissions(vault_file)
+    try:
+        st = vault_file.stat()
+        with _LOCAL_VAULT_CACHE_LOCK:
+            _LOCAL_VAULT_CACHE[vault_file] = (st.st_mtime_ns, st.st_size, dict(data))
+    except OSError:
+        pass
 
 
 def store_secret_in_keyring(
@@ -369,7 +430,7 @@ def store_secret_in_keyring(
     service_name = f"mesh:{clean_ns}"
     stored_in_os = False
 
-    if not _use_isolated_local_vault():
+    if _is_keyring_functional():
         try:
             import keyring  # type: ignore[import-not-found]
 
@@ -400,7 +461,7 @@ def get_secret_from_keyring(namespace: str, key_name: str) -> Optional[str]:
     clean_key = validate_secret_key_name(key_name)
     service_name = f"mesh:{clean_ns}"
 
-    if not _use_isolated_local_vault():
+    if _is_keyring_functional():
         try:
             import keyring  # type: ignore[import-not-found]
 
@@ -777,49 +838,66 @@ def is_credential(text: str) -> bool:
     Return True if `text` contains a live credential, API key, private key, JWT,
     URL password, CLI secret flag, YAML block secret, or secret assignment (Findings S2, S3, S4).
     """
+    if isinstance(text, str) and len(text) <= 4096:
+        with _IS_CRED_LOCK:
+            cached = _IS_CRED_CACHE.get(text)
+            if cached is not None:
+                _IS_CRED_CACHE.move_to_end(text)
+                return cached
+
     norm = _normalize_for_detection(text)
     if not norm:
-        return False
+        res = False
+    elif _PEM_BLOCK_RE.search(norm):
+        res = True
+    elif _JWT_RE.search(norm):
+        res = True
+    elif _KNOWN_API_KEY_RE.search(norm):
+        res = True
+    elif _URL_USERINFO_RE.search(norm):
+        res = True
+    elif _AUTH_HEADER_RE.search(norm):
+        res = True
+    elif _BEARER_TOKEN_RE.search(norm):
+        res = True
+    else:
+        res = False
+        for m in _YAML_BLOCK_SECRET_RE.finditer(norm):
+            yaml_content = m.group(3).strip()
+            if not yaml_content.startswith(("[REDACTED", "[SECRET_REF:")):
+                res = True
+                break
+        if not res and _UNQUOTED_PASSPHRASE_RE.search(norm):
+            res = True
+        if not res:
+            for m in _CLI_SECRET_FLAG_RE.finditer(norm):
+                flag_name = m.group(1)
+                was_quoted = m.group(3) is not None
+                val = m.group(4) if was_quoted else (m.group(5) or "")
+                if _is_plausible_secret_value(val, flag_name, flag_name.lstrip("-"), was_quoted=was_quoted):
+                    res = True
+                    break
+        if not res:
+            for m in _KEYWORD_ASSIGNMENT_RE.finditer(norm):
+                kw = m.group(1)
+                mid = m.group(2)
+                if _context_has_benign_subject_noun(mid):
+                    continue
+                op_match = re.search(r"(?i)(is|was|equals|:=|=|:)\s*$", mid)
+                op = op_match.group(1) if op_match else "="
+                was_quoted = m.group(3) is not None
+                val = m.group(4) if was_quoted else (m.group(5) or "")
+                if _is_plausible_secret_value(val, op, kw, was_quoted=was_quoted):
+                    res = True
+                    break
 
-    if _PEM_BLOCK_RE.search(norm):
-        return True
-    if _JWT_RE.search(norm):
-        return True
-    if _KNOWN_API_KEY_RE.search(norm):
-        return True
-    if _URL_USERINFO_RE.search(norm):
-        return True
-    if _AUTH_HEADER_RE.search(norm):
-        return True
-    if _BEARER_TOKEN_RE.search(norm):
-        return True
-    for m in _YAML_BLOCK_SECRET_RE.finditer(norm):
-        yaml_content = m.group(3).strip()
-        if not yaml_content.startswith(("[REDACTED", "[SECRET_REF:")):
-            return True
-    if _UNQUOTED_PASSPHRASE_RE.search(norm):
-        return True
+    if isinstance(text, str) and len(text) <= 4096:
+        with _IS_CRED_LOCK:
+            if len(_IS_CRED_CACHE) >= _MAX_IS_CRED_CACHE:
+                _IS_CRED_CACHE.popitem(last=False)
+            _IS_CRED_CACHE[text] = res
 
-    for m in _CLI_SECRET_FLAG_RE.finditer(norm):
-        flag_name = m.group(1)
-        was_quoted = m.group(3) is not None
-        val = m.group(4) if was_quoted else (m.group(5) or "")
-        if _is_plausible_secret_value(val, flag_name, flag_name.lstrip("-"), was_quoted=was_quoted):
-            return True
-
-    for m in _KEYWORD_ASSIGNMENT_RE.finditer(norm):
-        kw = m.group(1)
-        mid = m.group(2)
-        if _context_has_benign_subject_noun(mid):
-            continue
-        op_match = re.search(r"(?i)(is|was|equals|:=|=|:)\s*$", mid)
-        op = op_match.group(1) if op_match else "="
-        was_quoted = m.group(3) is not None
-        val = m.group(4) if was_quoted else (m.group(5) or "")
-        if _is_plausible_secret_value(val, op, kw, was_quoted=was_quoted):
-            return True
-
-    return False
+    return res
 
 
 def _redact_common_secrets(

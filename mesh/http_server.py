@@ -27,7 +27,7 @@ import sys
 import threading
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, NoReturn, Optional
 from urllib.parse import urlparse
 
 import uvicorn
@@ -146,7 +146,7 @@ def verify_request_auth(request: Request) -> None:
         )
 
 
-def _raise_http_error(exc: BaseException, endpoint: str) -> None:
+def _raise_http_error(exc: BaseException, endpoint: str) -> NoReturn:
     """
     Centralized exception-to-HTTPException mapper for HTTP routes (Issue H5)[cite: 2]:
       - HTTPException -> re-raised unchanged
@@ -831,7 +831,8 @@ async def mcp_proxy(request: Request) -> Any:
             )
 
         req_id = body_data.get("id")
-        params = body_data.get("params") if isinstance(body_data.get("params"), dict) else {}
+        raw_params = body_data.get("params")
+        params: dict[str, Any] = raw_params if isinstance(raw_params, dict) else {}
         tool_name = str(body_data.get("name") or params.get("name") or "").strip()
         arguments = body_data.get("arguments") if "arguments" in body_data else params.get("arguments", {})
         default_ns = body_data.get("default_namespace") or params.get("default_namespace")
@@ -1356,8 +1357,9 @@ def brief(
     include_private: Optional[bool] = None,
     agent_id: Optional[str] = None,
 ) -> dict[str, Any]:
+    ns = (namespace or os.environ.get("MESH_NAMESPACE", "shared")).strip() or "shared"
     try:
-        ns = validate_namespace((namespace or os.environ.get("MESH_NAMESPACE", "shared")).strip() or "shared")
+        ns = validate_namespace(ns)
         priv = _resolve_http_include_private(include_private)
         mesh = get_mesh(namespace=ns, agent_id=agent_id, create=False)
         res = mesh.project_brief(max_tokens=max_tokens, include_private=priv)
@@ -1390,8 +1392,9 @@ def list_tasks(
     include_private: Optional[bool] = None,
     agent_id: Optional[str] = None,
 ) -> dict[str, Any]:
+    ns = (namespace or os.environ.get("MESH_NAMESPACE", "shared")).strip() or "shared"
     try:
-        ns = validate_namespace((namespace or os.environ.get("MESH_NAMESPACE", "shared")).strip() or "shared")
+        ns = validate_namespace(ns)
         priv = _resolve_http_include_private(include_private)
         mesh = get_mesh(namespace=ns, agent_id=agent_id, create=False)
         items = mesh.list_work_items(status=status, kind=kind, parent_id=parent_id, limit=limit, include_private=priv)
@@ -1485,8 +1488,9 @@ def changelog(
     include_private: Optional[bool] = None,
     agent_id: Optional[str] = None,
 ) -> dict[str, Any]:
+    ns = (namespace or os.environ.get("MESH_NAMESPACE", "shared")).strip() or "shared"
     try:
-        ns = validate_namespace((namespace or os.environ.get("MESH_NAMESPACE", "shared")).strip() or "shared")
+        ns = validate_namespace(ns)
         priv = _resolve_http_include_private(include_private)
         mesh = get_mesh(namespace=ns, agent_id=agent_id, create=False)
         res = mesh.changelog(since=since, format=format, include_private=priv)

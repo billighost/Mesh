@@ -52,9 +52,10 @@ def _is_symlink_or_junction(path: Path) -> bool:
     """Return True if `path` is a POSIX/Windows symlink or a Windows NTFS junction."""
     if path.is_symlink():
         return True
-    if hasattr(path, "is_junction"):
+    is_junc = getattr(path, "is_junction", None)
+    if is_junc is not None:
         try:
-            if path.is_junction():  # Python 3.12+
+            if is_junc():  # Python 3.12+
                 return True
         except OSError:
             pass
@@ -321,6 +322,7 @@ def install_all(
         )
         return results
 
+    perm_callable: Any
     if permission_fn is None:
         from .daemon import request_user_permission as default_perm_fn
 

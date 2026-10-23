@@ -14,12 +14,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import hmac
+import http.client
 import json
 import os
 import re
 import secrets
 import shlex
 import signal
+import socket
 import stat
 import subprocess
 import sys
@@ -109,6 +111,15 @@ def _get_token_file_stamp(token_file: Path) -> Optional[tuple[int, int]]:
         return None
 
 
+def _safe_fchmod(fd: int, mode: int) -> None:
+    fchmod = getattr(os, "fchmod", None)
+    if fchmod is not None:
+        try:
+            fchmod(fd, mode)
+        except (AttributeError, OSError):
+            pass
+
+
 def _write_private_file(path: Path, content: str) -> None:
     """
     Write `content` to `path` creating the file with 0600 permissions atomically from birth
@@ -128,10 +139,7 @@ def _write_private_file(path: Path, content: str) -> None:
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     fd = os.open(str(tmp_path), flags, stat.S_IRUSR | stat.S_IWUSR)
-    try:
-        os.fchmod(fd, stat.S_IRUSR | stat.S_IWUSR)
-    except (AttributeError, OSError):
-        pass
+    _safe_fchmod(fd, stat.S_IRUSR | stat.S_IWUSR)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(content)
     secure_file_permissions(tmp_path)
@@ -151,10 +159,7 @@ def _open_private_log_append(path: Path) -> Any:
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     fd = os.open(str(path), flags, stat.S_IRUSR | stat.S_IWUSR)
-    try:
-        os.fchmod(fd, stat.S_IRUSR | stat.S_IWUSR)
-    except (AttributeError, OSError):
-        pass
+    _safe_fchmod(fd, stat.S_IRUSR | stat.S_IWUSR)
     return os.fdopen(fd, "a", encoding="utf-8")
 
 
@@ -175,8 +180,7 @@ def _read_valid_token_file(token_file: Path) -> Optional[str]:
 def _try_atomic_create_token_file(token_file: Path, token: str) -> bool:
     reject_symlink(token_file)
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
+    flags |= getattr(os, "O_NOFOLLOW", 0)
     mode = stat.S_IRUSR | stat.S_IWUSR if os.name != "nt" else 0o600
     try:
         fd = os.open(str(token_file), flags, mode)
@@ -188,10 +192,7 @@ def _try_atomic_create_token_file(token_file: Path, token: str) -> bool:
         raise
     try:
         if os.name != "nt":
-            try:
-                os.fchmod(fd, stat.S_IRUSR | stat.S_IWUSR)
-            except (AttributeError, OSError):
-                pass
+            _safe_fchmod(fd, stat.S_IRUSR | stat.S_IWUSR)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(token)
             f.flush()
@@ -449,39 +450,50 @@ def verify_daemon_identity(
     nonce_bytes = bytes.fromhex(nonce)
     expected_proof = hmac.new(token.encode("utf-8"), nonce_bytes, hashlib.sha256).hexdigest()
 
-    url = f"http://{host}:{port}/identity?nonce={nonce}"
-    req = urllib.request.Request(
-        url,
-        headers={"Accept": "application/json", "X-Mesh-Nonce": nonce},
-        method="GET",
-    )
+    conn = http.client.HTTPConnection(host, port, timeout=timeout)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            if resp.status == 200:
-                body = resp.read().decode("utf-8")
-                data = json.loads(body)
-                if isinstance(data, dict) and data.get("proof"):
-                    actual_proof = str(data["proof"]).strip()
-                    if hmac.compare_digest(actual_proof, expected_proof):
-                        result = {
-                            "status": "ok",
-                            "pid": data.get("pid"),
-                            "version": data.get("version"),
-                            "identity_verified": True,
-                        }
-                        with _VERIFIED_DAEMON_LOCK:
-                            _VERIFIED_DAEMON_CACHE[key] = (time.monotonic() + 30.0, result)
-                        return result
-                    else:
-                        sys.stderr.write(
-                            f"[WARNING] a process on port {port} failed Mesh identity verification.\n"
-                        )
+        conn.connect()
+        if conn.sock is not None:
+            try:
+                conn.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            except Exception:
+                pass
+        conn.request(
+            "GET",
+            f"/identity?nonce={nonce}",
+            headers={"Accept": "application/json", "X-Mesh-Nonce": nonce},
+        )
+        resp = conn.getresponse()
+        if resp.status == 200:
+            body = resp.read().decode("utf-8")
+            data = json.loads(body)
+            if isinstance(data, dict) and data.get("proof"):
+                actual_proof = str(data["proof"]).strip()
+                if hmac.compare_digest(actual_proof, expected_proof):
+                    result = {
+                        "status": "ok",
+                        "pid": data.get("pid"),
+                        "version": data.get("version"),
+                        "identity_verified": True,
+                    }
+                    with _VERIFIED_DAEMON_LOCK:
+                        _VERIFIED_DAEMON_CACHE[key] = (time.monotonic() + 30.0, result)
+                    return result
                 else:
                     sys.stderr.write(
                         f"[WARNING] a process on port {port} failed Mesh identity verification.\n"
                     )
-    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+            else:
+                sys.stderr.write(
+                    f"[WARNING] a process on port {port} failed Mesh identity verification.\n"
+                )
+    except (http.client.HTTPException, TimeoutError, OSError, ValueError):
         pass
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
     with _VERIFIED_DAEMON_LOCK:
         _VERIFIED_DAEMON_CACHE.pop(key, None)
@@ -953,7 +965,8 @@ def stop_daemon(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> dict[str,
                     break
                 time.sleep(0.05)
             if _is_pid_alive(candidate_pid) and _is_mesh_daemon_process(candidate_pid):
-                os.kill(candidate_pid, signal.SIGKILL)
+                sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
+                os.kill(candidate_pid, sigkill)
             killed = True
         except OSError:
             killed = False
@@ -1266,8 +1279,8 @@ def daemon_cmd() -> None:
         )
 
     elif args.action == "unload":
-        res = trigger_daemon_unload(host=args.host, port=args.port)
-        if res is None:
+        unload_res = trigger_daemon_unload(host=args.host, port=args.port)
+        if unload_res is None:
             ui.info("Mesh daemon is not running")
         else:
             ui.success("Unloaded neural model weights from RAM")

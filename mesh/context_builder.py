@@ -287,9 +287,9 @@ def _whitelist_json_memory(mem: dict[str, Any]) -> dict[str, Any]:
     raw_tags = (
         mem.get("tags")
         if isinstance(mem.get("tags"), list)
-        else (mem.get("tags_list") or _parse_tags(mem.get("tags")))
+        else (mem.get("tags_list") or _parse_tags(mem.get("tags")) or [])
     )
-    clean_tags = [_sanitize_prompt_text(str(t)) for t in raw_tags if _sanitize_prompt_text(str(t))]
+    clean_tags = [_sanitize_prompt_text(str(t)) for t in (raw_tags or []) if _sanitize_prompt_text(str(t))]
     candidate = {
         "id": str(mem.get("id", "")),
         "content": _sanitize_prompt_text(str(mem.get("content", ""))),

@@ -30,6 +30,7 @@ import socket
 import sqlite3
 import stat
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -46,7 +47,7 @@ from .version import VERSION, check_for_updates
 for _stream in (sys.stdout, sys.stderr):
     if hasattr(_stream, "reconfigure"):
         try:
-            _stream.reconfigure(errors="replace")
+            getattr(_stream, "reconfigure")(errors="replace")
         except Exception:
             pass
 
@@ -126,7 +127,88 @@ def _handle_missing_namespace_cli(ns: str, as_json: bool = False) -> None:
     ui.warn(f"Namespace '{ns}' doesn't exist", hint)
 
 
-def _daemon_port_open(timeout: float = 0.08) -> Optional[int]:
+import http.client
+
+
+class _FastHTTPConnection(http.client.HTTPConnection):
+    def connect(self) -> None:
+        super().connect()
+        if getattr(self, "sock", None) is not None:
+            try:
+                self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            except Exception:
+                pass
+
+
+_CLI_HTTP_POOL: dict[tuple[str, int], http.client.HTTPConnection] = {}
+_CLI_HTTP_POOL_LOCK = threading.Lock()
+
+_CLI_MESH_CACHE: dict[tuple[str, str, bool], Any] = {}
+_CLI_MESH_CACHE_LOCK = threading.Lock()
+
+
+def _get_cli_mesh(
+    namespace: str,
+    agent_id: str = "cli",
+    create: bool = False,
+    trusted_local: bool = True,
+) -> Any:
+    key = (namespace, agent_id, trusted_local)
+    with _CLI_MESH_CACHE_LOCK:
+        m = _CLI_MESH_CACHE.get(key)
+        if m is not None:
+            return m
+        from .memory import Mesh
+
+        m = Mesh(namespace=namespace, agent_id=agent_id, create=create, trusted_local=trusted_local)
+        _CLI_MESH_CACHE[key] = m
+        return m
+
+
+def evict_cli_mesh_cache(namespace: Optional[str] = None) -> None:
+    with _CLI_MESH_CACHE_LOCK:
+        if namespace is None:
+            _CLI_MESH_CACHE.clear()
+        else:
+            to_del = [k for k in _CLI_MESH_CACHE if k[0] == namespace]
+            for k in to_del:
+                _CLI_MESH_CACHE.pop(k, None)
+
+
+def _get_pooled_conn(host: str, port: int, timeout: float) -> http.client.HTTPConnection:
+    key = (host, port)
+    with _CLI_HTTP_POOL_LOCK:
+        conn = _CLI_HTTP_POOL.get(key)
+        if conn is not None and getattr(conn, "sock", None) is None:
+            _CLI_HTTP_POOL.pop(key, None)
+            conn = None
+        if conn is None:
+            conn = _FastHTTPConnection(host, port, timeout=timeout)
+            _CLI_HTTP_POOL[key] = conn
+        return conn
+
+
+def _close_pooled_conn(host: str, port: int) -> None:
+    key = (host, port)
+    with _CLI_HTTP_POOL_LOCK:
+        conn = _CLI_HTTP_POOL.pop(key, None)
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _daemon_port_open(timeout: float = 0.015) -> Optional[int]:
+    if os.environ.get("MESH_NO_DAEMON_PROXY", "").strip().lower() in ("1", "true", "yes"):
+        return None
+    try:
+        from .daemon import _pid_file
+
+        if not _pid_file().exists() and "MESH_FORCE_DAEMON_PROBE" not in os.environ:
+            return None
+    except Exception:
+        pass
     host = os.environ.get("MESH_HTTP_HOST", "127.0.0.1")
     try:
         port = env_int("MESH_HTTP_PORT", 7701, minimum=1, maximum=65535)
@@ -159,11 +241,14 @@ def _daemon_request(
         return None
     req_host = host or os.environ.get("MESH_HTTP_HOST", "127.0.0.1")
     req_port = int(port or env_int("MESH_HTTP_PORT", 7701, minimum=1, maximum=65535))
-    try:
-        with socket.create_connection((req_host, req_port), timeout=0.08):
+    if host is None and "MESH_HTTP_PORT" not in os.environ:
+        try:
+            from .daemon import _pid_file
+
+            if not _pid_file().exists():
+                return None
+        except Exception:
             pass
-    except OSError:
-        return None
 
     from .daemon import get_auth_headers, invalidate_daemon_identity_cache, verify_daemon_identity
 
@@ -171,56 +256,76 @@ def _daemon_request(
     if not verify_daemon_identity(host=req_host, port=req_port, timeout=0.5):
         return None
 
-    url = f"http://{req_host}:{req_port}{path}"
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
     headers = get_auth_headers()
+    headers["Connection"] = "keep-alive"
     if data is not None:
         headers["Content-Type"] = "application/json"
-    req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+
+    for attempt in range(2):
+        conn = _get_pooled_conn(req_host, req_port, timeout=timeout)
+        try:
+            conn.request(method, path, body=data, headers=headers)
+            resp = conn.getresponse()
+            raw_body = resp.read().decode("utf-8")
             if 200 <= int(resp.status) < 300:
-                raw_body = resp.read().decode("utf-8")
                 if not raw_body.strip():
                     return {}
                 try:
-                    parsed = json.loads(raw_body)
+                    return json.loads(raw_body)
                 except ValueError:
                     return {
                         "_daemon_lost": True,
                         "detail": f"Daemon returned an unreadable response for {path}.",
                     }
-                return parsed
+            elif resp.status in (400, 401, 403, 404, 409, 422, 500, 502, 503, 504):
+                try:
+                    err_body = json.loads(raw_body)
+                    detail = err_body.get("detail") if isinstance(err_body, dict) else raw_body
+                except Exception:
+                    detail = raw_body or f"HTTP {resp.status}"
+                return {"_http_error": int(resp.status), "detail": detail}
             return {
                 "_daemon_lost": True,
                 "detail": f"Daemon returned unexpected HTTP {resp.status} for {path}.",
             }
-    except urllib.error.HTTPError as e:
-        try:
-            err_body = json.loads(e.read().decode("utf-8"))
-            detail = err_body.get("detail") if isinstance(err_body, dict) else str(e)
-        except Exception:
-            detail = str(e)
-        return {"_http_error": int(e.code), "detail": detail}
-    except (TimeoutError, socket.timeout) as e:
-        invalidate_daemon_identity_cache(req_host, req_port)
-        return {
-            "_http_error": 504,
-            "_timeout": True,
-            "detail": f"Daemon timed out after {timeout}s while processing {path}: {e}",
-        }
-    except (urllib.error.URLError, OSError) as e:
-        invalidate_daemon_identity_cache(req_host, req_port)
-        if isinstance(getattr(e, "reason", None), (TimeoutError, socket.timeout)):
+        except (http.client.RemoteDisconnected, BrokenPipeError, ConnectionResetError) as e:
+            _close_pooled_conn(req_host, req_port)
+            if attempt == 0:
+                continue
+            invalidate_daemon_identity_cache(req_host, req_port)
+            return {
+                "_daemon_lost": True,
+                "detail": f"Lost the daemon connection while processing {path}: {e}",
+            }
+        except (TimeoutError, socket.timeout) as e:
+            _close_pooled_conn(req_host, req_port)
+            invalidate_daemon_identity_cache(req_host, req_port)
             return {
                 "_http_error": 504,
                 "_timeout": True,
                 "detail": f"Daemon timed out after {timeout}s while processing {path}: {e}",
             }
-        return {
-            "_daemon_lost": True,
-            "detail": f"Lost the daemon connection while processing {path}: {e}",
-        }
+        except OSError as e:
+            _close_pooled_conn(req_host, req_port)
+            invalidate_daemon_identity_cache(req_host, req_port)
+            if "timed out" in str(e).lower():
+                return {
+                    "_http_error": 504,
+                    "_timeout": True,
+                    "detail": f"Daemon timed out after {timeout}s while processing {path}: {e}",
+                }
+            return {
+                "_daemon_lost": True,
+                "detail": f"Lost the daemon connection while processing {path}: {e}",
+            }
+        except Exception as e:
+            _close_pooled_conn(req_host, req_port)
+            invalidate_daemon_identity_cache(req_host, req_port)
+            return {
+                "_daemon_lost": True,
+                "detail": f"Lost the daemon connection while processing {path}: {e}",
+            }
     return {
         "_daemon_lost": True,
         "detail": f"Daemon gave no response for {path}.",
@@ -281,9 +386,21 @@ def _namespace_degraded_counts(namespace: str) -> tuple[int, int]:
     db_path = ensure_secure_mesh_dir().resolve() / f"mesh_{namespace}.db"
     if not db_path.exists():
         return 0, 0
+
+    from .store import _CACHE_LOCK, _VECTOR_CACHE
+
+    with _CACHE_LOCK:
+        entry = _VECTOR_CACHE.get((db_path, namespace))
+        if entry is not None and entry.rows_by_id:
+            rows = list(entry.rows_by_id.values())
+            hash_cnt = sum(1 for r in rows if r.get("embedding_model") == "hash-384")
+            reembed_cnt = sum(1 for r in rows if r.get("embedding_model") in ("needs-reembed", "unknown") or not r.get("embedding"))
+            return hash_cnt, reembed_cnt
     try:
-        conn = sqlite3.connect(db_path, timeout=2.0)
-        try:
+        from .store import MeshStore
+
+        store = MeshStore(namespace=namespace, create=False)
+        with store._connect() as conn:
             hash_cnt = int(
                 conn.execute(
                     "SELECT COUNT(*) FROM memories WHERE namespace = ? AND embedding_model = 'hash-384'",
@@ -299,8 +416,6 @@ def _namespace_degraded_counts(namespace: str) -> tuple[int, int]:
                 or 0
             )
             return hash_cnt, reembed_cnt
-        finally:
-            conn.close()
     except Exception:
         return 0, 0
 
@@ -943,9 +1058,13 @@ def add_cmd() -> None:
             else:
                 ui.fail(f"Unexpected daemon response: {proxied}")
         else:
-            from .memory import Mesh
+            from .memory import get_engine_status
 
-            mesh = Mesh(namespace=ns, agent_id="human-cli", create=True, trusted_local=True)
+            eng = get_engine_status()
+            if not eng.get("model_loaded") and os.environ.get("MESH_CLI_FORCE_ONNX", "").strip().lower() not in ("1", "true", "yes"):
+                os.environ["MESH_FORCE_HASH_EMBED"] = "1"
+
+            mesh = _get_cli_mesh(namespace=ns, agent_id="human-cli", create=True, trusted_local=True)
             try:
                 result = mesh.learn(
                     content=final_content,
@@ -1068,11 +1187,15 @@ def ask_cmd() -> None:
                 other_possible = proxied.get("other_possible_memories", []) or []
                 filter_hint = proxied.get("filter_hint")
         else:
-            from .memory import Mesh
+            from .memory import get_engine_status
+
+            eng = get_engine_status()
+            if not eng.get("model_loaded") and os.environ.get("MESH_CLI_FORCE_ONNX", "").strip().lower() not in ("1", "true", "yes"):
+                os.environ["MESH_FORCE_HASH_EMBED"] = "1"
 
             sp.update(f"Searching {ns} (loading the embedding model on first use)…")
             try:
-                mesh = Mesh(namespace=ns, agent_id="human-cli", create=False, trusted_local=True)
+                mesh = _get_cli_mesh(namespace=ns, agent_id="human-cli", create=False, trusted_local=True)
             except NamespaceNotFoundError:
                 mesh = None
                 ns_missing = True
@@ -1191,10 +1314,8 @@ def inspect_cmd() -> None:
             return
         mems = proxied.get("memories", [])
     else:
-        from .memory import Mesh
-
         try:
-            mesh = Mesh(namespace=ns, agent_id="cli", create=False, trusted_local=True)
+            mesh = _get_cli_mesh(namespace=ns, agent_id="cli", create=False, trusted_local=True)
         except NamespaceNotFoundError:
             _handle_missing_namespace_cli(ns, args.json)
             return
@@ -1350,11 +1471,10 @@ def update_cmd() -> None:
         _done(args.memory_id)
         return
 
-    from .memory import Mesh
     from .store import NamespaceNotFoundError
 
     try:
-        mesh = Mesh(namespace=ns, agent_id="human-cli", create=False, trusted_local=True)
+        mesh = _get_cli_mesh(namespace=ns, agent_id="human-cli", create=False, trusted_local=True)
         res = mesh.update(
             memory_id=args.memory_id,
             content=content,
@@ -1375,7 +1495,6 @@ def update_cmd() -> None:
 
 def approve_cmd() -> None:
     """Approve one or all quarantined memories in a namespace (Finding S8)."""
-    from .memory import Mesh
     from .store import NamespaceNotFoundError
 
     parser = _parser(
@@ -1396,7 +1515,7 @@ def approve_cmd() -> None:
         ui.fail("Specify a memory ID or pass --all.", "Usage: mesh approve <id>  or  mesh approve --all")
 
     try:
-        mesh = Mesh(namespace=ns, agent_id="human-cli", create=False, trusted_local=True)
+        mesh = _get_cli_mesh(namespace=ns, agent_id="human-cli", create=False, trusted_local=True)
     except NamespaceNotFoundError:
         _handle_missing_namespace_cli(ns)
         sys.exit(1)
@@ -1541,11 +1660,10 @@ def forget_cmd() -> None:
         if proxied.get("status") == "not_found":
             _not_found()
 
-    from .memory import Mesh
     from .store import NamespaceNotFoundError
 
     try:
-        mesh = Mesh(namespace=ns, agent_id="human-cli", create=False, trusted_local=True)
+        mesh = _get_cli_mesh(namespace=ns, agent_id="human-cli", create=False, trusted_local=True)
         deleted = mesh.forget(args.memory_id)
     except NamespaceNotFoundError:
         _handle_missing_namespace_cli(ns)
@@ -1583,10 +1701,8 @@ def conflicts_cmd() -> None:
             print()
             ui.success(f"Resolved conflict {ui.style(str(args.resolve)[:8], 'bold')}")
             return
-        from .memory import Mesh
-
         try:
-            mesh = Mesh(namespace=ns, agent_id="cli", create=False, trusted_local=True)
+            mesh = _get_cli_mesh(namespace=ns, agent_id="cli", create=False, trusted_local=True)
             mesh.resolve_contradiction(args.resolve)
             print()
             ui.success(f"Resolved conflict {ui.style(str(args.resolve)[:8], 'bold')}")
@@ -1609,10 +1725,8 @@ def conflicts_cmd() -> None:
             return
         conflicts = proxied_list.get("contradictions", [])
     else:
-        from .memory import Mesh
-
         try:
-            mesh = Mesh(namespace=ns, agent_id="cli", create=False, trusted_local=True)
+            mesh = _get_cli_mesh(namespace=ns, agent_id="cli", create=False, trusted_local=True)
         except NamespaceNotFoundError:
             _handle_missing_namespace_cli(ns, args.json)
             return
@@ -1674,10 +1788,8 @@ def patterns_cmd() -> None:
             return
         p = proxied.get("patterns", {})
     else:
-        from .memory import Mesh
-
         try:
-            mesh = Mesh(namespace=ns, agent_id="cli", create=False, trusted_local=True)
+            mesh = _get_cli_mesh(namespace=ns, agent_id="cli", create=False, trusted_local=True)
         except NamespaceNotFoundError:
             _handle_missing_namespace_cli(ns, args.json)
             return
@@ -2517,7 +2629,6 @@ def status_cmd() -> None:
     except ValueError:
         st, h_cnt, r_cnt = None, 0, 0
 
-    from .memory import Mesh
     work_stats: dict[str, Any] = {
         "total": 0,
         "by_kind": {"goal": 0, "task": 0},
@@ -2525,7 +2636,7 @@ def status_cmd() -> None:
     }
     schema_ver = "3"
     try:
-        m = Mesh(namespace=ns, agent_id="cli", create=False, trusted_local=True)
+        m = _get_cli_mesh(namespace=ns, agent_id="cli", create=False, trusted_local=True)
         work_stats = m.store.get_work_item_stats()
         with m.store._connect() as conn:
             v_row = conn.execute("SELECT value FROM mesh_meta WHERE key = 'schema_version'").fetchone()
@@ -2741,11 +2852,10 @@ def brief_cmd() -> None:
     t0 = time.perf_counter()
     ns = _resolve_namespace(args.namespace)
     from .audit import log_audit_event
-    from .memory import Mesh
     from .store import NamespaceNotFoundError
 
     try:
-        mesh = Mesh(namespace=ns, agent_id="cli", create=False, trusted_local=True)
+        mesh = _get_cli_mesh(namespace=ns, agent_id="cli", create=False, trusted_local=True)
         brief = mesh.project_brief(
             max_tokens=args.max_tokens,
             include_work_items=True,
@@ -2894,9 +3004,8 @@ def task_cmd() -> None:
     t0 = time.perf_counter()
     ns = _resolve_namespace(args.namespace)
     from .audit import log_audit_event
-    from .memory import Mesh
 
-    mesh = Mesh(namespace=ns, agent_id="cli", create=(args.subcommand == "add"), trusted_local=True)
+    mesh = _get_cli_mesh(namespace=ns, agent_id="cli", create=(args.subcommand == "add"), trusted_local=True)
 
     if args.subcommand == "add":
         tags = _split_tags(args.tags)
@@ -2987,33 +3096,34 @@ def task_cmd() -> None:
         return
 
     elif args.subcommand == "show":
-        item = mesh.get_work_item(args.item_id, include_private=True)
-        if not item:
+        work_item = mesh.get_work_item(args.item_id, include_private=True)
+        if not work_item:
             ui.fail(f"Work item '{args.item_id}' not found in namespace '{ns}'.")
-        events = mesh.get_work_events(item_id=item["id"], limit=20)
-        log_audit_event("cli", "mesh task show", ns, (time.perf_counter() - t0) * 1000.0, "ok", "cli", len(str(item)), 1)
-        if args.json:
-            ui.json_out({"item": item, "events": events})
             return
-        ui.header(f"{item['kind'].capitalize()} {item['short_id']}", item["title"], f"status: {item['status']}")
+        events = mesh.get_work_events(item_id=work_item["id"], limit=20)
+        log_audit_event("cli", "mesh task show", ns, (time.perf_counter() - t0) * 1000.0, "ok", "cli", len(str(work_item)), 1)
+        if args.json:
+            ui.json_out({"item": work_item, "events": events})
+            return
+        ui.header(f"{work_item['kind'].capitalize()} {work_item['short_id']}", work_item["title"], f"status: {work_item['status']}")
         print()
         fields = [
-            ("ID", item["id"]),
-            ("Kind", item["kind"]),
-            ("Priority", item["priority"]),
-            ("Status", item["status"]),
-            ("Created by", f"{item['created_by']} ({ui.relative_time(item['created_at'])})"),
+            ("ID", work_item["id"]),
+            ("Kind", work_item["kind"]),
+            ("Priority", work_item["priority"]),
+            ("Status", work_item["status"]),
+            ("Created by", f"{work_item['created_by']} ({ui.relative_time(work_item['created_at'])})"),
         ]
-        if item.get("started_at"):
-            fields.append(("Started at", item["started_at"][:19]))
-        if item.get("completed_at"):
-            fields.append(("Completed at", f"{item['completed_at'][:19]} by {item.get('completed_by')}"))
-        if item.get("summary"):
-            fields.append(("Summary", item["summary"]))
-        if item.get("evidence"):
-            fields.append(("Evidence", ", ".join(item["evidence"])))
-        if item.get("tags"):
-            fields.append(("Tags", ", ".join(item["tags"])))
+        if work_item.get("started_at"):
+            fields.append(("Started at", work_item["started_at"][:19]))
+        if work_item.get("completed_at"):
+            fields.append(("Completed at", f"{work_item['completed_at'][:19]} by {work_item.get('completed_by')}"))
+        if work_item.get("summary"):
+            fields.append(("Summary", work_item["summary"]))
+        if work_item.get("evidence"):
+            fields.append(("Evidence", ", ".join(work_item["evidence"])))
+        if work_item.get("tags"):
+            fields.append(("Tags", ", ".join(work_item["tags"])))
         ui.kv(fields)
         if events:
             ui.section("Activity Log")
@@ -3035,11 +3145,10 @@ def log_cmd() -> None:
     t0 = time.perf_counter()
     ns = _resolve_namespace(args.namespace)
     from .audit import log_audit_event
-    from .memory import Mesh
     from .store import NamespaceNotFoundError
 
     try:
-        mesh = Mesh(namespace=ns, agent_id="cli", create=False, trusted_local=True)
+        mesh = _get_cli_mesh(namespace=ns, agent_id="cli", create=False, trusted_local=True)
         changelog_res = mesh.changelog(since=args.since, format=args.format, include_private=not args.no_private)
     except NamespaceNotFoundError:
         if args.format == "json":

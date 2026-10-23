@@ -13,7 +13,9 @@ Addresses Findings:
 """
 from __future__ import annotations
 
+from collections import OrderedDict
 import re
+import threading
 import unicodedata
 from typing import Iterable, NamedTuple, Optional
 
@@ -23,6 +25,19 @@ from .secrets import (
     is_credential,
     redact_secrets_local,
 )
+
+_GUARD_INGEST_CACHE: OrderedDict[tuple[str, bool], "GuardResult"] = OrderedDict()
+_POISON_CACHE: OrderedDict[str, bool] = OrderedDict()
+_TAGS_CACHE: OrderedDict[tuple[tuple[str, ...], bool], tuple[list[str], bool, tuple[str, ...]]] = OrderedDict()
+_GUARD_CACHE_LOCK = threading.Lock()
+_MAX_GUARD_CACHE = 2048
+
+
+def clear_guard_caches() -> None:
+    with _GUARD_CACHE_LOCK:
+        _GUARD_INGEST_CACHE.clear()
+        _POISON_CACHE.clear()
+        _TAGS_CACHE.clear()
 
 _INVISIBLE_CHAR_CLASS = INVISIBLE_CHAR_CLASS
 _ZERO_WIDTH_RE = ZERO_WIDTH_RE
@@ -105,10 +120,25 @@ def _normalize_for_poison_check(text: str) -> str:
 
 def is_poison_attempt(text: str) -> bool:
     """Return True if `text` matches any prompt-injection or structural breakout pattern."""
+    if isinstance(text, str) and len(text) <= 4096:
+        with _GUARD_CACHE_LOCK:
+            res = _POISON_CACHE.get(text)
+            if res is not None:
+                _POISON_CACHE.move_to_end(text)
+                return res
+
     norm = _normalize_for_poison_check(text)
     if not norm:
-        return False
-    return any(p.search(norm) for p in _COMPILED_POISON)
+        res = False
+    else:
+        res = any(p.search(norm) for p in _COMPILED_POISON)
+
+    if isinstance(text, str) and len(text) <= 4096:
+        with _GUARD_CACHE_LOCK:
+            if len(_POISON_CACHE) >= _MAX_GUARD_CACHE:
+                _POISON_CACHE.popitem(last=False)
+            _POISON_CACHE[text] = res
+    return res
 
 
 _is_poison_attempt = is_poison_attempt
@@ -134,20 +164,34 @@ def guard_ingest(content: str, local_only: bool = False) -> GuardResult:
     if not isinstance(content, str):
         content = str(content or "")
 
+    cache_key = (content, bool(local_only))
+    if len(content) <= 4096:
+        with _GUARD_CACHE_LOCK:
+            cached = _GUARD_INGEST_CACHE.get(cache_key)
+            if cached is not None:
+                _GUARD_INGEST_CACHE.move_to_end(cache_key)
+                return cached
+
     sanitized = _CONTROL_CHAR_RE.sub("", content).strip()
     if not sanitized:
-        return GuardResult(
+        res = GuardResult(
             content="",
             local_only=bool(local_only),
             rejected=True,
             reason="Memory content cannot be empty or solely control characters.",
             warnings=(),
         )
+        if len(content) <= 4096:
+            with _GUARD_CACHE_LOCK:
+                if len(_GUARD_INGEST_CACHE) >= _MAX_GUARD_CACHE:
+                    _GUARD_INGEST_CACHE.popitem(last=False)
+                _GUARD_INGEST_CACHE[cache_key] = res
+        return res
 
     from .memory import MAX_CONTENT_LENGTH
 
     if len(sanitized) > MAX_CONTENT_LENGTH:
-        return GuardResult(
+        res = GuardResult(
             content=sanitized,
             local_only=bool(local_only),
             rejected=True,
@@ -157,15 +201,27 @@ def guard_ingest(content: str, local_only: bool = False) -> GuardResult:
             ),
             warnings=(),
         )
+        if len(content) <= 4096:
+            with _GUARD_CACHE_LOCK:
+                if len(_GUARD_INGEST_CACHE) >= _MAX_GUARD_CACHE:
+                    _GUARD_INGEST_CACHE.popitem(last=False)
+                _GUARD_INGEST_CACHE[cache_key] = res
+        return res
 
     if is_poison_attempt(sanitized):
-        return GuardResult(
+        res = GuardResult(
             content=sanitized,
             local_only=bool(local_only),
             rejected=True,
             reason="Prompt injection or adversarial instruction pattern detected in memory content.",
             warnings=(),
         )
+        if len(content) <= 4096:
+            with _GUARD_CACHE_LOCK:
+                if len(_GUARD_INGEST_CACHE) >= _MAX_GUARD_CACHE:
+                    _GUARD_INGEST_CACHE.popitem(last=False)
+                _GUARD_INGEST_CACHE[cache_key] = res
+        return res
 
     warnings: list[str] = []
     final_local_only = bool(local_only)
@@ -179,13 +235,19 @@ def guard_ingest(content: str, local_only: bool = False) -> GuardResult:
             "Credential or secret pattern detected: secret was redacted and forced to private (local_only)."
         )
 
-    return GuardResult(
+    res = GuardResult(
         content=final_content,
         local_only=final_local_only,
         rejected=False,
         reason=None,
         warnings=tuple(warnings),
     )
+    if len(content) <= 4096:
+        with _GUARD_CACHE_LOCK:
+            if len(_GUARD_INGEST_CACHE) >= _MAX_GUARD_CACHE:
+                _GUARD_INGEST_CACHE.popitem(last=False)
+            _GUARD_INGEST_CACHE[cache_key] = res
+    return res
 
 
 def guard_tags(
@@ -199,6 +261,25 @@ def guard_tags(
     """
     if not tags:
         return [], bool(local_only), ()
+
+    tags_tuple: Optional[tuple[str, ...]] = None
+    cache_key: Optional[tuple[tuple[str, ...], bool]] = None
+    if isinstance(tags, (list, tuple)):
+        try:
+            tags_tuple = tuple(str(t) for t in tags)
+            if sum(len(t) for t in tags_tuple) <= 4096:
+                cache_key = (tags_tuple, bool(local_only))
+                with _GUARD_CACHE_LOCK:
+                    cached = _TAGS_CACHE.get(cache_key)
+                    if cached is not None:
+                        _TAGS_CACHE.move_to_end(cache_key)
+                        return list(cached[0]), cached[1], cached[2]
+            else:
+                tags_tuple = None
+        except Exception:
+            tags_tuple = None
+            cache_key = None
+
     clean_tags: list[str] = []
     final_local_only = bool(local_only)
     warnings: list[str] = []
@@ -220,4 +301,11 @@ def guard_tags(
         if t not in clean_tags:
             clean_tags.append(t)
 
-    return clean_tags, final_local_only, tuple(warnings)
+    warnings_tuple = tuple(warnings)
+    if cache_key is not None:
+        with _GUARD_CACHE_LOCK:
+            if len(_TAGS_CACHE) >= _MAX_GUARD_CACHE:
+                _TAGS_CACHE.popitem(last=False)
+            _TAGS_CACHE[cache_key] = (list(clean_tags), final_local_only, warnings_tuple)
+
+    return clean_tags, final_local_only, warnings_tuple

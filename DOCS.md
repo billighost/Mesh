@@ -761,6 +761,10 @@ It binds loopback by default. Non-loopback binding requires an explicit `--host`
 | `MESH_TOKENIZER_SHA256` | Additional/replacement tokenizer SHA-256 allowlist entry. |
 | `MESH_FORCE_PYTORCH` | Force the PyTorch backend (requires `[pytorch]`). |
 | `MESH_FORCE_FASTEMBED` | Force the FastEmbed backend (requires `[fastembed]`). |
+| `MESH_FORCE_HASH_EMBED` | Force the fast hash-384 fallback embedding backend without loading ONNX. |
+| `MESH_CLI_FORCE_ONNX` | Force ONNX model loading on one-shot CLI commands instead of fast hash-384. |
+| `MESH_AUTO_HEAL_ON_CALL` | `1` runs embedding healing synchronously on store access; default `0` (healing runs in background). |
+| `MESH_SYNC_ONNX` | `1` forces synchronous ONNX embedding on learn rather than fast-path hash indexing. |
 | `MESH_EMBED_CACHE_SIZE` | In-memory embedding LRU size. Default 1024. |
 | `MESH_IDLE_UNLOAD_SECONDS` | Idle seconds before unloading the model; `0` never unloads. |
 
@@ -775,6 +779,7 @@ It binds loopback by default. Non-loopback binding requires an explicit `--host`
 | `MESH_MAX_VECTOR_CACHE_SIZE` | In-memory vector cache cap. |
 | `MESH_MAX_QUERY_ROWS` | Query result cap. |
 | `MESH_MAX_AUDIT_ROWS` | Audit row cap. |
+| `MESH_STRICT_FSYNC` | `1` enforces SQLite `PRAGMA synchronous=NORMAL` instead of `OFF` for strict durability. |
 | `MESH_SKIP_WINDOWS_ACL` | Skips Windows ACL hardening. Not recommended. |
 
 ### HTTP, daemon, and auth
@@ -785,6 +790,7 @@ It binds loopback by default. Non-loopback binding requires an explicit `--host`
 | `MESH_ALLOWED_HOSTS` | Comma-separated additional allowed `Host` values for non-loopback binding. |
 | `MESH_UNIX_SOCKET` | POSIX Unix socket path (mode `0600`). |
 | `MESH_AUTH_TOKEN`, `MESH_TOKEN` | Token overrides for server/client. Prefer the generated `~/.mesh/auth_token`. |
+| `MESH_FORCE_DAEMON_PROBE` | `1` forces port probing even if `daemon.pid` is absent. |
 | `MESH_CSRF` | CSRF protection control for browser surfaces. |
 | `MESH_IN_DAEMON` | Internal: marks a process running inside the daemon. |
 

@@ -29,7 +29,7 @@ import uuid
 from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Iterator, Literal, Optional, Sequence
 
 import numpy as np
 
@@ -324,6 +324,8 @@ class _NamespaceLockState:
 
 _NS_LOCK_REGISTRY_MUTEX = threading.Lock()
 _NS_LOCK_REGISTRY: dict[tuple[Path, str], _NamespaceLockState] = {}
+_OPEN_LOCK_FDS: dict[Path, int] = {}
+_OPEN_LOCK_FDS_MUTEX = threading.Lock()
 
 
 def _get_ns_lock_path(namespace: str) -> Path:
@@ -337,59 +339,60 @@ def _get_ns_lock_path(namespace: str) -> Path:
 def _acquire_os_file_lock(lock_path: Path, timeout: float) -> int:
     """
     Acquire an exclusive cross-process advisory file lock on `lock_path`.
-    Finding N9: Guarantees `fd` is closed on *any* BaseException (including KeyboardInterrupt)
-    before lock acquisition succeeds.
+    Reuses open file descriptors across calls to eliminate OS open/close overhead.
     """
-    ensure_secure_mesh_dir(lock_path.parent)
-    reject_symlink(lock_path)
-    flags = os.O_RDWR | os.O_CREAT
-    if hasattr(os, "O_NOFOLLOW"):
-        flags |= os.O_NOFOLLOW
-    mode = stat.S_IRUSR | stat.S_IWUSR if os.name != "nt" else 0o600
-    fd = os.open(str(lock_path), flags, mode)
-    try:
-        if os.name != "nt":
-            try:
-                os.fchmod(fd, stat.S_IRUSR | stat.S_IWUSR)
-            except (AttributeError, OSError):
-                pass
-        else:
-            try:
-                if os.fstat(fd).st_size == 0:
-                    os.write(fd, b"\x00")
-            except OSError:
-                pass
+    with _OPEN_LOCK_FDS_MUTEX:
+        fd = _OPEN_LOCK_FDS.get(lock_path)
+        if fd is None:
+            ensure_secure_mesh_dir(lock_path.parent)
+            reject_symlink(lock_path)
+            flags = os.O_RDWR | os.O_CREAT
+            flags |= getattr(os, "O_NOFOLLOW", 0)
+            mode = stat.S_IRUSR | stat.S_IWUSR if os.name != "nt" else 0o600
+            fd = os.open(str(lock_path), flags, mode)
+            if os.name != "nt":
+                fchmod = getattr(os, "fchmod", None)
+                if fchmod is not None:
+                    try:
+                        fchmod(fd, stat.S_IRUSR | stat.S_IWUSR)
+                    except (AttributeError, OSError):
+                        pass
+            else:
+                try:
+                    if os.fstat(fd).st_size == 0:
+                        os.write(fd, b"\x00")
+                except OSError:
+                    pass
+            _OPEN_LOCK_FDS[lock_path] = fd
 
-        deadline = time.monotonic() + max(0.05, float(timeout))
-        sleep_s = 0.002
-        while True:
-            try:
-                if os.name == "nt":
-                    import msvcrt
-
-                    os.lseek(fd, 0, os.SEEK_SET)
-                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-                else:
-                    import fcntl
-
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                return fd
-            except OSError:
-                if time.monotonic() >= deadline:
-                    raise TimeoutError(
-                        f"Timed out after {timeout:.1f}s waiting for namespace write lock '{lock_path.name}'."
-                    )
-                time.sleep(sleep_s)
-                sleep_s = min(0.05, sleep_s * 1.4)
-    except BaseException:
+    deadline = time.monotonic() + max(0.05, float(timeout))
+    sleep_s = 0.002
+    while True:
         try:
-            os.close(fd)
+            if os.name == "nt":
+                import msvcrt
+
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                flock = getattr(fcntl, "flock", None)
+                if flock is not None:
+                    lock_ex = getattr(fcntl, "LOCK_EX", 2)
+                    lock_nb = getattr(fcntl, "LOCK_NB", 4)
+                    flock(fd, lock_ex | lock_nb)
+            return fd
         except OSError:
-            pass
-        raise
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"Timed out after {timeout:.1f}s waiting for namespace write lock '{lock_path.name}'."
+                )
+            time.sleep(sleep_s)
+            sleep_s = min(0.05, sleep_s * 1.4)
 
 
-def _release_os_file_lock(fd: int) -> None:
+def _release_os_file_lock(fd: int, close_fd: bool = False) -> None:
     try:
         if os.name == "nt":
             import msvcrt
@@ -402,15 +405,19 @@ def _release_os_file_lock(fd: int) -> None:
         else:
             import fcntl
 
+            flock = getattr(fcntl, "flock", None)
+            if flock is not None:
+                lock_un = getattr(fcntl, "LOCK_UN", 8)
+                try:
+                    flock(fd, lock_un)
+                except OSError:
+                    pass
+    finally:
+        if close_fd:
             try:
-                fcntl.flock(fd, fcntl.LOCK_UN)
+                os.close(fd)
             except OSError:
                 pass
-    finally:
-        try:
-            os.close(fd)
-        except OSError:
-            pass
 
 
 @contextlib.contextmanager
@@ -446,9 +453,9 @@ def namespace_write_lock(namespace: str, timeout: float = 15.0) -> Iterator[None
         finally:
             state.depth -= 1
             if state.depth == 0 and state.fd is not None:
-                fd_to_close = state.fd
+                fd_to_release = state.fd
                 state.fd = None
-                _release_os_file_lock(fd_to_close)
+                _release_os_file_lock(fd_to_release, close_fd=False)
     finally:
         state.rlock.release()
 
@@ -473,10 +480,30 @@ def evict_namespace_write_lock(namespace: str) -> None:
                 return
             _NS_LOCK_REGISTRY.pop(key, None)
             if state.fd is not None:
-                _release_os_file_lock(state.fd)
+                _release_os_file_lock(state.fd, close_fd=True)
                 state.fd = None
+            if state.lock_path is not None:
+                with _OPEN_LOCK_FDS_MUTEX:
+                    open_fd = _OPEN_LOCK_FDS.pop(state.lock_path, None)
+                    if open_fd is not None:
+                        try:
+                            os.close(open_fd)
+                        except OSError:
+                            pass
         finally:
             state.rlock.release()
+
+
+@atexit.register
+def _cleanup_open_lock_fds() -> None:
+    with _OPEN_LOCK_FDS_MUTEX:
+        for fd in _OPEN_LOCK_FDS.values():
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        _OPEN_LOCK_FDS.clear()
+
 
 
 def _clean_possessives(text: str) -> str:
@@ -707,9 +734,10 @@ class _PooledConnection(sqlite3.Connection):
             self._mesh_lock.release()
             raise
 
-    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> bool:
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> Literal[False]:
         try:
-            return super().__exit__(exc_type, exc_val, exc_tb)
+            super().__exit__(exc_type, exc_val, exc_tb)
+            return False
         finally:
             self._mesh_lock.release()
 
@@ -785,9 +813,10 @@ class _ConnectionCheckout:
             self._checkin()
             raise
 
-    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> bool:
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> Literal[False]:
         try:
-            return self._conn.__exit__(exc_type, exc_val, exc_tb)
+            self._conn.__exit__(exc_type, exc_val, exc_tb)
+            return False
         finally:
             self._checkin()
 
@@ -864,7 +893,7 @@ def _get_db_stamp(db_path: Path) -> Optional[DbStamp]:
         return None
 
 
-def _normalize_vector(vec: list[float] | np.ndarray, enforce_dim: bool = True) -> np.ndarray:
+def _normalize_vector(vec: Sequence[float] | np.ndarray, enforce_dim: bool = True) -> np.ndarray:
     arr = np.asarray(vec, dtype=np.float32).reshape(-1)
     if enforce_dim and arr.size != EMBEDDING_DIM:
         raise ValueError(
@@ -876,7 +905,7 @@ def _normalize_vector(vec: list[float] | np.ndarray, enforce_dim: bool = True) -
     return np.ascontiguousarray(arr, dtype=np.float32)
 
 
-def _vector_to_blob(vec: list[float] | np.ndarray) -> bytes:
+def _vector_to_blob(vec: Sequence[float] | np.ndarray) -> bytes:
     """Serialize a vector into a normalized float32 byte buffer (encrypting if at-rest encryption is active)."""
     raw = _normalize_vector(vec).tobytes()
     if is_encryption_enabled():
@@ -960,12 +989,14 @@ class _VectorCacheEntry:
         "ids",
         "id_to_idx",
         "_matrix_buf",
+        "_hash_matrix_buf",
         "dim",
         "all_ids",
         "rows_by_id",
         "lexical_by_id",
         "stem_df",
         "stem_to_ids",
+        "token_to_ids",
         "needs_healing_ids",
     )
 
@@ -994,6 +1025,7 @@ class _VectorCacheEntry:
         self.lexical_by_id: dict[str, dict[str, Any]] = {}
         self.stem_df: dict[str, int] = {}
         self.stem_to_ids: dict[str, set[str]] = {}
+        self.token_to_ids: dict[str, set[str]] = {}
         self.needs_healing_ids: set[str] = (
             set(needs_healing_ids) if needs_healing_ids is not None else set()
         )
@@ -1005,19 +1037,28 @@ class _VectorCacheEntry:
             buf[:n_rows] = matrix
             self._matrix_buf: Optional[np.ndarray] = buf
             self.dim: int = dim
+
+            hbuf = np.empty((cap, 384), dtype=np.float32)
+            self._hash_matrix_buf: Optional[np.ndarray] = hbuf
         else:
             self._matrix_buf = None
+            self._hash_matrix_buf = None
             self.dim = 0
 
         for mid, row_meta in self.rows_by_id.items():
-            if reused_lexical and mid in reused_lexical:
-                lex = reused_lexical[mid]
-                self.lexical_by_id[mid] = lex
-                for s in lex["df_stems"]:
-                    self.stem_df[s] = self.stem_df.get(s, 0) + 1
-                    self.stem_to_ids.setdefault(s, set()).add(mid)
-            else:
-                self._index_row_lexical(mid, row_meta)
+            self._index_row_lexical(mid, row_meta)
+            idx = self.id_to_idx.get(mid)
+            if idx is not None and self._hash_matrix_buf is not None:
+                if row_meta.get("embedding_model") == "hash-384" and self._matrix_buf is not None:
+                    self._hash_matrix_buf[idx] = self._matrix_buf[idx]
+                else:
+                    try:
+                        from .memory import _hash_embed_384
+
+                        self._hash_matrix_buf[idx] = _hash_embed_384(str(row_meta.get("content", "")))
+                    except Exception:
+                        if self._matrix_buf is not None and self._matrix_buf.shape[1] == 384:
+                            self._hash_matrix_buf[idx] = self._matrix_buf[idx]
 
             if needs_healing_ids is None:
                 idx = self.id_to_idx.get(mid)
@@ -1029,6 +1070,15 @@ class _VectorCacheEntry:
         _CACHE_REBUILD_COUNT += 1
 
     def _index_row_lexical(self, memory_id: str, row_meta: dict[str, Any]) -> None:
+        old_tokens = row_meta.get("_indexed_tokens")
+        if old_tokens:
+            for tok in old_tokens:
+                t_set = self.token_to_ids.get(tok)
+                if t_set is not None:
+                    t_set.discard(memory_id)
+                    if not t_set:
+                        self.token_to_ids.pop(tok, None)
+
         old_lex = self.lexical_by_id.pop(memory_id, None)
         if old_lex is not None:
             for s in old_lex["df_stems"]:
@@ -1044,7 +1094,20 @@ class _VectorCacheEntry:
                         self.stem_to_ids.pop(s, None)
 
         content = str(row_meta.get("content", ""))
-        tags_list = row_meta.get("tags_list") or _parse_tags_json(row_meta.get("tags"))
+        tags_raw = row_meta.get("tags")
+        tags_list = row_meta.get("tags_list") or (_parse_tags_json(tags_raw) if tags_raw else [])
+        row_meta["tags_list"] = tags_list
+        row_meta["_tags_low_set"] = frozenset(t.lower() for t in tags_list)
+
+        search_text = f"{content} {' '.join(tags_list)}" if tags_list else content
+        search_tokens = _extract_search_tokens(search_text)
+        row_meta["_search_tokens"] = search_tokens
+
+        indexed_tokens = set(search_tokens[0]) | search_tokens[2]
+        row_meta["_indexed_tokens"] = indexed_tokens
+        for tok in indexed_tokens:
+            self.token_to_ids.setdefault(tok, set()).add(memory_id)
+
         new_lex = _build_row_lexical_entry(content, tags_list)
         self.lexical_by_id[memory_id] = new_lex
         for s in new_lex["df_stems"]:
@@ -1052,6 +1115,17 @@ class _VectorCacheEntry:
             self.stem_to_ids.setdefault(s, set()).add(memory_id)
 
     def _unindex_row_lexical(self, memory_id: str) -> None:
+        row_meta = self.rows_by_id.get(memory_id)
+        if row_meta is not None:
+            old_tokens = row_meta.get("_indexed_tokens")
+            if old_tokens:
+                for tok in old_tokens:
+                    t_set = self.token_to_ids.get(tok)
+                    if t_set is not None:
+                        t_set.discard(memory_id)
+                        if not t_set:
+                            self.token_to_ids.pop(tok, None)
+
         old_lex = self.lexical_by_id.pop(memory_id, None)
         if old_lex is not None:
             for s in old_lex["df_stems"]:
@@ -1090,12 +1164,14 @@ class _VectorCacheEntry:
     def similarity_snapshot(
         self,
         query_vec: np.ndarray,
+        use_hash_matrix: bool = False,
     ) -> tuple[list[str], Optional[np.ndarray], dict[str, dict[str, Any]]]:
         with _CACHE_LOCK:
             ids_copy = list(self.ids)
-            if self._matrix_buf is None or not ids_copy:
+            buf = self._hash_matrix_buf if use_hash_matrix else self._matrix_buf
+            if buf is None or not ids_copy:
                 return ids_copy, None, dict(self.rows_by_id)
-            mat_slice = self._matrix_buf[: len(ids_copy)]
+            mat_slice = buf[: len(ids_copy)]
             if query_vec.ndim != 1 or query_vec.shape[0] != mat_slice.shape[1]:
                 return ids_copy, None, dict(self.rows_by_id)
             return ids_copy, mat_slice @ query_vec, dict(self.rows_by_id)
@@ -1123,8 +1199,8 @@ class _VectorCacheEntry:
         self.all_ids.add(memory_id)
         if row_meta is not None:
             self.rows_by_id[memory_id] = dict(row_meta)
-            self._index_row_lexical(memory_id, row_meta)
-            if _row_needs_healing(row_meta, vec):
+            self._index_row_lexical(memory_id, self.rows_by_id[memory_id])
+            if _row_needs_healing(self.rows_by_id[memory_id], vec):
                 self.needs_healing_ids.add(memory_id)
             else:
                 self.needs_healing_ids.discard(memory_id)
@@ -1141,6 +1217,17 @@ class _VectorCacheEntry:
             if self._matrix_buf is None or vec_1d.shape[0] != self.dim:
                 return False
             self._matrix_buf[existing_idx] = vec_1d
+            if self._hash_matrix_buf is not None:
+                meta = self.rows_by_id.get(memory_id) or row_meta or {}
+                if meta.get("embedding_model") == "hash-384" and vec_1d.shape[0] == 384:
+                    self._hash_matrix_buf[existing_idx] = vec_1d
+                else:
+                    try:
+                        from .memory import _hash_embed_384
+
+                        self._hash_matrix_buf[existing_idx] = _hash_embed_384(str(meta.get("content", "")))
+                    except Exception:
+                        pass
             return True
 
         n = len(self.ids)
@@ -1150,6 +1237,18 @@ class _VectorCacheEntry:
             buf[0] = vec_1d
             self._matrix_buf = buf
             self.dim = dim
+            hbuf = np.empty((64, 384), dtype=np.float32)
+            meta = self.rows_by_id.get(memory_id) or row_meta or {}
+            if meta.get("embedding_model") == "hash-384" and vec_1d.shape[0] == 384:
+                hbuf[0] = vec_1d
+            else:
+                try:
+                    from .memory import _hash_embed_384
+
+                    hbuf[0] = _hash_embed_384(str(meta.get("content", "")))
+                except Exception:
+                    hbuf[0] = vec_1d
+            self._hash_matrix_buf = hbuf
             self.ids = [memory_id]
             self.id_to_idx = {memory_id: 0}
             return True
@@ -1162,8 +1261,24 @@ class _VectorCacheEntry:
             new_buf = np.empty((new_cap, self.dim), dtype=np.float32)
             new_buf[:n] = self._matrix_buf[:n]
             self._matrix_buf = new_buf
+            if self._hash_matrix_buf is not None:
+                new_hbuf = np.empty((new_cap, 384), dtype=np.float32)
+                new_hbuf[:n] = self._hash_matrix_buf[:n]
+                self._hash_matrix_buf = new_hbuf
 
         self._matrix_buf[n] = vec_1d
+        if self._hash_matrix_buf is not None:
+            meta = self.rows_by_id.get(memory_id) or row_meta or {}
+            if meta.get("embedding_model") == "hash-384" and vec_1d.shape[0] == 384:
+                self._hash_matrix_buf[n] = vec_1d
+            else:
+                try:
+                    from .memory import _hash_embed_384
+
+                    self._hash_matrix_buf[n] = _hash_embed_384(str(meta.get("content", "")))
+                except Exception:
+                    self._hash_matrix_buf[n] = vec_1d
+
         self.id_to_idx[memory_id] = n
         self.ids.append(memory_id)
         return True
@@ -1171,8 +1286,8 @@ class _VectorCacheEntry:
     def delete_vector(self, memory_id: str) -> None:
         self.all_ids.discard(memory_id)
         self.needs_healing_ids.discard(memory_id)
-        self.rows_by_id.pop(memory_id, None)
         self._unindex_row_lexical(memory_id)
+        self.rows_by_id.pop(memory_id, None)
         idx = self.id_to_idx.pop(memory_id, None)
         if idx is None:
             return
@@ -1183,9 +1298,12 @@ class _VectorCacheEntry:
             self.id_to_idx[last_id] = idx
             if self._matrix_buf is not None:
                 self._matrix_buf[idx] = self._matrix_buf[last_idx]
+            if self._hash_matrix_buf is not None:
+                self._hash_matrix_buf[idx] = self._hash_matrix_buf[last_idx]
         self.ids.pop()
         if not self.ids or self._matrix_buf is None:
             self._matrix_buf = None
+            self._hash_matrix_buf = None
             self.dim = 0
 
 
@@ -1224,11 +1342,11 @@ _TELEMETRY_BUFFERS: dict[Path, _TelemetryBuffer] = {}
 def _get_telemetry_batch_limit() -> int:
     raw = os.environ.get("MESH_TELEMETRY_BATCH", "").strip()
     if not raw:
-        return 50
+        return 128
     try:
         return max(0, int(raw))
     except ValueError:
-        return 50
+        return 128
 
 
 def _get_telemetry_flush_seconds() -> float:
@@ -1301,7 +1419,6 @@ def _flush_telemetry_for_db_path(db_path: Path) -> None:
             _QUERY_WRITE_COUNTS[resolved] = q_writes
             with store._connect() as conn:
                 conn.execute("BEGIN IMMEDIATE")
-                current_cv: Optional[int] = None
                 try:
                     for mid, (delta, accessed_at) in inc_items:
                         conn.execute(
@@ -1339,23 +1456,20 @@ def _flush_telemetry_for_db_path(db_path: Path) -> None:
                             _QUERY_WRITE_COUNTS[resolved] = 0
                             _prune_queries_table_locked(conn, ns, _max_query_rows())
                     conn.commit()
-                    current_cv = store._read_content_version_locked(conn)
+                    store._read_content_version_locked(conn)
                 except Exception:
                     if conn.in_transaction:
                         conn.rollback()
                     raise
-            cached = _VECTOR_CACHE.get((resolved, ns))
-            if (
-                cached is not None
-                and current_cv is not None
-                and cached.content_version is not None
-                and cached.content_version == current_cv
-            ):
-                stamp = _get_db_stamp(resolved)
-                cv_after = store._read_content_version_locked()
-                if stamp is not None and cv_after == current_cv:
-                    _INITIALIZED_DBS[resolved] = stamp
-                    cached.update_stamp(stamp, data_version=store._get_data_version_locked())
+            new_stamp = _get_db_stamp(resolved)
+            with _CACHE_LOCK:
+                if new_stamp is not None:
+                    _INITIALIZED_DBS[resolved] = new_stamp
+                    for (c_path, _), vcache in _VECTOR_CACHE.items():
+                        if c_path == resolved:
+                            vcache.stamp = new_stamp
+                            vcache.mtime_ns = new_stamp[0]
+                            vcache.file_size = new_stamp[1]
     except Exception:
         _requeue_telemetry(resolved, ns, inc_items, q_rows)
 
@@ -1859,13 +1973,14 @@ class MeshStore:
                 factory=_PooledConnection,
             )
             conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA synchronous=NORMAL")
+            sync_mode = "NORMAL" if os.environ.get("MESH_STRICT_FSYNC") == "1" else "OFF"
+            conn.execute(f"PRAGMA synchronous={sync_mode}")
             conn.execute("PRAGMA temp_store=MEMORY")
             conn.execute("PRAGMA busy_timeout=5000")
             conn.execute("PRAGMA secure_delete=ON")
             try:
                 if os.name != "nt":
-                    conn.execute("PRAGMA mmap_size=268435456")
+                    conn.execute("PRAGMA mmap_size=67108864")
                 conn.execute("PRAGMA cache_size=-32000")
             except sqlite3.OperationalError:
                 pass
@@ -1991,6 +2106,17 @@ class MeshStore:
             dv = self._get_data_version_locked()
             cv = content_version if content_version is not None else self._read_content_version_locked()
             synced_cache.update_stamp(stamp, data_version=dv, content_version=cv)
+
+    def _refresh_cache_stamp_after_non_memory_write(self) -> None:
+        stamp = _get_db_stamp(self.db_path)
+        if stamp is not None:
+            with _CACHE_LOCK:
+                _INITIALIZED_DBS[self.db_path] = stamp
+                for (c_path, _), vcache in _VECTOR_CACHE.items():
+                    if c_path == self.db_path:
+                        vcache.stamp = stamp
+                        vcache.mtime_ns = stamp[0]
+                        vcache.file_size = stamp[1]
 
     def _ensure_initialized(self) -> None:
         if not self.create and not self.db_path.exists():
@@ -2349,7 +2475,7 @@ class MeshStore:
                 return
             missing_ids = [r[0] for r in missing_rows]
             try:
-                import chromadb
+                import chromadb  # pyright: ignore[reportMissingImports]
 
                 client = chromadb.PersistentClient(path=str(chroma_dir))
                 col = client.get_collection(name=f"mesh_{self.namespace}")
@@ -2986,24 +3112,11 @@ class MeshStore:
     def get(self, memory_id: str) -> Optional[dict[str, Any]]:
         if not self.db_path.exists():
             return None
-        self.flush_telemetry()
         with _CACHE_LOCK:
             cache = self._get_vector_cache()
             row = cache.rows_by_id.get(memory_id)
             if row is not None:
-                out = dict(row)
-                try:
-                    with self._connect() as conn:
-                        r = conn.execute(
-                            "SELECT access_count, accessed_at FROM memories WHERE id = ? AND namespace = ?",
-                            (memory_id, self.namespace),
-                        ).fetchone()
-                        if r is not None:
-                            out["access_count"] = int(r[0] or 0)
-                            out["accessed_at"] = r[1]
-                except Exception:
-                    pass
-                return out
+                return dict(row)
         return None
 
     def update(
@@ -3032,7 +3145,7 @@ class MeshStore:
         `content is None` and `local_only=False` is requested.
         """
         self._ensure_initialized()
-        self.flush_telemetry()
+        self._maybe_lazy_flush_telemetry()
         now = _utc_now_iso()
         norm_vec: Optional[np.ndarray] = (
             _normalize_vector(embedding, enforce_dim=True) if embedding is not None else None
@@ -3635,9 +3748,13 @@ class MeshStore:
         self._maybe_lazy_flush_telemetry()
         q_vec = _normalize_vector(embedding, enforce_dim=False)
         cache = self._get_vector_cache()
+        use_hash_sim = False
         with _CACHE_LOCK:
             ids_snap = list(cache.ids)
             mat = cache.matrix
+            if (query_embedding_model == "hash-384" or mat is None) and cache._hash_matrix_buf is not None and len(ids_snap) > 0 and q_vec.ndim == 1 and q_vec.shape[0] == 384:
+                mat = cache._hash_matrix_buf[: len(ids_snap)]
+                use_hash_sim = True
             if mat is None or len(ids_snap) == 0 or q_vec.ndim != 1 or q_vec.shape[0] != mat.shape[1]:
                 return []
             sims = mat @ q_vec
@@ -3680,8 +3797,6 @@ class MeshStore:
         if not masked_indices:
             return []
 
-        lexical_map = self._fts_lexical_scores(query_text, limit=max(len(masked_indices), 50))
-
         norm_q = _clean_possessives(query_text)
         raw_q_tokens = [t.strip("._:-/") for t in _TOKEN_RE.findall(norm_q)]
         raw_q_tokens = [t for t in raw_q_tokens if len(t) >= 2 and t not in _LEXICAL_STOPWORDS]
@@ -3693,16 +3808,33 @@ class MeshStore:
         q_norm_phrase = " ".join(_WORD_RE.findall(norm_q))
         q_compact = re.sub(r"[^a-z0-9]", "", q_norm_phrase)
 
+        lexical_map: dict[str, float] = {}
+        for tok in q_content_tokens:
+            t_hits = cache.token_to_ids.get(tok)
+            if t_hits:
+                for mid in t_hits:
+                    if mid in masked_mid_set:
+                        lexical_map[mid] = lexical_map.get(mid, 0.0) + 1.0
+        for syn_set in q_synonyms.values():
+            for syn in syn_set:
+                s_hits = cache.token_to_ids.get(syn)
+                if s_hits:
+                    for mid in s_hits:
+                        if mid in masked_mid_set:
+                            lexical_map[mid] = lexical_map.get(mid, 0.0) + 0.5
+        if lexical_map:
+            max_hits = max(lexical_map.values())
+            for mid, hits in list(lexical_map.items()):
+                rel = hits / max_hits
+                lexical_map[mid] = round(0.65 * rel + 0.35 * (hits / (hits + 1.0)), 4)
+
         masked_count = len(masked_indices)
-        if masked_count >= PREMASK_SKIP_CUT_THRESHOLD:
-            k = min(masked_count, max(n * PREMASK_TOP_K_MULTIPLIER, 250))
+        k = min(masked_count, max(n * 4, 30))
+        if masked_count > k:
             masked_arr = np.asarray(masked_indices, dtype=np.int64)
             masked_sims = sims[masked_arr]
-            if k < masked_count:
-                top_local = np.argpartition(-masked_sims, k - 1)[:k]
-                candidate_mid_set = {ids_snap[int(masked_arr[i])] for i in top_local}
-            else:
-                candidate_mid_set = set(masked_mid_set)
+            top_local = np.argpartition(-masked_sims, k - 1)[:k]
+            candidate_mid_set = {ids_snap[int(masked_arr[i])] for i in top_local}
             candidate_mid_set.update(mid for mid in lexical_map if mid in masked_mid_set)
             with _CACHE_LOCK:
                 for s in q_stems:
@@ -3736,7 +3868,7 @@ class MeshStore:
                 continue
             parsed_tags = cached_row.get("tags_list") or []
 
-            mixed_space = _is_mixed_space(cached_row.get("embedding_model"), query_embedding_model)
+            mixed_space = False if use_hash_sim else _is_mixed_space(cached_row.get("embedding_model"), query_embedding_model)
             sem_sim = 0.0 if mixed_space else max(0.0, min(1.0, float(sims[idx])))
             fts_score = lexical_map.get(mid, 0.0)
             lex_score, specific_cov, exact_stem_cov, match_reason = self._score_candidate_lexical(
@@ -3948,18 +4080,6 @@ class MeshStore:
         if not rows_snap:
             return []
 
-        fresh_counts: dict[str, tuple[int, str]] = {}
-        try:
-            with _CACHE_LOCK:
-                with self._connect() as conn:
-                    for mid, ac, at in conn.execute(
-                        "SELECT id, access_count, accessed_at FROM memories WHERE namespace = ?",
-                        (self.namespace,),
-                    ).fetchall():
-                        fresh_counts[str(mid)] = (int(ac or 0), str(at or ""))
-        except Exception:
-            pass
-
         type_filter = memory_type.strip().lower() if memory_type else None
         req_tags: set[str] = set()
         if tag and tag.strip():
@@ -3993,10 +4113,7 @@ class MeshStore:
                     continue
                 if eff_conf < min_confidence:
                     continue
-            row_copy = dict(row)
-            if mid in fresh_counts:
-                row_copy["access_count"], row_copy["accessed_at"] = fresh_counts[mid]
-            filtered.append(row_copy)
+            filtered.append(dict(row))
 
         if order_by == "confidence":
             filtered.sort(
@@ -4025,7 +4142,30 @@ class MeshStore:
         """
         if not self.db_path.exists():
             return []
-        self.flush_telemetry()
+        self._maybe_lazy_flush_telemetry()
+        with _CACHE_LOCK:
+            synced = self._is_cache_synced_locked()
+            if synced is not None:
+                results: list[dict[str, Any]] = []
+                for mid in synced.ids:
+                    row = synced.rows_by_id.get(mid)
+                    if row is None:
+                        continue
+                    if row.get("local_only"):
+                        continue
+                    if not include_quarantined and row.get("quarantined"):
+                        continue
+                    d = dict(row)
+                    if include_embeddings:
+                        idx = synced.id_to_idx.get(mid)
+                        if idx is not None and synced._matrix_buf is not None:
+                            d["embedding"] = synced._matrix_buf[idx].tolist()
+                        else:
+                            d["embedding"] = None
+                    results.append(d)
+                results.sort(key=lambda r: str(r.get("created_at") or ""))
+                return results
+
         q_clause = "" if include_quarantined else "AND COALESCE(quarantined, 0) = 0 "
         with _CACHE_LOCK:
             with self._connect() as conn:
@@ -4320,11 +4460,6 @@ class MeshStore:
                         if conn.in_transaction:
                             conn.rollback()
                         raise
-                    if deleted:
-                        try:
-                            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                        except sqlite3.OperationalError:
-                            pass
 
                 if deleted:
                     if synced_cache is not None:
@@ -4630,7 +4765,6 @@ class MeshStore:
                 db_new = encrypt_text_for_storage(safe_new) if enc_on else safe_new
                 db_existing = encrypt_text_for_storage(safe_existing) if enc_on else safe_existing
 
-                new_cv: Optional[int] = None
                 with self._connect() as conn:
                     conn.execute("BEGIN IMMEDIATE")
                     try:
@@ -4652,14 +4786,12 @@ class MeshStore:
                                 now,
                             ),
                         )
-                        new_cv = self._bump_content_version_in_tx(conn)
                         conn.commit()
                     except Exception:
                         if conn.in_transaction:
                             conn.rollback()
                         raise
-                if synced_cache is not None:
-                    self._refresh_stamps_after_write_locked(synced_cache, content_version=new_cv)
+            self._refresh_cache_stamp_after_non_memory_write()
         return cid
 
     def get_contradictions(self, resolved: bool = False) -> list[dict[str, Any]]:
@@ -4700,8 +4832,6 @@ class MeshStore:
 
         with namespace_write_lock(self.namespace):
             with _CACHE_LOCK:
-                synced_cache = self._is_cache_synced_locked()
-                new_cv: Optional[int] = None
                 with self._connect() as conn:
                     conn.execute("BEGIN IMMEDIATE")
                     try:
@@ -4738,7 +4868,6 @@ class MeshStore:
                             "UPDATE contradictions SET resolved = 1 WHERE id = ? AND namespace = ?",
                             (target_id, self.namespace),
                         )
-                        new_cv = self._bump_content_version_in_tx(conn)
                         conn.commit()
                         updated = cur.rowcount > 0
                     except Exception:
@@ -4746,9 +4875,8 @@ class MeshStore:
                             conn.rollback()
                         raise
 
-                if synced_cache is not None:
-                    self._refresh_stamps_after_write_locked(synced_cache, content_version=new_cv)
-                return updated
+            self._refresh_cache_stamp_after_non_memory_write()
+            return updated
 
     def get_patterns(self, include_private: bool = False) -> dict[str, Any]:
         """
@@ -4763,9 +4891,13 @@ class MeshStore:
                 "stale_memories": [],
             }
         self.flush_telemetry()
-        priv_q_filter = "" if include_private else "AND COALESCE(private_query, 0) = 0"
-        priv_mem_filter = "" if include_private else "AND COALESCE(local_only, 0) = 0"
+        cache = self._get_vector_cache()
+        mem_rows = [
+            r for r in cache.rows_by_id.values()
+            if not r.get("quarantined") and (include_private or not r.get("local_only"))
+        ]
 
+        priv_q_filter = "" if include_private else "AND COALESCE(private_query, 0) = 0"
         with _CACHE_LOCK:
             with self._connect() as conn:
                 conn.row_factory = sqlite3.Row
@@ -4774,17 +4906,6 @@ class MeshStore:
                     SELECT query_text, best_similarity
                     FROM queries
                     WHERE namespace = ? AND TRIM(query_text) != '' {priv_q_filter}
-                    """,
-                    (self.namespace,),
-                ).fetchall()
-
-                mem_rows = conn.execute(
-                    f"""
-                    SELECT id, content, memory_type, confidence, tags, source_agent,
-                           created_at, accessed_at, access_count, ttl_days, decay_start_at,
-                           local_only, quarantined
-                    FROM memories
-                    WHERE namespace = ? AND COALESCE(quarantined, 0) = 0 {priv_mem_filter}
                     """,
                     (self.namespace,),
                 ).fetchall()
@@ -5036,7 +5157,8 @@ class MeshStore:
                 item_dict = dict(row)
                 item_dict["tags"] = clean_tags
                 item_dict["evidence"] = []
-                return item_dict
+            self._refresh_cache_stamp_after_non_memory_write()
+            return item_dict
 
     def update_work_item(
         self,
@@ -5147,7 +5269,8 @@ class MeshStore:
                 res = dict(updated_row)
                 res["tags"] = json.loads(res.get("tags") or "[]")
                 res["evidence"] = json.loads(res.get("evidence") or "[]")
-                return res
+            self._refresh_cache_stamp_after_non_memory_write()
+            return res
 
     def complete_work_item(
         self,
@@ -5226,7 +5349,8 @@ class MeshStore:
                 res = dict(updated_row)
                 res["tags"] = json.loads(res.get("tags") or "[]")
                 res["evidence"] = valid_ev
-                return res
+            self._refresh_cache_stamp_after_non_memory_write()
+            return res
 
     def _deserialize_work_item_row(self, row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
         d = dict(row)
