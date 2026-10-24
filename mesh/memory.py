@@ -45,6 +45,8 @@ from typing import Any, Iterator, Optional
 
 import numpy as np
 
+from .c_bridge import c_hash_embed_384 as _c_hash_embed_384
+
 from .audit import (
     REDACTED_CONTENT_PLACEHOLDER,
     ensure_secure_mesh_dir,
@@ -714,6 +716,10 @@ def _hash_embed_384(text: str) -> np.ndarray:
     Reserves indices 368..383 == 0.0 as a deterministic watermark alongside the SQLite
     `embedding_model = 'hash-384'` column so warm-up vectors are always upgraded once ONNX loads.
     """
+    if isinstance(text, str):
+        _native_vec = _c_hash_embed_384(text)  # ~30 us vs ~330 us; None => Python path below
+        if _native_vec is not None:
+            return _native_vec
     vec = np.zeros(EMBEDDING_DIM, dtype=np.float32)
     cleaned = _normalize_text_for_tokens(text)
     raw_words = _WORD_TOKEN_RE.findall(cleaned)
@@ -821,10 +827,30 @@ def _has_local_onnx_pair() -> Optional[tuple[Path, Path]]:
     return res
 
 
+_DISCOVER_NEG_UNTIL: float = 0.0
+
+
+def _discover_negative_ttl() -> float:
+    raw = os.environ.get("MESH_MODEL_DISCOVERY_TTL", "").strip()
+    if not raw:
+        return 120.0
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return 120.0
+
+
 def _discover_local_onnx_pair() -> Optional[tuple[Path, Path]]:
+    global _DISCOVER_NEG_UNTIL
     fast_pair = _has_local_onnx_pair()
     if fast_pair is not None:
         return fast_pair
+    # A failed search walks several cache trees with rglob (thousands of is_file() calls,
+    # ~12 ms on Windows) and _get_model() used to repeat it on EVERY learn()/recall().
+    # Remember the miss; a pair that appears later is still picked up by the
+    # _has_local_onnx_pair() fast check above.
+    if time.monotonic() < _DISCOVER_NEG_UNTIL:
+        return None
 
     model_dir = _get_onnx_model_dir()
     target_model = model_dir / "model.onnx"
@@ -889,7 +915,12 @@ def _discover_local_onnx_pair() -> Optional[tuple[Path, Path]]:
         except OSError:
             pass
 
-    return _has_local_onnx_pair()
+    _pair = _has_local_onnx_pair()
+    if _pair is None:
+        _ttl = _discover_negative_ttl()
+        if _ttl > 0.0:
+            _DISCOVER_NEG_UNTIL = time.monotonic() + _ttl
+    return _pair
 
 
 def _download_file_from_mirrors(

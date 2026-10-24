@@ -35,6 +35,7 @@ import numpy as np
 
 from .audit import (
     REDACTED_CONTENT_PLACEHOLDER,
+    cached_resolved_mesh_dir,
     clear_audit_log,
     ensure_secure_mesh_dir,
     evict_audit_cache,
@@ -330,7 +331,8 @@ _OPEN_LOCK_FDS_MUTEX = threading.Lock()
 
 def _get_ns_lock_path(namespace: str) -> Path:
     clean_ns = validate_namespace(namespace)
-    base_dir = ensure_secure_mesh_dir().resolve()
+    ensure_secure_mesh_dir()
+    base_dir = cached_resolved_mesh_dir()
     lock_path = base_dir / f".mesh_{clean_ns}.lock"
     reject_symlink(lock_path)
     return lock_path
@@ -427,7 +429,7 @@ def namespace_write_lock(namespace: str, timeout: float = 15.0) -> Iterator[None
     on `~/.mesh/.mesh_<ns>.lock` (mode 0600 on POSIX).
     """
     clean_ns = validate_namespace(namespace)
-    mesh_dir = get_mesh_dir().resolve()
+    mesh_dir = cached_resolved_mesh_dir()
     key = (mesh_dir, clean_ns)
     with _NS_LOCK_REGISTRY_MUTEX:
         state = _NS_LOCK_REGISTRY.get(key)
@@ -1922,7 +1924,8 @@ class MeshStore:
     def __init__(self, namespace: str = "default", create: bool = True):
         self.namespace = validate_namespace(namespace)
         self.create = bool(create)
-        base_dir = ensure_secure_mesh_dir().resolve()
+        ensure_secure_mesh_dir()
+        base_dir = cached_resolved_mesh_dir()
         raw_candidate = base_dir / f"mesh_{self.namespace}.db"
         reject_symlink(raw_candidate)
         resolved_db = raw_candidate.resolve()
@@ -3768,31 +3771,50 @@ class MeshStore:
 
         masked_indices: list[int] = []
         masked_mid_set: set[str] = set()
-        for idx, mid in enumerate(ids_snap):
-            cached_row = rows_snap.get(mid)
-            if cached_row is None:
-                continue
-            if not include_quarantined and cached_row.get("quarantined"):
-                continue
-            if type_filter and cached_row["memory_type"].lower() != type_filter:
-                continue
-            if source_agent and cached_row["source_agent"] != source_agent:
-                continue
-            if not include_private and cached_row.get("local_only"):
-                continue
-            if filter_tags:
-                parsed_tags = cached_row.get("tags_list") or []
-                mem_tags_lower = {str(t).lower() for t in parsed_tags}
-                if not filter_tags.issubset(mem_tags_lower):
+        _no_row_filters = (
+            not type_filter
+            and not source_agent
+            and not filter_tags
+            and include_private
+            and include_stale
+            and min_confidence <= 0.0
+        )
+        if _no_row_filters:
+            # Fast path: only the quarantine flag can exclude a row.
+            for idx, mid in enumerate(ids_snap):
+                cached_row = rows_snap.get(mid)
+                if cached_row is None:
                     continue
-            if not include_stale or min_confidence > 0.0:
-                eff_conf, is_stale = _compute_row_effective_confidence(cached_row, now=ref_now)
-                if not include_stale and is_stale:
+                if not include_quarantined and cached_row.get("quarantined"):
                     continue
-                if eff_conf < min_confidence:
+                masked_indices.append(idx)
+                masked_mid_set.add(mid)
+        else:
+            for idx, mid in enumerate(ids_snap):
+                cached_row = rows_snap.get(mid)
+                if cached_row is None:
                     continue
-            masked_indices.append(idx)
-            masked_mid_set.add(mid)
+                if not include_quarantined and cached_row.get("quarantined"):
+                    continue
+                if type_filter and cached_row["memory_type"].lower() != type_filter:
+                    continue
+                if source_agent and cached_row["source_agent"] != source_agent:
+                    continue
+                if not include_private and cached_row.get("local_only"):
+                    continue
+                if filter_tags:
+                    parsed_tags = cached_row.get("tags_list") or []
+                    mem_tags_lower = {str(t).lower() for t in parsed_tags}
+                    if not filter_tags.issubset(mem_tags_lower):
+                        continue
+                if not include_stale or min_confidence > 0.0:
+                    eff_conf, is_stale = _compute_row_effective_confidence(cached_row, now=ref_now)
+                    if not include_stale and is_stale:
+                        continue
+                    if eff_conf < min_confidence:
+                        continue
+                masked_indices.append(idx)
+                masked_mid_set.add(mid)
 
         if not masked_indices:
             return []
@@ -3808,20 +3830,28 @@ class MeshStore:
         q_norm_phrase = " ".join(_WORD_RE.findall(norm_q))
         q_compact = re.sub(r"[^a-z0-9]", "", q_norm_phrase)
 
-        lexical_map: dict[str, float] = {}
+        # Counter.update() counts in C; identical totals to the old per-id Python loop
+        # (+1.0 per exact token hit, +0.5 per synonym hit, masked rows only).
+        from collections import Counter as _HitCounter
+
+        _exact_hits = _HitCounter()
         for tok in q_content_tokens:
             t_hits = cache.token_to_ids.get(tok)
             if t_hits:
-                for mid in t_hits:
-                    if mid in masked_mid_set:
-                        lexical_map[mid] = lexical_map.get(mid, 0.0) + 1.0
+                _exact_hits.update(t_hits)
+        _syn_hits = _HitCounter()
         for syn_set in q_synonyms.values():
             for syn in syn_set:
                 s_hits = cache.token_to_ids.get(syn)
                 if s_hits:
-                    for mid in s_hits:
-                        if mid in masked_mid_set:
-                            lexical_map[mid] = lexical_map.get(mid, 0.0) + 0.5
+                    _syn_hits.update(s_hits)
+        lexical_map: dict[str, float] = {}
+        for mid, cnt in _exact_hits.items():
+            if mid in masked_mid_set:
+                lexical_map[mid] = float(cnt)
+        for mid, cnt in _syn_hits.items():
+            if mid in masked_mid_set:
+                lexical_map[mid] = lexical_map.get(mid, 0.0) + 0.5 * cnt
         if lexical_map:
             max_hits = max(lexical_map.values())
             for mid, hits in list(lexical_map.items()):
@@ -3844,6 +3874,30 @@ class MeshStore:
             eval_indices = [idx for idx in masked_indices if ids_snap[idx] in candidate_mid_set]
         else:
             eval_indices = masked_indices
+
+        # df-aware pruning: terms such as "port"/"architecture" occur in nearly every row,
+        # so the union above can be the whole namespace. Rank by (lexical hits, semantic sim),
+        # keep the best few dozen plus every row that matches a RARE query stem, and only
+        # run the expensive per-row lexical scorer on those.
+        _prune_cap = max(n * 2, 48)
+        if len(eval_indices) > _prune_cap:
+            _must: set[str] = set()
+            with _CACHE_LOCK:
+                for _s in set(q_stems):
+                    if 0 < stem_df_snap.get(_s, 0) <= 24:
+                        _hits = cache.stem_to_ids.get(_s)
+                        if _hits:
+                            _must.update(_hits & masked_mid_set)
+            _ev = np.asarray(eval_indices, dtype=np.int64)
+            _lex_part = np.fromiter(
+                (lexical_map.get(ids_snap[_i], 0.0) for _i in eval_indices),
+                dtype=np.float64,
+                count=len(eval_indices),
+            )
+            _rank = 0.6 * _lex_part + 0.4 * np.clip(sims[_ev].astype(np.float64), 0.0, 1.0)
+            _top = np.argpartition(-_rank, _prune_cap - 1)[:_prune_cap]
+            _keep = {eval_indices[int(_i)] for _i in _top}
+            eval_indices = [_i for _i in eval_indices if _i in _keep or ids_snap[_i] in _must]
 
         total_docs = max(1, len(rows_snap))
         has_specific_tokens = any(s not in _FRAMING_TOKENS for s in q_stems)
@@ -4419,7 +4473,13 @@ class MeshStore:
         if not clean_id or not self.db_path.exists():
             return False
 
-        self.flush_telemetry()
+        # Pending telemetry only needs flushing when it could still reference this row;
+        # queries mentioning the content are scrubbed from the buffer in-memory below.
+        with _TELEMETRY_LOCK:
+            _tb = _TELEMETRY_BUFFERS.get(self.db_path)
+            _has_pending = bool(_tb is not None and (_tb.access_increments or _tb.query_rows))
+        if _has_pending:
+            self.flush_telemetry()
         purged_content: Optional[str] = None
         deleted = False
 
