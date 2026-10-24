@@ -49,6 +49,7 @@ def clear_secrets_caches() -> None:
         _IS_CRED_CACHE.clear()
 
 from .audit import ensure_secure_mesh_dir, secure_file_permissions, validate_namespace
+from .c_bridge import c_guard_prescan as _c_guard_prescan
 
 # Finding S8 / S10: Shared invisible character class (soft hyphen, zero-width joiners, bidi controls, tags)
 INVISIBLE_CHAR_CLASS = (
@@ -838,6 +839,10 @@ def is_credential(text: str) -> bool:
     Return True if `text` contains a live credential, API key, private key, JWT,
     URL password, CLI secret flag, YAML block secret, or secret assignment (Findings S2, S3, S4).
     """
+    # Fast-path: C pre-scanner guarantees no credential trigger substrings — skip all regex.
+    if isinstance(text, str) and 0 < len(text.strip()) <= 16384 and _c_guard_prescan(text):
+        return False
+
     if isinstance(text, str) and len(text) <= 4096:
         with _IS_CRED_LOCK:
             cached = _IS_CRED_CACHE.get(text)

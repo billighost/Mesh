@@ -63,6 +63,7 @@ _SECURED_LOCK = threading.Lock()
 # ---------------------------------------------------------------------------
 
 _AUDIT_PENDING: dict[str, list[tuple[str, tuple[Any, ...]]]] = {}
+_AUDIT_KNOWN_DB_PATHS: set[Path] = set()
 _AUDIT_QUEUE_LOCK = threading.Lock()
 _AUDIT_FLUSH_LOCK = threading.Lock()
 _AUDIT_WAKE_EVENT = threading.Event()
@@ -136,15 +137,86 @@ def _is_symlink_or_reparse(path: Path) -> bool:
     return False
 
 
+# --- Path-trust cache -------------------------------------------------------
+# A full reject_symlink() costs ~9-25 syscalls (is_symlink/is_junction/exists/lstat
+# x 3 sidecar suffixes), which on NTFS + Defender is milliseconds per call. Paths
+# that passed the full check are remembered for MESH_PATH_RECHECK_SECONDS (default
+# 5, 0 disables). While trusted, every call still does ONE lstat of the path itself,
+# so swapping the db/dir for a symlink or junction is caught immediately; only the
+# -wal/-shm sidecar re-check waits for the TTL.
+_PATH_TRUST: dict[str, float] = {}
+_RESOLVED_DIR_CACHE: dict[str, tuple[float, Path]] = {}
+_FILE_PERM_TS: dict[str, float] = {}
+_AUDIT_PATH_CACHE: dict[tuple[str, str], Path] = {}
+
+
+def _path_recheck_ttl() -> float:
+    raw = os.environ.get("MESH_PATH_RECHECK_SECONDS")
+    if raw is None:
+        return 5.0
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return 5.0
+
+
+def clear_path_trust_cache() -> None:
+    """Forget every verified path (tests / evict hooks)."""
+    _PATH_TRUST.clear()
+    _RESOLVED_DIR_CACHE.clear()
+    _FILE_PERM_TS.clear()
+    _AUDIT_PATH_CACHE.clear()
+
+
+def _lstat_link_state(key: str) -> Optional[bool]:
+    """True = symlink/reparse point, False = plain entry, None = missing/unreadable."""
+    try:
+        st = os.lstat(key)
+    except OSError:
+        return None
+    if stat.S_ISLNK(st.st_mode) or (getattr(st, "st_file_attributes", 0) & 0x400):
+        return True
+    return False
+
+
+def cached_resolved_mesh_dir() -> Path:
+    """`get_mesh_dir().resolve()` memoized for the path-trust TTL."""
+    raw = get_mesh_dir()
+    key = os.fspath(raw)
+    ttl = _path_recheck_ttl()
+    if ttl > 0.0:
+        ent = _RESOLVED_DIR_CACHE.get("R:" + key)
+        if ent is not None and (time.monotonic() - ent[0]) < ttl:
+            return ent[1]
+    resolved = raw.resolve()
+    if ttl > 0.0:
+        _RESOLVED_DIR_CACHE["R:" + key] = (time.monotonic(), resolved)
+    return resolved
+
+
 def reject_symlink(path: Path) -> None:
     """
     Refuse to operate on a symlink (or sidecar `-wal`/`-shm` symlink) to prevent
     symlink-following arbitrary file clobbering or chmod attacks (Finding N6).
     """
+    key = os.fspath(path)
+    ttl = _path_recheck_ttl()
+    if ttl > 0.0:
+        ts = _PATH_TRUST.get(key)
+        if ts is not None and (time.monotonic() - ts) < ttl:
+            link = _lstat_link_state(key)
+            if link is False:
+                return
+            _PATH_TRUST.pop(key, None)
+            if link is True:
+                raise ValueError(f"Refusing to operate on symlinked path: '{path}'.")
+            # Missing now: fall through to the full check.
     for suffix in ("", "-wal", "-shm"):
         candidate = Path(f"{path}{suffix}") if suffix else path
         if _is_symlink_or_reparse(candidate):
             raise ValueError(f"Refusing to operate on symlinked path: '{candidate}'.")
+    if ttl > 0.0:
+        _PATH_TRUST[key] = time.monotonic()
 
 
 def _apply_windows_owner_acl(target: Path) -> None:
@@ -206,10 +278,18 @@ def ensure_secure_mesh_dir(path: Optional[Path] = None) -> Path:
     """
     target = path if path is not None else get_mesh_dir()
     reject_symlink(target)
+    _tkey = os.fspath(target)
+    _ttl = _path_recheck_ttl()
+    if _ttl > 0.0:
+        _ent = _RESOLVED_DIR_CACHE.get(_tkey)
+        if _ent is not None and (time.monotonic() - _ent[0]) < _ttl and os.path.isdir(_tkey):
+            return target
     try:
         resolved = target.resolve()
         with _SECURED_LOCK:
             if resolved in _SECURED_PATHS and target.exists():
+                if _ttl > 0.0:
+                    _RESOLVED_DIR_CACHE[_tkey] = (time.monotonic(), resolved)
                 return target
     except OSError:
         resolved = target
@@ -228,6 +308,8 @@ def ensure_secure_mesh_dir(path: Optional[Path] = None) -> Path:
 
     with _SECURED_LOCK:
         _SECURED_PATHS[resolved] = 1
+    if _ttl > 0.0:
+        _RESOLVED_DIR_CACHE[_tkey] = (time.monotonic(), resolved)
     return target
 
 
@@ -236,6 +318,12 @@ def secure_file_permissions(file_path: Path) -> None:
     Enforce 0600 permissions on POSIX and owner-only ACLs on Windows for a database
     and any WAL/SHM sidecar files, rejecting symlinks first (Findings N5, N6).
     """
+    _fkey = os.fspath(file_path)
+    _fttl = _path_recheck_ttl()
+    if _fttl > 0.0:
+        _fts = _FILE_PERM_TS.get(_fkey)
+        if _fts is not None and (time.monotonic() - _fts) < _fttl and _lstat_link_state(_fkey) is False:
+            return
     try:
         resolved_base = file_path.resolve()
         with _SECURED_LOCK:
@@ -267,6 +355,8 @@ def secure_file_permissions(file_path: Path) -> None:
             new_stamp = int(file_path.stat().st_mtime_ns)
             with _SECURED_LOCK:
                 _SECURED_PATHS[resolved_base] = new_stamp
+            if _fttl > 0.0:
+                _FILE_PERM_TS[_fkey] = time.monotonic()
     except OSError:
         pass
 
@@ -372,7 +462,7 @@ def _audit_drain_worker() -> None:
     while True:
         _AUDIT_WAKE_EVENT.wait(timeout=0.5)
         _AUDIT_WAKE_EVENT.clear()
-        time.sleep(0.025)
+        time.sleep(0.030)
         flush_audit_log(None)
 
 
@@ -404,12 +494,23 @@ def _close_all_audit_connections() -> None:
 
 def _get_audit_db_path(namespace: str) -> Path:
     clean_ns = validate_namespace(namespace)
-    base_dir = ensure_secure_mesh_dir().resolve()
+    _ckey = (clean_ns, os.fspath(get_mesh_dir()))
+    _hit = _AUDIT_PATH_CACHE.get(_ckey)
+    if _hit is not None:
+        _hk = os.fspath(_hit)
+        _ts = _PATH_TRUST.get(_hk)
+        if _ts is not None and (time.monotonic() - _ts) < _path_recheck_ttl():
+            reject_symlink(_hit)  # one lstat while trusted
+            return _hit
+    ensure_secure_mesh_dir()
+    base_dir = cached_resolved_mesh_dir()
     raw_candidate = base_dir / f"audit_{clean_ns}.db"
     reject_symlink(raw_candidate)
     db_path = raw_candidate.resolve()
     if db_path.parent != base_dir:
         raise ValueError(f"Invalid namespace path resolution for '{namespace}'.")
+    reject_symlink(db_path)
+    _AUDIT_PATH_CACHE[_ckey] = db_path
     return db_path
 
 
@@ -654,23 +755,25 @@ def _write_audit_entry(namespace: str, sql: str, params: tuple[Any, ...]) -> Non
     Returns immediately; the caller's hot path is never blocked on a SQLite commit.
     First row for a new DB is committed synchronously so audit_<ns>.db is guaranteed to exist.
     """
+    _AUDIT_ENQUEUE_SEQ[0] += 1
     try:
         clean_ns = validate_namespace(namespace)
         db_path = _get_audit_db_path(clean_ns)
     except Exception:
         return
 
-    if db_path not in _AUDIT_INITIALIZED_FILES and not db_path.exists():
-        try:
-            with _AUDIT_LOCK:
-                _connect_audit(db_path)
-            _AUDIT_INITIALIZED_FILES.add(db_path)
-        except Exception:
-            pass
-    else:
-        _AUDIT_INITIALIZED_FILES.add(db_path)
+    if db_path not in _AUDIT_KNOWN_DB_PATHS:
+        if not db_path.exists():
+            try:
+                with _AUDIT_LOCK:
+                    _connect_audit(db_path)
+            except Exception:
+                pass
+        _AUDIT_KNOWN_DB_PATHS.add(db_path)
 
-    _ensure_audit_drain_thread()
+    if _AUDIT_DRAIN_THREAD is None or not _AUDIT_DRAIN_THREAD.is_alive():
+        _ensure_audit_drain_thread()
+
     with _AUDIT_QUEUE_LOCK:
         if clean_ns not in _AUDIT_PENDING:
             _AUDIT_PENDING[clean_ns] = []
@@ -842,6 +945,9 @@ def scrub_memory_update_from_audit(
     """
     try:
         namespace = validate_namespace(namespace)
+        _dedup_text = f"{int(bool(local_only))}:{old_content or ''}"
+        if _scrub_recently_done("update", namespace, memory_id, _dedup_text):
+            return
         flush_audit_log(namespace)
         db_path = _get_audit_db_path(namespace)
         if not db_path.exists() or _get_audit_db_stamp(db_path) is None:
@@ -861,6 +967,7 @@ def scrub_memory_update_from_audit(
             new_stamp = _get_audit_db_stamp(db_path)
             if new_stamp is not None:
                 _INITIALIZED_AUDIT_DBS[db_path] = new_stamp
+        _scrub_mark_done("update", namespace, memory_id, _dedup_text)
     except Exception:
         pass
 
@@ -908,6 +1015,22 @@ def log_update(
         pass
 
 
+_SCRUB_DEDUP: dict[tuple, tuple[float, int]] = {}
+_AUDIT_ENQUEUE_SEQ = [0]
+
+
+def _scrub_recently_done(kind: str, namespace: str, memory_id: str, text: Optional[str]) -> bool:
+    """True when the identical scrub finished <2 s ago and nothing was logged since."""
+    ent = _SCRUB_DEDUP.get((kind, namespace, memory_id, hash(text or "")))
+    return ent is not None and (time.monotonic() - ent[0]) < 2.0 and ent[1] == _AUDIT_ENQUEUE_SEQ[0]
+
+
+def _scrub_mark_done(kind: str, namespace: str, memory_id: str, text: Optional[str]) -> None:
+    if len(_SCRUB_DEDUP) > 512:
+        _SCRUB_DEDUP.clear()
+    _SCRUB_DEDUP[(kind, namespace, memory_id, hash(text or ""))] = (time.monotonic(), _AUDIT_ENQUEUE_SEQ[0])
+
+
 def purge_memory_from_audit(
     namespace: str,
     memory_id: str,
@@ -919,6 +1042,8 @@ def purge_memory_from_audit(
     """
     try:
         namespace = validate_namespace(namespace)
+        if _scrub_recently_done("purge", namespace, memory_id, content):
+            return
         flush_audit_log(namespace)
         db_path = _get_audit_db_path(namespace)
         if not db_path.exists() or _get_audit_db_stamp(db_path) is None:
@@ -936,6 +1061,7 @@ def purge_memory_from_audit(
             new_stamp = _get_audit_db_stamp(db_path)
             if new_stamp is not None:
                 _INITIALIZED_AUDIT_DBS[db_path] = new_stamp
+        _scrub_mark_done("purge", namespace, memory_id, content)
     except Exception:
         pass
 
