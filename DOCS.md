@@ -1,6 +1,6 @@
 # Mesh User Documentation
 
-Complete user guide for **Mesh** (`mesh-context-layer`) **0.8.2** (Beta): installation, agent setup, the memory and task model, the full CLI/MCP/HTTP/Python reference, privacy, encryption, performance evidence, and troubleshooting.
+Complete user guide for **Mesh** (`mesh-context-layer`) **0.8.3** (Beta): installation, agent setup, the memory and task model, the full CLI/MCP/HTTP/Python reference, privacy, encryption, performance evidence, and troubleshooting.
 
 - New here? Start with [Install](#1-install) and the [60-minute tutorial](#2-first-run-tutorial).
 - Evaluating? Read [Privacy and data handling](#12-privacy-data-and-network) and [Evidence](#14-performance-and-evidence).
@@ -55,7 +55,7 @@ pip install "mesh-context-layer[secrets,crypto]"
 ### Verify the install
 
 ```bash
-mesh version           # -> mesh 0.8.2
+mesh version           # -> mesh 0.8.3
 mesh doctor            # storage, SQLite/FTS5, model, daemon, MCP configs, 17 tools
 mesh status --json     # machine-readable state
 ```
@@ -748,6 +748,7 @@ It binds loopback by default. Non-loopback binding requires an explicit `--host`
 | `MESH_AUTO_START_DAEMON` | Opts into daemon auto-start where supported. |
 | `MESH_NO_DAEMON_PROXY` | Disables CLI proxying through the daemon. |
 | `MESH_ALLOW_DAEMON_DOWNLOAD` | Allows a daemon started with `--yes` to download the model. |
+| `MESH_QUIET` | `1` suppresses progress output and spinner to stderr. |
 | `NO_COLOR`, `FORCE_COLOR`, `MESH_NO_COLOR`, `MESH_FORCE_COLOR`, `MESH_ASCII`, `MESH_NO_SPINNER` | Output rendering. |
 | `XDG_CONFIG_HOME` | Config root for OpenCode and some agent paths on Unix. |
 
@@ -765,8 +766,21 @@ It binds loopback by default. Non-loopback binding requires an explicit `--host`
 | `MESH_CLI_FORCE_ONNX` | Force ONNX model loading on one-shot CLI commands instead of fast hash-384. |
 | `MESH_AUTO_HEAL_ON_CALL` | `1` runs embedding healing synchronously on store access; default `0` (healing runs in background). |
 | `MESH_SYNC_ONNX` | `1` forces synchronous ONNX embedding on learn rather than fast-path hash indexing. |
+| `MESH_BG_ONNX` | `0` disables background stage-2 ONNX re-embedding (default `1`). |
+| `MESH_BG_ONNX_IDLE_MS` | Idle time in milliseconds before background ONNX worker re-embeds queued items. |
+| `MESH_BG_ONNX_DRAIN_ON_EXIT` | `auto`, `1` (force drain on exit), or `0` (skip drain). |
+| `MESH_BG_ONNX_DRAIN_TIMEOUT` | Max seconds to wait for background re-embedding queue drain on exit. Default 10.0. |
+| `MESH_MODEL_DISCOVERY_TTL` | TTL in seconds for model discovery cache. |
+| `MESH_MODEL_PAIR_RECHECK_SECONDS` | Interval in seconds to re-verify model pair integrity. |
 | `MESH_EMBED_CACHE_SIZE` | In-memory embedding LRU size. Default 1024. |
 | `MESH_IDLE_UNLOAD_SECONDS` | Idle seconds before unloading the model; `0` never unloads. |
+
+### Native acceleration (C core)
+
+| Variable | Meaning |
+|---|---|
+| `MESH_DISABLE_NATIVE` | `1` disables native C acceleration library (`mesh/_c_core.dll` / `.so`), forcing pure-Python fallbacks. |
+| `MESH_C_CORE_PATH` | Custom path to the native compiled library (`_c_core.dll` / `_c_core.so`). |
 
 ### Storage and limits
 
@@ -780,6 +794,9 @@ It binds loopback by default. Non-loopback binding requires an explicit `--host`
 | `MESH_MAX_QUERY_ROWS` | Query result cap. |
 | `MESH_MAX_AUDIT_ROWS` | Audit row cap. |
 | `MESH_STRICT_FSYNC` | `1` enforces SQLite `PRAGMA synchronous=NORMAL` instead of `OFF` for strict durability. |
+| `MESH_INIT_LOCK_RETRY_SECONDS` | Seconds to wait/retry acquiring initialization lock for database creation/migration. Default 10. |
+| `MESH_FS_MEMO_MS` | Window in milliseconds (default 10 ms) during which lstat-verified file paths are memoized. `0` disables. |
+| `MESH_PATH_RECHECK_SECONDS` | Interval in seconds (default 60 s) to cache verified safe path evaluations for audit logging. |
 | `MESH_SKIP_WINDOWS_ACL` | Skips Windows ACL hardening. Not recommended. |
 
 ### HTTP, daemon, and auth

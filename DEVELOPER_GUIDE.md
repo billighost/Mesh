@@ -1,4 +1,4 @@
-# Mesh Developer Guide (v0.8.2)
+# Mesh Developer Guide (v0.8.3)
 
 How to work on Mesh safely: isolated setup, tests, benchmarks, documentation checks, extension points, release, and field-test reproduction.
 
