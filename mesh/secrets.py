@@ -49,7 +49,40 @@ def clear_secrets_caches() -> None:
         _IS_CRED_CACHE.clear()
 
 from .audit import ensure_secure_mesh_dir, secure_file_permissions, validate_namespace
-from .c_bridge import c_guard_prescan as _c_guard_prescan
+
+_PRESCAN_TRIGGERS: tuple[str, ...] = (
+    "sk-", "ghp", "gho", "ghu", "ghs", "ghr", "github", "glpat", "akia", "asia", "aiza", "xox",
+    "eyj", "pypi", "sg.", "npm", "hf_", "rk_", "demo_fake", "demo", "password", "passwd",
+    "passphrase", "passcode", "pwd", "pin", "secret", "token", "api_key", "apikey", "api key",
+    "api-key", "key", "phrase", "mnemonic", "seed", "credential", "private", "code", "auth",
+    "bearer", "basic", "hunter2", "vault", "locker", "login", "recovery", "aws", "ignor",
+    "disregard", "forget", "override", "bypass", "system", "inst", "instruct", "prompt",
+    "directive", "guideline", "constraint", "guardrail", "policies", "follow", "obey",
+    "adhere", "mode", "jailbreak", "unrestricted", "developer", "mesh", "context", "important",
+    "critical", "urgent", "anweisung", "instrucc", "regeln", "reglas", "regles", "instruc",
+    "dan",
+)
+
+_PRESCAN_STRUCTURAL: tuple[str, ...] = ("<", "=", "_", "*", "`", "~", "[", "]", "--", "://")
+
+
+def guard_prescan(text: str) -> bool:
+    """Pure-Python prescan: True = text is provably clean ASCII (skip regex guards); False = run full pipeline."""
+    if not text or not text.strip() or len(text) > 16384:
+        return False
+    for ch in text:
+        c = ord(ch)
+        if (c < 32 and c != 10 and c != 9) or c >= 127:
+            return False
+    for s in _PRESCAN_STRUCTURAL:
+        if s in text:
+            return False
+    low = text.lower()
+    for trigger in _PRESCAN_TRIGGERS:
+        if trigger in low:
+            return False
+    return True
+
 
 # Finding S8 / S10: Shared invisible character class (soft hyphen, zero-width joiners, bidi controls, tags)
 INVISIBLE_CHAR_CLASS = (
@@ -839,8 +872,8 @@ def is_credential(text: str) -> bool:
     Return True if `text` contains a live credential, API key, private key, JWT,
     URL password, CLI secret flag, YAML block secret, or secret assignment (Findings S2, S3, S4).
     """
-    # Fast-path: C pre-scanner guarantees no credential trigger substrings — skip all regex.
-    if isinstance(text, str) and 0 < len(text.strip()) <= 16384 and _c_guard_prescan(text):
+    # Fast-path: pre-scanner guarantees no credential trigger substrings — skip all regex.
+    if isinstance(text, str) and 0 < len(text.strip()) <= 16384 and guard_prescan(text):
         return False
 
     if isinstance(text, str) and len(text) <= 4096:

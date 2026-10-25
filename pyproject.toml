@@ -125,6 +125,7 @@ include = [
     "/CONTRIBUTING.md",
     "/AGENTS.md",
     "/llms.txt",
+    "/scripts",
     "/SECURITY.md",
     "/THREAT_MODEL.md",
     "/pyproject.toml",

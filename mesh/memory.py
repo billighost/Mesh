@@ -45,7 +45,6 @@ from typing import Any, Iterator, Optional
 
 import numpy as np
 
-from .c_bridge import c_hash_embed_384 as _c_hash_embed_384
 
 from .audit import (
     REDACTED_CONTENT_PLACEHOLDER,
@@ -724,10 +723,6 @@ def _hash_embed_384(text: str) -> np.ndarray:
     Reserves indices 368..383 == 0.0 as a deterministic watermark alongside the SQLite
     `embedding_model = 'hash-384'` column so warm-up vectors are always upgraded once ONNX loads.
     """
-    if isinstance(text, str):
-        _native_vec = _c_hash_embed_384(text)  # ~30 us vs ~330 us; None => Python path below
-        if _native_vec is not None:
-            return _native_vec
     vec = np.zeros(EMBEDDING_DIM, dtype=np.float32)
     cleaned = _normalize_text_for_tokens(text)
     raw_words = _WORD_TOKEN_RE.findall(cleaned)

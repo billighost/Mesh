@@ -99,15 +99,22 @@ jobs:
       - name: Twine Check
         run: twine check --strict dist/*
 
-      - name: Verify Clean Tarballs and Zero Leaks
+      - name: Verify Clean Pure-Python Package and Zero Binary Artifacts
         run: |
           python -c "
-          import glob, tarfile, zipfile, sys
+          import glob, os, tarfile, zipfile, sys
 
           sdists = glob.glob('dist/*.tar.gz')
           wheels = glob.glob('dist/*.whl')
           if not sdists or not wheels:
               sys.exit('Error: Missing build artifacts in dist/')
+
+          # Wheel must be pure-Python py3-none-any
+          whl_name = os.path.basename(wheels[0])
+          if not whl_name.endswith('-py3-none-any.whl'):
+              sys.exit(f'Error: Expected pure-Python py3-none-any wheel, got: {whl_name}')
+
+          forbidden_binary_exts = ('.dll', '.so', '.dylib', '.pyd', '.exe')
 
           # Verify sdist
           with tarfile.open(sdists[0], 'r:gz') as tar:
@@ -117,6 +124,10 @@ jobs:
               if leaks:
                   sys.exit(f'Error: Leaked files in sdist: {leaks}')
 
+              binaries_in_sdist = [n for n in sdist_names if any(n.lower().endswith(ext) for ext in forbidden_binary_exts)]
+              if binaries_in_sdist:
+                  sys.exit(f'Error: Forbidden binary artifacts found in sdist: {binaries_in_sdist}')
+
           # Verify wheel
           with zipfile.ZipFile(wheels[0], 'r') as whl:
               whl_names = whl.namelist()
@@ -124,6 +135,10 @@ jobs:
               leaks_whl = [n for n in whl_names if any(ext in n.lower() for ext in ['.mp4', '.mp3', '.wav', '.png', 'marketing/', 'node_modules/'])]
               if leaks_whl:
                   sys.exit(f'Error: Leaked files in wheel: {leaks_whl}')
+
+              binaries_in_whl = [n for n in whl_names if any(n.lower().endswith(ext) for ext in forbidden_binary_exts)]
+              if binaries_in_whl:
+                  sys.exit(f'Error: Forbidden binary artifacts found in wheel: {binaries_in_whl}')
 
               # Check essential bundled assets
               if 'mesh/skills/mesh-context-layer/SKILL.md' not in whl_names:
@@ -135,7 +150,7 @@ jobs:
               if any(n.startswith('tests/') for n in whl_names):
                   sys.exit('Error: Test files must not be present in wheel!')
 
-          print('Packaging verification PASSED: zero leaks, correct skill & module payloads.')
+          print('Packaging verification PASSED: pure py3-none-any wheel, zero binary artifacts, zero leaks.')
           "
 
       - name: Upload Build Artifacts for Smoke Test

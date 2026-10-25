@@ -91,3 +91,35 @@ Backups, exports, copied data directories, and cloud sync destinations are outsi
 - Never store credentials; use `secret_ref` and `mesh run --vault`, and still assume detection can miss.
 - Review `mesh install --dry-run` before letting the installer edit agent configuration, and review project-scope `.mcp.json`/MCP configs in cloned repositories.
 - Run `mesh audit export` to review access metadata; audit events are content-free by design.
+
+## 5. Verifying your install
+
+Mesh packages are built with GitHub Actions Trusted Publishing and cryptographically attested using Sigstore (`actions/attest-build-provenance`). Every release publishes `SHA256SUMS.txt` alongside wheels and source distributions on GitHub Releases.
+
+### Verify wheel checksum with pip
+
+To verify package hashes during installation:
+
+```bash
+# Verify using pip hash-checking mode with the official SHA256SUMS:
+curl -sSLO https://github.com/billighost/mesh/releases/download/v0.8.3/SHA256SUMS.txt
+pip install --require-hashes -r <(sed -E 's/^([a-f0-9]+)\s+(.+)$/\2 --hash=sha256:\1/' SHA256SUMS.txt)
+```
+
+Or manually verify the downloaded distribution:
+
+```bash
+# macOS/Linux
+sha256sum -c SHA256SUMS.txt --ignore-missing
+
+# Windows (PowerShell)
+Get-FileHash dist/mesh_context_layer-*.whl -Algorithm SHA256
+```
+
+### Verify build provenance attestation with GitHub CLI
+
+Every release artifact can be cryptographically verified against the GitHub Actions build workflow:
+
+```bash
+gh attestation verify mesh_context_layer-0.8.3-py3-none-any.whl --owner billighost
+```

@@ -6,15 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [0.8.3] - 2026-10-25 (Beta)
 
-Performance acceleration and reliability release introducing native C acceleration core, high-speed C CLI client, background stage-2 ONNX re-embedding, filesystem path memoization, and namespace pooling fixes.
+Performance acceleration and reliability release introducing pure-Python prescan filters, background stage-2 ONNX re-embedding, filesystem path memoization, and namespace pooling fixes.
 
 ### Added
-- **Native C Acceleration Core (`c_core/mesh_core.c` & `mesh/c_bridge.py`)**: High-performance C core with SIMD (AVX2/FMA) vector dot-product computation, fast ASCII security prescan filter, hash embedding generation, and vectorized TTL decay calculations. Includes pure-Python/NumPy automatic fallbacks when the native library is absent or disabled (`MESH_DISABLE_NATIVE=1`).
-- **High-Speed Native C CLI Client (`c_cli/mesh_fast.c` & `mesh/native_cli.py`)**: Ultra-low-latency C CLI wrapper interfacing with daemon/HTTP surfaces via zero-overhead socket transport.
 - **Background Stage-2 ONNX Re-Embedding (`mesh/memory.py`)**: Asynchronous worker to re-embed memory rows from fast-path hash embeddings to high-precision ONNX neural representations in the background (`MESH_BG_ONNX=1`), keeping foreground operations fast.
 - **Filesystem Path Memoization & Trust Caching (`mesh/audit.py`, `mesh/crypto.py`)**: High-efficiency lstat memoization (`MESH_FS_MEMO_MS`) and path validation trust cache (`MESH_PATH_RECHECK_SECONDS`) to eliminate redundant disk I/O during security audit checks.
 - **Initialization Lock Retries (`mesh/store.py`)**: Resilient acquisition retry loop (`MESH_INIT_LOCK_RETRY_SECONDS`) for database schema initialization and migrations under multi-process contention.
-- **Multi-Surface Benchmarking Suite (`benchmark_all_surfaces.py`)**: End-to-end benchmark suite verifying throughput and latency across CLI, C CLI, SDK, MCP, and HTTP interfaces.
+- **Multi-Surface Benchmarking Suite (`benchmark_all_surfaces.py`)**: End-to-end benchmark suite verifying throughput and latency across CLI, SDK, MCP, and HTTP interfaces.
+
+### Removed
+- **Native C Core & Native CLI (`c_core/`, `c_cli/`, `mesh/c_bridge.py`, `mesh/native_cli.py`)**: Removed native C acceleration binaries and runtime C compilation in favor of audited pure-Python and NumPy BLAS vector math (which outperforms native AVX2 loops on real workloads). Standardized distribution as pure `py3-none-any.whl`.
+- **Environment Variables**: Removed `MESH_DISABLE_NATIVE` and `MESH_C_CORE_PATH`.
 
 ### Fixed
 - **Namespace Listing & Stats Query Optimization (`mesh/namespaces.py`)**: Resolved namespace query bottlenecks by connecting via `MeshStore` pooling and utilizing warm in-memory cache rows instead of redundant disk opens. Added CLI mesh cache eviction on namespace deletion.

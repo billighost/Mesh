@@ -19,9 +19,10 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
+from hypothesis import given, settings, strategies as st
 import pytest
 
-from mesh.guards import guard_ingest
+from mesh.guards import guard_ingest, guard_prescan
 from mesh.memory import Mesh
 from mesh.secrets import is_credential, redact_secrets_local
 
@@ -251,3 +252,32 @@ def test_hook_graceful_error_resilience(capsys):
     out = capsys.readouterr().out.strip()
     data = json.loads(out)
     assert data == {"injectSteps": []}, "Hook must return empty injectSteps on failure, not crash"
+
+
+def test_prescan_never_reports_corpus_secrets_as_clean():
+    """Assert guard_prescan returns False for every item in SECRET_CORPUS."""
+    for secret in SECRET_CORPUS:
+        assert guard_prescan(secret) is False, (
+            f"Prescan reported True (clean) for secret from corpus: {secret!r}"
+        )
+
+
+@given(st.text(min_size=1, max_size=2048))
+@settings(max_examples=250)
+def test_prescan_soundness_property(text: str):
+    """
+    Assert that prescan never reports a string as clean (True) when the full
+    guard regexes would redact it or detect a credential.
+    """
+    if guard_prescan(text):
+        assert not is_credential(text), (
+            f"Prescan reported clean, but is_credential was True for: {text!r}"
+        )
+        redacted = redact_secrets_local(text)
+        assert redacted == text, (
+            f"Prescan reported clean, but redact_secrets_local altered content: {text!r} -> {redacted!r}"
+        )
+        res = guard_ingest(text, local_only=False)
+        assert not res.rejected, f"Prescan reported clean, but guard_ingest rejected: {res.reason}"
+        assert not res.local_only, "Prescan reported clean, but guard_ingest forced local_only"
+

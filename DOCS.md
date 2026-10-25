@@ -775,13 +775,6 @@ It binds loopback by default. Non-loopback binding requires an explicit `--host`
 | `MESH_EMBED_CACHE_SIZE` | In-memory embedding LRU size. Default 1024. |
 | `MESH_IDLE_UNLOAD_SECONDS` | Idle seconds before unloading the model; `0` never unloads. |
 
-### Native acceleration (C core)
-
-| Variable | Meaning |
-|---|---|
-| `MESH_DISABLE_NATIVE` | `1` disables native C acceleration library (`mesh/_c_core.dll` / `.so`), forcing pure-Python fallbacks. |
-| `MESH_C_CORE_PATH` | Custom path to the native compiled library (`_c_core.dll` / `_c_core.so`). |
-
 ### Storage and limits
 
 | Variable | Meaning |

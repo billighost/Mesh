@@ -57,3 +57,10 @@ desktop.ini
 # Scratch / local work
 .work/
 .claude/
+
+# Compiled extensions / binaries
+*.so
+*.dylib
+*.dll
+*.pyd
+*.old
