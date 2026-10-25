@@ -74,7 +74,7 @@ def get_rules_block_content(version: str = VERSION) -> str:
         body = _RULES_BLOCK_FILE.read_text(encoding="utf-8").strip()
     else:
         body = (
-            "# Mesh Memory & Task Protocol (Always-On)\n"
+            "# Mesh Context & Task Protocol (Always-On)\n"
             "1. SESSION START: Call `mesh_project_brief(max_tokens=500)` immediately to load open tasks, recent completions, and facts.\n"
             "2. RECALL FIRST: Before asking the user or assuming conventions/ports/commands, query `mesh_recall` with targeted keywords.\n"
             "3. RECORD WITH RATIONALE: Store durable architectural decisions WITH their reason (\"because <reason>\"), ports, commands, and conventions via `mesh_learn`.\n"

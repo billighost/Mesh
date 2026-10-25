@@ -1,5 +1,5 @@
 """
-mesh/io.py — High-speed export and import for Mesh memory stores.
+mesh/io.py — High-speed export and import for Mesh stores.
 
 Addresses Findings:
   - S1: Preserves and validates `secret_ref` locator metadata across export and import
