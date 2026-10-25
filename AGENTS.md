@@ -83,5 +83,4 @@ CI (`.github/workflows/ci.yml`) runs these on Ubuntu, macOS, and Windows with Py
 - User docs: [DOCS.md](DOCS.md) — every CLI command, MCP tool, HTTP route, environment variable.
 - Internals: [ARCHITECTURE.md](ARCHITECTURE.md) — module map, schema, search pipeline, concurrency.
 - Contributor workflow: [CONTRIBUTING.md](CONTRIBUTING.md) and [DEVELOPER_GUIDE.md](DEVELOPER_GUIDE.md).
-- Security: [SECURITY.md](SECURITY.md) and [THREAT_MODEL.md](THREAT_MODEL.md).
-- Open field-test issues: [docs/field-test/issues.md](docs/field-test/issues.md).
+- Security & open issues: [SECURITY.md](SECURITY.md) and [THREAT_MODEL.md](THREAT_MODEL.md).

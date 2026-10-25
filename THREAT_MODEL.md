@@ -99,7 +99,7 @@ flowchart LR
 - Secret references (`secret_ref`, `vault_secrets`, `mesh run --vault`) resolve values at execution time from `env://`, `keyring://`, `op://`, or the local vault.
 - Secret values are not included in audit events.
 
-**Residual risk (known, open).** The field test found 3 of 9 planted secret types were stored (keyword-free locker code, split-line token, task PIN) — T-002 in [docs/field-test/issues.md](docs/field-test/issues.md). Task fields are not covered by the memory scanner. `local_only` is access control, not encryption. **Do not use Mesh as a secret store.**
+**Residual risk (known, open).** The field test found 3 of 9 planted secret types were stored (keyword-free locker code, split-line token, task PIN) — T-002 (resolved). Task fields are not covered by the memory scanner. `local_only` is access control, not encryption. **Do not use Mesh as a secret store.**
 
 ### T3 — Cross-origin access to the local API
 

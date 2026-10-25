@@ -385,9 +385,9 @@ flowchart LR
     H[HTTP client] --> S[Loopback API]
     S --> E
     D[Dashboard] --> S
-    E --> G[guard_ingest<br/>secret + injection checks]
-    G --> M[Local embedding<br/>ONNX or hash-384]
-    M --> DB[(mesh_namespace.db<br/>WAL + FTS5)]
+    E --> G["guard_ingest<br>secret + injection checks"]
+    G --> M["Local embedding<br>ONNX or hash-384"]
+    M --> DB[("mesh_namespace.db<br>WAL + FTS5")]
     E --> W[(work_items + work_events)]
     DB --> R[Hybrid recall]
     W --> B[Session brief]
@@ -395,6 +395,42 @@ flowchart LR
 ```
 
 For module-level detail, data flows, schema, and tradeoffs, see [ARCHITECTURE.md](ARCHITECTURE.md).
+
+---
+
+## Performance at a glance
+
+Measured with **Mesh v0.8.3**, local ONNX embeddings (`all-MiniLM-L6-v2`), **Windows 11 AMD64**, **Python 3.14.0**, **SQLite 3.50.4**, synthetic corpus. Run `python benchmark_all_surfaces.py` to reproduce on your hardware.
+
+### Core SDK operations (p50, ~100 memories, ONNX loaded)
+
+| Operation | p50 | p95 |
+|---|---:|---:|
+| `mesh_project_brief` (500-token) | **2.44 ms** | 5.27 ms |
+| `mesh_task_create` | **3.47 ms** | 8.48 ms |
+| `mesh_task_list` | **1.05 ms** | 3.61 ms |
+| `mesh_task_complete` | **3.63 ms** | 6.74 ms |
+| `mesh_log` (markdown) | **3.07 ms** | 6.71 ms |
+| `mesh_recall` hybrid top-5 (cached) | **5.33 ms** | 10.04 ms |
+| `mesh_recall` hybrid top-5 (uncached) | **8.58 ms** | 13.08 ms |
+| `mesh_learn` new write | **9.63 ms** | 13.32 ms |
+| `mesh_learn` duplicate (reinforcement) | **7.77 ms** | 9.96 ms |
+| Embedding cache hit | **0.05 ms** | 0.17 ms |
+
+### MCP surface (p50, as called by an agent)
+
+| MCP Tool | p50 | p95 |
+|---|---:|---:|
+| `mesh_project_brief` | **2.77 ms** | 3.82 ms |
+| `mesh_task_create` | **4.26 ms** | 6.09 ms |
+| `mesh_task_list` | **3.38 ms** | 6.30 ms |
+| `mesh_log` | **4.99 ms** | 27.29 ms |
+| `mesh_recall` | **14.68 ms** | 39.72 ms |
+| `mesh_learn` | **7.79 ms** | 10.71 ms |
+| `mesh_inspect` | **4.86 ms** | 9.20 ms |
+| `mesh_contradictions` | **2.37 ms** | 3.27 ms |
+
+> **These are from a single run on one machine.** Your hardware will differ; run `benchmark_all_surfaces.py` yourself. The scale table (500–10,000 memories) is in [`benchmarks/RESULTS.md`](benchmarks/RESULTS.md).
 
 ---
 
@@ -425,29 +461,34 @@ Two kinds of evidence are kept separate. Neither is a marketing claim, and neith
 
 ### Benchmarks (reproducible)
 
-All numbers below are copied from [`benchmarks/RESULTS.md`](benchmarks/RESULTS.md), measured with local ONNX embeddings on **Windows AMD64 / Ubuntu 22.04 CI**, **Python 3.12 / 3.14**, **SQLite 3.50+ WAL**, and a synthetic multi-domain corpus. They are machine-specific; reproduce with:
+Numbers below are from **Mesh v0.8.3** measured with local ONNX embeddings (`all-MiniLM-L6-v2`) on **Windows 11 AMD64 / Ubuntu 22.04 CI**, **Python 3.14.0**, **SQLite 3.50.4 WAL**, synthetic multi-domain corpus. Machine-specific; reproduce with:
 
 ```bash
+# Comprehensive latency profiler across all surfaces (SDK, MCP, HTTP, CLI)
+python benchmark_all_surfaces.py
+
+# Legacy per-benchmark scripts
 python benchmarks/mesh_benchmark.py
 python benchmarks/concurrency_stress.py
 python benchmarks/scale_benchmark.py --scales 500,1000,5000
 ```
 
-Representative core operations (p50):
+Representative core SDK operations (p50, ONNX loaded, ~100 memories):
 
-| Operation | p50 |
-|---|---:|
-| `mesh_project_brief` (500-token) | 6.20 ms |
-| `mesh_task_create` | 39.55 ms |
-| `mesh_task_list` | 5.75 ms |
-| `mesh_task_complete` | 21.36 ms |
-| `mesh_log` (markdown) | 2.60 ms |
-| `mesh_recall` hybrid top-5 | 57.78 ms |
-| `mesh_learn` new write | 140.96 ms |
-| `mesh_learn` duplicate | 64.12 ms |
-| Embedding cache hit | 0.02 ms |
+| Operation | p50 | p95 |
+|---|---:|---:|
+| `mesh_project_brief` (500-token) | **2.44 ms** | 5.27 ms |
+| `mesh_task_create` | **3.47 ms** | 8.48 ms |
+| `mesh_task_list` | **1.05 ms** | 3.61 ms |
+| `mesh_task_complete` | **3.63 ms** | 6.74 ms |
+| `mesh_log` (markdown) | **3.07 ms** | 6.71 ms |
+| `mesh_recall` hybrid top-5 (cached) | **5.33 ms** | 10.04 ms |
+| `mesh_recall` hybrid top-5 (uncached) | **8.58 ms** | 13.08 ms |
+| `mesh_learn` new write | **9.63 ms** | 13.32 ms |
+| `mesh_learn` duplicate (reinforcement) | **7.77 ms** | 9.96 ms |
+| Embedding cache hit | **0.05 ms** | 0.17 ms |
 
-Scale (single-process, ONNX loaded):
+Scale (single-process, ONNX loaded, from `benchmarks/scale_benchmark.py`):
 
 | Memories | Work items | Ingest | DB size | Dense recall p50 | Brief p50 | Task list p50 | RAM delta |
 |---:|---:|---:|---:|---:|---:|---:|---:|
@@ -456,7 +497,7 @@ Scale (single-process, ONNX loaded):
 | 5,000 | 1,000 | ~18/s | 52.4 MB | 178.4 ms | 9.15 ms | 5.12 ms | +215 MB |
 | 10,000 | 2,000 | ~19/s | 104.8 MB | 195.2 ms | 11.40 ms | 6.40 ms | +240 MB |
 
-These replace an earlier README table whose throughput, latency, database-size, and RAM numbers did not match `benchmarks/RESULTS.md`. If you need a number for your hardware, run the scripts; do not quote this table as universal.
+If you need a number for your hardware, run the scripts; do not quote these tables as universal.
 
 ### Independent field test — Mesh 0.8.1b2
 
@@ -486,7 +527,7 @@ Quoted from [`docs/field-test/PUBLIC_ADDENDUM_PROBE.md`](docs/field-test/PUBLIC_
 
 ### Known open issues
 
-From [`docs/field-test/issues.md`](docs/field-test/issues.md):
+Issues from the 0.8.1b2 field test:
 
 | ID | Severity | Status | Summary | Resolution |
 |---|---|---|---|---|
@@ -639,7 +680,7 @@ Full detail: [THREAT_MODEL.md](THREAT_MODEL.md). Report vulnerabilities privatel
 
 ### Reliability and performance
 
-**How does it behave at thousands of memories?** At 10,000 memories and 2,000 work items, `benchmarks/RESULTS.md` reports ~19 ingests/s, 195.2 ms dense recall p50, 11.40 ms brief p50, 104.8 MB database, and +240 MB RAM. Your hardware will differ.
+**How does it behave at thousands of memories?** At 10,000 memories and 2,000 work items, [`benchmarks/RESULTS.md`](benchmarks/RESULTS.md) reports ~19 ingests/s, 195.2 ms dense recall p50, 11.40 ms brief p50, 104.8 MB database, and +240 MB RAM. At ~100 memories with ONNX loaded, recall runs in ~5–9 ms and the brief in ~2.4 ms (p50). Your hardware will differ.
 
 **What about 100,000 memories?** Not measured in this repository. Do not assume linear behavior; run `benchmarks/scale_benchmark.py`.
 
