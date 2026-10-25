@@ -164,10 +164,18 @@ class _BoundedReembedQueue:
         self._data.move_to_end(key)
         while len(self._data) > self.maxsize:
             self._data.popitem(last=False)
+        _notify_reembed_worker()
 
     def append(self, item: tuple[str, str, str]) -> None:
         ns, mid, content = item
         self.put(ns, mid, content)
+
+    def pop_some(self, count: int) -> list[tuple[str, str, str]]:
+        items: list[tuple[str, str, str]] = []
+        while self._data and len(items) < max(1, int(count)):
+            (ns, mid), text = self._data.popitem(last=False)
+            items.append((ns, mid, text))
+        return items
 
     def pop_all(self) -> list[tuple[str, str, str]]:
         items = [(ns, mid, text) for (ns, mid), text in self._data.items()]
@@ -776,7 +784,38 @@ _LOCAL_PAIR_CACHE: Optional[tuple[Path, int, int, Path, int, int, Optional[tuple
 _LOCAL_PAIR_LOCK = threading.Lock()
 
 
+_PAIR_TTL_CACHE: Optional[tuple[Path, float, Optional[tuple[Path, Path]]]] = None
+
+
+def _pair_recheck_seconds() -> float:
+    raw = os.environ.get("MESH_MODEL_PAIR_RECHECK_SECONDS")
+    if raw is None:
+        return 1.0
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return 1.0
+
+
 def _has_local_onnx_pair() -> Optional[tuple[Path, Path]]:
+    """Cheap front for _has_local_onnx_pair_impl: re-stat the model files at most once per TTL."""
+    global _PAIR_TTL_CACHE
+    ttl = _pair_recheck_seconds()
+    if ttl <= 0.0:
+        return _has_local_onnx_pair_impl()
+    model_dir = _get_onnx_model_dir()
+    ent = _PAIR_TTL_CACHE
+    now = time.monotonic()
+    if ent is not None and ent[0] == model_dir and (now - ent[1]) < ttl:
+        return ent[2]
+    res = _has_local_onnx_pair_impl()
+    # Only a FOUND pair is memoised: a missing pair costs one failed stat and must be noticed the
+    # moment the background download worker installs it.
+    _PAIR_TTL_CACHE = (model_dir, now, res) if res is not None else None
+    return res
+
+
+def _has_local_onnx_pair_impl() -> Optional[tuple[Path, Path]]:
     global _LOCAL_PAIR_CACHE
     model_dir = _get_onnx_model_dir()
     target_model = model_dir / "model.onnx"
@@ -1286,6 +1325,184 @@ def _backfill_pending_embeddings() -> None:
             pass
 
 
+_FG_TS: float = 0.0  # monotonic time of the last FOREGROUND embed (learn / recall / update); the worker yields to it
+_REEMBED_EVENT = threading.Event()
+_REEMBED_IDLE = threading.Event()
+_REEMBED_IDLE.set()
+_REEMBED_WORKER_LOCK = threading.Lock()
+_REEMBED_WORKER: Optional[threading.Thread] = None
+_REEMBED_DRAINING = 0
+_REEMBED_INFLIGHT = 0  # items popped from the queue but not finished yet (guarded by _PENDING_REEMBED_LOCK)
+_REEMBED_STORES: "OrderedDict[str, MeshStore]" = OrderedDict()
+_REEMBED_ATEXIT_REGISTERED = False
+
+
+def _bg_onnx_enabled() -> bool:
+    """Stage 2 only runs when a real ONNX pair is installed and the person has not opted out."""
+    if os.environ.get("MESH_BG_ONNX", "1").strip().lower() in ("0", "false", "no", "off"):
+        return False
+    if os.environ.get("MESH_FORCE_HASH_EMBED", "").strip().lower() in ("1", "true", "yes"):
+        return False
+    if not _should_use_fast_stage1():
+        return False
+    return _has_local_onnx_pair() is not None
+
+
+def _reembed_idle_gap() -> float:
+    raw = os.environ.get("MESH_BG_ONNX_IDLE_MS")
+    try:
+        return max(0.0, float(raw) / 1000.0) if raw is not None else 0.15
+    except ValueError:
+        return 0.15
+
+
+def _notify_reembed_worker() -> None:
+    """Called whenever a hash-384 row is queued: wake (or lazily start) the stage-2 worker. Never blocks."""
+    global _REEMBED_WORKER, _REEMBED_ATEXIT_REGISTERED
+    if not _bg_onnx_enabled():
+        return
+    _REEMBED_IDLE.clear()
+    _REEMBED_EVENT.set()
+    worker = _REEMBED_WORKER
+    if worker is not None and worker.is_alive():
+        return
+    with _REEMBED_WORKER_LOCK:
+        if _REEMBED_WORKER is not None and _REEMBED_WORKER.is_alive():
+            return
+        _REEMBED_WORKER = threading.Thread(target=_reembed_worker_loop, name="mesh-onnx-stage2", daemon=True)
+        _REEMBED_WORKER.start()
+        if not _REEMBED_ATEXIT_REGISTERED:
+            import atexit
+
+            atexit.register(_reembed_atexit)
+            _REEMBED_ATEXIT_REGISTERED = True
+
+
+def _reembed_store(ns: str) -> "MeshStore":
+    store = _REEMBED_STORES.get(ns)
+    if store is None:
+        store = MeshStore(namespace=ns, create=False)
+        _REEMBED_STORES[ns] = store
+        while len(_REEMBED_STORES) > 8:
+            _REEMBED_STORES.popitem(last=False)
+    else:
+        _REEMBED_STORES.move_to_end(ns)
+    return store
+
+
+def _process_reembed_batch(items: list[tuple[str, str, str]]) -> None:
+    """Swap the real ONNX vector in for rows that were stored with the fast hash vector.
+
+    Safe against concurrent edits: a row is only rewritten if its content still equals the queued text
+    (checked before AND after the forward pass); `preserve_accessed_at` keeps recall statistics intact.
+    """
+    by_ns: dict[str, list[tuple[str, str]]] = {}
+    for ns, mid, text in items:
+        by_ns.setdefault(ns, []).append((mid, text))
+    for ns, group in by_ns.items():
+        try:
+            store = _reembed_store(ns)
+        except Exception:
+            _REEMBED_STORES.pop(ns, None)
+            continue
+        valid: list[tuple[str, str]] = []
+        for mid, text in group:
+            row = store.get(mid)
+            if row is not None and row.get("content") == text and row.get("embedding_model") == "hash-384":
+                valid.append((mid, text))
+        if not valid:
+            continue
+        vecs, tag = _encode_texts_with_tag([t for _, t in valid])
+        if tag != "onnx-minilm-l6-v2":
+            continue
+        for (mid, text), vec in zip(valid, vecs):
+            latest = store.get(mid)
+            if latest is not None and latest.get("content") == text and latest.get("embedding_model") == "hash-384":
+                store.update(
+                    memory_id=mid,
+                    content=None,
+                    embedding=vec.tolist(),
+                    embedding_model="onnx-minilm-l6-v2",
+                    preserve_accessed_at=True,
+                )
+
+
+def _reembed_worker_loop() -> None:
+    global _REEMBED_INFLIGHT
+    while True:
+        _REEMBED_EVENT.wait(timeout=60.0)
+        with _PENDING_REEMBED_LOCK:
+            backlog = len(_PENDING_REEMBED_QUEUE)
+        if backlog == 0:
+            _REEMBED_EVENT.clear()
+            with _PENDING_REEMBED_LOCK:
+                if len(_PENDING_REEMBED_QUEUE) == 0 and _REEMBED_INFLIGHT == 0:
+                    _REEMBED_IDLE.set()
+                else:
+                    _REEMBED_EVENT.set()
+            if len(_PENDING_REEMBED_QUEUE) == 0 and not _REEMBED_IDLE.is_set():
+                time.sleep(0.005)  # another worker is mid-batch: do not spin, do not declare idle
+            continue
+        if not _bg_onnx_enabled():
+            _REEMBED_EVENT.clear()
+            _REEMBED_IDLE.set()
+            continue
+        if not _REEMBED_DRAINING:
+            gap = _reembed_idle_gap() - (time.monotonic() - _FG_TS)
+            if gap > 0.0:
+                time.sleep(min(gap, 0.25))  # a foreground call just ran: stay out of its way
+                continue
+        with _PENDING_REEMBED_LOCK:
+            batch = _PENDING_REEMBED_QUEUE.pop_some(8)
+            _REEMBED_INFLIGHT += len(batch)
+        try:
+            _process_reembed_batch(batch)
+        except Exception:
+            time.sleep(0.25)  # transient (locked db, model warming): rows stay hash-tagged and are healed later
+        finally:
+            with _PENDING_REEMBED_LOCK:
+                _REEMBED_INFLIGHT -= len(batch)
+
+
+def drain_reembed_worker(timeout: float = 10.0) -> bool:
+    """Block until every queued row has been upgraded (or `timeout`). True when the queue is empty."""
+    global _REEMBED_DRAINING
+    if not _bg_onnx_enabled():
+        return True
+    with _PENDING_REEMBED_LOCK:
+        if len(_PENDING_REEMBED_QUEUE) == 0 and _REEMBED_INFLIGHT == 0 and _REEMBED_IDLE.is_set():
+            return True
+    _REEMBED_DRAINING += 1
+    try:
+        _notify_reembed_worker()
+        return _REEMBED_IDLE.wait(timeout=max(0.0, float(timeout)))
+    finally:
+        _REEMBED_DRAINING -= 1
+
+
+def _drain_policy_allows() -> bool:
+    """close()/exit drain: always when forced (MESH_BG_ONNX_DRAIN_ON_EXIT=1); by default only if the model is
+    already resident, so a one-shot CLI call never pays a model load just to upgrade a vector on its way out."""
+    mode = os.environ.get("MESH_BG_ONNX_DRAIN_ON_EXIT", "auto").strip().lower()
+    if mode in ("0", "false", "no", "off"):
+        return False
+    if mode in ("1", "true", "yes", "on"):
+        return True
+    return _model is not None and _model_backend not in (None, "onnx-warming", "hash-fallback")
+
+
+def _drain_reembed_for_close() -> None:
+    try:
+        if _drain_policy_allows() and len(_PENDING_REEMBED_QUEUE):
+            drain_reembed_worker(timeout=env_float("MESH_BG_ONNX_DRAIN_TIMEOUT", 10.0, minimum=0.0))
+    except Exception:
+        pass
+
+
+def _reembed_atexit() -> None:
+    _drain_reembed_for_close()
+
+
 def _trigger_background_bootstrap() -> None:
     global _bootstrap_triggered
     if _bootstrap_triggered:
@@ -1627,6 +1844,7 @@ def warmup_model(
         ns = validate_namespace((namespace or os.environ.get("MESH_NAMESPACE", "shared")).strip() or "shared")
         ensure_model_downloaded(blocking=blocking, timeout=10.0, assume_yes=assume_yes)
         _embed_cached_with_tag("warmup")
+        drain_reembed_worker(timeout=env_float("MESH_BG_ONNX_DRAIN_TIMEOUT", 10.0, minimum=0.0))
         db_file = ensure_secure_mesh_dir().resolve() / f"mesh_{ns}.db"
         if db_file.exists():
             mesh = Mesh(namespace=ns, agent_id="warmup", create=False)
@@ -1643,7 +1861,8 @@ def _should_use_fast_stage1() -> bool:
 
 
 def _embed_cached_with_tag(cleaned_text: str) -> tuple[np.ndarray, str]:
-    global _last_model_use_ts
+    global _last_model_use_ts, _FG_TS
+    _FG_TS = time.monotonic()
     with _EMBED_CACHE_LOCK:
         cached = _EMBED_CACHE.get(cleaned_text)
         if cached is not None:
@@ -3243,6 +3462,7 @@ class Mesh:
     def close(self) -> None:
         if hasattr(self, "store") and self.store is not None:
             self.store.flush_telemetry()
+        _drain_reembed_for_close()
 
     def __enter__(self) -> "Mesh":
         return self

@@ -131,6 +131,9 @@ def verify_request_auth(request: Request) -> None:
     Verify the local Mesh authentication token on protected endpoints using `hmac.compare_digest`[cite: 2].
     Can be overridden in unit tests via `app.dependency_overrides[verify_request_auth] = lambda: None`[cite: 2].
     """
+    _scope = getattr(request, "scope", None)
+    if isinstance(_scope, dict) and _scope.get("mesh_auth_verified") is True:
+        return  # already authenticated by _SecurityASGIMiddleware for this very request
     expected_token = get_or_create_auth_token()
     auth_header = request.headers.get("authorization", "")
     provided_token = ""
@@ -212,21 +215,27 @@ app.add_middleware(
 )
 
 
-@app.middleware("http")
-async def _security_middleware(request: Request, call_next: Any) -> Any:
-    """
-    1. Validate `Host` header to block DNS rebinding attacks[cite: 2].
-    2. Validate `Origin` header (if present) to block cross-site requests from arbitrary websites[cite: 2].
-    3. Enforce `Content-Length` bound (`_MAX_REQUEST_BODY_BYTES`) before reading body (Finding N4).
-    4. Verify `~/.mesh/auth_token` on all endpoints except `/health`, `/identity`, and `OPTIONS` preflights[cite: 2].
-    """
+_SEC_POLICY_CACHE: dict[tuple, tuple[frozenset, frozenset]] = {}
+
+
+def _security_policy(has_auth_override: bool) -> tuple[frozenset, frozenset]:
+    """(allowed_hosts, custom_hosts) for the current environment; memoised per distinct env tuple."""
+    key = (
+        os.environ.get("MESH_HTTP_HOST", _ACTIVE_BIND_HOST),
+        os.environ.get("MESH_ALLOWED_HOSTS", ""),
+        _ACTIVE_BIND_HOST,
+        tuple(sorted(_ALLOWED_HOSTS)),
+        has_auth_override,
+    )
+    hit = _SEC_POLICY_CACHE.get(key)
+    if hit is not None:
+        return hit
     configured_host = os.environ.get("MESH_HTTP_HOST", _ACTIVE_BIND_HOST).strip().lower()
     allowed_hosts = set(_ALLOWED_HOSTS)
     if configured_host not in ("0.0.0.0", "::", "[::]"):  # nosec B104
         allowed_hosts.add(configured_host)
     if _ACTIVE_BIND_HOST not in ("0.0.0.0", "::", "[::]"):  # nosec B104
         allowed_hosts.add(_ACTIVE_BIND_HOST)
-
     custom_hosts: set[str] = set()
     env_allowed = os.environ.get("MESH_ALLOWED_HOSTS", "").strip()
     if env_allowed:
@@ -235,50 +244,98 @@ async def _security_middleware(request: Request, call_next: Any) -> Any:
             if ci:
                 allowed_hosts.add(ci)
                 custom_hosts.add(ci)
-
-    has_auth_override = verify_request_auth in app.dependency_overrides
     if has_auth_override:
         allowed_hosts.add("testserver")
+    if len(_SEC_POLICY_CACHE) > 64:
+        _SEC_POLICY_CACHE.clear()
+    res = (frozenset(allowed_hosts), frozenset(custom_hosts))
+    _SEC_POLICY_CACHE[key] = res
+    return res
 
-    req_host = _extract_hostname(request.headers.get("host", ""))
-    if req_host and req_host not in allowed_hosts:
-        return JSONResponse(
-            status_code=403,
-            content={"detail": f"Forbidden Host header '{req_host}' (DNS rebinding protection)."},
-        )
 
-    origin = request.headers.get("origin")
-    if origin:
-        parsed_origin = urlparse(origin)
-        origin_host = (parsed_origin.hostname or "").lower()
-        is_valid_local = bool(re.match(_LOCAL_ORIGIN_REGEX, origin))
-        is_valid_custom = origin_host in custom_hosts and parsed_origin.scheme in ("http", "https")
-        if origin_host not in allowed_hosts or not (is_valid_local or is_valid_custom):
-            return JSONResponse(
+class _SecurityASGIMiddleware:
+    """
+    Pure-ASGI port of the former `@app.middleware("http")` security gate (same checks, same order,
+    same responses) without BaseHTTPMiddleware's per-request task group / streaming wrapper:
+    1. Validate `Host` to block DNS rebinding.
+    2. Validate `Origin` (if present) to block cross-site requests.
+    3. Enforce `Content-Length` <= `_MAX_REQUEST_BODY_BYTES` before the body is read (Finding N4).
+    4. Verify the bearer token on everything except `/health`, `/identity` and `OPTIONS` preflights.
+    A request that passed step 4 is marked in its own ASGI scope so the route-level
+    `verify_request_auth` dependency does not repeat the token comparison.
+    """
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
+        has_auth_override = verify_request_auth in app.dependency_overrides
+        allowed_hosts, custom_hosts = _security_policy(has_auth_override)
+
+        host_hdr = origin = content_len_hdr = None
+        for k, v in scope.get("headers") or ():
+            if k == b"host":
+                host_hdr = v.decode("latin-1")
+            elif k == b"origin":
+                origin = v.decode("latin-1")
+            elif k == b"content-length":
+                content_len_hdr = v.decode("latin-1")
+
+        req_host = _extract_hostname(host_hdr or "")
+        if req_host and req_host not in allowed_hosts:
+            await JSONResponse(
                 status_code=403,
-                content={"detail": "Forbidden cross-origin request."},
-            )
+                content={"detail": f"Forbidden Host header '{req_host}' (DNS rebinding protection)."},
+            )(scope, receive, send)
+            return
 
-    # Finding N4: Reject oversized Content-Length upfront across all routes
-    content_len_hdr = request.headers.get("content-length")
-    if content_len_hdr and request.url.path != "/identity":
-        try:
-            if int(content_len_hdr) > _MAX_REQUEST_BODY_BYTES:
-                return JSONResponse(
-                    status_code=413,
-                    content={"detail": f"Request body exceeds maximum allowed size ({_MAX_REQUEST_BODY_BYTES} bytes)."},
+        if origin:
+            parsed_origin = urlparse(origin)
+            origin_host = (parsed_origin.hostname or "").lower()
+            is_valid_local = bool(re.match(_LOCAL_ORIGIN_REGEX, origin))
+            is_valid_custom = origin_host in custom_hosts and parsed_origin.scheme in ("http", "https")
+            if origin_host not in allowed_hosts or not (is_valid_local or is_valid_custom):
+                await JSONResponse(
+                    status_code=403,
+                    content={"detail": "Forbidden cross-origin request."},
+                )(scope, receive, send)
+                return
+
+        path = scope.get("path", "")
+        if content_len_hdr and path != "/identity":
+            try:
+                if int(content_len_hdr) > _MAX_REQUEST_BODY_BYTES:
+                    await JSONResponse(
+                        status_code=413,
+                        content={"detail": f"Request body exceeds maximum allowed size ({_MAX_REQUEST_BODY_BYTES} bytes)."},
+                    )(scope, receive, send)
+                    return
+            except ValueError:
+                await JSONResponse(status_code=400, content={"detail": "Invalid Content-Length header."})(
+                    scope, receive, send
                 )
-        except ValueError:
-            return JSONResponse(status_code=400, content={"detail": "Invalid Content-Length header."})
+                return
 
-    if request.method == "OPTIONS" or request.url.path in ("/health", "/identity") or has_auth_override:
-        return await call_next(request)
+        if scope.get("method") == "OPTIONS" or path in ("/health", "/identity") or has_auth_override:
+            await self.app(scope, receive, send)
+            return
 
-    try:
-        verify_request_auth(request)
-    except HTTPException as exc:
-        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
-    return await call_next(request)
+        try:
+            verify_request_auth(Request(scope))
+        except HTTPException as exc:
+            await JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})(scope, receive, send)
+            return
+        scope["mesh_auth_verified"] = True
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(_SecurityASGIMiddleware)
+
+
 
 
 _MESH_LOCK = threading.RLock()

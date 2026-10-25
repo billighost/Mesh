@@ -160,9 +160,22 @@ def _path_recheck_ttl() -> float:
         return 5.0
 
 
+_PATH_MICRO: dict[str, float] = {}
+
+
+def _fs_memo_seconds() -> float:
+    """Window (default 10 ms) in which a path that was lstat-verified is not re-checked (MESH_FS_MEMO_MS, 0 = off)."""
+    raw = os.environ.get("MESH_FS_MEMO_MS")
+    try:
+        return max(0.0, float(raw) / 1000.0) if raw is not None else 0.01
+    except ValueError:
+        return 0.01
+
+
 def clear_path_trust_cache() -> None:
     """Forget every verified path (tests / evict hooks)."""
     _PATH_TRUST.clear()
+    _PATH_MICRO.clear()
     _RESOLVED_DIR_CACHE.clear()
     _FILE_PERM_TS.clear()
     _AUDIT_PATH_CACHE.clear()
@@ -203,10 +216,18 @@ def reject_symlink(path: Path) -> None:
     ttl = _path_recheck_ttl()
     if ttl > 0.0:
         ts = _PATH_TRUST.get(key)
-        if ts is not None and (time.monotonic() - ts) < ttl:
+        _now = time.monotonic()
+        if ts is not None and (_now - ts) < ttl:
+            _micro = _fs_memo_seconds()
+            if _micro > 0.0:
+                _seen = _PATH_MICRO.get(key)
+                if _seen is not None and (_now - _seen) < _micro:
+                    return  # lstat-verified milliseconds ago, inside the same operation: skip a repeat syscall
             link = _lstat_link_state(key)
             if link is False:
+                _PATH_MICRO[key] = _now
                 return
+            _PATH_MICRO.pop(key, None)
             _PATH_TRUST.pop(key, None)
             if link is True:
                 raise ValueError(f"Refusing to operate on symlinked path: '{path}'.")
@@ -539,19 +560,18 @@ def _check_audit_namespace_limit(base_dir: Path, db_path: Path) -> None:
 
 def _get_audit_db_stamp(db_path: Path) -> Optional[tuple[int, int, int, int]]:
     """Return a composite (db_mtime_ns, db_size, wal_mtime_ns, wal_size) stamp for WAL-safe sync."""
-    if not db_path.exists():
-        return None
+    # One stat per file: the old exists()+stat() pairs doubled the syscalls (~60 us each on Windows with AV).
     try:
-        st = db_path.stat()
-        if st.st_size <= 0:
-            return None
-        wal_path = Path(f"{db_path}-wal")
-        if wal_path.exists():
-            wst = wal_path.stat()
-            return (st.st_mtime_ns, st.st_size, wst.st_mtime_ns, wst.st_size)
-        return (st.st_mtime_ns, st.st_size, 0, 0)
+        st = os.stat(db_path)
     except OSError:
         return None
+    if st.st_size <= 0:
+        return None
+    try:
+        wst = os.stat(f"{db_path}-wal")
+        return (st.st_mtime_ns, st.st_size, wst.st_mtime_ns, wst.st_size)
+    except OSError:
+        return (st.st_mtime_ns, st.st_size, 0, 0)
 
 
 def evict_audit_cache(namespace: str) -> None:

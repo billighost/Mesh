@@ -18,6 +18,14 @@ visual language (see ui.py). Behaviour, security rules and daemon semantics:
 """
 from __future__ import annotations
 
+import sys as _fast_sys
+
+if __name__ == "__main__" and len(_fast_sys.argv) == 2 and _fast_sys.argv[1] in ("-v", "--version", "version"):
+    from .version import VERSION as _FAST_VERSION
+
+    print(f"mesh {_FAST_VERSION}")
+    raise SystemExit(0)
+
 import argparse
 import difflib
 import json
@@ -32,9 +40,7 @@ import stat
 import sys
 import threading
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -459,12 +465,69 @@ def _type_help(valid_types: Any) -> str:
     return "Memory type: " + ", ".join(sorted(valid_types))
 
 
+_TERM_WIDTH_CACHE: Optional[tuple[float, int]] = None
+
+
+def _cached_term_width() -> int:
+    """HelpFormatter's default width, without a console query for every add_argument() (~120 us on Windows)."""
+    global _TERM_WIDTH_CACHE
+    now = time.monotonic()
+    cached = _TERM_WIDTH_CACHE
+    if cached is not None and (now - cached[0]) < 1.0:
+        return cached[1]
+    import shutil as _shutil
+
+    width = _shutil.get_terminal_size().columns - 2
+    _TERM_WIDTH_CACHE = (now, width)
+    return width
+
+
+def _install_colorize_memo() -> None:
+    """Python 3.14's argparse calls _colorize.can_colorize() (env lookups + a console-mode syscall on Windows) for
+    every parser and formatter - thousands of times per `mesh task list`. The answer cannot change within a
+    process for the same stream, so remember it."""
+    if sys.version_info < (3, 13):
+        return
+    try:
+        import _colorize
+    except ImportError:
+        return
+    orig = getattr(_colorize, "can_colorize", None)
+    if orig is None or getattr(orig, "_mesh_memo", False):
+        return
+    memo: dict[Any, bool] = {}
+
+    def can_colorize(*args: Any, **kwargs: Any) -> bool:
+        key = (tuple(id(a) for a in args), tuple((k, id(v)) for k, v in sorted(kwargs.items())))
+        if key not in memo:
+            memo[key] = orig(*args, **kwargs)
+        return memo[key]
+
+    can_colorize._mesh_memo = True  # type: ignore[attr-defined]
+    _colorize.can_colorize = can_colorize
+
+
+_install_colorize_memo()
+
+
+class _FastArgumentParser(argparse.ArgumentParser):
+    def _get_formatter(self) -> Any:
+        try:
+            formatter = self.formatter_class(prog=self.prog, width=_cached_term_width())
+        except TypeError:
+            return super()._get_formatter()
+        set_color = getattr(formatter, "_set_color", None)
+        if set_color is not None:
+            set_color(getattr(self, "color", False))
+        return formatter
+
+
 def _parser(name: str, description: str, examples: Optional[list[tuple[str, str]]] = None) -> argparse.ArgumentParser:
     epilog = None
     if examples:
         width = max(len(c) for c, _ in examples) + 2
         epilog = "examples:\n" + "\n".join(f"  {c.ljust(width)}# {d}" for c, d in examples)
-    return argparse.ArgumentParser(
+    return _FastArgumentParser(
         prog=f"mesh {name}",
         description=description,
         epilog=epilog,
@@ -2086,6 +2149,7 @@ def doctor_cmd() -> None:
 _SHELL_FORWARD_NS = {
     "add", "ask", "inspect", "update", "forget", "approve", "run", "encrypt-db",
     "status", "why", "context", "conflicts", "patterns", "digest", "export", "capture",
+    "brief", "task", "import", "log", "doctor", 
 }
 
 

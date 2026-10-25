@@ -18,6 +18,7 @@ import atexit
 import contextlib
 import json
 import logging
+import functools
 import os
 import re
 import sqlite3
@@ -55,6 +56,7 @@ from .crypto import (
     is_encrypted_text,
     is_encryption_enabled,
 )
+from .audit import _path_recheck_ttl
 from .envutil import env_int
 from .guards import guard_ingest, guard_tags
 from .secrets import is_credential, normalize_secret_ref, redact_secrets_local
@@ -836,7 +838,18 @@ def _utc_now_iso() -> str:
     return _utc_now().isoformat()
 
 
+@functools.lru_cache(maxsize=16384)
+def _parse_iso_utc_cached(ts: str) -> Optional[datetime]:
+    return _parse_iso_utc_impl(ts)
+
+
 def _parse_iso_utc(ts: Optional[str]) -> Optional[datetime]:
+    if not ts or not isinstance(ts, str):
+        return None
+    return _parse_iso_utc_cached(ts)
+
+
+def _parse_iso_utc_impl(ts: Optional[str]) -> Optional[datetime]:
     if not ts or not isinstance(ts, str):
         return None
     try:
@@ -878,21 +891,32 @@ def _compute_row_effective_confidence(
         return round(stored_conf, 4), stored_conf < STALE_THRESHOLD
 
 
+_TOK_COMPACT_CACHE: dict[str, str] = {}
+_PHRASE_PATTERN_CACHE: dict[str, "re.Pattern[str]"] = {}
+
+
+def _phrase_pattern(phrase: str) -> "re.Pattern[str]":
+    pat = _PHRASE_PATTERN_CACHE.get(phrase)
+    if pat is None:
+        pat = re.compile(r"\b" + re.escape(phrase) + r"\b")
+        if len(_PHRASE_PATTERN_CACHE) > 512:
+            _PHRASE_PATTERN_CACHE.clear()
+        _PHRASE_PATTERN_CACHE[phrase] = pat
+    return pat
+
+
 def _get_db_stamp(db_path: Path) -> Optional[DbStamp]:
-    if not db_path.exists():
-        return None
+    # One stat per file (the old exists()+stat() pair doubled the syscalls; on Windows each
+    # one is a CreateFile round-trip that Defender may scan).
     try:
-        st = db_path.stat()
-        wal_path = Path(f"{db_path}-wal")
-        if wal_path.exists():
-            try:
-                wst = wal_path.stat()
-                return (st.st_mtime_ns, st.st_size, wst.st_mtime_ns, wst.st_size)
-            except OSError:
-                pass
-        return (st.st_mtime_ns, st.st_size, 0, 0)
+        st = os.stat(db_path)
     except OSError:
         return None
+    try:
+        wst = os.stat(f"{db_path}-wal")
+        return (st.st_mtime_ns, st.st_size, wst.st_mtime_ns, wst.st_size)
+    except OSError:
+        return (st.st_mtime_ns, st.st_size, 0, 0)
 
 
 def _normalize_vector(vec: Sequence[float] | np.ndarray, enforce_dim: bool = True) -> np.ndarray:
@@ -2135,7 +2159,22 @@ class MeshStore:
                 if self.db_path in _CONNECTION_POOL:
                     _CONNECTION_POOL.move_to_end(self.db_path)
                 return
-            self._init_db()
+            try:
+                _init_budget = max(0.0, float(os.environ.get("MESH_INIT_LOCK_RETRY_SECONDS", "10")))
+            except ValueError:
+                _init_budget = 10.0
+            _init_deadline = time.monotonic() + _init_budget
+            _init_delay = 0.01
+            while True:
+                try:
+                    self._init_db()
+                    break
+                except sqlite3.OperationalError as _exc:
+                    _msg = str(_exc).lower()
+                    if ("locked" not in _msg and "busy" not in _msg) or time.monotonic() >= _init_deadline:
+                        raise
+                    time.sleep(_init_delay)
+                    _init_delay = min(_init_delay * 2.0, 0.25)
             new_stamp = _get_db_stamp(self.db_path)
             if new_stamp is not None:
                 _INITIALIZED_DBS[self.db_path] = new_stamp
@@ -3455,12 +3494,20 @@ class MeshStore:
         if sims is None or len(ids_snap) == 0:
             return {"documents": [[]], "distances": [[]], "metadatas": [[]], "ids": [[]]}
         if query_embedding_model is not None:
-            valid_indices = [
-                idx
-                for idx, mid in enumerate(ids_snap)
-                if mid in rows_snap
-                and not _is_mixed_space(rows_snap[mid].get("embedding_model"), query_embedding_model)
-            ]
+            # the per-row model tag takes a handful of distinct values: decide each value once, not once per row
+            _mix_memo: dict[Any, bool] = {}
+            valid_indices = []
+            for idx, mid in enumerate(ids_snap):
+                _row = rows_snap.get(mid)
+                if _row is None:
+                    continue
+                _em = _row.get("embedding_model")
+                _mixed = _mix_memo.get(_em)
+                if _mixed is None:
+                    _mixed = _is_mixed_space(_em, query_embedding_model)
+                    _mix_memo[_em] = _mixed
+                if not _mixed:
+                    valid_indices.append(idx)
             if not valid_indices:
                 return {"documents": [[]], "distances": [[]], "metadatas": [[]], "ids": [[]]}
             valid_arr = np.asarray(valid_indices, dtype=np.int64)
@@ -3644,7 +3691,12 @@ class MeshStore:
             if is_specific:
                 specific_total_idf += w_idf
 
-            tok_compact = re.sub(r"[^a-z0-9]", "", tok)
+            tok_compact = _TOK_COMPACT_CACHE.get(tok)
+            if tok_compact is None:
+                tok_compact = re.sub(r"[^a-z0-9]", "", tok)
+                if len(_TOK_COMPACT_CACHE) > 4096:
+                    _TOK_COMPACT_CACHE.clear()
+                _TOK_COMPACT_CACHE[tok] = tok_compact
             tok_syns = syn_lookup.get(tok, set())
 
             if tok in all_doc_tokens or (len(tok_compact) >= 3 and tok_compact in all_doc_tokens):
@@ -3692,7 +3744,7 @@ class MeshStore:
 
         phrase_bonus = 0.0
         if len(q_content_tokens) >= 2 and exact_stem_coverage > 0.0:
-            if len(q_norm_phrase) >= 4 and re.search(r"\b" + re.escape(q_norm_phrase) + r"\b", doc_norm):
+            if len(q_norm_phrase) >= 4 and _phrase_pattern(q_norm_phrase).search(doc_norm):
                 phrase_bonus = 0.25
             elif len(q_compact) >= 6 and q_compact in all_doc_tokens:
                 phrase_bonus = 0.22
@@ -3780,15 +3832,17 @@ class MeshStore:
             and min_confidence <= 0.0
         )
         if _no_row_filters:
-            # Fast path: only the quarantine flag can exclude a row.
-            for idx, mid in enumerate(ids_snap):
-                cached_row = rows_snap.get(mid)
-                if cached_row is None:
-                    continue
-                if not include_quarantined and cached_row.get("quarantined"):
-                    continue
-                masked_indices.append(idx)
-                masked_mid_set.add(mid)
+            # Fast path: only the quarantine flag can exclude a row (comprehensions run ~2x faster than the
+            # per-row append loop; same rows, same order).
+            if include_quarantined:
+                masked_indices = [idx for idx, mid in enumerate(ids_snap) if mid in rows_snap]
+            else:
+                masked_indices = [
+                    idx
+                    for idx, mid in enumerate(ids_snap)
+                    if (_r := rows_snap.get(mid)) is not None and not _r.get("quarantined")
+                ]
+            masked_mid_set = {ids_snap[idx] for idx in masked_indices}
         else:
             for idx, mid in enumerate(ids_snap):
                 cached_row = rows_snap.get(mid)
@@ -3845,18 +3899,18 @@ class MeshStore:
                 s_hits = cache.token_to_ids.get(syn)
                 if s_hits:
                     _syn_hits.update(s_hits)
-        lexical_map: dict[str, float] = {}
-        for mid, cnt in _exact_hits.items():
-            if mid in masked_mid_set:
-                lexical_map[mid] = float(cnt)
+        lexical_map: dict[str, float] = {
+            mid: float(cnt) for mid, cnt in _exact_hits.items() if mid in masked_mid_set
+        }
         for mid, cnt in _syn_hits.items():
             if mid in masked_mid_set:
                 lexical_map[mid] = lexical_map.get(mid, 0.0) + 0.5 * cnt
         if lexical_map:
             max_hits = max(lexical_map.values())
-            for mid, hits in list(lexical_map.items()):
-                rel = hits / max_hits
-                lexical_map[mid] = round(0.65 * rel + 0.35 * (hits / (hits + 1.0)), 4)
+            lexical_map = {
+                mid: round(0.65 * (hits / max_hits) + 0.35 * (hits / (hits + 1.0)), 4)
+                for mid, hits in lexical_map.items()
+            }
 
         masked_count = len(masked_indices)
         k = min(masked_count, max(n * 4, 30))
@@ -4645,8 +4699,20 @@ class MeshStore:
     def flush_telemetry(self) -> None:
         _flush_telemetry_for_db_path(self.db_path)
 
-    def _maybe_lazy_flush_telemetry(self) -> None:
+    def _resolved_db_path(self) -> Path:
+        """`self.db_path.resolve()` memoised per store for the path-trust TTL."""
+        ttl = _path_recheck_ttl()
+        if ttl > 0.0:
+            ent = self.__dict__.get("_rdb_cache")
+            if ent is not None and (time.monotonic() - ent[0]) < ttl:
+                return ent[1]
         resolved = self.db_path.resolve()
+        if ttl > 0.0:
+            self.__dict__["_rdb_cache"] = (time.monotonic(), resolved)
+        return resolved
+
+    def _maybe_lazy_flush_telemetry(self) -> None:
+        resolved = self._resolved_db_path()
         batch_limit = _get_telemetry_batch_limit()
         flush_secs = _get_telemetry_flush_seconds()
         should_flush = False
@@ -4727,7 +4793,7 @@ class MeshStore:
             clean_query = redact_secrets_local(clean_query)
             is_priv_q = True
 
-        resolved = self.db_path.resolve()
+        resolved = self._resolved_db_path()
 
         with _CACHE_LOCK:
             cached = _VECTOR_CACHE.get((self.db_path, self.namespace))
