@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import sys as _fast_sys
 
-if __name__ == "__main__" and len(_fast_sys.argv) == 2 and _fast_sys.argv[1] in ("-v", "--version", "version"):
+if len(_fast_sys.argv) == 2 and _fast_sys.argv[1] in ("-v", "--version", "version"):
     from .version import VERSION as _FAST_VERSION
 
     print(f"mesh {_FAST_VERSION}")

@@ -41,9 +41,19 @@ import uuid
 from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import TYPE_CHECKING, Any, Iterator, Optional
 
-import numpy as np
+if TYPE_CHECKING:
+    import numpy as np
+
+
+def __getattr__(name: str) -> Any:
+    if name == "np":
+        import numpy as _np
+
+        globals()["np"] = _np
+        return _np
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 from .audit import (
