@@ -115,14 +115,13 @@ Follow these numbered steps in every session:
 ## 6. Multi-Agent Etiquette & Namespace Resolution
 
 - **Agent Identity**: Default is taken from `MESH_AGENT_ID`. When collaborating, append role suffixes (e.g. `claude-code:architect`, `antigravity:tester`).
-- **Namespace Resolution Order** (implemented in 0.8.2):
+- **Namespace Resolution Order**  :
   1. Explicit tool argument: `namespace="my-project"`
   2. Environment variable: `MESH_NAMESPACE`
   3. `.mesh/namespace` file in the project root (agent-written convention — see §2 Step C)
   4. Git remote repository name (derive from `git remote get-url origin`)
   5. Current working directory folder name
-  6. `shared` (last resort — avoid for project work)
-- **Note**: `.mesh.toml` is mentioned in some documentation but is **not implemented** in 0.8.2. Use `.mesh/namespace` instead.
+   
 - **Namespace naming rules**: lowercase, alphanumeric + hyphens/underscores, max 64 chars (e.g. `my-project`, `acme-api-v2`).
 - **Ownership**: Respect existing memories from other agents; update or supersede rather than clobbering.
 - **Never use `shared` for project-specific work**: it is the global catch-all and will mix memories across unrelated projects.
