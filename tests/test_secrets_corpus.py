@@ -124,7 +124,7 @@ BENIGN_CORPUS: list[str] = [
 
     # Semantic versions
     "Mesh version v0.8.1 was published yesterday",
-    "Upcoming target release is 0.8.2 with security fixes",
+    "Upcoming target release is 0.8.3 with security fixes",
 
     # Model names and technical identifiers
     "Using sentence-transformers/all-MiniLM-L6-v2 for local embeddings",

@@ -9,7 +9,7 @@ When one agent learns something, another agent in a different session or tool ca
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 ![Status: Beta](https://img.shields.io/badge/status-beta-orange.svg)
 
-> **Beta.** Version `0.8.2`. Interfaces may change between beta releases. Read [Status & versioning](#status-versioning-and-roadmap) before depending on it in production.
+> **Beta.** Version `0.8.3`. Interfaces may change between beta releases. Read [Status & versioning](#status-versioning-and-roadmap) before depending on it in production.
 
 ---
 
@@ -18,7 +18,7 @@ When one agent learns something, another agent in a different session or tool ca
 | Question | Answer |
 |---|---|
 | **What it is** | A local MCP server + CLI + HTTP API that gives multiple AI agents one shared, searchable memory and a deterministic task ledger per project namespace. |
-| **Current version** | `0.8.2` (Beta), MIT, maintained by [billighost](https://github.com/billighost). |
+| **Current version** | `0.8.3` (Beta), MIT, maintained by [billighost](https://github.com/billighost). |
 | **Python** | Requires Python **3.10+**. Package classifiers cover 3.10–3.13; the 0.8.1b2 field test ran on Python 3.14.0. |
 | **Operating systems** | Windows, macOS, and Linux code paths exist. The 0.8.1b2 independent field test ran on **Windows 11 only**; macOS/Linux were not independently field-tested in that run. |
 | **Where data lives** | `~/.mesh/` by default (`%USERPROFILE%\.mesh` on Windows). Override with `MESH_HOME` or `MESH_DIR`. One SQLite database per namespace: `mesh_<namespace>.db`, plus `audit_<namespace>.db`. |
@@ -691,9 +691,9 @@ Full detail: [THREAT_MODEL.md](THREAT_MODEL.md). Report vulnerabilities privatel
 
 ### Project and maintenance
 
-**What version is this?** `0.8.2`, Beta.
+**What version is this?** `0.8.3`, Beta.
 
-**Will the API change?** Beta releases may change interfaces. Pin `mesh-context-layer==0.8.2` if you need reproducibility.
+**Will the API change?** Beta releases may change interfaces. Pin `mesh-context-layer==0.8.3` if you need reproducibility.
 
 **Who maintains it?** billighost. See the repository and PyPI project.
 
@@ -753,7 +753,7 @@ Private memories are never exported, so deleting them cannot be undone from an e
 
 ## Status, versioning, and roadmap
 
-**Current status: Beta (`0.8.2`).**
+**Current status: Beta (`0.8.3`).**
 
 Implemented and documented here: namespaced memory, hybrid recall, deduplication, contradiction tracking, TTL decay, goals/tasks with mandatory completion summaries, session brief, project changelog, installer/uninstaller for eight agents, skill and rules block, local audit, quarantine/approval, secret references, optional encryption, daemon/HTTP/dashboard.
 
