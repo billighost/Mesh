@@ -13,6 +13,7 @@ Validates Finding F8:
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -21,6 +22,10 @@ from unittest.mock import patch
 
 from hypothesis import given, settings, strategies as st
 import pytest
+
+settings.register_profile("ci", max_examples=2000, deadline=None)
+settings.register_profile("default", max_examples=250)
+settings.load_profile(os.getenv("HYPOTHESIS_PROFILE", "default"))
 
 from mesh.guards import guard_ingest, guard_prescan
 from mesh.memory import Mesh
@@ -254,6 +259,70 @@ def test_hook_graceful_error_resilience(capsys):
     assert data == {"injectSteps": []}, "Hook must return empty injectSteps on failure, not crash"
 
 
+st_non_ascii_char = st.sampled_from([
+    "é", "ñ", "ü", "ø", "ç", "à", "î", "ö", "ß",
+    "Д", "ж", "ш", "я", "α", "β", "γ", "δ", "Ω",
+    "中", "文", "字", "日", "本", "語", "한", "글",
+    "🔑", "🛡️", "⚠️", "🚀", "💡"
+])
+
+st_zero_width_and_combining = st.sampled_from([
+    "\u200b",  # ZERO WIDTH SPACE
+    "\u200c",  # ZERO WIDTH NON-JOINER
+    "\u200d",  # ZERO WIDTH JOINER
+    "\ufeff",  # ZERO WIDTH NO-BREAK SPACE / BOM
+    "\u00ad",  # SOFT HYPHEN
+    "\u034f",  # COMBINING GRAPHEME JOINER
+    "\u0300",  # COMBINING GRAVE ACCENT
+    "\u0301",  # COMBINING ACUTE ACCENT
+    "\u0302",  # COMBINING CIRCUMFLEX ACCENT
+    "\u0303",  # COMBINING TILDE
+    "\u0308",  # COMBINING DIAERESIS
+    "\u202a",  # LEFT-TO-RIGHT EMBEDDING
+    "\u202e",  # RIGHT-TO-LEFT OVERRIDE
+    "\u2060",  # WORD JOINER
+])
+
+
+@st.composite
+def mutated_secrets(draw: st.DrawFn) -> str:
+    base_secret = draw(st.sampled_from(SECRET_CORPUS))
+    prefix = draw(st.text(alphabet=" \t\r\n", min_size=0, max_size=5)) + draw(
+        st.text(alphabet=st.characters(blacklist_categories=("Cs",)), max_size=30)
+    )
+    suffix = draw(
+        st.text(alphabet=st.characters(blacklist_categories=("Cs",)), max_size=30)
+    ) + draw(st.text(alphabet=" \t\r\n", min_size=0, max_size=5))
+    if draw(st.booleans()):
+        base_secret = "".join(
+            c.upper() if draw(st.booleans()) else c.lower() for c in base_secret
+        )
+    return f"{prefix}{base_secret}{suffix}"
+
+
+@st.composite
+def non_ascii_text(draw: st.DrawFn) -> str:
+    prefix = draw(st.text(min_size=0, max_size=50))
+    special = draw(st_non_ascii_char)
+    suffix = draw(st.text(min_size=0, max_size=50))
+    return f"{prefix}{special}{suffix}"
+
+
+@st.composite
+def zero_width_combining_text(draw: st.DrawFn) -> str:
+    prefix = draw(st.text(min_size=0, max_size=50))
+    zw = draw(st_zero_width_and_combining)
+    suffix = draw(st.text(min_size=0, max_size=50))
+    return f"{prefix}{zw}{suffix}"
+
+
+@st.composite
+def very_long_text(draw: st.DrawFn) -> str:
+    base = draw(st.text(alphabet="abcdefghijklmnopqrstuvwxyz ", min_size=50, max_size=200))
+    repeat_count = draw(st.integers(min_value=85, max_value=120))
+    return (base * repeat_count)[:20000]
+
+
 def test_prescan_never_reports_corpus_secrets_as_clean():
     """Assert guard_prescan returns False for every item in SECRET_CORPUS."""
     for secret in SECRET_CORPUS:
@@ -262,14 +331,47 @@ def test_prescan_never_reports_corpus_secrets_as_clean():
         )
 
 
-@given(st.text(min_size=1, max_size=2048))
-@settings(max_examples=250)
+@given(non_ascii_text())
+def test_prescan_rejects_non_ascii_text(text: str):
+    """Pure-Python prescan must return False for any string containing non-ASCII characters."""
+    assert guard_prescan(text) is False
+
+
+@given(zero_width_combining_text())
+def test_prescan_rejects_zero_width_and_combining(text: str):
+    """Pure-Python prescan must return False for any string with zero-width or combining characters."""
+    assert guard_prescan(text) is False
+
+
+@given(mutated_secrets())
+def test_prescan_rejects_mutated_secrets(text: str):
+    """Prescan must return False for mutated secrets from SECRET_CORPUS (prefixes, suffixes, whitespace, casing)."""
+    assert guard_prescan(text) is False
+
+
+@given(very_long_text())
+def test_prescan_rejects_oversized_strings(text: str):
+    """Prescan must return False for strings exceeding the 16384 length threshold."""
+    if len(text) > 16384:
+        assert guard_prescan(text) is False
+
+
+@given(
+    st.one_of(
+        st.text(min_size=1, max_size=2048),
+        non_ascii_text(),
+        zero_width_combining_text(),
+        mutated_secrets(),
+    )
+)
 def test_prescan_soundness_property(text: str):
     """
     Assert that prescan never reports a string as clean (True) when the full
-    guard regexes would redact it or detect a credential.
+    guard regexes would redact it or detect a credential, and never marks
+    non-ASCII text as clean.
     """
     if guard_prescan(text):
+        assert text.isascii(), f"Prescan allowed non-ASCII text: {text!r}"
         assert not is_credential(text), (
             f"Prescan reported clean, but is_credential was True for: {text!r}"
         )
