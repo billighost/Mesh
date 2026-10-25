@@ -28,11 +28,23 @@ Persistent semantic memory, deterministic work tracking, and project changelogs 
 
 Follow these numbered steps in every session:
 
-1. **SESSION START**:
-   - Resolve the project namespace: explicit argument > `MESH_NAMESPACE` > `.mesh.toml` > git remote name > root folder name.
-   - Call `mesh_project_brief(max_tokens=500)` **before** asking the user setup questions or beginning work.
-   - If empty/new, note this and create the namespace deliberately on your first write.
-   - If `did_you_mean` suggestions appear, ask the user to confirm rather than guessing.
+1. **SESSION START — Namespace Bootstrap (do this before anything else)**:
+
+   **Step A — Resolve the namespace (in priority order):**
+   1. Explicit tool argument or env var: `namespace="my-project"` / `MESH_NAMESPACE`
+   2. Read `.mesh/namespace` file in the project root (one-line plain text, e.g. `my-project`)
+   3. Derive from git remote name (e.g. `origin` → `my-project`)
+   4. Derive from the current working directory folder name
+   5. Fall back to `shared` only as a last resort — avoid this for project work
+
+   **Step B — Verify and bootstrap:**
+   - Call `mesh_project_brief(namespace=<resolved>, max_tokens=500)`.
+   - If the brief returns **empty or no memories**, this is a new namespace: note it and create it deliberately on your first `mesh_learn` or `mesh_task_create` call.
+   - If `did_you_mean` suggestions appear in the response, ask the user to confirm the right namespace before writing anything.
+
+   **Step C — Persist namespace for future agents:**
+   - If `.mesh/namespace` does **not** exist in the project root, create it now with the resolved namespace name (one line, no whitespace). This file is the authoritative per-project namespace pointer.
+   - Example: write `my-project` to `.mesh/namespace` and add `.mesh/namespace` to the project's source control if appropriate (never commit `.mesh/*.db` files).
 2. **RECALL FIRST**:
    - Before asking the user about architecture, conventions, ports, test commands, or past decisions, query `mesh_recall(query=...)`.
    - Use targeted keywords and synonyms (e.g. `mesh_recall(query="test command postgres port")`).
@@ -62,7 +74,9 @@ Follow these numbered steps in every session:
 
 | Situation / Trigger | Primary Tool Call | Action |
 |---|---|---|
-| Session start / new prompt in repo | `mesh_project_brief(max_tokens=500)` | Load namespace health, open tasks, recent completions, and core facts. |
+| Session start / new prompt in repo | See §2 Namespace Bootstrap, then `mesh_project_brief` | Resolve namespace, verify `.mesh/namespace` file, load brief. |
+| `.mesh/namespace` file absent in project | Write `.mesh/namespace` with resolved name | Create file so all future agents use the same namespace automatically. |
+| `mesh_project_brief` returns empty | Namespace is new — note it; first `mesh_learn` creates it | Do not fall back to `shared`; use the derived project name. |
 | User asks about setup, ports, commands | `mesh_recall(query="...")` | Check Mesh first before asking the user or guessing defaults. |
 | Learned durable fact, decision, or fix | `mesh_learn(content=..., memory_type=..., tags=[...])` | Record immediately with reason ("because ..."). One fact per memory. |
 | Existing fact or port changed | `mesh_recall` then `mesh_update(memory_id=...)` | Update in-place to avoid duplicate memories or contradictions. |
@@ -101,13 +115,17 @@ Follow these numbered steps in every session:
 ## 6. Multi-Agent Etiquette & Namespace Resolution
 
 - **Agent Identity**: Default is taken from `MESH_AGENT_ID`. When collaborating, append role suffixes (e.g. `claude-code:architect`, `antigravity:tester`).
-- **Namespace Resolution Order**:
+- **Namespace Resolution Order** (implemented in 0.8.2):
   1. Explicit tool argument: `namespace="my-project"`
   2. Environment variable: `MESH_NAMESPACE`
-  3. Project config: `.mesh.toml` in project root
-  4. Git remote repository name
+  3. `.mesh/namespace` file in the project root (agent-written convention — see §2 Step C)
+  4. Git remote repository name (derive from `git remote get-url origin`)
   5. Current working directory folder name
+  6. `shared` (last resort — avoid for project work)
+- **Note**: `.mesh.toml` is mentioned in some documentation but is **not implemented** in 0.8.2. Use `.mesh/namespace` instead.
+- **Namespace naming rules**: lowercase, alphanumeric + hyphens/underscores, max 64 chars (e.g. `my-project`, `acme-api-v2`).
 - **Ownership**: Respect existing memories from other agents; update or supersede rather than clobbering.
+- **Never use `shared` for project-specific work**: it is the global catch-all and will mix memories across unrelated projects.
 
 ---
 
@@ -120,36 +138,47 @@ Follow these numbered steps in every session:
 
 ## 8. Compact End-to-End Walkthrough
 
-```json
-// 1. Session start
-mesh_project_brief({"max_tokens": 500})
+```
+// ── STEP 0: Namespace bootstrap (ALWAYS first) ──────────────────────────────
 
-// 2. Discovering existing conventions
-mesh_recall({"query": "database migrations alembic"})
+// A. Check for .mesh/namespace file in project root.
+//    If found: namespace = file contents (e.g. "acme-api")
+//    If not found: derive from git remote / folder name (e.g. "Mesh" → "mesh")
 
-// 3. Creating goal and subtask
-mesh_task_create({"title": "Upgrade DB to v3", "kind": "goal"}) // -> goal-1
-mesh_task_create({"title": "Run migration script", "kind": "task", "parent_id": "goal-1"}) // -> task-2
+// B. Load the project brief using the resolved namespace
+mesh_project_brief({"namespace": "mesh", "max_tokens": 500})
+//    → If brief is empty: this is a new namespace. Note it; first mesh_learn creates it.
+//    → If did_you_mean appears: ask user to confirm before writing anything.
 
-// 4. Starting task
-mesh_task_update({"item_id": "task-2", "status": "in_progress"})
+// C. Write .mesh/namespace if it doesn't exist yet (one line: "mesh")
+//    This ensures the next agent picks up the same namespace automatically.
 
-// 5. Recording durable architectural decision with rationale
+// ── STEP 1: Recall before asking the user ───────────────────────────────────
+mesh_recall({"query": "database migrations alembic", "namespace": "mesh"})
+
+// ── STEP 2: Track goals & tasks ─────────────────────────────────────────────
+mesh_task_create({"title": "Upgrade DB to v3", "kind": "goal", "namespace": "mesh"}) // -> goal-1
+mesh_task_create({"title": "Run migration script", "kind": "task", "parent_id": "goal-1", "namespace": "mesh"}) // -> task-2
+
+// ── STEP 3: Work ─────────────────────────────────────────────────────────────
+mesh_task_update({"item_id": "task-2", "status": "in_progress", "namespace": "mesh"})
+
 mesh_learn({
   "content": "Decision: Added work_items table with WAL mode because concurrent agent task tracking requires non-blocking reads.",
   "memory_type": "decision",
-  "tags": ["db", "architecture"]
+  "tags": ["db", "architecture"],
+  "namespace": "mesh"
 })
 
-// 6. Completing task with summary and evidence
+// ── STEP 4: Complete & report ─────────────────────────────────────────────────
 mesh_task_complete({
   "item_id": "task-2",
   "summary": "Executed v3 migration; created work_items and work_events tables with automatic backups.",
-  "evidence": ["mesh/store.py", "git:59a96ce"]
+  "evidence": ["mesh/store.py", "git:59a96ce"],
+  "namespace": "mesh"
 })
 
-// 7. Reviewing changelog
-mesh_log({"since": "24h", "format": "markdown"})
+mesh_log({"since": "24h", "format": "markdown", "namespace": "mesh"})
 ```
 
 ---
