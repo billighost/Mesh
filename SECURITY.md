@@ -58,7 +58,7 @@ These are statements about the code in this repository, not a guarantee. Each ha
 ### Secret handling
 
 - `guard_ingest` scans memory content and tags for credential patterns, redacts detected values, and forces the record to `local_only=True`. This is best-effort pattern matching, not a guarantee.
-- **Known limitation:** the independent field test found 3 of 9 planted secret types were not caught (T-002 in [docs/field-test/issues.md](docs/field-test/issues.md)): a keyword-free locker code, a token split across lines, and a task PIN. Task descriptions are not scanned by the same path as memories. Do not store secrets in Mesh.
+- **Known limitation:** the independent field test found 3 of 9 planted secret types were not caught (issue T-002): a keyword-free locker code, a token split across lines, and a task PIN. Task descriptions are not scanned by the same path as memories. Do not store secrets in Mesh.
 - Secret references (`env://`, `keyring://`, `op://`, and the local vault used by `mesh run --vault`) store a pointer, not the value, in memory content. Resolution happens at execution time. This reduces exposure but does not make it safe to put a secret in a memory body.
 - Suspected secrets are **not** rejected; they are redacted and made private. A redaction can miss a value and a private memory is still readable on disk.
 

@@ -66,7 +66,7 @@ Include:
 3. The exact command or MCP tool call, expected behavior, and actual behavior.
 4. Relevant logs with tokens, memory contents, and personal paths removed.
 
-If the bug involves a secret being stored or echoed, say so explicitly in the issue without reproducing the secret value. See the open field-test issue T-002 in [docs/field-test/issues.md](docs/field-test/issues.md).
+If the bug involves a secret being stored or echoed, say so explicitly in the issue without reproducing the secret value. See the open field-test issue T-002.
 
 ## License
 

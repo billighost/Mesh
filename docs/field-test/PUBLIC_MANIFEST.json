@@ -64,26 +64,6 @@
       "sha256": "2a91d2d4be6cd3ab1e6c54c43976efbe473bab3a12db61a7b0d7b63ccbe2ec67"
     },
     {
-      "path": "ISSUE_STATUS.md",
-      "size_bytes": 16857,
-      "sha256": "85bdf24b60714fbb8e761c5494da332b4bed333d269b3a70a61f9db330e58a6b"
-    },
-    {
-      "path": "ISSUE_STATUS_ADDENDUM.md",
-      "size_bytes": 9224,
-      "sha256": "1adeb52d925b99a30f3fff887d1da72b44ac5586f246a352d0702c98689cbe8c"
-    },
-    {
-      "path": "ISSUE_STATUS_ADDENDUM_0_8_2.md",
-      "size_bytes": 10067,
-      "sha256": "55f920976b0eec8fa9c9881c5c50a563d66125c1c396c94eb3572436155aa654"
-    },
-    {
-      "path": "issues.md",
-      "size_bytes": 7886,
-      "sha256": "f417c6cef9aa1f0da0076097d470cefd38a32a2a818503d4c297555d7f9d080d"
-    },
-    {
       "path": "probe-data/config_summary.csv",
       "size_bytes": 812,
       "sha256": "b94b92df2d419ae3c203ca93fae58b3af53aafe536171afb4a2676bd54781534"
@@ -197,21 +177,6 @@
       "path": "reproduce/test_secret_audit.py",
       "size_bytes": 9082,
       "sha256": "94d233cfa6957ee492d7f6e1dc4864ee5a08e6ef0bb15629548d266410ca310a"
-    },
-    {
-      "path": "RETEST_PLAN.md",
-      "size_bytes": 6875,
-      "sha256": "9b7b171b1e528f971596bf54022081e6bca9b2bc5c40d898cac0812822ea0873"
-    },
-    {
-      "path": "RETEST_PLAN_T.md",
-      "size_bytes": 10430,
-      "sha256": "4c76374e2b27d069bc7181ccbe440b3c2d46de61639bc187cb66b1b5de19204f"
-    },
-    {
-      "path": "RETEST_PLAN_T2.md",
-      "size_bytes": 6758,
-      "sha256": "2095f975fd4269c06fbb15b269bbb027347b188508c4c78995b7b9443eed7932"
     }
   ]
 }
