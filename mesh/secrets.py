@@ -411,13 +411,12 @@ def _write_local_vault_locked(data: dict[str, str]) -> None:
     vault_file = _local_vault_path()
     ensure_secure_mesh_dir(vault_file.parent)
     serialized = json.dumps(data, indent=2, sort_keys=True)
-    try:
-        from .crypto import encrypt_text_for_storage, is_encryption_enabled
+    from .crypto import encrypt_text_for_storage, is_encryption_enabled
 
-        if is_encryption_enabled():
-            serialized = encrypt_text_for_storage(serialized)
-    except Exception:
-        pass
+    if is_encryption_enabled():
+        # Fail-closed: If encryption is enabled, writing the vault unencrypted is forbidden.
+        # If encryption fails, raise immediately so no plaintext credentials touch the disk.
+        serialized = encrypt_text_for_storage(serialized)
     tmp_path = vault_file.with_suffix(f".tmp.{os.getpid()}.{threading.get_ident()}")
     if os.name == "nt":
         tmp_path.write_text(serialized, encoding="utf-8")

@@ -707,13 +707,10 @@ def _prune_audit_log_locked(conn: sqlite3.Connection, max_rows: int) -> None:
 def _maybe_encrypt_audit_field(val: Optional[str]) -> Optional[str]:
     if val is None:
         return None
-    try:
-        from .crypto import encrypt_text_for_storage, is_encryption_enabled
+    from .crypto import encrypt_text_for_storage, is_encryption_enabled
 
-        if is_encryption_enabled():
-            return encrypt_text_for_storage(val)
-    except Exception:
-        pass
+    if is_encryption_enabled():
+        return encrypt_text_for_storage(val)
     return val
 
 

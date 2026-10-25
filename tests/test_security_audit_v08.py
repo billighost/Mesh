@@ -693,3 +693,52 @@ def test_issue_t002_secret_detection_and_task_quarantine(tmp_path, monkeypatch):
     assert len(data.get("work_items", [])) == 0
     assert data.get("skipped_local_only_work_items", 0) == 2
 
+
+def test_vault_write_fail_closed_when_encryption_fails(tmp_path, monkeypatch):
+    """When encryption is enabled and encryption fails, vault write must fail closed without writing plaintext."""
+    monkeypatch.setenv("MESH_HOME", str(tmp_path))
+    monkeypatch.setenv("MESH_PASSPHRASE", "super-secret-passphrase")
+
+    from mesh.secrets import _local_vault_path, _write_local_vault_locked
+
+    vault_file = _local_vault_path()
+    assert not vault_file.exists()
+
+    with patch("mesh.crypto.encrypt_text_for_storage", side_effect=RuntimeError("Cipher subsystem failure")):
+        with pytest.raises(RuntimeError, match="Cipher subsystem failure"):
+            _write_local_vault_locked({"secret_key": "top_secret_value"})
+
+    assert not vault_file.exists(), "Vault file must not exist if encryption failed"
+
+
+def test_vault_write_plaintext_when_encryption_not_configured(tmp_path, monkeypatch):
+    """When encryption is NOT configured, vault writes plaintext with owner-only permissions."""
+    monkeypatch.setenv("MESH_HOME", str(tmp_path))
+    monkeypatch.delenv("MESH_PASSPHRASE", raising=False)
+    monkeypatch.delenv("MESH_ENCRYPTION_KEY", raising=False)
+    monkeypatch.delenv("MESH_ENCRYPT_AT_REST", raising=False)
+
+    from mesh.secrets import _local_vault_path, _read_local_vault_locked, _write_local_vault_locked
+
+    vault_file = _local_vault_path()
+    assert not vault_file.exists()
+
+    _write_local_vault_locked({"plain_key": "plain_val"})
+    assert vault_file.exists()
+
+    # Verify content is plaintext JSON
+    content = vault_file.read_text(encoding="utf-8")
+    assert not content.startswith("enc:v1:")
+    data = json.loads(content)
+    assert data == {"plain_key": "plain_val"}
+
+    # Permissions on POSIX must be owner-only (0600)
+    if os.name != "nt":
+        mode = vault_file.stat().st_mode & 0o777
+        assert mode == 0o600, f"Expected 0600, got {oct(mode)}"
+
+    # Can read back
+    read_back = _read_local_vault_locked()
+    assert read_back == {"plain_key": "plain_val"}
+
+

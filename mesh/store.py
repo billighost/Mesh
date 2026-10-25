@@ -935,7 +935,10 @@ def _vector_to_blob(vec: Sequence[float] | np.ndarray) -> bytes:
     """Serialize a vector into a normalized float32 byte buffer (encrypting if at-rest encryption is active)."""
     raw = _normalize_vector(vec).tobytes()
     if is_encryption_enabled():
-        return encrypt_blob_for_storage(raw) or raw
+        enc = encrypt_blob_for_storage(raw)
+        if enc is None:
+            raise RuntimeError("Vector encryption failed while at-rest encryption is active.")
+        return enc
     return raw
 
 
