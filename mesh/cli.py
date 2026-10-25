@@ -513,7 +513,7 @@ _install_colorize_memo()
 class _FastArgumentParser(argparse.ArgumentParser):
     def _get_formatter(self) -> Any:
         try:
-            formatter = self.formatter_class(prog=self.prog, width=_cached_term_width())
+            formatter = self.formatter_class(prog=self.prog, width=_cached_term_width())  # type: ignore[call-arg]
         except TypeError:
             return super()._get_formatter()
         set_color = getattr(formatter, "_set_color", None)

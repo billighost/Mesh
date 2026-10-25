@@ -3888,12 +3888,12 @@ class MeshStore:
         # (+1.0 per exact token hit, +0.5 per synonym hit, masked rows only).
         from collections import Counter as _HitCounter
 
-        _exact_hits = _HitCounter()
+        _exact_hits: _HitCounter[str] = _HitCounter()
         for tok in q_content_tokens:
             t_hits = cache.token_to_ids.get(tok)
             if t_hits:
                 _exact_hits.update(t_hits)
-        _syn_hits = _HitCounter()
+        _syn_hits: _HitCounter[str] = _HitCounter()
         for syn_set in q_synonyms.values():
             for syn in syn_set:
                 s_hits = cache.token_to_ids.get(syn)
@@ -4293,7 +4293,7 @@ class MeshStore:
                         (self.namespace,),
                     ).fetchall()
 
-        results: list[dict[str, Any]] = []
+        db_results: list[dict[str, Any]] = []
         for r in rows:
             d = {col: r[col] for col in r.keys() if col != "embedding"}
             d["content"] = decrypt_text_if_encrypted(d.get("content"))
@@ -4310,8 +4310,8 @@ class MeshStore:
                     d["embedding"] = arr.tolist() if arr.size == EMBEDDING_DIM else None
                 else:
                     d["embedding"] = None
-            results.append(d)
-        return results
+            db_results.append(d)
+        return db_results
 
     def get_exportable_work_items(
         self,
