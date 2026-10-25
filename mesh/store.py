@@ -34,15 +34,15 @@ from typing import TYPE_CHECKING, Any, Iterator, Literal, Optional, Sequence
 
 if TYPE_CHECKING:
     import numpy as np
+else:
+    class _LazyNumPy:
+        def __getattr__(self, name: str) -> Any:
+            import numpy as _np
 
+            globals()["np"] = _np
+            return getattr(_np, name)
 
-def __getattr__(name: str) -> Any:
-    if name == "np":
-        import numpy as _np
-
-        globals()["np"] = _np
-        return _np
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    np = _LazyNumPy()
 
 from .audit import (
     REDACTED_CONTENT_PLACEHOLDER,
