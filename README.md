@@ -1,6 +1,8 @@
-# Mesh
+# Mesh Context Layer (formerly mesh-memory)
 
 **Local-first shared memory, goals, tasks, and project changelogs for AI coding agents.**
+
+*Disambiguation: Mesh Context Layer is an AI-agent context and memory coordination layer, not a 3D polygonal mesh or geometry processing library.*
 
 When one agent learns something, another agent in a different session or tool can recall it — by meaning, keyword, or exact identifier — without a cloud service in the middle.
 
@@ -9,7 +11,7 @@ When one agent learns something, another agent in a different session or tool ca
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 ![Status: Beta](https://img.shields.io/badge/status-beta-orange.svg)
 
-> **Beta.** Version `0.8.2`. Interfaces may change between beta releases. Read [Status & versioning](#status-versioning-and-roadmap) before depending on it in production.
+> **Beta.** Version `0.8.3`. Interfaces may change between beta releases. Read [Status & versioning](#status-versioning-and-roadmap) before depending on it in production.
 
 ---
 
@@ -18,7 +20,7 @@ When one agent learns something, another agent in a different session or tool ca
 | Question | Answer |
 |---|---|
 | **What it is** | A local MCP server + CLI + HTTP API that gives multiple AI agents one shared, searchable memory and a deterministic task ledger per project namespace. |
-| **Current version** | `0.8.2` (Beta), MIT, maintained by [billighost](https://github.com/billighost). |
+| **Current version** | `0.8.3` (Beta), MIT, maintained by [billighost](https://github.com/billighost). |
 | **Python** | Requires Python **3.10+**. Package classifiers cover 3.10–3.13; the 0.8.1b2 field test ran on Python 3.14.0. |
 | **Operating systems** | Windows, macOS, and Linux code paths exist. The 0.8.1b2 independent field test ran on **Windows 11 only**; macOS/Linux were not independently field-tested in that run. |
 | **Where data lives** | `~/.mesh/` by default (`%USERPROFILE%\.mesh` on Windows). Override with `MESH_HOME` or `MESH_DIR`. One SQLite database per namespace: `mesh_<namespace>.db`, plus `audit_<namespace>.db`. |
