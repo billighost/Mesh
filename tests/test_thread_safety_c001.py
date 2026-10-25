@@ -314,6 +314,14 @@ def test_mcp_tool_calls_under_concurrency(isolated_mesh_env, monkeypatch):
     assert bad == [], bad[:3]
 
 
+def _child_env() -> dict[str, str]:
+    env = dict(os.environ)
+    extra = [p for p in sys.path if p and os.path.isdir(p)]
+    existing = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = os.pathsep.join(extra + ([existing] if existing else []))
+    return env
+
+
 def test_multi_process_writers_share_one_namespace(isolated_mesh_env):
     namespace = _ns("c001-mp")
     repo_root = Path(__file__).resolve().parents[1]
@@ -333,6 +341,7 @@ def test_multi_process_writers_share_one_namespace(isolated_mesh_env):
                 str(items),
             ],
             cwd=str(repo_root),
+            env=_child_env(),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,

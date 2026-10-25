@@ -240,7 +240,7 @@ def export_namespace(
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(content_str)
         secure_file_permissions(path)
-        if hasattr(sys.stderr, "isatty") and sys.stderr.isatty():
+        if hasattr(sys.stderr, "isatty") and sys.stderr.isatty() and not os.environ.get("MESH_QUIET"):
             from . import ui
 
             ui.success(
@@ -614,7 +614,7 @@ def import_namespace(
             stats["imported_work_events"] = w_stats["imported_events"]
             stats["errors"] += w_stats["errors"]
 
-    if hasattr(sys.stderr, "isatty") and sys.stderr.isatty():
+    if hasattr(sys.stderr, "isatty") and sys.stderr.isatty() and not os.environ.get("MESH_QUIET"):
         from . import ui
 
         _summary = f"{stats['skipped']} skipped (already present)  {ui.sym('dot')}  {stats['errors']} errors"

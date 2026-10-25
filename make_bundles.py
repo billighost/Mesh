@@ -24,7 +24,7 @@ ROOT = Path.cwd()
 INCLUDE_EXT = {".py", ".c", ".h", ".toml", ".cfg", ".ini", ".md", ".txt", ".yml", ".yaml", ".json", ".sh", ".ps1", ".bat", ".in"}
 SKIP_DIRS = {".git", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "venv", ".venv", "env", "node_modules",
              "build", "dist", "session_bundles", ".idea", ".vscode", "mesh.egg-info", ".hypothesis"}
-SKIP_NAMES = {"mesh_baseline_report.json", "package-lock.json"}
+SKIP_NAMES = {"mesh_baseline_report.json", "mesh_benchmark_report.json", "mesh_benchmark_report_realistic.json", "package-lock.json"}
 MAX_FILE_BYTES = 1_500_000
 
 

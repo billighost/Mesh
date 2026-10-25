@@ -44,7 +44,7 @@ def compile_native_cli(force: bool = False) -> Optional[Path]:
         if comp_path:
             cmd = [comp_path, "-O3", "-Wall", "-Wextra", "-Wno-unknown-pragmas", str(src), "-o", str(out)]
             if os.name == "nt":
-                cmd.append("-lws2_32")
+                cmd.extend(["-lws2_32", "-lbcrypt", "-lshell32"])
             try:
                 res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
                 if res.returncode == 0 and out.exists():
@@ -56,7 +56,7 @@ def compile_native_cli(force: bool = False) -> Optional[Path]:
     if os.name == "nt":
         cl_path = shutil.which("cl")
         if cl_path:
-            cmd = [cl_path, "/O2", "/nologo", str(src), f"/Fe:{out}", "ws2_32.lib"]
+            cmd = [cl_path, "/O2", "/nologo", str(src), f"/Fe:{out}", "ws2_32.lib", "bcrypt.lib", "shell32.lib"]
             try:
                 res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
                 if res.returncode == 0 and out.exists():

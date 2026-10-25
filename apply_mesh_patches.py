@@ -62,9 +62,22 @@ def _path_recheck_ttl() -> float:
         return 5.0
 
 
+_PATH_MICRO: dict[str, float] = {}
+
+
+def _fs_memo_seconds() -> float:
+    """Window (default 10 ms) in which a path that was lstat-verified is not re-checked (MESH_FS_MEMO_MS, 0 = off)."""
+    raw = os.environ.get("MESH_FS_MEMO_MS")
+    try:
+        return max(0.0, float(raw) / 1000.0) if raw is not None else 0.01
+    except ValueError:
+        return 0.01
+
+
 def clear_path_trust_cache() -> None:
     """Forget every verified path (tests / evict hooks)."""
     _PATH_TRUST.clear()
+    _PATH_MICRO.clear()
     _RESOLVED_DIR_CACHE.clear()
     _FILE_PERM_TS.clear()
     _AUDIT_PATH_CACHE.clear()
@@ -105,10 +118,18 @@ def reject_symlink(path: Path) -> None:
     ttl = _path_recheck_ttl()
     if ttl > 0.0:
         ts = _PATH_TRUST.get(key)
-        if ts is not None and (time.monotonic() - ts) < ttl:
+        _now = time.monotonic()
+        if ts is not None and (_now - ts) < ttl:
+            _micro = _fs_memo_seconds()
+            if _micro > 0.0:
+                _seen = _PATH_MICRO.get(key)
+                if _seen is not None and (_now - _seen) < _micro:
+                    return  # lstat-verified milliseconds ago, inside the same operation: skip a repeat syscall
             link = _lstat_link_state(key)
             if link is False:
+                _PATH_MICRO[key] = _now
                 return
+            _PATH_MICRO.pop(key, None)
             _PATH_TRUST.pop(key, None)
             if link is True:
                 raise ValueError(f"Refusing to operate on symlinked path: '{path}'.")
@@ -374,15 +395,17 @@ r"""        masked_indices: list[int] = []
             and min_confidence <= 0.0
         )
         if _no_row_filters:
-            # Fast path: only the quarantine flag can exclude a row.
-            for idx, mid in enumerate(ids_snap):
-                cached_row = rows_snap.get(mid)
-                if cached_row is None:
-                    continue
-                if not include_quarantined and cached_row.get("quarantined"):
-                    continue
-                masked_indices.append(idx)
-                masked_mid_set.add(mid)
+            # Fast path: only the quarantine flag can exclude a row (comprehensions run ~2x faster than the
+            # per-row append loop; same rows, same order).
+            if include_quarantined:
+                masked_indices = [idx for idx, mid in enumerate(ids_snap) if mid in rows_snap]
+            else:
+                masked_indices = [
+                    idx
+                    for idx, mid in enumerate(ids_snap)
+                    if (_r := rows_snap.get(mid)) is not None and not _r.get("quarantined")
+                ]
+            masked_mid_set = {ids_snap[idx] for idx in masked_indices}
         else:
             for idx, mid in enumerate(ids_snap):
                 cached_row = rows_snap.get(mid)
@@ -442,10 +465,9 @@ r"""        # Counter.update() counts in C; identical totals to the old per-id P
                 s_hits = cache.token_to_ids.get(syn)
                 if s_hits:
                     _syn_hits.update(s_hits)
-        lexical_map: dict[str, float] = {}
-        for mid, cnt in _exact_hits.items():
-            if mid in masked_mid_set:
-                lexical_map[mid] = float(cnt)
+        lexical_map: dict[str, float] = {
+            mid: float(cnt) for mid, cnt in _exact_hits.items() if mid in masked_mid_set
+        }
         for mid, cnt in _syn_hits.items():
             if mid in masked_mid_set:
                 lexical_map[mid] = lexical_map.get(mid, 0.0) + 0.5 * cnt

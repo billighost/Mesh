@@ -50,6 +50,15 @@ def build() -> bool:
     if not gcc:
         print("  no C compiler found - the package still works through the Python fallbacks.")
         return False
+    try:
+        target = subprocess.run([gcc, "-dumpmachine"], capture_output=True, text=True).stdout.strip().lower()
+    except OSError:
+        target = ""
+    py_64 = sys.maxsize > 2**32
+    if py_64 and target and not any(t in target for t in ("x86_64", "amd64", "aarch64", "arm64")):
+        print(f"  gcc targets '{target}' (32-bit) but this Python is 64-bit: the DLL could not be loaded.")
+        print("  Install a 64-bit gcc (e.g. WinLibs UCRT x86_64) and put it first on PATH.")
+        return False
     out = ROOT / "mesh" / lib_name()
     cmd = [gcc, "-O3", "-std=c11", "-shared", "-o", str(out), "c_core/mesh_core.c", "-lm"]
     if sys.platform != "win32":
@@ -73,7 +82,22 @@ def build() -> bool:
         if m:
             ver = m.group(1)
     exe = ROOT / "c_cli" / ("mesh_fast.exe" if sys.platform == "win32" else "mesh_fast")
-    run([gcc, "-O2", "-std=c11", f'-DMESH_VERSION="{ver}"', "c_cli/mesh_fast.c", "-o", str(exe)])
+    cli_cmd = [gcc, "-O2", "-std=c11", "-Wall", "-Wextra", f'-DMESH_VERSION="{ver}"', "c_cli/mesh_fast.c", "-o", str(exe)]
+    if sys.platform == "win32":
+        cli_cmd += ["-lws2_32", "-lbcrypt", "-lshell32"]
+    if exe.exists():
+        try:
+            exe.unlink()
+        except OSError:
+            print(f"  cannot replace {exe} (in use?) - skipping the native client rebuild.")
+            return True
+    if run(cli_cmd) != 0:
+        print("  native client failed to build: `mesh` keeps using the Python CLI (nothing else is affected).")
+    # Windows code paths are compile-checked on POSIX hosts that happen to have mingw-w64 installed.
+    mingw = shutil.which("x86_64-w64-mingw32-gcc")
+    if sys.platform != "win32" and mingw:
+        run([mingw, "-O2", "-std=c11", "-Wall", "-Wextra", f'-DMESH_VERSION="{ver}"', "c_cli/mesh_fast.c",
+             "-o", os.path.join(tempfile.mkdtemp(), "mesh_fast.exe"), "-lws2_32", "-lbcrypt", "-lshell32"])
     return True
 
 
@@ -172,13 +196,16 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--skip-tests", action="store_true")
     ap.add_argument("--skip-bench", action="store_true")
+    ap.add_argument("--bench-realistic", action="store_true",
+                    help="also run the benchmark with one persistent ASGI portal and a separate-process daemon")
     args = ap.parse_args()
     ok = True
 
     step(1, "apply patches")
-    patcher = ROOT / "apply_mesh_patches.py"
-    if patcher.exists() and run([sys.executable, str(patcher)]) != 0:
-        return 2
+    for patcher_name in ("apply_mesh_patches.py", "apply_round2.py"):
+        patcher = ROOT / patcher_name
+        if patcher.exists() and run([sys.executable, str(patcher)]) != 0:
+            return 2
 
     step(2, "compile native core")
     native = build()
@@ -197,7 +224,11 @@ def main() -> int:
 
     if not args.skip_bench and (ROOT / "benchmark_all_surfaces.py").exists():
         step(6, "benchmark")
-        run([sys.executable, "benchmark_all_surfaces.py"])
+        run([sys.executable, "benchmark_all_surfaces.py", "-n", "15", "-o", "mesh_benchmark_report.json"])
+        if args.bench_realistic:
+            print("\n--- realistic harness: persistent ASGI portal + separate-process daemon ---")
+            run([sys.executable, "benchmark_all_surfaces.py", "-n", "15", "--persistent-asgi", "--separate-server",
+                 "-o", "mesh_benchmark_report_realistic.json"])
 
     print("\nRESULT:", "OK" if ok else "FAILED")
     return 0 if ok else 1

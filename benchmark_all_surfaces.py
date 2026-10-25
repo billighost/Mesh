@@ -116,6 +116,22 @@ def _free_port() -> int:
         return int(s.getsockname()[1])
 
 
+_PERSISTENT_ASGI = False  # --persistent-asgi
+_SEPARATE_SERVER = False  # --separate-server
+
+
+def _make_client(asgi_app, base_url):
+    """ASGI test client. Starlette's TestClient starts a new anyio portal THREAD for every request unless it
+    is used as a context manager; --persistent-asgi keeps one portal for the whole run so the numbers measure
+    the server, not the harness."""
+    from fastapi.testclient import TestClient
+
+    client = TestClient(asgi_app, base_url=base_url)
+    if _PERSISTENT_ASGI:
+        client.__enter__()
+    return client
+
+
 def _copy_existing_onnx_models_if_present(real_home: Path, temp_mesh_home: Path) -> bool:
     """
     If the user already has ~/.mesh/models downloaded, symlink or copy it into the
@@ -228,6 +244,7 @@ def run_all_benchmarks(iters: int = 25) -> dict[str, Any]:
     os.environ["MESH_AUTO_APPROVE"] = "0"
     os.environ["MESH_NO_MODEL_DOWNLOAD"] = "1"
     os.environ["MESH_NO_UPDATE_CHECK"] = "1"
+    os.environ["MESH_QUIET"] = "1"  # no "Exported/Imported ..." status lines when stderr is a terminal
 
     from mesh import Mesh, VERSION
     from mesh.audit import (
@@ -857,7 +874,7 @@ def run_all_benchmarks(iters: int = 25) -> dict[str, Any]:
 
     token = get_or_create_auth_token()
     auth_headers = {"Authorization": f"Bearer {token}", "X-Mesh-Token": token}
-    http_client = TestClient(http_app, base_url="http://127.0.0.1:7701")
+    http_client = _make_client(http_app, "http://127.0.0.1:7701")
 
     rec.measure(
         "http_asgi",
@@ -941,7 +958,7 @@ def run_all_benchmarks(iters: int = 25) -> dict[str, Any]:
     )
 
     # Dashboard ASGI
-    dash_client = TestClient(dash_app, base_url="http://127.0.0.1:7433")
+    dash_client = _make_client(dash_app, "http://127.0.0.1:7433")
     rec.measure(
         "dashboard_asgi",
         "GET / (HTML + session handshake)",
@@ -1009,10 +1026,26 @@ def run_all_benchmarks(iters: int = 25) -> dict[str, Any]:
 
     live_port = _free_port()
     os.environ["MESH_HTTP_PORT"] = str(live_port)
-    config = uvicorn.Config(http_app, host="127.0.0.1", port=live_port, log_level="error")
-    server = uvicorn.Server(config)
-    server_thread = threading.Thread(target=server.run, daemon=True)
-    server_thread.start()
+    server = None
+    server_thread = None
+    server_proc = None
+    if _SEPARATE_SERVER:
+        # real daemon in its own process: no shared GIL / timer granularity with the measuring client
+        _srv_env = dict(os.environ)
+        _srv_env["PYTHONPATH"] = str(Path(__file__).resolve().parent) + (
+            os.pathsep + _srv_env["PYTHONPATH"] if _srv_env.get("PYTHONPATH") else ""
+        )
+        server_proc = subprocess.Popen(
+            [sys.executable, "-m", "mesh.http_server", "--port", str(live_port), "--no-warmup", "--yes"],
+            env=_srv_env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    else:
+        config = uvicorn.Config(http_app, host="127.0.0.1", port=live_port, log_level="error")
+        server = uvicorn.Server(config)
+        server_thread = threading.Thread(target=server.run, daemon=True)
+        server_thread.start()
 
     # Wait for live server to accept connections
     for _ in range(50):
@@ -1052,8 +1085,42 @@ def run_all_benchmarks(iters: int = 25) -> dict[str, Any]:
         iterations=iters,
     )
 
-    server.should_exit = True
-    server_thread.join(timeout=3.0)
+    _native_exe = Path(__file__).resolve().parent / "c_cli" / ("mesh_fast.exe" if os.name == "nt" else "mesh_fast")
+    if _native_exe.exists():
+        _nat_env = dict(os.environ)
+        _nat_env["MESH_NO_DAEMON_PROXY"] = "0"
+        rec.measure(
+            "cli_native",
+            "mesh_fast --version (native, no Python)",
+            lambda i: subprocess.run(
+                [str(_native_exe), "--version"], env=_nat_env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False
+            ),
+            iterations=10,
+            warmup=2,
+        )
+        rec.measure(
+            "cli_native",
+            "mesh_fast ask 'Redis port' --json (verified daemon forwarding)",
+            lambda i: subprocess.run(
+                [str(_native_exe), "ask", "Redis port", "--namespace", "bench_sdk", "--json"],
+                env=_nat_env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            ),
+            iterations=10,
+            warmup=2,
+        )
+    if server is not None:
+        server.should_exit = True
+    if server_thread is not None:
+        server_thread.join(timeout=3.0)
+    if server_proc is not None:
+        server_proc.terminate()
+        try:
+            server_proc.wait(timeout=5.0)
+        except subprocess.TimeoutExpired:
+            server_proc.kill()
     os.environ["MESH_NO_DAEMON_PROXY"] = "1"
 
     # =========================================================================
@@ -1223,7 +1290,19 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run full Mesh baseline latency profiler.")
     parser.add_argument("--iterations", "-n", type=int, default=25, help="Iterations per operation (default: 25)")
     parser.add_argument("--output", "-o", default="mesh_baseline_report.json", help="Output JSON report path")
+    parser.add_argument(
+        "--persistent-asgi",
+        action="store_true",
+        help="Keep ONE anyio portal per ASGI test client (default: Starlette's one-thread-per-request behaviour)",
+    )
+    parser.add_argument(
+        "--separate-server",
+        action="store_true",
+        help="Run the live-TCP daemon as a separate process instead of a thread of this process",
+    )
     args = parser.parse_args()
+    globals()["_PERSISTENT_ASGI"] = bool(args.persistent_asgi)
+    globals()["_SEPARATE_SERVER"] = bool(args.separate_server)
 
     report = run_all_benchmarks(iters=max(5, args.iterations))
     out_path = Path(args.output).resolve()

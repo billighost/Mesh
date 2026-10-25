@@ -200,10 +200,38 @@ def is_encryption_enabled() -> bool:
         return True
     if (os.environ.get("MESH_ENCRYPTION_KEY") or "").strip():
         return True
+    global _ENC_MEMO
     try:
-        return _encryption_marker_path().exists()
+        from .audit import cached_resolved_mesh_dir, get_mesh_dir, reject_symlink
+
+        _mdir = os.fspath(get_mesh_dir())
+        _now = time.monotonic()
+        _memo = _ENC_MEMO
+        if _memo is not None and _memo[0] == _mdir and (_now - _memo[1]) < _enc_memo_seconds():
+            return _memo[2]
+        reject_symlink(get_mesh_dir())
+        os.stat(os.path.join(os.fspath(cached_resolved_mesh_dir()), ".encryption_enabled"))
+        _ENC_MEMO = (_mdir, _now, True)
+        return True
     except OSError:
+        _ENC_MEMO = (_mdir, _now, False)
         return False
+
+
+_ENC_MEMO: Optional[tuple[str, float, bool]] = None
+
+
+def _enc_memo_seconds() -> float:
+    raw = os.environ.get("MESH_FS_MEMO_MS")
+    try:
+        return max(0.0, float(raw) / 1000.0) if raw is not None else 0.01
+    except ValueError:
+        return 0.01
+
+
+def _invalidate_enc_memo() -> None:
+    global _ENC_MEMO
+    _ENC_MEMO = None
 
 
 def enable_encryption_at_rest(passphrase: Optional[str] = None) -> None:
@@ -211,6 +239,7 @@ def enable_encryption_at_rest(passphrase: Optional[str] = None) -> None:
     if passphrase:
         os.environ["MESH_PASSPHRASE"] = passphrase
     _write_atomic_private_bytes(_encryption_marker_path(), b"1")
+    _invalidate_enc_memo()
     get_active_master_key()
 
 
@@ -221,6 +250,7 @@ def disable_encryption_at_rest() -> None:
         _encryption_marker_path().unlink(missing_ok=True)
     except OSError:
         pass
+    _invalidate_enc_memo()
     with _KEY_LOCK:
         _CACHED_KEY_STATE = None
 
