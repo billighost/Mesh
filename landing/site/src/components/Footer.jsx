@@ -14,13 +14,14 @@ const columns = [
       ["How it works", "#how"],
       ["Search", "#search"],
       ["Memory", "#memory"],
+      ["Performance", "#performance"],
       ["Install", "#install"],
     ],
   },
   {
     title: "Interfaces",
     links: [
-      ["MCP", "#interfaces"],
+      ["MCP (17 tools)", "#interfaces"],
       ["HTTP REST", "#interfaces"],
       ["CLI", "#interfaces"],
       ["Python SDK", "#interfaces"],
@@ -32,6 +33,7 @@ const columns = [
       ["GitHub", GITHUB_URL],
       ["PyPI", PYPI_URL],
       ["Changelog", "https://github.com/billighost/mesh/blob/main/CHANGELOG.md"],
+      ["Docs", "https://github.com/billighost/mesh/blob/main/DOCS.md"],
       ["Agensi", AGENSI_URL],
     ],
   },
@@ -40,6 +42,7 @@ const columns = [
     links: [["MIT License", "https://opensource.org/license/mit"]],
   },
 ];
+
 
 function FooterLink({ href, children }) {
   const external = /^https?:/.test(href);
@@ -65,7 +68,7 @@ export default function Footer() {
             <Mark size={24} />
             <span className="brand__word">mesh</span>
           </a>
-          <p className="footer__desc">Shared semantic memory for AI agents.</p>
+          <p className="footer__desc">Shared memory, tasks, and changelogs for AI agents. Local-first, MIT.</p>
           <span className="status-line">
             <span className="status-dot presence-dot" aria-hidden="true" />
             local engine / no external daemon

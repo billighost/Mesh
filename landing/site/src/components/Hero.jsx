@@ -6,14 +6,14 @@ import Mark from "./ui/Mark";
 import Terminal from "./ui/Terminal";
 
 const heroLines = [
-  "$ mesh status",
-  "ok  local / sqlite wal / 384d",
-  '$ backend.learn("postgres runs on :5432")',
-  "ok  indexed / dedupe on / 0.08 ms",
-  '$ frontend.recall("postgres port")',
-  "ok  1 hit / 0.93 sim / backend-agent",
-  "ok  shared with 3 agents",
-  "ok  _",
+  "$ mesh brief --max-tokens 500",
+  "ok  3 open tasks / 2 decisions / 1 conflict",
+  '$ mesh ask "what port does postgres use?"',
+  "ok  5432 / 0.93 sim / backend-agent / 8.58 ms",
+  '$ mesh add "auth uses RS256 JWT" --type decision',
+  "ok  learned / 4 agents will recall this",
+  '$ mesh task done task-3 --summary "JWT live"',
+  "ok  logged / changelog updated / _",
 ];
 
 export default function Hero() {
@@ -28,16 +28,16 @@ export default function Hero() {
         <div className="hero__copy">
           <span className="kicker">Shared memory for AI agents</span>
           <h1 className="hero__title" id="hero-title">
-            <span className="hero__line">Your agents are</span>
-            <span className="hero__line">brilliant.</span>
-            <span className="hero__line">And they have</span>
+            <span className="hero__line">Your agents forget</span>
+            <span className="hero__line">everything between</span>
             <span className="hero__line">
-              <span className="hero__highlight">amnesia.</span>
+              <span className="hero__highlight">sessions.</span>
             </span>
           </h1>
           <p className="hero__lede">
-            Mesh gives every agent one shared memory. One learns a fact. Every other agent
-            recalls it in under a tenth of a millisecond.
+            Mesh gives every agent one shared memory, a task ledger, and a project
+            changelog — all local, all searchable, no cloud required.
+            One agent learns a fact. Every other agent recalls it in milliseconds.
           </p>
           <div className="hero__actions">
             <Button
@@ -56,11 +56,13 @@ export default function Hero() {
           <div className="hero__meta">
             <span>MIT</span>
             <span className="hero__meta-sep">/</span>
+            <span>v0.8.3</span>
+            <span className="hero__meta-sep">/</span>
+            <span>17 MCP tools</span>
+            <span className="hero__meta-sep">/</span>
             <span>local-first</span>
             <span className="hero__meta-sep">/</span>
             <span>Python 3.10+</span>
-            <span className="hero__meta-sep">/</span>
-            <span>no external database</span>
           </div>
         </div>
 
@@ -91,7 +93,7 @@ export default function Hero() {
               frontend-agent
             </span>
           </div>
-          <p className="hero__caption">learn → recall / one shared namespace</p>
+          <p className="hero__caption">learn → recall → log / one shared namespace</p>
         </div>
       </div>
     </section>

@@ -21,8 +21,8 @@ export default function ProblemSection() {
           index="01"
           route="THE PROBLEM"
           id="problem-title"
-          title="Every session starts from zero."
-          lede="Your terminal agent discovers the staging port. Your editor agent never hears about it. Your review agent re-learns the same constraint for the third time this week. The work is already done — it just isn't anywhere your next agent can reach."
+          title="Every new session starts from zero."
+          lede="Your terminal agent discovers the staging port. Your editor agent never hears about it. Your review agent re-learns the same constraint for the third time this week — and pays for those tokens again. The work is done. It just isn't anywhere your next agent can reach."
         />
 
         <div className="problem__toolbar">
@@ -108,7 +108,7 @@ export default function ProblemSection() {
         </div>
 
         <blockquote className="pullquote">
-          The amnesia tax is paid in tokens, latency, and repeated mistakes.
+          The amnesia tax is paid in tokens, repeated mistakes, and work that should only happen once.
         </blockquote>
       </div>
     </section>
