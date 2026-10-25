@@ -2149,7 +2149,7 @@ def doctor_cmd() -> None:
 _SHELL_FORWARD_NS = {
     "add", "ask", "inspect", "update", "forget", "approve", "run", "encrypt-db",
     "status", "why", "context", "conflicts", "patterns", "digest", "export", "capture",
-    "brief", "task", "import", "log", "doctor", 
+    "brief", "task", "import", "log", "doctor",
 }
 
 

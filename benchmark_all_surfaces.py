@@ -870,7 +870,6 @@ def run_all_benchmarks(iters: int = 25) -> dict[str, Any]:
     # =========================================================================
     print("\n--- [6/7] HTTP Server & Dashboard Surfaces (ASGI & Live TCP Socket) ---")
 
-    from fastapi.testclient import TestClient
 
     token = get_or_create_auth_token()
     auth_headers = {"Authorization": f"Bearer {token}", "X-Mesh-Token": token}

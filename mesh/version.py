@@ -10,7 +10,7 @@ import sys
 import threading
 from typing import Optional
 
-VERSION = "0.8.2"
+VERSION = "0.8.3"
 
 _PEP440_RE = re.compile(
     r"^\s*v?(?P<release>\d+(?:\.\d+)*)"
