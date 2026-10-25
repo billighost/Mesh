@@ -103,7 +103,7 @@ mesh install windsurf --project --dir . --apply
 ```
 **Verification in live agent:**
 1. Open Windsurf Cascade.
-2. In Cascade chat, query: "Query Mesh memory for project status."
+2. In Cascade chat, query: "Query Mesh for project status."
 3. Confirm Cascade triggers `mesh_recall`.
 
 ### 7. OpenCode
