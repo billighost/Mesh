@@ -19,6 +19,7 @@ Performance acceleration and reliability release introducing pure-Python prescan
 - **Environment Variables**: Removed `MESH_DISABLE_NATIVE` and `MESH_C_CORE_PATH`.
 
 ### Fixed
+- **Codex & Agent Installer Configuration Formats (`mesh/installer.py`)**: Fixed OpenAI Codex CLI adapter to write and update `config.toml` (`~/.codex/config.toml` or `.codex/config.toml`) using standard `[mcp_servers.<name>]` TOML tables parsed and verified via `tomllib`, resolving an issue where `.codex/mcp.json` was written. Updated Gemini CLI adapter to target `settings.json`, OpenCode adapter to target `opencode.json` with standard `"mcp"` server table, and Windsurf adapter to restrict project-scope MCP to `None` in alignment with official vendor documentation.
 - **Namespace Listing & Stats Query Optimization (`mesh/namespaces.py`)**: Resolved namespace query bottlenecks by connecting via `MeshStore` pooling and utilizing warm in-memory cache rows instead of redundant disk opens. Added CLI mesh cache eviction on namespace deletion.
 
 ## [0.8.2] - 2026-10-22 (Beta)

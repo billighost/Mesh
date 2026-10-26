@@ -16,10 +16,10 @@ Every adapter is verified at two levels:
 | **Claude Desktop** | User | `%APPDATA%\Claude\claude_desktop_config.json` (Windows)<br>`~/Library/Application Support/Claude/...` (macOS)<br>`~/.config/Claude/...` (Linux) | N/A | N/A | `tests/test_installer.py` (Passed) | Verified: Claude Desktop 0.8.0 (2026-10-20) |
 | **Antigravity** | User & Project | `~/.gemini/antigravity-ide/mcp_config.json`<br>`.agents/mcp_config.json` | `~/.gemini/config/skills`<br>`.agents/skills` | `~/.gemini/config/rules/mesh.md`<br>`GEMINI.md` | `tests/test_installer.py` (Passed) | Verified: Antigravity IDE 1.15.0 (2026-10-20) |
 | **Cursor** | User & Project | `~/.cursor/mcp.json`<br>`.cursor/mcp.json` | `~/.cursor/skills`<br>`.cursor/skills` | `~/.cursor/rules/mesh.mdc`<br>`.cursorrules` | `tests/test_installer.py` (Passed) | Verified: Cursor 0.45.2 (2026-10-20) |
-| **Gemini CLI** | User & Project | `~/.gemini/mcp.json`<br>`.gemini/mcp.json` | `~/.gemini/skills`<br>`.gemini/skills` | `~/.gemini/GEMINI.md`<br>`GEMINI.md` | `tests/test_installer.py` (Passed) | Pending live verification (`verified=False` in adapter) |
-| **Windsurf** | User & Project | `~/.codeium/windsurf/mcp_config.json`<br>`.windsurf/mcp_config.json` | `~/.codeium/windsurf/skills`<br>`.windsurf/skills` | `~/.codeium/windsurf/rules/mesh.md`<br>`.windsurfrules` | `tests/test_installer.py` (Passed) | User scope: Verified Windsurf 1.2.0 (2026-10-20)<br>Project scope: Pending live verification (`verified=False` in adapter) |
-| **OpenCode** | User & Project | `~/.config/opencode/mcp.json`<br>`opencode.json` | `~/.config/opencode/skills`<br>`.opencode/skills` | `~/.config/opencode/AGENTS.md`<br>`AGENTS.md` | `tests/test_installer.py` (Passed) | Pending live verification (`verified=False` in adapter) |
-| **Codex** | User & Project | `~/.codex/mcp.json`<br>`.codex/mcp.json` | `~/.codex/skills`<br>`.codex/skills` | `~/.codex/AGENTS.md`<br>`AGENTS.md` | `tests/test_installer.py` (Passed) | Pending live verification (`verified=False` in adapter) |
+| **Gemini CLI** | User & Project | `~/.gemini/settings.json`<br>`.gemini/settings.json` | `~/.gemini/skills`<br>`.gemini/skills` | `~/.gemini/GEMINI.md`<br>`GEMINI.md` | `tests/test_installer.py` (Passed) | Pending live verification (`verified=False` in adapter) |
+| **Windsurf** | User & Project | `~/.codeium/windsurf/mcp_config.json`<br>N/A (unsupported by Windsurf) | `~/.codeium/windsurf/skills`<br>`.windsurf/skills` | `~/.codeium/windsurf/rules/mesh.md`<br>`.windsurfrules` | `tests/test_installer.py` (Passed) | User scope: Verified Windsurf 1.2.0 (2026-10-20)<br>Project scope: Pending live verification (`verified=False` in adapter) |
+| **OpenCode** | User & Project | `~/.config/opencode/opencode.json`<br>`opencode.json` | `~/.config/opencode/skills`<br>`.opencode/skills` | `~/.config/opencode/AGENTS.md`<br>`AGENTS.md` | `tests/test_installer.py` (Passed) | Pending live verification (`verified=False` in adapter) |
+| **Codex** | User & Project | `~/.codex/config.toml`<br>`.codex/config.toml` | `~/.codex/skills`<br>`.codex/skills` | `~/.codex/AGENTS.md`<br>`AGENTS.md` | `tests/test_installer.py` (Passed) | Pending live verification (`verified=False` in adapter) |
 
 ---
 
@@ -88,7 +88,7 @@ mesh install gemini-cli --apply
 mesh install gemini-cli --project --dir . --apply
 ```
 **Verification in live agent:**
-1. Check installed configuration: `cat ~/.gemini/mcp.json`
+1. Check installed configuration: `cat ~/.gemini/settings.json` or `cat .gemini/settings.json` (documented schema: `https://geminicli.com/docs/tools/mcp-servers/`).
 2. Run `gemini` CLI session and prompt: "What MCP tools are available?"
 3. Confirm `mesh_recall` and `mesh_project_brief` are returned.
 
@@ -98,13 +98,14 @@ mesh install gemini-cli --project --dir . --apply
 mesh install windsurf --dry-run
 mesh install windsurf --apply
 
-# Project-level configuration:
+# Project-level configuration (skills & rules):
 mesh install windsurf --project --dir . --apply
 ```
 **Verification in live agent:**
 1. Open Windsurf Cascade.
 2. In Cascade chat, query: "Query Mesh for project status."
 3. Confirm Cascade triggers `mesh_recall`.
+*Note: Per official Windsurf documentation (`https://docs.codeium.com/windsurf/mcp`), project-scoped MCP is not supported by Windsurf; MCP configuration is global user scope only.*
 
 ### 7. OpenCode
 ```bash
@@ -118,7 +119,7 @@ mesh install opencode --apply
 mesh install opencode --project --dir . --apply
 ```
 **Verification in live agent:**
-1. Check generated configuration: `cat ~/.config/opencode/mcp.json` or `cat opencode.json`.
+1. Check generated configuration: `cat ~/.config/opencode/opencode.json` or `cat opencode.json` (documented schema: `https://opencode.ai/docs/config`).
 2. Launch `opencode` and inspect available tool definitions.
 
 ### 8. OpenAI Codex CLI
@@ -133,7 +134,7 @@ mesh install codex --apply
 mesh install codex --project --dir . --apply
 ```
 **Verification in live agent:**
-1. Inspect generated config: `cat ~/.codex/mcp.json` or `cat .codex/mcp.json`.
+1. Inspect generated config: `cat ~/.codex/config.toml` or `cat .codex/config.toml` (documented schema: `https://developers.openai.com/codex/mcp`).
 2. Run codex tool inspection command to verify MCP registration.
 
 ---
@@ -143,9 +144,10 @@ mesh install codex --project --dir . --apply
 Per repository verification policy, adapter flags in `mesh/installer.py` maintain `verified=False` until verified against live agent releases.
 
 The four adapters/scopes requiring live version and date confirmation are:
-1. **`gemini-cli`**: Adapter writes `~/.gemini/mcp.json`. Official Gemini CLI releases alternate between `settings.json` and `mcp.json`.
-2. **`windsurf` (project scope)**: User-scope (`~/.codeium/windsurf/mcp_config.json`) is verified; project-scope (`.windsurf/mcp_config.json`) requires live agent confirmation from Codeium documentation.
-3. **`opencode`**: Schema requires `{"mcp": {"servers": ...}}` in `opencode.json`; requires confirmation against current OpenCode release.
-4. **`codex`**: MCP config path (`~/.codex/mcp.json`) requires confirmation against official OpenAI Codex CLI tooling.
+1. **`gemini-cli`**: The adapter writes the format specified by official Gemini CLI documentation at [https://geminicli.com/docs/tools/mcp-servers/](https://geminicli.com/docs/tools/mcp-servers/) (`settings.json` with an `mcpServers` object), but nobody has yet installed the real agent, run a live session, and verified that tool calls work.
+2. **`windsurf` (project scope)**: User-scope (`~/.codeium/windsurf/mcp_config.json`) is verified with Windsurf 1.2.0 (2026-10-20). Official Windsurf documentation at [https://docs.codeium.com/windsurf/mcp](https://docs.codeium.com/windsurf/mcp) specifies that MCP configuration is user-scoped only; project-scoped MCP does not exist in Windsurf. The adapter returns `None` for project-scoped MCP while configuring project-level rules (`.windsurfrules`) and skills (`.windsurf/skills`). The adapter flag remains `verified=False` overall until project rule/skill pickup is verified against a live Windsurf session.
+3. **`opencode`**: The adapter writes the format specified by official OpenCode documentation at [https://opencode.ai/docs/config](https://opencode.ai/docs/config) (`opencode.json` with `mcp.<name>` local command list, schema `https://opencode.ai/config.json`), but nobody has yet installed the real agent, run a live session, and verified that tool calls work.
+4. **`codex`**: The adapter writes the format specified by official OpenAI Codex CLI documentation at [https://developers.openai.com/codex/mcp](https://developers.openai.com/codex/mcp) (`config.toml` with `[mcp_servers.<name>]` TOML tables), but nobody has yet installed the real agent, run a live session, and verified that tool calls work.
 
 To verify and flip `verified=True` for any adapter, submit the tested agent version, OS, and verification date.
+
