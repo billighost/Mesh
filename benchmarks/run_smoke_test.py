@@ -509,80 +509,36 @@ def run_class_a_mem0_sdk(
     questions: list[dict[str, Any]],
     original_to_opaque: dict[str, str],
 ) -> dict[str, Any]:
-    from mem0 import Memory
+    py_mem0 = str(PROJECT_ROOT / "benchmarks" / ".venv-mem0" / "Scripts" / "python.exe")
+    worker_script = str(PROJECT_ROOT / "benchmarks" / "run_mem0_worker.py")
 
-    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True, prefix="mem0_sdk_") as temp_dir:
-        os.environ["MEM0_TELEMETRY"] = "false"
-        config = {
-            "version": "v1.1",
-            "vector_store": {
-                "provider": "qdrant",
-                "config": {
-                    "path": os.path.join(temp_dir, "qdrant"),
-                    "embedding_model_dims": 384,
-                },
-            },
-            "llm": {
-                "provider": "openai",
-                "config": {"api_key": "fake-local-no-cloud-calls", "model": "gpt-4o-mini"},
-            },
-            "embedder": {
-                "provider": "fastembed",
-                "config": {"model": "sentence-transformers/all-MiniLM-L6-v2"},
-            },
-        }
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True, prefix="mem0_sdk_ipc_") as temp_dir:
+        corpus_file = Path(temp_dir) / "corpus.json"
+        questions_file = Path(temp_dir) / "questions.json"
+        orig_file = Path(temp_dir) / "orig_to_opaque.json"
+        out_file = Path(temp_dir) / "mem0_out.json"
 
-        with ProcessTreePeakTracker() as tracker:
-            mem = Memory.from_config(config)
+        with open(corpus_file, "w", encoding="utf-8") as f:
+            json.dump(corpus, f)
+        with open(questions_file, "w", encoding="utf-8") as f:
+            json.dump(questions, f)
+        with open(orig_file, "w", encoding="utf-8") as f:
+            json.dump(original_to_opaque, f)
 
-            t_write_start = time.perf_counter()
-            for item in corpus:
-                mem.add(item["content"], user_id="smoke_user", metadata={"turn_id": item["tag"]}, infer=False)
-            mem.add(KNOWN_ITEM_CONTENT, user_id="smoke_user", metadata={"turn_id": KNOWN_ITEM_ID}, infer=False)
-            write_sec = time.perf_counter() - t_write_start
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
+        p = subprocess.run(
+            [py_mem0, "-u", worker_script, str(corpus_file), str(questions_file), str(orig_file), str(out_file)],
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        if p.returncode != 0:
+            raise RuntimeError(f"Mem0 worker failed (exit {p.returncode}):\n{p.stderr}")
 
-            t_poll_start = time.perf_counter()
-            _ = mem.search(KNOWN_ITEM_QUERY, filters={"user_id": "smoke_user"}, limit=1)
-            time_to_searchable = time.perf_counter() - t_poll_start
-
-            # Count verification via Qdrant collection count
-            expected_total = len(corpus) + 1
-            stored_count = 0
-            try:
-                col_info = mem.vector_store.client.get_collection("mem0")
-                stored_count = col_info.points_count
-            except Exception:
-                all_mem = mem.get_all(user_id="smoke_user")
-                stored_count = len(all_mem.get("results", []))
-
-            audit_notes = {
-                "stored_points_count": stored_count,
-                "notes": "Mem0 Qdrant vector store point count verified.",
-            }
-
-            def recall_fn(query: str, n: int = 10):
-                res = mem.search(query, filters={"user_id": "smoke_user"}, limit=n)
-                cands = []
-                for item in res.get("results", []):
-                    tid = item.get("metadata", {}).get("turn_id", "")
-                    cands.append((tid, item.get("memory", "")))
-                return cands
-
-            eval_res = evaluate_retrieval_suite(
-                tool_name="Mem0 (SDK)",
-                interface_class="Class A",
-                questions=questions,
-                original_to_opaque=original_to_opaque,
-                recall_fn=recall_fn,
-                stored_count=stored_count,
-                expected_turns=expected_total,
-                write_seconds=write_sec,
-                time_to_searchable_seconds=time_to_searchable,
-                peak_rss_mb=tracker.peak_mb,
-                audit_notes=audit_notes,
-            )
-            gc.collect()
-            return eval_res
+        with open(out_file, "r", encoding="utf-8") as f:
+            result = json.load(f)
+        return result
 
 
 # -----------------------------------------------------------------------------
