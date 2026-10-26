@@ -464,7 +464,7 @@ def run_class_a_mesh_sdk(
             # Count verification
             stored_count = mesh.store.count()
             expected_total = len(corpus) + 1  # 1319 + 1 needle = 1320
-            quarantined = mesh.store.get_quarantined_memories()
+            quarantined = mesh.store.list(quarantined_only=True)
 
             audit_notes = {
                 "quarantined_count": len(quarantined),
