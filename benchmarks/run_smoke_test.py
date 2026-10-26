@@ -553,10 +553,10 @@ def run_class_b_mesh_cli_cold(
     from mesh.memory import Mesh
 
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True, prefix="mesh_cli_cold_") as temp_dir:
+        os.environ["MESH_HOME"] = temp_dir
+        os.environ["MESH_NO_AUTO_DAEMON"] = "1"
+        os.environ["MESH_NO_UPDATE_CHECK"] = "1"
         env = os.environ.copy()
-        env["MESH_HOME"] = temp_dir
-        env["MESH_NO_AUTO_DAEMON"] = "1"
-        env["MESH_NO_UPDATE_CHECK"] = "1"
 
         with ProcessTreePeakTracker() as tracker:
             # Seed database via SDK
@@ -630,13 +630,13 @@ def run_class_b_mesh_cli_daemon(
 
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True, prefix="mesh_cli_daemon_") as temp_dir:
         test_port = "17788"
+        os.environ["MESH_HOME"] = temp_dir
+        os.environ["MESH_PORT"] = test_port
+        os.environ["MESH_HTTP_PORT"] = test_port
+        os.environ["MESH_NO_UPDATE_CHECK"] = "1"
+        os.environ["MESH_NO_MODEL_DOWNLOAD"] = "1"
+        os.environ["MESH_NON_INTERACTIVE"] = "1"
         env = os.environ.copy()
-        env["MESH_HOME"] = temp_dir
-        env["MESH_PORT"] = test_port
-        env["MESH_HTTP_PORT"] = test_port
-        env["MESH_NO_UPDATE_CHECK"] = "1"
-        env["MESH_NO_MODEL_DOWNLOAD"] = "1"
-        env["MESH_NON_INTERACTIVE"] = "1"
 
         with ProcessTreePeakTracker() as tracker:
             # 1. Seed database via SDK
