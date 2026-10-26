@@ -1,0 +1,38 @@
+================================================================================
+  PHASE 7 SMOKE TEST RESULTS REPORT
+================================================================================
+
+Commit       : 9a21be15cfa1d04fe97a94ee43c0f19959792058 (feat/ci-evidence)
+Platform     : Windows-11-10.0.22000-SP0 | Python 3.14.0
+Date         : 2026-10-26T14:16:42Z
+
+--------------------------------------------------------------------------------
+1. 1,000-MEMORY SCALE TEST (Ingest Throughput & Footprint)
+--------------------------------------------------------------------------------
+Tool                         Class      Throughput       Ingest Time    Disk MB    RSS Delta 
+--------------------------------------------------------------------------------
+Mesh (SDK)                   Class A       88.0 items/s     11.36s       11.52 MB     0.00 MB
+Mem0 (SDK)                   Class A       25.1 items/s     39.84s        4.56 MB   112.50 MB
+Basic Memory (CLI)           Class B        2.9 items/s    344.82s        9.06 MB     0.00 MB
+Auxly CLI (Keyword-only)     Class B      892.8 items/s      1.12s        0.16 MB     0.00 MB
+
+--------------------------------------------------------------------------------
+2. LONGMEMEVAL-50 ACCURACY & LATENCY BENCHMARK
+--------------------------------------------------------------------------------
+
+### CLASS A: IN-PROCESS LIBRARY API
+Tool                     Recall@1   Recall@5   Recall@10  MRR      Latency p50    Latency p95   
+--------------------------------------------------------------------------------
+Mesh (SDK)               0.3800     0.9000     0.9400     0.5941      71.51 ms      169.49 ms
+Mem0 (SDK)               0.4000     0.8200     0.9200     0.5642     345.66 ms      860.51 ms
+
+### CLASS B: CLI SUBPROCESS / EXTERNAL IPC
+Tool                         Recall@1   Recall@5   Recall@10  MRR      Latency p50    Latency p95   
+--------------------------------------------------------------------------------
+Mesh (CLI)                   0.3800     0.9000     0.9400     0.5941    5130.14 ms     8641.17 ms
+Basic Memory (CLI)           0.1200     0.1400     0.1600     0.1329   18040.54 ms    42204.41 ms
+Auxly CLI (Keyword-only)     0.0000     0.0000     0.0000     0.0000     475.28 ms      725.07 ms
+
+================================================================================
+END OF SMOKE TEST. STOPPED AS ORDERED BY USER INSTRUCTION B.10.
+================================================================================

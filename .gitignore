@@ -11,6 +11,7 @@ build/
 venv/
 env/
 *.log
+!benchmarks/results/*.log
 .pytest_cache/
 .coverage
 htmlcov/
@@ -65,3 +66,5 @@ desktop.ini
 *.dll
 *.pyd
 *.old
+*.exe
+benchmarks/bin/

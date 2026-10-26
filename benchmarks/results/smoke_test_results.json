@@ -1,0 +1,140 @@
+{
+  "metadata": {
+    "target_commit": "9a21be15cfa1d04fe97a94ee43c0f19959792058",
+    "branch": "feat/ci-evidence",
+    "platform": "Windows-11-10.0.22000-SP0",
+    "python_version": "3.14.0",
+    "timestamp": "2026-10-26T14:16:42Z",
+    "competitors": {
+      "mesh": {
+        "version": "0.8.3",
+        "commit": "9a21be15cfa1d04fe97a94ee43c0f19959792058"
+      },
+      "mem0": {
+        "version": "2.2.1",
+        "wheel_sha256": "fe91bb91ac8926231993a4aa58df00a60c6c74c709e6a338fe399500776eef4d",
+        "infer_mode": false,
+        "embedder": "sentence-transformers/all-MiniLM-L6-v2"
+      },
+      "basic_memory": {
+        "version": "0.24.1",
+        "wheel_sha256": "b528fff0a92bc91683e791553f9b10f57f7e3185a1aa15d494f5b8294eaad89e"
+      },
+      "auxly_cli": {
+        "version": "1.5.0",
+        "binary_sha256": "720feb62b795ddaf027ca35d758caa4d261f3c5f8169eedc4a1c1e2f9bdf9d55",
+        "indexing_type": "Keyword-only"
+      }
+    }
+  },
+  "scale_test_1k": {
+    "mesh_sdk": {
+      "tool": "Mesh (SDK)",
+      "class": "Class A",
+      "items_ingested": 1000,
+      "ingest_seconds": 11.36,
+      "throughput_items_per_sec": 88.0,
+      "disk_footprint_mb": 11.52,
+      "rss_delta_mb": 0.0
+    },
+    "mem0_sdk": {
+      "tool": "Mem0 (SDK)",
+      "class": "Class A",
+      "items_ingested": 1000,
+      "ingest_seconds": 39.84,
+      "throughput_items_per_sec": 25.1,
+      "disk_footprint_mb": 4.56,
+      "rss_delta_mb": 112.5
+    },
+    "auxly_cli": {
+      "tool": "Auxly CLI (Keyword-only)",
+      "class": "Class B",
+      "items_ingested": 1000,
+      "ingest_seconds": 1.12,
+      "throughput_items_per_sec": 892.8,
+      "disk_footprint_mb": 0.16,
+      "rss_delta_mb": 0.0
+    },
+    "basic_memory_cli": {
+      "tool": "Basic Memory (CLI)",
+      "class": "Class B",
+      "items_ingested": 1000,
+      "ingest_seconds": 344.82,
+      "throughput_items_per_sec": 2.9,
+      "disk_footprint_mb": 9.06,
+      "rss_delta_mb": 0.0
+    }
+  },
+  "longmemeval_50": {
+    "mesh_sdk": {
+      "questions_count": 50,
+      "recall_at_1": 0.38,
+      "recall_at_5": 0.9,
+      "recall_at_10": 0.94,
+      "mrr": 0.5941,
+      "latency_p50_ms": 71.51,
+      "latency_p95_ms": 169.49,
+      "latency_mean_ms": 79.96,
+      "tool": "Mesh (SDK)",
+      "class": "Class A",
+      "turns_ingested": 1319,
+      "ingest_seconds": 34.72
+    },
+    "mem0_sdk": {
+      "questions_count": 50,
+      "recall_at_1": 0.4,
+      "recall_at_5": 0.82,
+      "recall_at_10": 0.92,
+      "mrr": 0.5642,
+      "latency_p50_ms": 345.66,
+      "latency_p95_ms": 860.51,
+      "latency_mean_ms": 407.69,
+      "tool": "Mem0 (SDK)",
+      "class": "Class A",
+      "turns_ingested": 1319,
+      "ingest_seconds": 151.58
+    },
+    "mesh_cli": {
+      "questions_count": 50,
+      "recall_at_1": 0.38,
+      "recall_at_5": 0.9,
+      "recall_at_10": 0.94,
+      "mrr": 0.5941,
+      "latency_p50_ms": 5130.14,
+      "latency_p95_ms": 8641.17,
+      "latency_mean_ms": 5149.64,
+      "tool": "Mesh (CLI)",
+      "class": "Class B",
+      "turns_ingested": 1319,
+      "ingest_seconds": 32.62
+    },
+    "auxly_cli": {
+      "questions_count": 50,
+      "recall_at_1": 0.0,
+      "recall_at_5": 0.0,
+      "recall_at_10": 0.0,
+      "mrr": 0.0,
+      "latency_p50_ms": 475.28,
+      "latency_p95_ms": 725.07,
+      "latency_mean_ms": 523.87,
+      "tool": "Auxly CLI (Keyword-only)",
+      "class": "Class B",
+      "turns_ingested": 1319,
+      "ingest_seconds": 0.9
+    },
+    "basic_memory_cli": {
+      "questions_count": 50,
+      "recall_at_1": 0.12,
+      "recall_at_5": 0.14,
+      "recall_at_10": 0.16,
+      "mrr": 0.1329,
+      "latency_p50_ms": 18040.54,
+      "latency_p95_ms": 42204.41,
+      "latency_mean_ms": 20828.44,
+      "tool": "Basic Memory (CLI)",
+      "class": "Class B",
+      "turns_ingested": 1319,
+      "ingest_seconds": 228.58
+    }
+  }
+}
