@@ -32,6 +32,7 @@ When one agent learns something, another agent in a different session or tool ca
 | **Supported agents (installer)** | Claude Code, Claude Desktop, Antigravity, Gemini CLI, Cursor, Windsurf, OpenCode, Codex. |
 | **Delete everything** | Back up first, then `mesh namespaces delete <ns>` per namespace, or remove the whole `~/.mesh` directory. See [Delete everything](#delete-everything). |
 | **Security contact** | `bb2010ng@gmail.com` or GitHub private vulnerability reporting. See [SECURITY.md](SECURITY.md). |
+| **Independent reviews** | Independently reviewed by 3 people (Jason, Mark and Adesire). See [docs/REVIEWS.md](docs/REVIEWS.md). |
 | **Verified against** | Field-tested against package `0.8.1b2` (source `5348d00`, 2026-10-20); current codebase incorporates post-0.8.1 field-test fixes F1–F8. |
 
 ---

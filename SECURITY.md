@@ -124,3 +124,7 @@ Every release artifact can be cryptographically verified against the GitHub Acti
 ```bash
 gh attestation verify mesh_context_layer-0.8.3-py3-none-any.whl --owner billighost
 ```
+
+## 6. Independent Reviews
+
+Independently reviewed by 3 people (Jason, Mark and Adesire). See [docs/REVIEWS.md](docs/REVIEWS.md) for review scopes, findings (F1–F8, S1–S12, N1–N8), and resolutions.

@@ -263,6 +263,6 @@ export const faq = [
   },
   {
     q: "Is it production-ready?",
-    a: "Mesh is MIT-licensed at v0.8.3 (Beta). It has passed a targeted concurrency retest and an independent field test. It is local-first, not a hosted service. Read the security model and consent notes in the README before deploying in a shared or multi-user environment.",
+    a: "Mesh is MIT-licensed at v0.8.3 (Beta). Independently reviewed by 3 people (Jason, Mark and Adesire; see docs/REVIEWS.md in the repo). It has passed a targeted concurrency retest and an independent field test. It is local-first, not a hosted service. Read the security model and consent notes in the README before deploying in a shared or multi-user environment.",
   },
 ];
