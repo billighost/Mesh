@@ -771,7 +771,6 @@ It binds loopback by default. Non-loopback binding requires an explicit `--host`
 |---|---|
 | `MESH_REQUIRE_MODEL` | `1` enables strict embedding mode: raises an error immediately if the ONNX model is unavailable, forbidding silent fallback to `hash-384`. |
 | `MESH_AUTO_DOWNLOAD_MODEL` | `1` automatically downloads and verifies the canonical ONNX model without interactive confirmation prompts (automation/CI mode). |
-| `MESH_DOWNLOAD_MODEL` | Alias for `MESH_AUTO_DOWNLOAD_MODEL`. |
 | `MESH_NO_MODEL_DOWNLOAD` | `1` disables ONNX download; stays on `hash-384`. |
 | `MESH_SKIP_CHECKSUM` | Skips model checksum verification. Not recommended. |
 | `MESH_MODEL_SHA256` | Additional/replacement ONNX SHA-256 allowlist entry. |

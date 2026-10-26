@@ -372,3 +372,80 @@ def test_reembed_command(capsys, monkeypatch):
 
     finally:
         _cleanup_ns(ns)
+
+
+def test_reembed_crash_safety_rollback_and_resume(capsys, monkeypatch):
+    """
+    Verify that an interruption mid-batch in mesh reembed:
+      1. Rolls back the active batch safely without corrupted/missing rows
+      2. Created an automatic pre-run safety backup
+      3. Allows a subsequent run to resume and successfully re-embed all memories
+    """
+    from mesh.cli import reembed_cmd
+
+    ns = "test_reembed_crash"
+    store = MeshStore(namespace=ns)
+    try:
+        # Seed 4 memories
+        with store._connect() as conn:
+            for i in range(1, 5):
+                conn.execute(
+                    "INSERT INTO memories (id, namespace, content, embedding_model, embedding, created_at, updated_at, accessed_at, access_count, local_only) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (f"mem-crash-{i}", ns, f"Memory {i} for crash safety test", "hash-384", None, "2026-10-26T12:00:00Z", "2026-10-26T12:00:00Z", "2026-10-26T12:00:00Z", 0, 0),
+                )
+            conn.commit()
+
+        fake_pair = (Path("fake.onnx"), Path("fake_tokenizer.json"))
+        batch_call_count = 0
+
+        def failing_encode(texts):
+            nonlocal batch_call_count
+            batch_call_count += 1
+            if batch_call_count == 2:
+                raise RuntimeError("Simulated crash mid-batch 2!")
+            return ([[0.05] * 384 for _ in texts], "onnx-minilm-l6-v2")
+
+        with patch("mesh.memory._has_local_onnx_pair", return_value=fake_pair):
+            # 1. Run with crash on second batch
+            with patch("mesh.memory._encode_uncached_texts_with_tag", side_effect=failing_encode):
+                monkeypatch.setattr(
+                    sys, "argv", ["mesh", "reembed", "--namespace", ns, "--batch-size", "2"]
+                )
+                with pytest.raises(RuntimeError) as exc_info:
+                    reembed_cmd()
+                assert "Simulated crash mid-batch 2!" in str(exc_info.value)
+
+            # Verify database integrity:
+            # - Exactly 4 memories exist (none lost)
+            # - Batch 1 (2 memories) converted, Batch 2 (2 memories) intact as hash-384
+            with store._connect() as conn:
+                rows = conn.execute("SELECT id, embedding_model FROM memories WHERE namespace = ? ORDER BY id", (ns,)).fetchall()
+                assert len(rows) == 4
+                onnx_count = sum(1 for r in rows if r[1] == "onnx-minilm-l6-v2")
+                hash_count = sum(1 for r in rows if r[1] == "hash-384")
+                assert onnx_count == 2
+                assert hash_count == 2
+
+            # Verify safety backup file was created
+            backup_files = list(store.db_path.parent.glob(f"{store.db_path.name}.bak-reembed-*"))
+            assert len(backup_files) >= 1
+
+            # 2. Re-run to completion (resumes remaining hash-384 memories)
+            with patch("mesh.memory._encode_uncached_texts_with_tag", side_effect=lambda texts: ([[0.05] * 384 for _ in texts], "onnx-minilm-l6-v2")):
+                monkeypatch.setattr(
+                    sys, "argv", ["mesh", "reembed", "--namespace", ns, "--batch-size", "2"]
+                )
+                reembed_cmd()
+                captured = capsys.readouterr()
+                comb = captured.out + captured.err
+                assert "Re-embedded 2 memories" in comb
+
+            # Verify all 4 memories are now on ONNX
+            with store._connect() as conn:
+                rows_final = conn.execute("SELECT id, embedding_model FROM memories WHERE namespace = ?", (ns,)).fetchall()
+                assert len(rows_final) == 4
+                assert all(r[1] == "onnx-minilm-l6-v2" for r in rows_final)
+
+    finally:
+        _cleanup_ns(ns)

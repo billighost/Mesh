@@ -610,7 +610,6 @@ def setup_cmd() -> None:
     assume_yes = (
         args.yes
         or os.environ.get("MESH_AUTO_DOWNLOAD_MODEL", "").strip().lower() in ("1", "true", "yes")
-        or os.environ.get("MESH_DOWNLOAD_MODEL", "").strip().lower() in ("1", "true", "yes")
     )
     if args.strict:
         os.environ["MESH_REQUIRE_MODEL"] = "1"
@@ -1982,7 +1981,8 @@ def doctor_cmd() -> None:
             conn.execute("CREATE VIRTUAL TABLE _doc_fts USING fts5(content, tokenize='porter unicode61')")
             conn.execute("INSERT INTO _doc_fts(content) VALUES ('mesh doctor fts5 check')")
             r = conn.execute("SELECT COUNT(*) FROM _doc_fts WHERE _doc_fts MATCH 'mesh'").fetchone()
-            assert r and int(r[0]) == 1
+            if not (r and int(r[0]) == 1):
+                raise RuntimeError("FTS5 verification match query failed")
         row("ok", "SQLite + FTS5", f"SQLite {sqlite3.sqlite_version} with Porter stemming")
     except Exception as e:
         row("fail", "SQLite + FTS5", str(e), "Install a Python build whose SQLite includes FTS5")
@@ -2492,6 +2492,7 @@ def reembed_cmd(argv: Optional[list[str]] = None) -> None:
     parser.add_argument("--force", action="store_true", help="Re-embed all memories even if already on ONNX")
     parser.add_argument("--batch-size", type=int, default=32, help="Batch size for embedding calculation (default: 32)")
     parser.add_argument("--dry-run", action="store_true", help="Preview memories needing re-embedding without writing")
+    parser.add_argument("--no-backup", action="store_true", help="Skip automatic safety database backup before re-embedding")
     if argv is None:
         raw_args = sys.argv[1:]
         if raw_args and raw_args[0] == "reembed":
@@ -2500,6 +2501,8 @@ def reembed_cmd(argv: Optional[list[str]] = None) -> None:
     else:
         args = parser.parse_args(argv)
 
+    import shutil
+    from datetime import datetime, timezone
     from .crypto import is_encryption_enabled
     from .memory import _encode_uncached_texts_with_tag, _has_local_onnx_pair
     from .namespaces import list_namespaces
@@ -2542,6 +2545,15 @@ def reembed_cmd(argv: Optional[list[str]] = None) -> None:
             ui.note(f"Namespace '{ns}': {len(rows)} memories would be re-embedded (dry-run).")
             continue
 
+        if not args.no_backup and store.db_path.exists():
+            ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+            backup_path = store.db_path.with_name(f"{store.db_path.name}.bak-reembed-{ts}")
+            try:
+                shutil.copy2(store.db_path, backup_path)
+                ui.note(f"Safety backup created at {backup_path.name}")
+            except Exception as b_err:
+                ui.warn(f"Could not create reembed pre-run backup: {b_err}")
+
         with ui.spinner(f"Re-embedding {len(rows)} memories in '{ns}'…"):
             reembedded_in_ns = 0
             batch_size = max(1, min(args.batch_size, 128))
@@ -2552,16 +2564,22 @@ def reembed_cmd(argv: Optional[list[str]] = None) -> None:
 
                 with namespace_write_lock(ns):
                     with store._connect() as conn:
-                        for (mid, content, _), vec in zip(batch, vecs):
-                            vec_arr = np.asarray(vec, dtype=np.float32)
-                            blob_to_write: Any = vec_arr.tobytes()
-                            if is_encryption_enabled():
-                                blob_to_write = encrypt_blob_for_storage(blob_to_write)
-                            conn.execute(
-                                "UPDATE memories SET embedding = ?, embedding_model = ? WHERE id = ? AND namespace = ?",
-                                (blob_to_write, tag, mid, ns),
-                            )
-                        conn.commit()
+                        conn.execute("BEGIN IMMEDIATE")
+                        try:
+                            for (mid, content, _), vec in zip(batch, vecs):
+                                vec_arr = np.asarray(vec, dtype=np.float32)
+                                blob_to_write: Any = vec_arr.tobytes()
+                                if is_encryption_enabled():
+                                    blob_to_write = encrypt_blob_for_storage(blob_to_write)
+                                conn.execute(
+                                    "UPDATE memories SET embedding = ?, embedding_model = ? WHERE id = ? AND namespace = ?",
+                                    (blob_to_write, tag, mid, ns),
+                                )
+                            conn.commit()
+                        except Exception:
+                            if conn.in_transaction:
+                                conn.rollback()
+                            raise
                 reembedded_in_ns += len(batch)
 
             store._invalidate_cache()

@@ -480,7 +480,8 @@ def _try_proxy_via_daemon(name: str, arguments: dict[str, Any]) -> Optional[dict
                 else:
                     reused_conn = True
 
-                assert _DAEMON_CONN is not None
+                if _DAEMON_CONN is None:
+                    raise RuntimeError("Daemon connection unexpectedly uninitialized")
                 _DAEMON_CONN.request(
                     "POST",
                     "/mcp",

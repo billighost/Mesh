@@ -25,7 +25,8 @@ import pytest
 
 settings.register_profile("ci", max_examples=2000, deadline=None)
 settings.register_profile("default", max_examples=250)
-settings.load_profile(os.getenv("HYPOTHESIS_PROFILE", "default"))
+if "HYPOTHESIS_PROFILE" in os.environ:
+    settings.load_profile(os.environ["HYPOTHESIS_PROFILE"])
 
 from mesh.guards import guard_ingest, guard_prescan
 from mesh.memory import Mesh
