@@ -57,6 +57,7 @@ desktop.ini
 # Scratch / local work
 .work/
 .claude/
+.mesh/
 
 # Compiled extensions / binaries
 *.so

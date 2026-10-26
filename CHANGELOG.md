@@ -13,6 +13,7 @@ Performance acceleration and reliability release introducing pure-Python prescan
 - **Filesystem Path Memoization & Trust Caching (`mesh/audit.py`, `mesh/crypto.py`)**: High-efficiency lstat memoization (`MESH_FS_MEMO_MS`) and path validation trust cache (`MESH_PATH_RECHECK_SECONDS`) to eliminate redundant disk I/O during security audit checks.
 - **Initialization Lock Retries (`mesh/store.py`)**: Resilient acquisition retry loop (`MESH_INIT_LOCK_RETRY_SECONDS`) for database schema initialization and migrations under multi-process contention.
 - **Multi-Surface Benchmarking Suite (`benchmark_all_surfaces.py`)**: End-to-end benchmark suite verifying throughput and latency across CLI, SDK, MCP, and HTTP interfaces.
+- **CSV & Markdown Export with Formula Injection Protection (`mesh/io.py`, `mesh/cli.py`)**: Added one-way export support for Markdown summaries and spreadsheet CSV formats (`mesh export --format {json,markdown,csv}`). CSV export protects against spreadsheet formula injection (CWE-1236) by neutralizing cells beginning with `=`, `+`, `-`, `@`, `\t`, or `\r`. Omitted bulky embeddings from text/spreadsheet formats by default.
 
 ### Removed
 - **Native C Core & Native CLI (`c_core/`, `c_cli/`, `mesh/c_bridge.py`, `mesh/native_cli.py`)**: Removed native C acceleration binaries and runtime C compilation in favor of audited pure-Python and NumPy BLAS vector math (which outperforms native AVX2 loops on real workloads). Standardized distribution as pure `py3-none-any.whl`.

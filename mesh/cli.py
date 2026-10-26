@@ -2375,28 +2375,44 @@ def export_cmd() -> None:
 
     parser = _parser(
         "export",
-        "Back up a namespace to a JSON file (private memories are never exported).",
+        "Export memories to a JSON, Markdown, or CSV file (JSON supports encrypted exports and lossless round-trip import).",
         [
-            ("mesh export backup.json", "export the active namespace"),
-            ("mesh export work.json --namespace work --no-embeddings", "smaller file"),
+            ("mesh export backup.json", "export active namespace to JSON (lossless round-trip)"),
+            ("mesh export summary.md", "export human-readable Markdown summary (one-way)"),
+            ("mesh export report.csv", "export spreadsheet CSV (formula-safe, one-way)"),
+            ("mesh export work.json --namespace work --no-embeddings", "smaller JSON file without vectors"),
             ("mesh export backup.enc.json --encrypt", "authenticated encrypted export"),
         ],
     )
-    parser.add_argument("output", help="Destination .json path")
+    parser.add_argument("output", help="Destination file path (.json, .md, or .csv)")
+    parser.add_argument("--format", choices=["json", "markdown", "csv"], default=None, help="Export format (json, markdown, csv). Inferred from file extension if omitted.")
     parser.add_argument("--namespace", default=None, metavar="NAME", help="Namespace to use (default: $MESH_NAMESPACE or 'shared')")
-    parser.add_argument("--no-embeddings", action="store_true", help="Omit vectors (smaller, re-embedded on import)")
+    parser.add_argument("--no-embeddings", action="store_true", help="Omit vectors (default for markdown and csv)")
     parser.add_argument("--encrypt", action="store_true", help="Encrypt the exported JSON file (Finding S5)")
     parser.add_argument("--passphrase", default=None, help="Passphrase for --encrypt (or set MESH_PASSPHRASE)")
     args = parser.parse_args()
     ns = _resolve_namespace(args.namespace)
     from .io import export_namespace
 
+    fmt = args.format
+    if not fmt:
+        out_lower = args.output.lower()
+        if out_lower.endswith(".md") or out_lower.endswith(".markdown"):
+            fmt = "markdown"
+        elif out_lower.endswith(".csv"):
+            fmt = "csv"
+        else:
+            fmt = "json"
+
+    incl_emb = False if args.no_embeddings else None
+
     try:
-        with ui.spinner(f"Exporting {ns}…"):
+        with ui.spinner(f"Exporting {ns} ({fmt})…"):
             export_namespace(
                 namespace=ns,
                 output_path=args.output,
-                include_embeddings=not args.no_embeddings,
+                format=fmt,
+                include_embeddings=incl_emb,
                 encrypt=bool(args.encrypt),
                 passphrase=args.passphrase,
             )

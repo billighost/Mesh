@@ -505,9 +505,15 @@ No flags. Checks data directory, SQLite/FTS5, daemon, model/engine, MCP configs,
 
 Flags: `--yes`, `--json`. Examples: `mesh namespaces stats work`, `mesh namespaces rename old new`, `mesh namespaces delete scratch`.
 
-#### `mesh export <output.json>`
+#### `mesh export <output>`
 
-Flags: `--namespace`, `--no-embeddings`, `--encrypt`, `--passphrase`. Private memories are never exported.
+Exports memories from the selected namespace to JSON, Markdown, or CSV.
+
+- **Formats (`--format {json,markdown,csv}`)**: Inferred from the output extension (`.json`, `.md`, `.csv`) if omitted.
+- **JSON**: The only lossless round-trip format; can be restored with `mesh import`. Supports `--encrypt` (authenticated envelope) and vector embeddings (toggle with `--no-embeddings`).
+- **Markdown (`.md`)**: One-way human-readable summary of memories and work items. Vector embeddings are omitted by default.
+- **CSV (`.csv`)**: One-way tabular export for spreadsheets. Vector embeddings are omitted by default. Neutralizes spreadsheet formula injection (CWE-1236) by automatically prefixing cells starting with `=`, `+`, `-`, `@`, `\t`, or `\r` with a single quote (`'`).
+- Flags: `--format`, `--namespace`, `--no-embeddings`, `--encrypt` (JSON only), `--passphrase`. Private memories are never exported in any format.
 
 #### `mesh import <input.json>`
 

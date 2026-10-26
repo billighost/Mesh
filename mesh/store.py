@@ -36,11 +36,15 @@ if TYPE_CHECKING:
     import numpy as np
 else:
     class _LazyNumPy:
-        def __getattr__(self, name: str) -> Any:
-            import numpy as _np
+        def __init__(self) -> None:
+            self._lock = threading.Lock()
 
-            globals()["np"] = _np
-            return getattr(_np, name)
+        def __getattr__(self, name: str) -> Any:
+            with self._lock:
+                import numpy as _np
+
+                globals()["np"] = _np
+                return getattr(_np, name)
 
     np = _LazyNumPy()
 

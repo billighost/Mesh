@@ -742,3 +742,60 @@ def test_vault_write_plaintext_when_encryption_not_configured(tmp_path, monkeypa
     assert read_back == {"plain_key": "plain_val"}
 
 
+def test_failed_encryption_rolls_back_cleanly_without_partial_rows(tmp_path, monkeypatch):
+    """
+    Verify that an encryption failure during store add/update:
+      1. Rolls back the active transaction cleanly.
+      2. Leaves no partial memory rows or orphaned data in SQLite.
+      3. Propagates a clear, actionable error message without leaving database locks.
+      4. Leaves the store in a healthy state for subsequent operations.
+    """
+    from unittest.mock import patch
+    import sqlite3
+    from mesh.memory import Mesh
+
+    monkeypatch.setenv("MESH_HOME", str(tmp_path))
+    monkeypatch.setenv("MESH_NO_AUTO_DAEMON", "1")
+    monkeypatch.setenv("MESH_AUTO_APPROVE", "0")
+    monkeypatch.setenv("MESH_ENCRYPT_AT_REST", "1")
+
+    mesh = Mesh(namespace="fail_closed_ns", agent_id="tester")
+
+    # 1. Store baseline memory to verify db works
+    m1 = mesh.learn("Baseline initial fact", memory_type="fact")
+    assert m1 is not None
+
+    db_path = mesh.store.db_path
+    assert db_path.exists()
+
+    with sqlite3.connect(str(db_path)) as conn:
+        count_before = conn.execute("SELECT count(*) FROM memories WHERE namespace = 'fail_closed_ns'").fetchone()[0]
+    assert count_before == 1
+
+    # 2. Simulate encryption failure during subsequent learn
+    error_msg = "Vector encryption failed: key derivation corrupted"
+    with patch("mesh.store.encrypt_blob_for_storage", side_effect=RuntimeError(error_msg)):
+        with pytest.raises(RuntimeError) as exc_info:
+            mesh.learn("Secret payload that must not be committed", memory_type="fact")
+
+    assert error_msg in str(exc_info.value)
+
+    # 3. Verify database state is untouched (rolled back)
+    with sqlite3.connect(str(db_path)) as conn:
+        count_after = conn.execute("SELECT count(*) FROM memories WHERE namespace = 'fail_closed_ns'").fetchone()[0]
+        rows = conn.execute("SELECT content FROM memories WHERE namespace = 'fail_closed_ns'").fetchall()
+
+    assert count_after == 1, "Failed write must not leave partial rows in database"
+    for r in rows:
+        assert "Secret payload" not in str(r[0])
+
+    # 4. Verify subsequent write succeeds without database locks
+    m2 = mesh.learn("Subsequent valid fact", memory_type="fact")
+    assert m2 is not None
+
+    with sqlite3.connect(str(db_path)) as conn:
+        final_count = conn.execute("SELECT count(*) FROM memories WHERE namespace = 'fail_closed_ns'").fetchone()[0]
+    assert final_count == 2
+
+
+
