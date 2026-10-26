@@ -1400,6 +1400,15 @@ def _reembed_store(ns: str) -> "MeshStore":
     return store
 
 
+def evict_memory_namespace_cache(ns: str) -> None:
+    """Drain reembed jobs and release cached stores for `ns`."""
+    try:
+        drain_reembed_worker(timeout=1.0)
+    except Exception:
+        pass
+    _REEMBED_STORES.pop(ns, None)
+
+
 def _process_reembed_batch(items: list[tuple[str, str, str]]) -> None:
     """Swap the real ONNX vector in for rows that were stored with the fast hash vector.
 
@@ -2807,10 +2816,13 @@ class Mesh:
         source_agent: Optional[str] = None,
         include_private: Optional[bool] = None,
         include_quarantined: bool = False,
-        record_telemetry: bool = True,
+        record_access: bool = True,
+        record_telemetry: Optional[bool] = None,
         _precomputed_embedding: Optional[list[float]] = None,
         _precomputed_model_tag: Optional[str] = None,
     ) -> list[dict[str, Any]]:
+        if record_telemetry is not None:
+            record_access = record_telemetry
         _check_agent_scope(self.agent_id, self.namespace, write=False, trusted_local=self.trusted_local)
         if not query or not query.strip():
             raise ValueError("query cannot be empty")
@@ -2908,7 +2920,7 @@ class Mesh:
                 else _parse_tags(row.get("tags"))
             )
             base_access = int(row.get("access_count") or 0)
-            access_count = base_access + (1 if record_telemetry else 0)
+            access_count = base_access + (1 if record_access else 0)
             usage_boost = min(1.0, math.log1p(access_count) / 5.0)
             composite_score = round(
                 0.72 * similarity + 0.22 * effective_confidence + 0.06 * usage_boost,
@@ -2958,7 +2970,7 @@ class Mesh:
         memories = memories[:n]
 
         # Finding S12: Redact credential queries and mark private_query=True even on 0 results
-        if record_telemetry and self.store.db_path.exists():
+        if record_access and self.store.db_path.exists():
             returned_ids = [m["id"] for m in memories if m.get("id")]
             query_has_cred = is_credential(clean_query)
             is_priv_query = bool(
@@ -2968,7 +2980,7 @@ class Mesh:
             )
             safe_logged_query = redact_secrets_local(clean_query) if query_has_cred else clean_query
             try:
-                self.store.record_recall_telemetry(
+                self.store.record_recall_access(
                     memory_ids=returned_ids,
                     query_text=safe_logged_query,
                     agent_id=self.agent_id,
@@ -3508,7 +3520,7 @@ class Mesh:
 
     def close(self) -> None:
         if hasattr(self, "store") and self.store is not None:
-            self.store.flush_telemetry()
+            self.store.flush_access_tracking()
         _drain_reembed_for_close()
 
     def __enter__(self) -> "Mesh":

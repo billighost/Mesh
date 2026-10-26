@@ -217,6 +217,19 @@ def _evict_namespace_caches(namespace: str, db_path: Optional[Path] = None) -> N
         except Exception:
             pass
 
+    mem_mod = sys.modules.get("mesh.memory")
+    if mem_mod is not None:
+        if hasattr(mem_mod, "evict_memory_namespace_cache"):
+            try:
+                mem_mod.evict_memory_namespace_cache(clean_ns)
+            except Exception:
+                pass
+        elif hasattr(mem_mod, "drain_reembed_worker"):
+            try:
+                mem_mod.drain_reembed_worker(timeout=1.0)
+            except Exception:
+                pass
+
 
 def evict_lru_namespace(exclude_namespace: Optional[str] = None) -> Optional[str]:
     """
@@ -250,16 +263,16 @@ def _remove_sqlite_files(db_path: Path, strict: bool = False) -> bool:
     all_removed = True
     for suffix in ("", "-wal", "-shm"):
         candidate = Path(f"{db_path}{suffix}")
-        for attempt in range(5):
+        for attempt in range(10):
             if not candidate.exists() and not candidate.is_symlink():
                 break
             try:
                 candidate.unlink()
                 break
             except OSError:
-                if attempt == 0:
+                if attempt in (0, 3, 6):
                     gc.collect()
-                time.sleep(0.02 * (attempt + 1))
+                time.sleep(0.04 * (attempt + 1))
         if candidate.exists():
             all_removed = False
             if strict:
@@ -547,6 +560,9 @@ def rename_namespace(old_name: str, new_name: str) -> int:
                 _remove_sqlite_files(new_audit)
             raise
 
+        _evict_namespace_caches(clean_old, old_db)
+        if old_audit.exists():
+            evict_audit_cache(clean_old)
         removed = _remove_sqlite_files(old_db, strict=True)
         if old_audit.exists():
             removed = _remove_sqlite_files(old_audit, strict=True) and removed

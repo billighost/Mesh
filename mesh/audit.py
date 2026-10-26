@@ -1258,7 +1258,7 @@ def log_audit_event(
     payload_size_bytes: int = 0,
     result_count: int = 0,
 ) -> None:
-    """Record an operational telemetry event (surface, tool/cmd, status, duration, payload size, NEVER memory text)."""
+    """Record an operational audit event (surface, tool/cmd, status, duration, payload size, NEVER memory text)."""
     try:
         clean_ns = validate_namespace(namespace)
         now_iso = datetime.now(timezone.utc).isoformat()

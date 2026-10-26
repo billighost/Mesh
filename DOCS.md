@@ -799,7 +799,10 @@ It binds loopback by default. Non-loopback binding requires an explicit `--host`
 | `MESH_MAX_OPEN_NAMESPACES` | Limit on simultaneously open namespace handles. |
 | `MESH_MAX_POOL_SIZE` | SQLite connection pool cap. |
 | `MESH_MAX_VECTOR_CACHE_SIZE` | In-memory vector cache cap. |
-| `MESH_MAX_QUERY_ROWS` | Query result cap. |
+| `MESH_MAX_QUERY_ROWS` | Retention cap on stored search query records per namespace (default 1000). Pruned automatically in FIFO order. |
+| `MESH_LOG_QUERY_TEXT` | `1` (default) stores redacted search queries in the local `queries` table. `0` or `false` disables query-text logging entirely (stores empty query string, preserving query count metrics with zero search terms recorded). |
+| `MESH_TRACKING_BATCH` | In-memory access tracking batch write limit before flushing to SQLite. Default 128. |
+| `MESH_TRACKING_FLUSH_SECONDS` | In-memory access tracking maximum flush interval in seconds. Default 5.0. |
 | `MESH_MAX_AUDIT_ROWS` | Audit row cap. |
 | `MESH_STRICT_FSYNC` | `1` enforces SQLite `PRAGMA synchronous=NORMAL` instead of `OFF` for strict durability. |
 | `MESH_INIT_LOCK_RETRY_SECONDS` | Seconds to wait/retry acquiring initialization lock for database creation/migration. Default 10. |
@@ -893,9 +896,9 @@ Mesh embeds locally with ONNX Runtime (`all-MiniLM-L6-v2`, 384 dimensions) or th
 - A version string and package name during an opt-in update check.
 - Log text or summaries only if you explicitly enable cloud capture; `--local-only` prevents it.
 
-### Telemetry
+### Local access tracking and telemetry policy
 
-No remote telemetry. Local audit events are content-free. `mesh audit export` exports them to a file you choose.
+No remote telemetry or phone-home. Local access tracking records (`access_count`, `accessed_at`, `queries`) and operational audit events remain strictly on the local machine in SQLite. They are never transmitted over the network and are completely excluded from all exports (`mesh export`, CSV, Markdown, JSON). Query text records are automatically pruned according to `MESH_MAX_QUERY_ROWS` (default 1,000) and can be disabled via `MESH_LOG_QUERY_TEXT=0`. Local audit events are content-free and only exportable via `mesh audit export` to a local file you explicitly choose.
 
 ### Log capture
 

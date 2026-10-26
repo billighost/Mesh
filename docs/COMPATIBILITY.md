@@ -88,7 +88,7 @@ mesh install gemini-cli --apply
 mesh install gemini-cli --project --dir . --apply
 ```
 **Verification in live agent:**
-1. Check installed configuration: `cat ~/.gemini/settings.json` or `cat .gemini/settings.json` (documented schema: `https://geminicli.com/docs/tools/mcp-servers/`).
+1. Check installed configuration: `cat ~/.gemini/settings.json` or `cat .gemini/settings.json` (documented schema: `https://geminicli.com/docs/tools/mcp-server/`, retrieved 2026-10-26, HTTP 200). Note: prior path `https://geminicli.com/docs/tools/mcp-servers/` returned HTTP 404.
 2. Run `gemini` CLI session and prompt: "What MCP tools are available?"
 3. Confirm `mesh_recall` and `mesh_project_brief` are returned.
 
@@ -105,7 +105,7 @@ mesh install windsurf --project --dir . --apply
 1. Open Windsurf Cascade.
 2. In Cascade chat, query: "Query Mesh for project status."
 3. Confirm Cascade triggers `mesh_recall`.
-*Note: Per official Windsurf documentation (`https://docs.codeium.com/windsurf/mcp`), project-scoped MCP is not supported by Windsurf; MCP configuration is global user scope only.*
+*Note: Our adapter targets the standalone Windsurf editor (`~/.codeium/windsurf/mcp_config.json`, same schema as Claude Desktop; per Windsurf documentation, the JetBrains plugin uses `~/.codeium/mcp_config.json`). Project-level MCP config is not documented by Windsurf, so Mesh does not write one.*
 
 ### 7. OpenCode
 ```bash
@@ -119,7 +119,7 @@ mesh install opencode --apply
 mesh install opencode --project --dir . --apply
 ```
 **Verification in live agent:**
-1. Check generated configuration: `cat ~/.config/opencode/opencode.json` or `cat opencode.json` (documented schema: `https://opencode.ai/docs/config`).
+1. Check generated configuration: `cat ~/.config/opencode/opencode.json` or `cat opencode.json` (documented schema: `https://opencode.ai/docs/config`, retrieved 2026-10-26, HTTP 200).
 2. Launch `opencode` and inspect available tool definitions.
 
 ### 8. OpenAI Codex CLI
@@ -134,7 +134,7 @@ mesh install codex --apply
 mesh install codex --project --dir . --apply
 ```
 **Verification in live agent:**
-1. Inspect generated config: `cat ~/.codex/config.toml` or `cat .codex/config.toml` (documented schema: `https://developers.openai.com/codex/mcp`).
+1. Inspect generated config: `cat ~/.codex/config.toml` or `cat .codex/config.toml` (documented schema: `https://developers.openai.com/codex/mcp`, retrieved 2026-10-26, HTTP 200).
 2. Run codex tool inspection command to verify MCP registration.
 
 ---
@@ -144,10 +144,10 @@ mesh install codex --project --dir . --apply
 Per repository verification policy, adapter flags in `mesh/installer.py` maintain `verified=False` until verified against live agent releases.
 
 The four adapters/scopes requiring live version and date confirmation are:
-1. **`gemini-cli`**: Config format confirmed against official Gemini CLI documentation at [https://geminicli.com/docs/tools/mcp-servers/](https://geminicli.com/docs/tools/mcp-servers/) (retrieved 2026-10-26; `settings.json` with an `mcpServers` object), but live end-to-end tool invocation has not been tested against a running instance of Gemini CLI.
-2. **`windsurf` (project scope)**: User-scope (`~/.codeium/windsurf/mcp_config.json`) is verified with Windsurf 1.2.0 (2026-10-20). Official Windsurf MCP documentation at [https://docs.codeium.com/windsurf/mcp](https://docs.codeium.com/windsurf/mcp) (retrieved 2026-10-26) specifies user-level `mcp_config.json` configuration; project-scoped MCP configuration is not supported by Windsurf. The adapter returns `None` for project-scoped MCP while configuring project-level rules (`.windsurfrules`) and skills (`.windsurf/skills`). The adapter flag remains `verified=False` overall until project rule/skill pickup is verified against a live Windsurf session.
-3. **`opencode`**: Config format confirmed against official OpenCode documentation at [https://opencode.ai/docs/config](https://opencode.ai/docs/config) (retrieved 2026-10-26; `~/.config/opencode/opencode.json` global, `opencode.json` project with `mcp.<name>` local command list, schema `https://opencode.ai/config.json`), but live end-to-end tool invocation has not been tested against a running instance of OpenCode.
-4. **`codex`**: Config format confirmed against official OpenAI Codex CLI documentation at [https://developers.openai.com/codex/mcp](https://developers.openai.com/codex/mcp) (retrieved 2026-10-26; `config.toml` with `[mcp_servers.<name>]` TOML tables), but live end-to-end tool invocation has not been tested against a running instance of Codex CLI.
+1. **`gemini-cli`**: Config format confirmed against official Gemini CLI documentation at [https://geminicli.com/docs/tools/mcp-server/](https://geminicli.com/docs/tools/mcp-server/) (retrieved 2026-10-26; HTTP 200; `settings.json` with an `mcpServers` object). Live end-to-end tool invocation has not been tested against a running instance of Gemini CLI. Note: prior URL `https://geminicli.com/docs/tools/mcp-servers/` returned HTTP 404.
+2. **`windsurf` (project scope)**: User-scope (`~/.codeium/windsurf/mcp_config.json`) is verified with Windsurf 1.2.0 (2026-10-20), targeting the standalone Windsurf editor (official docs: [https://docs.windsurf.com/windsurf/cascade/mcp](https://docs.windsurf.com/windsurf/cascade/mcp), retrieved 2026-10-26; HTTP 200; the JetBrains plugin uses `~/.codeium/mcp_config.json`). Note: legacy URL `https://docs.codeium.com/windsurf/mcp` returned HTTP 404. Project-level MCP config is not documented by Windsurf, so Mesh does not write one. The adapter returns `None` for project-scoped MCP while configuring project-level rules (`.windsurfrules`) and skills (`.windsurf/skills`). The adapter flag remains `verified=False` overall until project rule/skill pickup is verified against a live Windsurf session.
+3. **`opencode`**: Config format confirmed against official OpenCode documentation at [https://opencode.ai/docs/config](https://opencode.ai/docs/config) (retrieved 2026-10-26; HTTP 200; `~/.config/opencode/opencode.json` global, `opencode.json` project with `mcp.<name>` local command list, schema `https://opencode.ai/config.json`). Live end-to-end tool invocation has not been tested against a running instance of OpenCode.
+4. **`codex`**: Config format confirmed against official OpenAI Codex CLI documentation at [https://developers.openai.com/codex/mcp](https://developers.openai.com/codex/mcp) (retrieved 2026-10-26; HTTP 200; `config.toml` with `[mcp_servers.<name>]` TOML tables). Live end-to-end tool invocation has not been tested against a running instance of Codex CLI.
 
 To verify and flip `verified=True` for any adapter, submit the tested agent version, OS, and verification date.
 

@@ -48,7 +48,7 @@ from .store import (
     MeshStore,
     _normalize_trust_tier,
     _parse_iso_utc,
-    flush_all_telemetry,
+    flush_all_access_tracking,
     validate_memory_id,
 )
 from .version import VERSION, is_version_compatible
@@ -345,7 +345,7 @@ def export_namespace(
     else:
         incl_emb = bool(include_embeddings)
 
-    flush_all_telemetry()
+    flush_all_access_tracking()
     store = MeshStore(namespace=clean_ns, create=False)
     total_count = store.count()
     raw_exportable = store.get_exportable_memories(
@@ -511,7 +511,7 @@ def import_namespace(
     namespace = validate_namespace(raw_ns)
     memories = data.get("memories", [])
 
-    flush_all_telemetry()
+    flush_all_access_tracking()
     existing_privacy_map = _load_existing_id_privacy_map(namespace)
     seen_ids: set[str] = set(existing_privacy_map.keys())
     file_seen_ids: set[str] = set()

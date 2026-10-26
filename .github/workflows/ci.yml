@@ -40,8 +40,18 @@ jobs:
       - name: Run Mesh Documentation Consistency Checks
         run: python scripts/check_docs.py
 
-      - name: Run Bandit Security Analysis (Medium+ Severity)
-        run: bandit -r mesh -c pyproject.toml -ll
+      - name: Run Bandit Security Analysis
+        run: |
+          bandit -r mesh -c pyproject.toml -f json -o bandit-report.json || true
+          bandit -r mesh -c pyproject.toml -ll
+
+      - name: Upload Bandit Scan JSON Artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bandit-security-report
+          path: bandit-report.json
+          retention-days: 7
 
   test:
     name: Test (${{ matrix.os }}, py${{ matrix.python-version }})

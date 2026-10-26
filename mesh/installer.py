@@ -330,7 +330,7 @@ class WindsurfAdapter(AgentAdapter):
             "windsurf",
             "Windsurf",
             verified=False,
-            verification_note="User-scope verified (~/.codeium/windsurf/mcp_config.json); Windsurf official documentation does not support project-scoped MCP configuration.",
+            verification_note="User-scope verified (~/.codeium/windsurf/mcp_config.json, targeting Windsurf editor; JetBrains plugin uses ~/.codeium/mcp_config.json). Project-level MCP config is not documented by Windsurf, so Mesh does not write one.",
         )
 
     def get_mcp_config_path(self, scope: str, project_dir: Optional[Path] = None) -> Optional[Path]:

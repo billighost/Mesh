@@ -2546,13 +2546,38 @@ def reembed_cmd(argv: Optional[list[str]] = None) -> None:
             continue
 
         if not args.no_backup and store.db_path.exists():
-            ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-            backup_path = store.db_path.with_name(f"{store.db_path.name}.bak-reembed-{ts}")
             try:
+                db_size = store.db_path.stat().st_size
+                usage = shutil.disk_usage(store.db_path.parent)
+                min_required = db_size * 2 + 10 * 1024 * 1024
+                if usage.free < min_required:
+                    raise OSError(
+                        f"Insufficient disk space for safety backup on {store.db_path.parent}: "
+                        f"{usage.free // (1024 * 1024)}MB free, {min_required // (1024 * 1024)}MB required. "
+                        f"Free disk space or run with --no-backup to proceed without backup."
+                    )
+                ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+                backup_path = store.db_path.with_name(f"{store.db_path.name}.bak-reembed-{ts}")
                 shutil.copy2(store.db_path, backup_path)
+                from .audit import secure_file_permissions
+                secure_file_permissions(backup_path)
                 ui.note(f"Safety backup created at {backup_path.name}")
+
+                # Cleanup rule: retain up to 3 most recent backups
+                existing_backups = sorted(
+                    store.db_path.parent.glob(f"{store.db_path.name}.bak-reembed-*"),
+                    key=lambda p: p.name,
+                )
+                if len(existing_backups) > 3:
+                    for old_bak in existing_backups[:-3]:
+                        try:
+                            old_bak.unlink()
+                        except Exception as del_err:
+                            ui.warn(f"Could not remove old backup {old_bak.name}: {del_err}")
             except Exception as b_err:
-                ui.warn(f"Could not create reembed pre-run backup: {b_err}")
+                ui.warn(f"Reembed safety backup error: {b_err}")
+                if isinstance(b_err, OSError) and "Insufficient disk space" in str(b_err):
+                    raise
 
         with ui.spinner(f"Re-embedding {len(rows)} memories in '{ns}'…"):
             reembedded_in_ns = 0
@@ -2980,7 +3005,7 @@ _HELP_SECTIONS: list[tuple[str, list[tuple[str, str, str]]]] = [
             ("doctor", "Diagnose problems and suggest fixes", ""),
             ("encrypt-db", "Encrypt databases at rest (with backup & VACUUM)", "encrypt"),
             ("daemon <action>", "start · stop · restart · status · warmup · rotate-token", ""),
-            ("audit export", "Export content-free audit telemetry as JSON", ""),
+            ("audit export", "Export content-free audit events as JSON", ""),
             ("install-skills", "Teach your AI coding agents to use Mesh", ""),
             ("completion", "Tab-completion for your shell", ""),
         ],
@@ -3397,8 +3422,8 @@ def log_cmd() -> None:
 
 
 def audit_cmd() -> None:
-    """Inspect and export content-free operational telemetry."""
-    parser = _parser("audit", "Content-free operational telemetry and metrics (timing, tool names, NEVER memory text).")
+    """Inspect and export content-free operational audit events."""
+    parser = _parser("audit", "Content-free operational metrics and audit events (timing, tool names, NEVER memory text).")
     sub = parser.add_subparsers(dest="subcommand", metavar="ACTION")
 
     p_export = sub.add_parser("export", help="Export content-free audit events as JSON")

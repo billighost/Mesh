@@ -449,3 +449,183 @@ def test_reembed_crash_safety_rollback_and_resume(capsys, monkeypatch):
 
     finally:
         _cleanup_ns(ns)
+
+
+def test_query_logging_redacts_secrets(monkeypatch):
+    """Verify that query text containing credentials is redacted before writing to queries table."""
+    ns = "test_q_redact_secrets"
+    try:
+        mesh = Mesh(namespace=ns, agent_id="agent-audit")
+        secret_query = "Find deployment token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ123456"
+        mesh.recall(secret_query, n=5)
+        mesh.store.flush_access_tracking()
+
+        with mesh.store._connect() as conn:
+            rows = conn.execute("SELECT query_text FROM queries WHERE namespace = ?", (ns,)).fetchall()
+            assert len(rows) >= 1
+            for (q_text,) in rows:
+                assert "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ123456" not in q_text
+                assert "[REDACTED" in q_text
+    finally:
+        _cleanup_ns(ns)
+
+
+def test_query_logging_disabled_via_env(monkeypatch):
+    """Verify that MESH_LOG_QUERY_TEXT=0 records empty query text in queries table."""
+    ns = "test_q_log_disabled"
+    monkeypatch.setenv("MESH_LOG_QUERY_TEXT", "0")
+    try:
+        mesh = Mesh(namespace=ns, agent_id="agent-audit")
+        mesh.recall("Secret architecture decision", n=5)
+        mesh.store.flush_access_tracking()
+
+        with mesh.store._connect() as conn:
+            rows = conn.execute("SELECT query_text, result_count FROM queries WHERE namespace = ?", (ns,)).fetchall()
+            assert len(rows) >= 1
+            for q_text, r_cnt in rows:
+                assert q_text == ""
+    finally:
+        _cleanup_ns(ns)
+
+
+def test_export_excludes_queries_table(tmp_path):
+    """Verify that exports (JSON, Markdown, CSV) never leak queries table contents."""
+    from mesh.io import export_namespace
+
+    ns = "test_export_isolation"
+    try:
+        mesh = Mesh(namespace=ns, agent_id="agent-export")
+        mesh.learn("Important project fact for export", tags=["safe"])
+        mesh.recall("Search query containing private context", n=5)
+        mesh.store.flush_access_tracking()
+
+        json_out = tmp_path / "export.json"
+        md_out = tmp_path / "export.md"
+        csv_out = tmp_path / "export.csv"
+
+        export_namespace(ns, json_out, format="json")
+        export_namespace(ns, md_out, format="markdown")
+        export_namespace(ns, csv_out, format="csv")
+
+        json_data = json.loads(json_out.read_text(encoding="utf-8"))
+        assert "queries" not in json_data
+        md_raw = md_out.read_text(encoding="utf-8")
+        csv_raw = csv_out.read_text(encoding="utf-8")
+
+        for raw in (md_raw, csv_raw):
+            assert "Search query containing private context" not in raw
+            assert "queries" not in raw.lower()
+    finally:
+        _cleanup_ns(ns)
+
+
+def test_no_outbound_network_phone_home(monkeypatch):
+    """
+    Automated network barrier test:
+    Verify that full Mesh lifecycle executes with zero outbound network calls.
+    Outbound sockets raise RuntimeError, while loopback remains allowed.
+    """
+    import socket
+
+    orig_connect = socket.socket.connect
+
+    def guarded_connect(self, address):
+        host = address[0] if isinstance(address, tuple) else address
+        # Allow loopback addresses
+        if host in ("127.0.0.1", "::1", "localhost"):
+            return orig_connect(self, address)
+        raise RuntimeError(f"Prohibited outbound network access attempted to: {address}")
+
+    monkeypatch.setattr(socket.socket, "connect", guarded_connect)
+
+    ns = "test_offline_privacy"
+    try:
+        mesh = Mesh(namespace=ns, agent_id="offline-agent")
+        # 1. Ingestion
+        m = mesh.learn("Autonomous decision for offline privacy test", tags=["offline", "security"])
+        assert m["memory_id"]
+
+        # 2. Query & Recall
+        results = mesh.recall("offline privacy test", n=3)
+        assert len(results) >= 1
+
+        # 3. Project Brief
+        brief = mesh.project_brief(max_tokens=300)
+        assert "Autonomous decision" in brief or len(brief) > 0
+
+        # 4. Access tracking flush
+        mesh.store.flush_access_tracking()
+
+        # 5. Contradiction check
+        mesh.store.log_contradiction(
+            new_memory_id="mem-new",
+            new_content="Fact A",
+            existing_memory_id="mem-old",
+            existing_content="Fact B",
+            similarity=0.95,
+        )
+
+        # 6. Work items
+        task = mesh.create_work_item(title="Offline task")
+        assert task["short_id"]
+
+        # Verified: full lifecycle completed without attempting non-loopback connections
+    finally:
+        _cleanup_ns(ns)
+
+
+def test_reembed_backup_hardening(monkeypatch):
+    """
+    Verify reembed backup safety:
+      1. Raises OSError when disk space is insufficient
+      2. Automatically prunes old backups to retain at most 3
+    """
+    from mesh.cli import reembed_cmd
+    import shutil
+
+    ns = "test_reembed_hardening"
+    store = MeshStore(namespace=ns)
+    try:
+        with store._connect() as conn:
+            conn.execute(
+                "INSERT INTO memories (id, namespace, content, embedding_model, embedding, created_at, updated_at, accessed_at, access_count, local_only) "
+                "VALUES ('mem-h-1', ?, 'Hardening test memory', 'hash-384', NULL, '2026-10-26T12:00:00Z', '2026-10-26T12:00:00Z', '2026-10-26T12:00:00Z', 0, 0)",
+                (ns,),
+            )
+            conn.commit()
+
+        # 1. Test insufficient disk space
+        def mock_disk_usage(path):
+            # return 100 bytes free
+            return shutil._ntuple_diskusage(1000000, 999900, 100)
+
+        fake_pair = (Path("fake.onnx"), Path("fake_tokenizer.json"))
+        with patch("mesh.memory._has_local_onnx_pair", return_value=fake_pair):
+            with patch("shutil.disk_usage", side_effect=mock_disk_usage):
+                monkeypatch.setattr(sys, "argv", ["mesh", "reembed", "--namespace", ns])
+                with pytest.raises(OSError) as exc_info:
+                    reembed_cmd()
+                assert "Insufficient disk space" in str(exc_info.value)
+
+            # 2. Test old backup pruning (create 5 dummy backups)
+            for i in range(1, 6):
+                dummy_bak = store.db_path.with_name(f"{store.db_path.name}.bak-reembed-2026102600000{i}")
+                dummy_bak.write_text("dummy", encoding="utf-8")
+
+            # Run reembed successfully
+            with patch("mesh.memory._encode_uncached_texts_with_tag", side_effect=lambda texts: ([[0.05] * 384 for _ in texts], "onnx-minilm-l6-v2")):
+                monkeypatch.setattr(sys, "argv", ["mesh", "reembed", "--namespace", ns])
+                reembed_cmd()
+
+            # Verify that only 3 most recent backups remain
+            backups = list(store.db_path.parent.glob(f"{store.db_path.name}.bak-reembed-*"))
+            assert len(backups) <= 3
+            # Cleanup dummy backups
+            for b in backups:
+                try:
+                    b.unlink()
+                except Exception:
+                    pass
+    finally:
+        _cleanup_ns(ns)
+
