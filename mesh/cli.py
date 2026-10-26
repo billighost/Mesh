@@ -385,13 +385,13 @@ def _check_daemon_write_response(proxied: Optional[dict[str, Any]], cmd_label: s
     return proxied
 
 
-def _namespace_degraded_counts(namespace: str) -> tuple[int, int]:
-    """Return `(hash_384_count, needs_reembed_count)` for an existing namespace DB without creating one."""
+def _namespace_degraded_counts(namespace: str) -> tuple[int, int, int]:
+    """Return `(hash_384_count, needs_reembed_count, mixed_space_count)` for an existing namespace DB without creating one."""
     from .audit import ensure_secure_mesh_dir
 
     db_path = ensure_secure_mesh_dir().resolve() / f"mesh_{namespace}.db"
     if not db_path.exists():
-        return 0, 0
+        return 0, 0, 0
 
     from .store import _CACHE_LOCK, _VECTOR_CACHE
 
@@ -400,8 +400,10 @@ def _namespace_degraded_counts(namespace: str) -> tuple[int, int]:
         if entry is not None and entry.rows_by_id:
             rows = list(entry.rows_by_id.values())
             hash_cnt = sum(1 for r in rows if r.get("embedding_model") == "hash-384")
+            onnx_cnt = sum(1 for r in rows if r.get("embedding_model") == "onnx-minilm-l6-v2")
             reembed_cnt = sum(1 for r in rows if r.get("embedding_model") in ("needs-reembed", "unknown") or not r.get("embedding"))
-            return hash_cnt, reembed_cnt
+            mixed_cnt = min(hash_cnt, onnx_cnt) if (hash_cnt > 0 and onnx_cnt > 0) else 0
+            return hash_cnt, reembed_cnt, mixed_cnt
     try:
         from .store import MeshStore
 
@@ -414,6 +416,13 @@ def _namespace_degraded_counts(namespace: str) -> tuple[int, int]:
                 ).fetchone()[0]
                 or 0
             )
+            onnx_cnt = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM memories WHERE namespace = ? AND embedding_model = 'onnx-minilm-l6-v2'",
+                    (namespace,),
+                ).fetchone()[0]
+                or 0
+            )
             reembed_cnt = int(
                 conn.execute(
                     "SELECT COUNT(*) FROM memories WHERE namespace = ? AND (embedding_model = 'needs-reembed' OR embedding_model = 'unknown' OR embedding IS NULL)",
@@ -421,9 +430,10 @@ def _namespace_degraded_counts(namespace: str) -> tuple[int, int]:
                 ).fetchone()[0]
                 or 0
             )
-            return hash_cnt, reembed_cnt
+            mixed_cnt = min(hash_cnt, onnx_cnt) if (hash_cnt > 0 and onnx_cnt > 0) else 0
+            return hash_cnt, reembed_cnt, mixed_cnt
     except Exception:
-        return 0, 0
+        return 0, 0, 0
 
 
 # --- Smart Command & Flag Typo Recovery ---
@@ -593,8 +603,17 @@ def setup_cmd() -> None:
     parser.add_argument("--namespace", default=None, metavar="NAME", help="Namespace to use (default: $MESH_NAMESPACE or 'shared')")
     parser.add_argument("--no-startup", action="store_true", help="Don't register login auto-start")
     parser.add_argument("--wait", action="store_true", help="Wait for the model download to finish")
+    parser.add_argument("--strict", action="store_true", help="Strict mode: fail fast if model cannot be downloaded (MESH_REQUIRE_MODEL=1)")
     parser.add_argument("--yes", "-y", action="store_true", help="Skip interactive y/n permission prompts")
     args = parser.parse_args()
+
+    assume_yes = (
+        args.yes
+        or os.environ.get("MESH_AUTO_DOWNLOAD_MODEL", "").strip().lower() in ("1", "true", "yes")
+        or os.environ.get("MESH_DOWNLOAD_MODEL", "").strip().lower() in ("1", "true", "yes")
+    )
+    if args.strict:
+        os.environ["MESH_REQUIRE_MODEL"] = "1"
 
     from .daemon import (
         DAEMON_LOG_FILE,
@@ -616,7 +635,7 @@ def setup_cmd() -> None:
 
     # 1 ─ login auto-start
     if not args.no_startup:
-        if request_user_permission("register the Mesh daemon for OS login auto-start", assume_yes=args.yes):
+        if request_user_permission("register the Mesh daemon for OS login auto-start", assume_yes=assume_yes):
             info = install_startup(
                 host=DEFAULT_HOST,
                 port=DEFAULT_PORT,
@@ -631,7 +650,7 @@ def setup_cmd() -> None:
     # 2 ─ background daemon
     if request_user_permission(
         f"start the background Mesh HTTP daemon on {DEFAULT_HOST}:{DEFAULT_PORT}",
-        assume_yes=args.yes,
+        assume_yes=assume_yes,
     ):
         with ui.spinner("Starting background daemon…"):
             res = start_daemon(host=DEFAULT_HOST, port=DEFAULT_PORT, idle_timeout=DEFAULT_IDLE_TIMEOUT, lazy=True, wait=args.wait)
@@ -650,15 +669,17 @@ def setup_cmd() -> None:
         ui.success("Embedding model ready", _tilde(str(pair[0].parent)))
     elif request_user_permission(
         f"download the ONNX embedding model into {_tilde(str(_ONNX_MODEL_DIR))}",
-        assume_yes=args.yes,
+        assume_yes=assume_yes,
     ):
-        if args.wait or args.yes:
+        if args.wait or assume_yes:
             with ui.spinner("Downloading embedding model (this can take a minute)…"):
                 pair = ensure_model_downloaded(blocking=True, timeout=120.0, assume_yes=True)
             if pair is not None:
                 ui.success("Embedding model downloaded", _tilde(str(pair[0].parent)))
                 _daemon_request("/warmup", payload={"namespace": ns}, method="POST")
             else:
+                if args.strict:
+                    ui.fail("Strict mode: ONNX model download failed and MESH_REQUIRE_MODEL is set.")
                 ui.warn(
                     "Embedding model isn't ready yet",
                     "Mesh will use its built-in fallback until the download finishes. Check with `mesh doctor`.",
@@ -668,6 +689,8 @@ def setup_cmd() -> None:
             ensure_model_downloaded(blocking=False, assume_yes=True, detached=True)
             ui.info("Downloading embedding model in the background", _tilde(str(_ONNX_MODEL_DIR)))
     else:
+        if args.strict:
+            ui.fail("Strict mode: ONNX model download declined/skipped and MESH_REQUIRE_MODEL is set.")
         skipped_steps += 1
         ui.step("Embedding model download skipped", "Mesh will use its built-in fallback (lower search quality).")
 
@@ -2121,13 +2144,15 @@ def doctor_cmd() -> None:
                 counts["warn"] += 1
                 print(f"{pad}{ui.style(ui.sym('warn'), 'warn')} {ns_name}: {ui.style(str(n_info['error']), 'error')}")
                 continue
-            h_cnt, r_cnt = _namespace_degraded_counts(ns_name)
-            if h_cnt > 0 or r_cnt > 0:
+            h_cnt, r_cnt, m_cnt = _namespace_degraded_counts(ns_name)
+            if h_cnt > 0 or r_cnt > 0 or m_cnt > 0:
                 bits = []
                 if h_cnt:
                     bits.append(f"{h_cnt} on fallback embeddings")
                 if r_cnt:
                     bits.append(f"{r_cnt} need re-embedding")
+                if m_cnt:
+                    bits.append(f"{m_cnt} in mixed embedding space (run 'mesh reembed')")
                 print(f"{pad}{ui.style(ui.sym('warn'), 'warn')} {ns_name}: {n_info['memory_count']} memories, {ui.style(', '.join(bits), 'warn')}")
 
     # Summary
@@ -2451,6 +2476,103 @@ def import_cmd() -> None:
         ui.fail(str(e))
 
 
+def reembed_cmd(argv: Optional[list[str]] = None) -> None:
+    parser = _parser(
+        "reembed",
+        "Re-embed memories with the active ONNX model to standardize vector spaces and eliminate hash-384 fallbacks.",
+        [
+            ("mesh reembed", "re-embed fallback and mixed-space memories in current namespace"),
+            ("mesh reembed --all", "re-embed across all namespaces"),
+            ("mesh reembed --force", "re-embed all memories even if already on ONNX"),
+            ("mesh reembed --dry-run", "preview count without writing"),
+        ],
+    )
+    parser.add_argument("--namespace", default=None, metavar="NAME", help="Target namespace (default: current or 'shared')")
+    parser.add_argument("--all", action="store_true", help="Re-embed across all namespaces")
+    parser.add_argument("--force", action="store_true", help="Re-embed all memories even if already on ONNX")
+    parser.add_argument("--batch-size", type=int, default=32, help="Batch size for embedding calculation (default: 32)")
+    parser.add_argument("--dry-run", action="store_true", help="Preview memories needing re-embedding without writing")
+    if argv is None:
+        raw_args = sys.argv[1:]
+        if raw_args and raw_args[0] == "reembed":
+            raw_args = raw_args[1:]
+        args = parser.parse_args(raw_args)
+    else:
+        args = parser.parse_args(argv)
+
+    from .crypto import is_encryption_enabled
+    from .memory import _encode_uncached_texts_with_tag, _has_local_onnx_pair
+    from .namespaces import list_namespaces
+    from .store import MeshStore, encrypt_blob_for_storage, namespace_write_lock, np
+
+    pair = _has_local_onnx_pair()
+    if pair is None:
+        ui.fail(
+            "ONNX embedding model is not yet downloaded",
+            "Run `mesh setup --yes` to download the model first.",
+        )
+        return
+
+    target_namespaces = [n["namespace"] for n in list_namespaces()] if args.all else [_resolve_namespace(args.namespace)]
+
+    total_reembedded = 0
+    for ns in target_namespaces:
+        try:
+            store = MeshStore(namespace=ns, create=False)
+        except Exception:
+            continue
+
+        with store._connect() as conn:
+            if args.force:
+                rows = conn.execute(
+                    "SELECT id, content, embedding_model FROM memories WHERE namespace = ?",
+                    (ns,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT id, content, embedding_model FROM memories WHERE namespace = ? AND (embedding_model != 'onnx-minilm-l6-v2' OR embedding_model IS NULL OR embedding IS NULL)",
+                    (ns,),
+                ).fetchall()
+
+        if not rows:
+            ui.info(f"Namespace '{ns}': All memories already use onnx-minilm-l6-v2.")
+            continue
+
+        if args.dry_run:
+            ui.note(f"Namespace '{ns}': {len(rows)} memories would be re-embedded (dry-run).")
+            continue
+
+        with ui.spinner(f"Re-embedding {len(rows)} memories in '{ns}'…"):
+            reembedded_in_ns = 0
+            batch_size = max(1, min(args.batch_size, 128))
+            for i in range(0, len(rows), batch_size):
+                batch = rows[i : i + batch_size]
+                texts = [r[1] for r in batch]
+                vecs, tag = _encode_uncached_texts_with_tag(texts)
+
+                with namespace_write_lock(ns):
+                    with store._connect() as conn:
+                        for (mid, content, _), vec in zip(batch, vecs):
+                            vec_arr = np.asarray(vec, dtype=np.float32)
+                            blob_to_write: Any = vec_arr.tobytes()
+                            if is_encryption_enabled():
+                                blob_to_write = encrypt_blob_for_storage(blob_to_write)
+                            conn.execute(
+                                "UPDATE memories SET embedding = ?, embedding_model = ? WHERE id = ? AND namespace = ?",
+                                (blob_to_write, tag, mid, ns),
+                            )
+                        conn.commit()
+                reembedded_in_ns += len(batch)
+
+            store._invalidate_cache()
+            total_reembedded += reembedded_in_ns
+            ui.success(f"Re-embedded {reembedded_in_ns} memories in '{ns}' to '{tag}'")
+
+    if not args.dry_run and total_reembedded > 0:
+        print()
+        ui.success(f"Re-embedding complete: {total_reembedded} total memories updated across {len(target_namespaces)} namespace(s).")
+
+
 def namespaces_cmd() -> None:
     parser = _parser(
         "namespaces",
@@ -2705,9 +2827,9 @@ def status_cmd() -> None:
 
     try:
         st: Optional[dict[str, Any]] = namespace_stats(ns)
-        h_cnt, r_cnt = _namespace_degraded_counts(ns)
+        h_cnt, r_cnt, m_cnt = _namespace_degraded_counts(ns)
     except ValueError:
-        st, h_cnt, r_cnt = None, 0, 0
+        st, h_cnt, r_cnt, m_cnt = None, 0, 0, 0
 
     work_stats: dict[str, Any] = {
         "total": 0,
@@ -2738,7 +2860,7 @@ def status_cmd() -> None:
                 "memory_counts": st.get("memory_count", 0) if st else 0,
                 "memory_counts_by_type": st.get("type_breakdown", {}) if st else {},
                 "work_items_count": work_stats,
-                "pending_reembed": {"hash_384": h_cnt, "needs_reembed": r_cnt},
+                "pending_reembed": {"hash_384": h_cnt, "needs_reembed": r_cnt, "mixed_space": m_cnt},
                 "daemon_port_open": port,
             }
         )
@@ -2773,8 +2895,15 @@ def status_cmd() -> None:
         )
     )
     rows.append(("Daemon", ui.style(f"running on :{port}", "brand") if port else ui.style("not running", "muted")))
-    if h_cnt > 0 or r_cnt > 0:
-        rows.append(("Pending", ui.style(f"{h_cnt} on fallback embeddings, {r_cnt} need re-embedding", "warn")))
+    if h_cnt > 0 or r_cnt > 0 or m_cnt > 0:
+        pend_bits = []
+        if h_cnt:
+            pend_bits.append(f"{h_cnt} on fallback embeddings")
+        if r_cnt:
+            pend_bits.append(f"{r_cnt} need re-embedding")
+        if m_cnt:
+            pend_bits.append(f"{m_cnt} in mixed space")
+        rows.append(("Pending", ui.style(", ".join(pend_bits), "warn")))
     ui.kv(rows)
 
     if st is None:
@@ -3316,6 +3445,7 @@ def _get_command_mapping() -> dict[str, Callable[[], None]]:
         "install": install_cmd,
         "uninstall": uninstall_cmd,
         "install-skills": install_skills_cmd,
+        "reembed": reembed_cmd,
     }
 
 

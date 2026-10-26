@@ -27,6 +27,7 @@ import sys
 import threading
 import time
 import uuid
+import warnings
 from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -3525,6 +3526,14 @@ class MeshStore:
                     _mix_memo[_em] = _mixed
                 if not _mixed:
                     valid_indices.append(idx)
+            if len(valid_indices) < len(ids_snap) and not os.environ.get("MESH_QUIET"):
+                excluded_cnt = len(ids_snap) - len(valid_indices)
+                warnings.warn(
+                    f"Excluded {excluded_cnt} memories from semantic search due to mixed embedding space "
+                    f"(query uses '{query_embedding_model}'). Run 'mesh reembed' to re-embed historical memories.",
+                    UserWarning,
+                    stacklevel=2,
+                )
             if not valid_indices:
                 return {"documents": [[]], "distances": [[]], "metadatas": [[]], "ids": [[]]}
             valid_arr = np.asarray(valid_indices, dtype=np.int64)

@@ -2384,6 +2384,14 @@ def run() -> None:
             threading.Thread(target=background_sync_worker, daemon=True).start()
         elif is_interactive and request_user_permission("start the background MCP cache warmup worker"):
             threading.Thread(target=background_sync_worker, daemon=True).start()
+
+    eng = get_engine_status()
+    if eng.get("embedding_degraded") or eng.get("model_tag") == "hash-384":
+        logger.warning(
+            "Mesh MCP server is operating with hash-384 fallback embeddings (lower semantic search quality). "
+            "Run 'mesh setup' to download the verified ONNX model, or set MESH_REQUIRE_MODEL=1 to enforce strict model availability."
+        )
+
     asyncio.run(_run())
 
 

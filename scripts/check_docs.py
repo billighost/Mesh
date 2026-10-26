@@ -99,6 +99,7 @@ REGISTERED_CLI_COMMANDS = {
     "digest",
     "install-skills",
     "audit",
+    "reembed",
     "version",
     "help",
 }
@@ -415,6 +416,43 @@ def check_no_fernet_references(errors: list[str]) -> None:
                 )
 
 
+def check_no_review_placeholders_in_published_files(errors: list[str] | None = None) -> list[str]:
+    """
+    Verify that external review placeholders ([REPORT_LINK], [DATE], etc.)
+    exist only in docs/REVIEWS.md and never appear in published documentation,
+    PyPI metadata, or the landing site.
+    """
+    if errors is None:
+        errors = []
+    placeholders = [
+        "[AFFILIATION_OR_HANDLE]",
+        "[DATE]",
+        "[SCOPE]",
+        "[REPORT_LINK]",
+        "[FINDINGS_SUMMARY]",
+    ]
+    published_files = [
+        REPO_ROOT / "README.md",
+        REPO_ROOT / "pyproject.toml",
+        REPO_ROOT / "SECURITY.md",
+        REPO_ROOT / "THREAT_MODEL.md",
+        REPO_ROOT / "DOCS.md",
+        REPO_ROOT / "landing" / "site" / "src" / "data" / "content.js",
+    ]
+    for fpath in published_files:
+        if not fpath.exists():
+            continue
+        text = fpath.read_text(encoding="utf-8")
+        rel_path = fpath.relative_to(REPO_ROOT)
+        for ph in placeholders:
+            if ph in text:
+                errors.append(
+                    f"[{rel_path}] Unfilled review placeholder '{ph}' found in published file. "
+                    "Review placeholders may only exist in docs/REVIEWS.md."
+                )
+    return errors
+
+
 def main() -> int:
     print(f"Checking Mesh Documentation Consistency (Package version: v{VERSION})...")
     errors: list[str] = []
@@ -428,6 +466,7 @@ def main() -> int:
     check_field_test_version_labels(errors)
     check_public_manifest(errors)
     check_no_fernet_references(errors)
+    check_no_review_placeholders_in_published_files(errors)
 
     if errors:
         print(f"\n[FAIL] Documentation verification found {len(errors)} error(s):")

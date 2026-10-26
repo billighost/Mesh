@@ -511,13 +511,20 @@ Exports memories from the selected namespace to JSON, Markdown, or CSV.
 
 - **Formats (`--format {json,markdown,csv}`)**: Inferred from the output extension (`.json`, `.md`, `.csv`) if omitted.
 - **JSON**: The only lossless round-trip format; can be restored with `mesh import`. Supports `--encrypt` (authenticated envelope) and vector embeddings (toggle with `--no-embeddings`).
-- **Markdown (`.md`)**: One-way human-readable summary of memories and work items. Vector embeddings are omitted by default.
-- **CSV (`.csv`)**: One-way tabular export for spreadsheets. Vector embeddings are omitted by default. Neutralizes spreadsheet formula injection (CWE-1236) by automatically prefixing cells starting with `=`, `+`, `-`, `@`, `\t`, or `\r` with a single quote (`'`).
+- **Markdown (`.md`)**: One-way human-readable summary of memories and work items (cannot be re-imported). Memory bodies and summaries are rendered in fenced code blocks to prevent markdown headings, links, or HTML injection. Vector embeddings are omitted by default.
+- **CSV (`.csv`)**: One-way tabular export for spreadsheets (cannot be re-imported). Vector embeddings are omitted by default. Neutralizes spreadsheet formula injection (CWE-1236) by automatically prefixing cells starting with `=`, `+`, `-`, `@`, `\t`, or `\r` with a single quote (`'`). Note that bullet-style text such as `- use pnpm` or `+ add test` will appear with a leading quote (`'- use pnpm`) in CSV to prevent formula execution in Excel/Calc.
+- **Privacy & Security**: Private (`local_only`) memories are strictly omitted from all exports. Export files are written with owner-only permissions (mode `0600` on POSIX, owner-only ACL on Windows). All exports contain plain text unless JSON `--encrypt` is used.
 - Flags: `--format`, `--namespace`, `--no-embeddings`, `--encrypt` (JSON only), `--passphrase`. Private memories are never exported in any format.
 
 #### `mesh import <input.json>`
 
 Flags: `--namespace`, `--overwrite`, `--dry-run`, `--passphrase`.
+
+#### `mesh reembed`
+
+Re-embed memories using the active ONNX model to resolve mixed vector spaces and eliminate `hash-384` fallback vectors.
+
+Flags: `--namespace NAME` (target namespace; default: active or shared), `--all` (re-embed across all namespaces), `--force` (re-embed all memories even if already on ONNX), `--batch-size N` (batch size, default 32), `--dry-run` (preview memories needing re-embedding without writing).
 
 #### `mesh encrypt-db`
 
@@ -762,6 +769,9 @@ It binds loopback by default. Non-loopback binding requires an explicit `--host`
 
 | Variable | Meaning |
 |---|---|
+| `MESH_REQUIRE_MODEL` | `1` enables strict embedding mode: raises an error immediately if the ONNX model is unavailable, forbidding silent fallback to `hash-384`. |
+| `MESH_AUTO_DOWNLOAD_MODEL` | `1` automatically downloads and verifies the canonical ONNX model without interactive confirmation prompts (automation/CI mode). |
+| `MESH_DOWNLOAD_MODEL` | Alias for `MESH_AUTO_DOWNLOAD_MODEL`. |
 | `MESH_NO_MODEL_DOWNLOAD` | `1` disables ONNX download; stays on `hash-384`. |
 | `MESH_SKIP_CHECKSUM` | Skips model checksum verification. Not recommended. |
 | `MESH_MODEL_SHA256` | Additional/replacement ONNX SHA-256 allowlist entry. |

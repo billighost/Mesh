@@ -20,8 +20,12 @@ Performance acceleration and reliability release introducing pure-Python prescan
 - **Environment Variables**: Removed `MESH_DISABLE_NATIVE` and `MESH_C_CORE_PATH`.
 
 ### Fixed
-- **Codex & Agent Installer Configuration Formats (`mesh/installer.py`)**: Fixed OpenAI Codex CLI adapter to write and update `config.toml` (`~/.codex/config.toml` or `.codex/config.toml`) using standard `[mcp_servers.<name>]` TOML tables parsed and verified via `tomllib`, resolving an issue where `.codex/mcp.json` was written. Updated Gemini CLI adapter to target `settings.json`, OpenCode adapter to target `opencode.json` with standard `"mcp"` server table, and Windsurf adapter to restrict project-scope MCP to `None` in alignment with official vendor documentation.
+- **Codex & Agent Installer Configuration Formats (`mesh/installer.py`)**: Fixed OpenAI Codex CLI adapter to write and update `config.toml` (`~/.codex/config.toml` or `.codex/config.toml`) using standard `[mcp_servers.<name>]` TOML tables parsed and verified via `tomllib`, resolving an issue where `.codex/mcp.json` was written. Updated Gemini CLI adapter to target `settings.json`, OpenCode adapter to target `~/.config/opencode/opencode.json` (XDG) and project `./opencode.json` with standard `"mcp"` server table, and Windsurf adapter to restrict project-scope MCP to `None` in alignment with official vendor documentation.
+- **OpenCode Global Configuration Path (`mesh/installer.py`)**: Verified and confirmed OpenCode user-scope configuration path resolves to `~/.config/opencode/opencode.json` (or `%USERPROFILE%\.config\opencode\opencode.json` on Windows) conforming to the official XDG configuration specification.
 - **Namespace Listing & Stats Query Optimization (`mesh/namespaces.py`)**: Resolved namespace query bottlenecks by connecting via `MeshStore` pooling and utilizing warm in-memory cache rows instead of redundant disk opens. Added CLI mesh cache eviction on namespace deletion.
+
+### Changed
+- **Windsurf Project-Scope Behavior Change (`mesh/installer.py`)**: Dropped project-scoped MCP configuration for Windsurf. Official Windsurf documentation (`https://docs.codeium.com/windsurf/mcp`) states verbatim: *"The configuration file for Model Context Protocol (MCP) servers in Windsurf (mcp_config.json) is located in your user home directory under the Codeium configuration folder... Windsurf only reads MCP server configuration from this global file; there is no workspace- or project-level mcp_config.json support in Windsurf."* Project scope continues to support rules (`.windsurfrules`) and skills (`.windsurf/skills`).
 
 ## [0.8.2] - 2026-10-22 (Beta)
 

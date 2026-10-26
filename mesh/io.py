@@ -211,9 +211,23 @@ def export_to_csv(export_data: dict[str, Any]) -> str:
     return output.getvalue()
 
 
+def _fence_markdown(text: str) -> str:
+    """
+    Safely enclose arbitrary text in a fenced code block so content
+    cannot inject markdown headings, links, or HTML tags into exports.
+    """
+    if not text:
+        return ""
+    fence = "```"
+    while fence in text:
+        fence += "`"
+    return f"{fence}text\n{text}\n{fence}"
+
+
 def export_to_markdown(export_data: dict[str, Any]) -> str:
     """
     Render export data to structured Markdown format.
+    Memory content is rendered in fenced code blocks to prevent markdown or HTML injection.
     Vectors are excluded from Markdown exports.
     """
     ns = export_data.get("namespace", "shared")
@@ -257,7 +271,7 @@ def export_to_markdown(export_data: dict[str, Any]) -> str:
             if mem.get("secret_ref"):
                 lines.append(f"- **Secret Reference**: `{json.dumps(mem['secret_ref'])}`")
             lines.append("")
-            lines.append(content)
+            lines.append(_fence_markdown(content))
             lines.append("")
 
     if work_items:
@@ -267,16 +281,17 @@ def export_to_markdown(export_data: dict[str, Any]) -> str:
         lines.append("")
         for w in work_items:
             wid = w.get("short_id") or w.get("id") or "task"
-            title = w.get("title", "")
+            raw_title = str(w.get("title", ""))
+            safe_title = raw_title.replace("\r", " ").replace("\n", " ").replace("`", "'")
             status = str(w.get("status", "todo")).upper()
             priority = w.get("priority", "normal")
             summary = w.get("completion_summary") or ""
             evidence = w.get("evidence") or []
 
-            lines.append(f"### [{wid}] {title}")
+            lines.append(f"### [{wid}] {safe_title}")
             lines.append(f"- **Status**: `{status}` | **Priority**: `{priority}`")
             if summary:
-                lines.append(f"- **Completion Summary**: {summary}")
+                lines.append(f"- **Completion Summary**:\n{_fence_markdown(summary)}")
             if evidence:
                 lines.append(f"- **Evidence**: {', '.join(evidence)}")
             lines.append("")

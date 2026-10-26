@@ -27,6 +27,7 @@ import difflib
 import gc
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -1636,6 +1637,25 @@ def _ensure_idle_watchdog() -> None:
             t.start()
 
 
+_HASH_FALLBACK_WARNED = False
+_HASH_FALLBACK_LOCK = threading.Lock()
+
+
+def _warn_hash_fallback_once(reason: str = "") -> None:
+    """Emit a loud warning on stderr and logging.warning when Mesh falls back to hash-384."""
+    global _HASH_FALLBACK_WARNED
+    with _HASH_FALLBACK_LOCK:
+        if not _HASH_FALLBACK_WARNED and not os.environ.get("MESH_QUIET"):
+            _HASH_FALLBACK_WARNED = True
+            sys.stderr.write(
+                "\n[mesh warning] Running with hash-384 embedding fallback (lower semantic search quality).\n"
+                "  Run 'mesh setup' to download the verified ONNX model, or set MESH_REQUIRE_MODEL=1 to fail fast.\n\n"
+            )
+            logging.warning(
+                "Mesh is operating with hash-384 embedding fallback. Run 'mesh setup' to download the ONNX model."
+            )
+
+
 def _get_model() -> tuple[Any, str]:
     global _model, _torch, _model_backend, _last_model_use_ts
     _last_model_use_ts = time.monotonic()
@@ -1645,6 +1665,7 @@ def _get_model() -> tuple[Any, str]:
             return _model, _model_backend
         if _has_local_onnx_pair() is None:
             if _download_in_progress or time.monotonic() < _download_failed_until:
+                _warn_hash_fallback_once()
                 return _model, _model_backend
 
     with _MODEL_LOCK:
@@ -1656,12 +1677,20 @@ def _get_model() -> tuple[Any, str]:
             if onnx_pair is None and (
                 _download_in_progress or time.monotonic() < _download_failed_until
             ):
+                _warn_hash_fallback_once()
                 return _model, _model_backend
+
+        strict_model = os.environ.get("MESH_REQUIRE_MODEL", "").strip().lower() in ("1", "true", "yes")
 
         force_hash = os.environ.get("MESH_FORCE_HASH_EMBED", "").strip().lower() in ("1", "true", "yes")
         if force_hash:
+            if strict_model:
+                raise RuntimeError(
+                    "MESH_REQUIRE_MODEL=1 conflicts with MESH_FORCE_HASH_EMBED=1. Refusing hash-384 fallback in strict mode."
+                )
             _model = _hash_embed_384
             _model_backend = "hash-fallback"
+            _warn_hash_fallback_once()
             return _model, _model_backend
 
         force_pytorch = os.environ.get("MESH_FORCE_PYTORCH", "").strip().lower() in ("1", "true", "yes")
@@ -1715,8 +1744,15 @@ def _get_model() -> tuple[Any, str]:
             except Exception:
                 pass
 
+        if strict_model:
+            raise RuntimeError(
+                "MESH_REQUIRE_MODEL=1 is set, but the verified ONNX embedding model is unavailable. "
+                "Silent fallback to hash-384 is forbidden in strict mode. Run 'mesh setup' to download the model."
+            )
+
         if _request_model_download_permission(assume_yes=False):
             _start_background_model_download()
+        _warn_hash_fallback_once()
         _model = _hash_embed_384
         _model_backend = "onnx-warming" if _download_in_progress else "hash-fallback"
         _ensure_idle_watchdog()
@@ -2901,6 +2937,8 @@ class Mesh:
                 "local_only": bool(row.get("local_only", False)),
                 "trust_tier": row.get("trust_tier", "user"),
                 "quarantined": bool(row.get("quarantined", False)),
+                "embedding_model": row.get("embedding_model") or "unknown",
+                "embedding_backend": query_model_tag,
                 "created_at": row.get("created_at", ""),
                 "accessed_at": row.get("accessed_at", ""),
             }
