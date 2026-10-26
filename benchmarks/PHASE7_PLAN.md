@@ -52,14 +52,48 @@ All competitor tools are evaluated at explicit, immutable versions with verified
    - **Precision@k:** $(\text{count of gold memories in top-}k) / k$.
 
 ### Interface Classes (Reported in Separate Tables)
-To avoid conflating IPC/subprocess startup overhead with algorithmic retrieval latency, results are segregated into two interface classes:
-- **Class A (In-Process Library API):**
-  - Mesh Python SDK (`mesh.Mesh`: `learn()`, `recall()`)
-  - Mem0 Python SDK (`mem0.Memory`: `add(..., infer=False)`, `search()`)
-- **Class B (CLI Subprocess / External IPC):**
-  - Mesh CLI (`mesh learn`, `mesh recall`)
-  - Basic Memory CLI (`basic-memory add/write`, `basic-memory grep`)
-  - Auxly CLI (`auxly.exe note`, `auxly.exe search`)
+
+To avoid conflating IPC/subprocess startup overhead, agent tool protocols, and algorithmic retrieval, every tool is evaluated in **every interface it officially supports**, reported in its own independent table. Interfaces are never mixed in a single table or ranking.
+
+#### 1. Official Documentation & Interface Availability Matrix
+
+| Tool | Class A: Library / SDK (In-Process) | Class B: CLI Subprocess (Cold / Daemon) | Class C: MCP stdio (Persistent Session) | Official Documentation Citation |
+| :--- | :--- | :--- | :--- | :--- |
+| **Mesh** | **Supported** (`mesh.Mesh`: `learn()`, `recall()`) | **Supported** (`mesh learn`, `mesh recall`; cold and `mesh daemon`) | **Supported** (`mesh mcp`: `mesh_learn`, `mesh_recall`, 17 tools) | [DOCS.md#python-api](DOCS.md#python-api), [DOCS.md#cli-reference](DOCS.md#cli-reference), [DOCS.md#mcp-server](DOCS.md#mcp-server) |
+| **Mem0** | **Supported** (`from mem0 import Memory`: `add()`, `search()`) | **Not offered** (Package ships no CLI console script entry point; `python -m mem0` has no `__main__`) | **Not offered locally** (Official MCP server is a hosted cloud endpoint `https://mcp.mem0.ai/mcp` requiring cloud API keys; local repo archived) | [Mem0 Docs](https://docs.mem0.ai/), [Mem0 MCP Docs](https://docs.mem0.ai/platform/mem0-mcp) |
+| **Basic Memory** | **Not offered** (Docs explicitly state: *"No Python, no JSON, no anything that speaks MCP... Install, configure your AI client, run"*; no Python SDK documented) | **Supported** (`basic-memory add/write`, `basic-memory grep`) | **Supported** (`basic-memory mcp`, FastMCP stdio server: `write_note`, `search_notes`) | [Basic Memory PyPI](https://pypi.org/project/basic-memory/) |
+| **Auxly CLI** | **Not offered** (Compiled standalone Go binary `auxly.exe`; no Python API exists or is documented) | **Supported** (`auxly.exe note`, `auxly.exe search`) | **Supported** (`auxly.exe mcp-server`, stdio MCP server: `auxly_memory_write`, `auxly_memory_search`) | [Auxly GitHub Release](https://github.com/Tzamun-Arabia-IT-Co/auxly-memory-cli) |
+
+#### 2. Class Protocol Definitions
+
+- **Class A (Library / SDK, In-Process):**
+  - Measures direct algorithmic retrieval latency within Python address space.
+  - No IPC or serialization overhead.
+  
+- **Class B (CLI Subprocess, Cold / Daemon):**
+  - Each call is a fresh subprocess (`cold CLI call`), measuring command-line script invocation overhead.
+  - For tools supporting a persistent background daemon (Mesh), both **no daemon (cold)** and **daemon running (IPC socket)** modes are measured and labeled separately.
+  - Ingestion executes one CLI call per memory unless a documented bulk-import command is used.
+  - Evaluated on a deterministic seeded subset (`longmemeval_smoke_50.json`, seed 42) to keep total runtime under 30 minutes.
+
+- **Class C (MCP stdio, Persistent Session):**
+  - Client: Official MCP Python SDK (`mcp.client.stdio.stdio_client` and `ClientSession`).
+  - Session Lifecycle: Each server is spawned once per run and maintained as a single persistent session across all writes and searches.
+  - Ingestion: Invoked through documented write tool (`mesh_learn`, `write_note`, `auxly_memory_write`).
+  - Retrieval: Invoked through documented search tool (`mesh_recall`, `search_notes`, `auxly_memory_search`).
+  - Metrics: Server startup & initialization time reported separately from single tool-call round-trip latency (p50, p95, p99). Peak RAM measured across the complete server process tree.
+
+#### 3. Matching Results to Gold Turns (Stable Tag Mapping)
+- To eliminate bias across disparate output formats (UUIDs, file paths, snippets, formatted markdown), every memory turn is injected with a stable tag at ingest time: `[turn:<id>]` (e.g. `[turn:q1_s0_t2]`).
+- A retrieval hit is scored when the tool's returned output text contains the gold turn's tag.
+- Text chunking / frontmatter rewriting behavior is verified to ensure tags are preserved in retrieved snippets.
+
+#### 4. Pre-Scoring Validation (Known-Item Test)
+- For every tool and interface class, a unique synthetic sentence is ingested before running queries:
+  `"The cobalt quantum telescope discovered forty-two exoplanets orbiting Gliese 876 [turn:known_item_preflight]"`
+- An exact-phrase search (`"cobalt quantum telescope forty-two exoplanets"`) must return the item at **Rank 1**.
+- If a tool fails the known-item test in a given class, the harness aborts and marks that tool/class as *"could not be evaluated fairly"*.
+- For 5 sample queries per tool and class, the harness logs the query, top-5 raw result payloads, and gold tag for audit transparency.
 
 ---
 
