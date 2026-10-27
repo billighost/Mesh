@@ -68,3 +68,9 @@ desktop.ini
 *.old
 *.exe
 benchmarks/bin/
+
+# Benchmark work and datasets (never commit raw datasets or worker directories)
+benchmarks/work/
+benchmarks/data/longmemeval_s*.json
+benchmarks/data/longmemeval_pilot*.json
+scratch/
