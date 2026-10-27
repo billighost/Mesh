@@ -46,7 +46,7 @@ from typing import Any, Callable, Optional
 
 from . import ui
 from .audit import validate_namespace
-from .envutil import env_bool, env_int
+from .envutil import env_bool, env_float, env_int
 from .version import VERSION, check_for_updates
 
 # Ensure Windows cp1252 / legacy consoles never crash on Unicode output
@@ -191,6 +191,13 @@ def _get_pooled_conn(host: str, port: int, timeout: float) -> http.client.HTTPCo
         if conn is None:
             conn = _FastHTTPConnection(host, port, timeout=timeout)
             _CLI_HTTP_POOL[key] = conn
+        else:
+            conn.timeout = timeout
+            if getattr(conn, "sock", None) is not None:
+                try:
+                    conn.sock.settimeout(timeout)
+                except Exception:
+                    pass
         return conn
 
 
@@ -224,11 +231,14 @@ def _daemon_port_open(timeout: float = 0.015) -> Optional[int]:
         return None
 
 
+DEFAULT_DAEMON_REQUEST_TIMEOUT = env_float("MESH_DAEMON_REQUEST_TIMEOUT", 10.0, minimum=1.0)
+
+
 def _daemon_request(
     path: str,
     payload: Optional[dict[str, Any]] = None,
     method: str = "POST",
-    timeout: float = 4.0,
+    timeout: Optional[float] = None,
     host: Optional[str] = None,
     port: Optional[int] = None,
 ) -> Optional[dict[str, Any]]:
@@ -259,8 +269,14 @@ def _daemon_request(
     from .daemon import get_auth_headers, invalidate_daemon_identity_cache, verify_daemon_identity
 
     # Rule: the bearer token is never sent until verify_daemon_identity succeeds.
-    if not verify_daemon_identity(host=req_host, port=req_port, timeout=0.5):
+    if not verify_daemon_identity(host=req_host, port=req_port):
         return None
+
+    req_timeout = (
+        env_float("MESH_DAEMON_REQUEST_TIMEOUT", 10.0, minimum=1.0)
+        if timeout is None
+        else float(timeout)
+    )
 
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
     headers = get_auth_headers()
@@ -269,7 +285,7 @@ def _daemon_request(
         headers["Content-Type"] = "application/json"
 
     for attempt in range(2):
-        conn = _get_pooled_conn(req_host, req_port, timeout=timeout)
+        conn = _get_pooled_conn(req_host, req_port, timeout=req_timeout)
         try:
             conn.request(method, path, body=data, headers=headers)
             resp = conn.getresponse()
@@ -310,7 +326,7 @@ def _daemon_request(
             return {
                 "_http_error": 504,
                 "_timeout": True,
-                "detail": f"Daemon timed out after {timeout}s while processing {path}: {e}",
+                "detail": f"Daemon timed out after {req_timeout}s while processing {path}: {e}",
             }
         except OSError as e:
             _close_pooled_conn(req_host, req_port)
@@ -319,7 +335,7 @@ def _daemon_request(
                 return {
                     "_http_error": 504,
                     "_timeout": True,
-                    "detail": f"Daemon timed out after {timeout}s while processing {path}: {e}",
+                    "detail": f"Daemon timed out after {req_timeout}s while processing {path}: {e}",
                 }
             return {
                 "_daemon_lost": True,
