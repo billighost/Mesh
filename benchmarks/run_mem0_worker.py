@@ -1,5 +1,5 @@
 """
-benchmarks/run_mem0_worker.py - Dedicated Worker for Mem0 SDK in Python 3.12 Virtualenv
+benchmarks/run_mem0_worker.py - Dedicated Worker for Mem0 SDK in Python 3.12/3.14 Virtualenv
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 try:
     import psutil
@@ -25,11 +25,25 @@ except ImportError:
 
 KNOWN_ITEM_ID = "[turn:99999]"
 KNOWN_ITEM_CONTENT = (
-    f"{KNOWN_ITEM_ID} The cerulean observatory atop Mount Horizon recorded an "
-    "anomalous celestial frequency of 432.85 MHz on stellar quadrant nine."
+    f"{KNOWN_ITEM_ID} The cerulean observatory celestial frequency atop Mount Horizon recorded an "
+    "anomalous 432.85 MHz on stellar quadrant nine."
 )
 KNOWN_ITEM_QUERY = "cerulean observatory celestial frequency"
 KNOWN_ITEM_ANSWER = "432.85 MHz"
+
+
+def get_dir_size_mb(path: str | Path) -> float:
+    total_bytes = 0
+    p = Path(path)
+    if not p.exists():
+        return 0.0
+    for entry in p.rglob("*"):
+        try:
+            if entry.is_file() and not entry.is_symlink():
+                total_bytes += entry.stat().st_size
+        except (OSError, FileNotFoundError):
+            pass
+    return round(total_bytes / (1024 * 1024), 2)
 
 
 def get_tree_rss_mb() -> float:
@@ -78,35 +92,16 @@ class ProcessTreePeakTracker:
             self.peak_mb = final_rss
 
 
-def token_jaccard(s1: str, s2: str) -> float:
-    t1 = set(re.findall(r"\w+", s1.lower()))
-    t2 = set(re.findall(r"\w+", s2.lower()))
-    if not t1 or not t2:
+def percentile(data: list[float], p: float) -> float:
+    if not data:
         return 0.0
-    return len(t1 & t2) / len(t1 | t2)
-
-
-def is_retrieval_hit(
-    candidate_id: str,
-    candidate_content: str,
-    gold_ids: set[str],
-    gold_contents: list[str],
-    gold_answer: str,
-) -> bool:
-    if candidate_id:
-        for gid in gold_ids:
-            if gid in candidate_id or candidate_id in gid:
-                return True
-    for gid in gold_ids:
-        if gid and gid in candidate_content:
-            return True
-    if gold_answer and len(gold_answer) >= 4:
-        if gold_answer.lower() in candidate_content.lower():
-            return True
-    for g_turn in gold_contents:
-        if token_jaccard(candidate_content, g_turn) >= 0.70:
-            return True
-    return False
+    s = sorted(data)
+    idx = (len(s) - 1) * (p / 100.0)
+    low = math.floor(idx)
+    high = math.ceil(idx)
+    if low == high:
+        return s[int(idx)]
+    return s[low] * (high - idx) + s[high] * (idx - low)
 
 
 def bootstrap_ci(
@@ -131,6 +126,106 @@ def bootstrap_ci(
     return (round(lower, 4), round(upper, 4))
 
 
+def bootstrap_percentile_ci(
+    values: list[float],
+    p: float,
+    n_bootstrap: int = 1000,
+    ci: float = 0.95,
+    seed: int = 42,
+) -> tuple[float, float]:
+    if not values:
+        return (0.0, 0.0)
+    rng = random.Random(seed)
+    n = len(values)
+    estimates = []
+    for _ in range(n_bootstrap):
+        sample = [rng.choice(values) for _ in range(n)]
+        estimates.append(percentile(sample, p))
+    estimates.sort()
+    lower_idx = int((1.0 - ci) / 2.0 * n_bootstrap)
+    upper_idx = int((1.0 + ci) / 2.0 * n_bootstrap) - 1
+    lower = estimates[max(0, lower_idx)]
+    upper = estimates[min(n_bootstrap - 1, upper_idx)]
+    return (round(lower, 2), round(upper, 2))
+
+
+def extract_candidate_session(
+    cand_id: str,
+    cand_content: str,
+    tag_to_session: dict[str, str],
+) -> Optional[str]:
+    if cand_id in tag_to_session:
+        return tag_to_session[cand_id]
+
+    m = re.search(r"\[turn:(\d+)\]", cand_id)
+    if not m:
+        m = re.search(r"turn_(\d+)", cand_id)
+    if m:
+        t_tag = f"[turn:{int(m.group(1)):05d}]"
+        if t_tag in tag_to_session:
+            return tag_to_session[t_tag]
+
+    m = re.search(r"\[turn:(\d+)\]", cand_content)
+    if not m:
+        m = re.search(r"turn_(\d+)", cand_content)
+    if m:
+        t_tag = f"[turn:{int(m.group(1)):05d}]"
+        if t_tag in tag_to_session:
+            return tag_to_session[t_tag]
+
+    m = re.search(r"([a-f0-9]{8}_s\d+)", cand_id)
+    if m:
+        return m.group(1)
+    m = re.search(r"([a-f0-9]{8}_s\d+)", cand_content)
+    if m:
+        return m.group(1)
+
+    return None
+
+
+def is_turn_level_hit(
+    candidate_id: str,
+    candidate_content: str,
+    gold_turn_tags: set[str],
+) -> bool:
+    if candidate_id in gold_turn_tags:
+        return True
+
+    m_id = re.search(r"\[turn:(\d+)\]", candidate_id)
+    if not m_id:
+        m_id = re.search(r"turn_(\d+)", candidate_id)
+    if m_id:
+        tag = f"[turn:{int(m_id.group(1)):05d}]"
+        if tag in gold_turn_tags:
+            return True
+
+    m_cnt = re.search(r"\[turn:(\d+)\]", candidate_content)
+    if not m_cnt:
+        m_cnt = re.search(r"turn_(\d+)", candidate_content)
+    if m_cnt:
+        tag = f"[turn:{int(m_cnt.group(1)):05d}]"
+        if tag in gold_turn_tags:
+            return True
+
+    for gid in gold_turn_tags:
+        if gid and gid in candidate_content:
+            return True
+
+    return False
+
+
+def probe_searchable(probe_fn: Callable[[], bool], timeout: float = 60.0, interval: float = 0.05) -> float:
+    t_start = time.perf_counter()
+    while (time.perf_counter() - t_start) < timeout:
+        try:
+            if probe_fn():
+                return time.perf_counter() - t_start
+        except Exception:
+            pass
+        time.sleep(interval)
+    return time.perf_counter() - t_start
+
+
 def main():
     if len(sys.argv) < 5:
         print("Usage: run_mem0_worker.py <corpus_json> <questions_json> <orig_to_opaque_json> <out_json>", file=sys.stderr)
@@ -147,6 +242,13 @@ def main():
         questions = json.load(f)
     with open(orig_to_opaque_path, "r", encoding="utf-8") as f:
         original_to_opaque = json.load(f)
+
+    tag_to_session: dict[str, str] = {}
+    for item in corpus:
+        sess_id = f"{item['qid']}_s{item['s_idx']}"
+        tag_to_session[item["tag"]] = sess_id
+        tag_to_session[f"turn_{item['opaque_id']:05d}"] = sess_id
+        tag_to_session[str(item["opaque_id"])] = sess_id
 
     from mem0 import Memory
 
@@ -182,9 +284,16 @@ def main():
             write_sec = time.perf_counter() - t_write_start
 
             # Time to searchable
-            t_poll_start = time.perf_counter()
-            _ = mem.search(KNOWN_ITEM_QUERY, filters={"user_id": "smoke_user"}, limit=1)
-            time_to_searchable = time.perf_counter() - t_poll_start
+            def probe_mem0() -> bool:
+                res = mem.search(KNOWN_ITEM_QUERY, filters={"user_id": "smoke_user"}, limit=1)
+                results = res.get("results", [])
+                return any(
+                    KNOWN_ITEM_ANSWER.lower() in r.get("memory", "").lower()
+                    or KNOWN_ITEM_ID in r.get("metadata", {}).get("turn_id", "")
+                    for r in results
+                )
+
+            time_to_searchable = probe_searchable(probe_mem0, timeout=30.0, interval=0.05)
 
             # Count verification
             expected_total = len(corpus) + 1
@@ -202,7 +311,7 @@ def main():
             }
 
             def recall_fn(query: str, n: int = 10):
-                res = mem.search(query, filters={"user_id": "smoke_user"}, limit=n)
+                res = mem.search(query.strip(), filters={"user_id": "smoke_user"}, limit=n)
                 cands = []
                 for item in res.get("results", []):
                     tid = item.get("metadata", {}).get("turn_id", "")
@@ -231,81 +340,161 @@ def main():
 
             print("  [GATE PASSED] Known-item found at rank 1 in Mem0 (SDK).", flush=True)
 
-            # Evaluate 50 questions
-            hits_1_list = []
-            hits_5_list = []
-            hits_10_list = []
-            rr_list = []
-            ndcg_list = []
-            latencies_ms = []
-            raw_inspections = []
+            turn_h1_list: list[float] = []
+            turn_h5_list: list[float] = []
+            turn_h10_list: list[float] = []
+            turn_rr_list: list[float] = []
+            turn_ndcg_list: list[float] = []
+
+            sess_h1_list: list[float] = []
+            sess_h5_list: list[float] = []
+            sess_h10_list: list[float] = []
+            sess_rr_list: list[float] = []
+            sess_ndcg_list: list[float] = []
+
+            latencies_ms: list[float] = []
+            raw_inspections: list[dict[str, Any]] = []
 
             for q_idx, q in enumerate(questions):
                 qid = q["question_id"]
-                gold_tags = {
+                gold_turn_tags = {
                     original_to_opaque[f"{qid}_s{s_idx}_t{t_idx}"]
                     for s_idx, session in enumerate(q.get("haystack_sessions", []))
                     for t_idx, turn in enumerate(session)
                     if turn.get("has_answer")
                 }
-                gold_contents = [
-                    turn["content"]
-                    for session in q.get("haystack_sessions", [])
-                    for turn in session
-                    if turn.get("has_answer")
-                ]
+                gold_sessions = {
+                    f"{qid}_s{s_idx}"
+                    for s_idx, session in enumerate(q.get("haystack_sessions", []))
+                    if any(turn.get("has_answer") for turn in session)
+                }
                 gold_answer = q.get("answer", "")
 
                 t_q = time.perf_counter()
-                candidates = recall_fn(q["question"], 10)
+                candidates = recall_fn(q["question"].strip(), 10)
                 lat = (time.perf_counter() - t_q) * 1000.0
                 latencies_ms.append(lat)
 
-                first_hit_rank = None
-                cand_inspections = []
-                for rank_idx, (cand_id, cand_content) in enumerate(candidates[:10], start=1):
-                    hit = is_retrieval_hit(cand_id, cand_content, gold_tags, gold_contents, gold_answer)
-                    if rank_idx <= 5 and q_idx < 5:
-                        cand_inspections.append({
-                            "rank": rank_idx,
-                            "id": cand_id,
-                            "snippet": cand_content[:140],
-                            "is_hit": hit,
-                        })
-                    if hit and first_hit_rank is None:
-                        first_hit_rank = rank_idx
+                # 1. Turn-level scoring
+                first_turn_hit_rank: Optional[int] = None
+                for r_idx, (c_id, c_text) in enumerate(candidates[:10], start=1):
+                    if is_turn_level_hit(c_id, c_text, gold_turn_tags):
+                        first_turn_hit_rank = r_idx
+                        break
+                h1_t = 1.0 if (first_turn_hit_rank is not None and first_turn_hit_rank <= 1) else 0.0
+                h5_t = 1.0 if (first_turn_hit_rank is not None and first_turn_hit_rank <= 5) else 0.0
+                h10_t = 1.0 if (first_turn_hit_rank is not None and first_turn_hit_rank <= 10) else 0.0
+                rr_t = (1.0 / first_turn_hit_rank) if first_turn_hit_rank is not None else 0.0
+                ndcg_t = (1.0 / math.log2(first_turn_hit_rank + 1)) if (first_turn_hit_rank is not None and first_turn_hit_rank <= 10) else 0.0
+                turn_h1_list.append(h1_t)
+                turn_h5_list.append(h5_t)
+                turn_h10_list.append(h10_t)
+                turn_rr_list.append(rr_t)
+                turn_ndcg_list.append(ndcg_t)
 
-                h1 = 1.0 if (first_hit_rank is not None and first_hit_rank <= 1) else 0.0
-                h5 = 1.0 if (first_hit_rank is not None and first_hit_rank <= 5) else 0.0
-                h10 = 1.0 if (first_hit_rank is not None and first_hit_rank <= 10) else 0.0
-                rr = (1.0 / first_hit_rank) if first_hit_rank is not None else 0.0
-                ndcg = (1.0 / math.log2(first_hit_rank + 1)) if first_hit_rank is not None else 0.0
+                # 2. Session-level scoring
+                seen_sessions: set[str] = set()
+                deduped_sessions: list[str] = []
+                for c_idx, (c_id, c_text) in enumerate(candidates[:10]):
+                    sess = extract_candidate_session(c_id, c_text, tag_to_session)
+                    sess_key = sess if sess is not None else f"_unknown_{c_idx}"
+                    if sess_key not in seen_sessions:
+                        seen_sessions.add(sess_key)
+                        deduped_sessions.append(sess_key)
 
-                hits_1_list.append(h1)
-                hits_5_list.append(h5)
-                hits_10_list.append(h10)
-                rr_list.append(rr)
-                ndcg_list.append(ndcg)
+                first_session_hit_rank: Optional[int] = None
+                for s_rank, sess in enumerate(deduped_sessions, start=1):
+                    if sess in gold_sessions:
+                        first_session_hit_rank = s_rank
+                        break
+
+                h1_s = 1.0 if (first_session_hit_rank is not None and first_session_hit_rank <= 1) else 0.0
+                h5_s = 1.0 if (first_session_hit_rank is not None and first_session_hit_rank <= 5) else 0.0
+                h10_s = 1.0 if (first_session_hit_rank is not None and first_session_hit_rank <= 10) else 0.0
+                rr_s = (1.0 / first_session_hit_rank) if first_session_hit_rank is not None else 0.0
+                ndcg_s = (1.0 / math.log2(first_session_hit_rank + 1)) if (first_session_hit_rank is not None and first_session_hit_rank <= 10) else 0.0
+                sess_h1_list.append(h1_s)
+                sess_h5_list.append(h5_s)
+                sess_h10_list.append(h10_s)
+                sess_rr_list.append(rr_s)
+                sess_ndcg_list.append(ndcg_s)
 
                 if q_idx < 5:
+                    cand_inspections = []
+                    for r_idx, (c_id, c_text) in enumerate(candidates[:5], start=1):
+                        sess = extract_candidate_session(c_id, c_text, tag_to_session)
+                        t_hit = is_turn_level_hit(c_id, c_text, gold_turn_tags)
+                        s_hit = (sess in gold_sessions) if sess is not None else False
+                        cand_inspections.append({
+                            "rank": r_idx,
+                            "id": c_id,
+                            "session_id": sess,
+                            "snippet": c_text[:140],
+                            "turn_hit": t_hit,
+                            "session_hit": s_hit,
+                        })
                     raw_inspections.append({
                         "question_idx": q_idx + 1,
                         "question_id": qid,
                         "question_text": q["question"],
                         "gold_answer": gold_answer,
-                        "gold_turn_tags": list(gold_tags),
-                        "first_hit_rank": first_hit_rank,
+                        "gold_turn_tags": sorted(list(gold_turn_tags)),
+                        "gold_sessions": sorted(list(gold_sessions)),
+                        "first_turn_hit_rank": first_turn_hit_rank,
+                        "first_session_hit_rank": first_session_hit_rank,
                         "top_5_results": cand_inspections,
                     })
 
             total_q = len(questions)
-            latencies_sorted = sorted(latencies_ms)
-            p50_lat = statistics.median(latencies_ms)
-            p95_lat = latencies_sorted[int(len(latencies_sorted) * 0.95)] if latencies_sorted else 0.0
+
+            turn_metrics = {
+                "status": "evaluated",
+                "recall_at_1": round(sum(turn_h1_list) / total_q, 4),
+                "recall_at_1_ci": list(bootstrap_ci(turn_h1_list)),
+                "recall_at_5": round(sum(turn_h5_list) / total_q, 4),
+                "recall_at_5_ci": list(bootstrap_ci(turn_h5_list)),
+                "recall_at_10": round(sum(turn_h10_list) / total_q, 4),
+                "recall_at_10_ci": list(bootstrap_ci(turn_h10_list)),
+                "mrr": round(statistics.mean(turn_rr_list), 4),
+                "mrr_ci": list(bootstrap_ci(turn_rr_list)),
+                "ndcg_at_10": round(statistics.mean(turn_ndcg_list), 4),
+                "ndcg_at_10_ci": list(bootstrap_ci(turn_ndcg_list)),
+            }
+
+            sess_metrics = {
+                "status": "evaluated",
+                "recall_at_1": round(sum(sess_h1_list) / total_q, 4),
+                "recall_at_1_ci": list(bootstrap_ci(sess_h1_list)),
+                "recall_at_5": round(sum(sess_h5_list) / total_q, 4),
+                "recall_at_5_ci": list(bootstrap_ci(sess_h5_list)),
+                "recall_at_10": round(sum(sess_h10_list) / total_q, 4),
+                "recall_at_10_ci": list(bootstrap_ci(sess_h10_list)),
+                "mrr": round(statistics.mean(sess_rr_list), 4),
+                "mrr_ci": list(bootstrap_ci(sess_rr_list)),
+                "ndcg_at_10": round(statistics.mean(sess_ndcg_list), 4),
+                "ndcg_at_10_ci": list(bootstrap_ci(sess_ndcg_list)),
+            }
+
+            p50_lat = percentile(latencies_ms, 50)
+            p95_lat = percentile(latencies_ms, 95)
+            p99_lat = percentile(latencies_ms, 99)
+            latency_dict = {
+                "p50_ms": round(p50_lat, 2),
+                "p50_ms_ci": list(bootstrap_percentile_ci(latencies_ms, 50)),
+                "p95_ms": round(p95_lat, 2),
+                "p95_ms_ci": list(bootstrap_percentile_ci(latencies_ms, 95)),
+                "p99_ms": round(p99_lat, 2),
+                "p99_ms_ci": list(bootstrap_percentile_ci(latencies_ms, 99)),
+                "mean_ms": round(statistics.mean(latencies_ms), 2),
+                "latencies_ms": [round(l, 2) for l in latencies_ms],
+            }
+
+            disk_footprint = get_dir_size_mb(temp_dir)
 
             result = {
                 "tool": "Mem0 (SDK)",
                 "class": "Class A",
+                "storage_unit": "turn",
                 "count_verification": {
                     "expected_turns": expected_total,
                     "stored_count": stored_count,
@@ -324,24 +513,26 @@ def main():
                     "rank": ki_rank,
                     "query": KNOWN_ITEM_QUERY,
                 },
+                "turn_level_metrics": turn_metrics,
+                "session_level_metrics": sess_metrics,
                 "accuracy_metrics": {
-                    "recall_at_1": round(sum(hits_1_list) / total_q, 4),
-                    "recall_at_1_ci": list(bootstrap_ci(hits_1_list)),
-                    "recall_at_5": round(sum(hits_5_list) / total_q, 4),
-                    "recall_at_5_ci": list(bootstrap_ci(hits_5_list)),
-                    "recall_at_10": round(sum(hits_10_list) / total_q, 4),
-                    "recall_at_10_ci": list(bootstrap_ci(hits_10_list)),
-                    "mrr": round(statistics.mean(rr_list), 4),
-                    "mrr_ci": list(bootstrap_ci(rr_list)),
-                    "ndcg_at_10": round(statistics.mean(ndcg_list), 4),
-                    "ndcg_at_10_ci": list(bootstrap_ci(ndcg_list)),
+                    "turn_level": turn_metrics,
+                    "session_level": sess_metrics,
+                    "recall_at_1": turn_metrics["recall_at_1"],
+                    "recall_at_1_ci": turn_metrics["recall_at_1_ci"],
+                    "recall_at_5": turn_metrics["recall_at_5"],
+                    "recall_at_5_ci": turn_metrics["recall_at_5_ci"],
+                    "recall_at_10": turn_metrics["recall_at_10"],
+                    "recall_at_10_ci": turn_metrics["recall_at_10_ci"],
+                    "mrr": turn_metrics["mrr"],
+                    "mrr_ci": turn_metrics["mrr_ci"],
+                    "ndcg_at_10": turn_metrics["ndcg_at_10"],
+                    "ndcg_at_10_ci": turn_metrics["ndcg_at_10_ci"],
                 },
-                "latency_metrics": {
-                    "p50_ms": round(p50_lat, 2),
-                    "p95_ms": round(p95_lat, 2),
-                    "mean_ms": round(statistics.mean(latencies_ms), 2),
-                },
+                "latency_metrics": latency_dict,
+                "latencies_ms": latency_dict["latencies_ms"],
                 "peak_ram_mb": tracker.peak_mb,
+                "disk_footprint_mb": disk_footprint,
                 "raw_inspections_first_5": raw_inspections,
             }
 
