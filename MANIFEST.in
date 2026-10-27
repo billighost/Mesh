@@ -12,6 +12,7 @@ include llms.txt
 include pyproject.toml
 recursive-include mesh *.py
 recursive-include mesh/skills *.md *.txt *.json
+recursive-include scripts *.py
 recursive-include tests *.py *.json
 prune landing
 prune marketing
@@ -20,4 +21,4 @@ prune benchmarks
 prune assets
 prune .github
 prune unwanted
-global-exclude *.py[cod] __pycache__ *.so *.dylib *.mp4 *.mp3 *.wav *.png *.jpg
+global-exclude *.py[cod] __pycache__ *.so *.dylib *.dll *.exe *.mp4 *.mp3 *.wav *.png *.jpg

@@ -27,6 +27,7 @@ import difflib
 import gc
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -41,11 +42,24 @@ import uuid
 from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import TYPE_CHECKING, Any, Iterator, Optional
 
-import numpy as np
+if TYPE_CHECKING:
+    import numpy as np
+else:
+    class _LazyNumPy:
+        def __init__(self) -> None:
+            self._lock = threading.Lock()
 
-from .c_bridge import c_hash_embed_384 as _c_hash_embed_384
+        def __getattr__(self, name: str) -> Any:
+            with self._lock:
+                import numpy as _np
+
+                globals()["np"] = _np
+                return getattr(_np, name)
+
+    np = _LazyNumPy()
+
 
 from .audit import (
     REDACTED_CONTENT_PLACEHOLDER,
@@ -724,10 +738,6 @@ def _hash_embed_384(text: str) -> np.ndarray:
     Reserves indices 368..383 == 0.0 as a deterministic watermark alongside the SQLite
     `embedding_model = 'hash-384'` column so warm-up vectors are always upgraded once ONNX loads.
     """
-    if isinstance(text, str):
-        _native_vec = _c_hash_embed_384(text)  # ~30 us vs ~330 us; None => Python path below
-        if _native_vec is not None:
-            return _native_vec
     vec = np.zeros(EMBEDDING_DIM, dtype=np.float32)
     cleaned = _normalize_text_for_tokens(text)
     raw_words = _WORD_TOKEN_RE.findall(cleaned)
@@ -1390,6 +1400,15 @@ def _reembed_store(ns: str) -> "MeshStore":
     return store
 
 
+def evict_memory_namespace_cache(ns: str) -> None:
+    """Drain reembed jobs and release cached stores for `ns`."""
+    try:
+        drain_reembed_worker(timeout=1.0)
+    except Exception:
+        pass
+    _REEMBED_STORES.pop(ns, None)
+
+
 def _process_reembed_batch(items: list[tuple[str, str, str]]) -> None:
     """Swap the real ONNX vector in for rows that were stored with the fast hash vector.
 
@@ -1627,6 +1646,25 @@ def _ensure_idle_watchdog() -> None:
             t.start()
 
 
+_HASH_FALLBACK_WARNED = False
+_HASH_FALLBACK_LOCK = threading.Lock()
+
+
+def _warn_hash_fallback_once(reason: str = "") -> None:
+    """Emit a loud warning on stderr and logging.warning when Mesh falls back to hash-384."""
+    global _HASH_FALLBACK_WARNED
+    with _HASH_FALLBACK_LOCK:
+        if not _HASH_FALLBACK_WARNED and not os.environ.get("MESH_QUIET"):
+            _HASH_FALLBACK_WARNED = True
+            sys.stderr.write(
+                "\n[mesh warning] Running with hash-384 embedding fallback (lower semantic search quality).\n"
+                "  Run 'mesh setup' to download the verified ONNX model, or set MESH_REQUIRE_MODEL=1 to fail fast.\n\n"
+            )
+            logging.warning(
+                "Mesh is operating with hash-384 embedding fallback. Run 'mesh setup' to download the ONNX model."
+            )
+
+
 def _get_model() -> tuple[Any, str]:
     global _model, _torch, _model_backend, _last_model_use_ts
     _last_model_use_ts = time.monotonic()
@@ -1636,6 +1674,7 @@ def _get_model() -> tuple[Any, str]:
             return _model, _model_backend
         if _has_local_onnx_pair() is None:
             if _download_in_progress or time.monotonic() < _download_failed_until:
+                _warn_hash_fallback_once()
                 return _model, _model_backend
 
     with _MODEL_LOCK:
@@ -1647,12 +1686,20 @@ def _get_model() -> tuple[Any, str]:
             if onnx_pair is None and (
                 _download_in_progress or time.monotonic() < _download_failed_until
             ):
+                _warn_hash_fallback_once()
                 return _model, _model_backend
+
+        strict_model = os.environ.get("MESH_REQUIRE_MODEL", "").strip().lower() in ("1", "true", "yes")
 
         force_hash = os.environ.get("MESH_FORCE_HASH_EMBED", "").strip().lower() in ("1", "true", "yes")
         if force_hash:
+            if strict_model:
+                raise RuntimeError(
+                    "MESH_REQUIRE_MODEL=1 conflicts with MESH_FORCE_HASH_EMBED=1. Refusing hash-384 fallback in strict mode."
+                )
             _model = _hash_embed_384
             _model_backend = "hash-fallback"
+            _warn_hash_fallback_once()
             return _model, _model_backend
 
         force_pytorch = os.environ.get("MESH_FORCE_PYTORCH", "").strip().lower() in ("1", "true", "yes")
@@ -1706,8 +1753,15 @@ def _get_model() -> tuple[Any, str]:
             except Exception:
                 pass
 
+        if strict_model:
+            raise RuntimeError(
+                "MESH_REQUIRE_MODEL=1 is set, but the verified ONNX embedding model is unavailable. "
+                "Silent fallback to hash-384 is forbidden in strict mode. Run 'mesh setup' to download the model."
+            )
+
         if _request_model_download_permission(assume_yes=False):
             _start_background_model_download()
+        _warn_hash_fallback_once()
         _model = _hash_embed_384
         _model_backend = "onnx-warming" if _download_in_progress else "hash-fallback"
         _ensure_idle_watchdog()
@@ -2762,10 +2816,13 @@ class Mesh:
         source_agent: Optional[str] = None,
         include_private: Optional[bool] = None,
         include_quarantined: bool = False,
-        record_telemetry: bool = True,
+        record_access: bool = True,
+        record_telemetry: Optional[bool] = None,
         _precomputed_embedding: Optional[list[float]] = None,
         _precomputed_model_tag: Optional[str] = None,
     ) -> list[dict[str, Any]]:
+        if record_telemetry is not None:
+            record_access = record_telemetry
         _check_agent_scope(self.agent_id, self.namespace, write=False, trusted_local=self.trusted_local)
         if not query or not query.strip():
             raise ValueError("query cannot be empty")
@@ -2863,7 +2920,7 @@ class Mesh:
                 else _parse_tags(row.get("tags"))
             )
             base_access = int(row.get("access_count") or 0)
-            access_count = base_access + (1 if record_telemetry else 0)
+            access_count = base_access + (1 if record_access else 0)
             usage_boost = min(1.0, math.log1p(access_count) / 5.0)
             composite_score = round(
                 0.72 * similarity + 0.22 * effective_confidence + 0.06 * usage_boost,
@@ -2892,6 +2949,8 @@ class Mesh:
                 "local_only": bool(row.get("local_only", False)),
                 "trust_tier": row.get("trust_tier", "user"),
                 "quarantined": bool(row.get("quarantined", False)),
+                "embedding_model": row.get("embedding_model") or "unknown",
+                "embedding_backend": query_model_tag,
                 "created_at": row.get("created_at", ""),
                 "accessed_at": row.get("accessed_at", ""),
             }
@@ -2911,7 +2970,7 @@ class Mesh:
         memories = memories[:n]
 
         # Finding S12: Redact credential queries and mark private_query=True even on 0 results
-        if record_telemetry and self.store.db_path.exists():
+        if record_access and self.store.db_path.exists():
             returned_ids = [m["id"] for m in memories if m.get("id")]
             query_has_cred = is_credential(clean_query)
             is_priv_query = bool(
@@ -2921,7 +2980,7 @@ class Mesh:
             )
             safe_logged_query = redact_secrets_local(clean_query) if query_has_cred else clean_query
             try:
-                self.store.record_recall_telemetry(
+                self.store.record_recall_access(
                     memory_ids=returned_ids,
                     query_text=safe_logged_query,
                     agent_id=self.agent_id,
@@ -3461,7 +3520,7 @@ class Mesh:
 
     def close(self) -> None:
         if hasattr(self, "store") and self.store is not None:
-            self.store.flush_telemetry()
+            self.store.flush_access_tracking()
         _drain_reembed_for_close()
 
     def __enter__(self) -> "Mesh":

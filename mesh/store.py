@@ -27,12 +27,27 @@ import sys
 import threading
 import time
 import uuid
+import warnings
 from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterator, Literal, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Iterator, Literal, Optional, Sequence
 
-import numpy as np
+if TYPE_CHECKING:
+    import numpy as np
+else:
+    class _LazyNumPy:
+        def __init__(self) -> None:
+            self._lock = threading.Lock()
+
+        def __getattr__(self, name: str) -> Any:
+            with self._lock:
+                import numpy as _np
+
+                globals()["np"] = _np
+                return getattr(_np, name)
+
+    np = _LazyNumPy()
 
 from .audit import (
     REDACTED_CONTENT_PLACEHOLDER,
@@ -935,7 +950,10 @@ def _vector_to_blob(vec: Sequence[float] | np.ndarray) -> bytes:
     """Serialize a vector into a normalized float32 byte buffer (encrypting if at-rest encryption is active)."""
     raw = _normalize_vector(vec).tobytes()
     if is_encryption_enabled():
-        return encrypt_blob_for_storage(raw) or raw
+        enc = encrypt_blob_for_storage(raw)
+        if enc is None:
+            raise RuntimeError("Vector encryption failed while at-rest encryption is active.")
+        return enc
     return raw
 
 
@@ -1348,10 +1366,10 @@ _QUERY_WRITE_COUNTS: dict[Path, int] = {}
 _TRANSIENT_EMBEDDINGS: dict[tuple[str, str], np.ndarray] = {}
 
 
-# --- Batched Telemetry Buffer (Phase 2.3B) ---
+# --- Batched Access Tracking Buffer ---
 
 
-class _TelemetryBuffer:
+class _AccessTrackingBuffer:
     def __init__(self, db_path: Path, namespace: str) -> None:
         self.db_path = db_path
         self.namespace = namespace
@@ -1361,12 +1379,20 @@ class _TelemetryBuffer:
         self.first_event_ts: float = 0.0
 
 
-_TELEMETRY_LOCK = threading.RLock()
-_TELEMETRY_BUFFERS: dict[Path, _TelemetryBuffer] = {}
+_ACCESS_TRACKING_LOCK = threading.RLock()
+_ACCESS_TRACKING_BUFFERS: dict[Path, _AccessTrackingBuffer] = {}
+
+# Backward-compatibility aliases
+_TelemetryBuffer = _AccessTrackingBuffer
+_TELEMETRY_LOCK = _ACCESS_TRACKING_LOCK
+_TELEMETRY_BUFFERS = _ACCESS_TRACKING_BUFFERS
 
 
-def _get_telemetry_batch_limit() -> int:
-    raw = os.environ.get("MESH_TELEMETRY_BATCH", "").strip()
+def _get_tracking_batch_limit() -> int:
+    raw = (
+        os.environ.get("MESH_TRACKING_BATCH", "").strip()
+        or os.environ.get("MESH_TELEMETRY_BATCH", "").strip()
+    )
     if not raw:
         return 128
     try:
@@ -1375,8 +1401,11 @@ def _get_telemetry_batch_limit() -> int:
         return 128
 
 
-def _get_telemetry_flush_seconds() -> float:
-    raw = os.environ.get("MESH_TELEMETRY_FLUSH_SECONDS", "").strip()
+def _get_tracking_flush_seconds() -> float:
+    raw = (
+        os.environ.get("MESH_TRACKING_FLUSH_SECONDS", "").strip()
+        or os.environ.get("MESH_TELEMETRY_FLUSH_SECONDS", "").strip()
+    )
     if not raw:
         return 5.0
     try:
@@ -1385,28 +1414,37 @@ def _get_telemetry_flush_seconds() -> float:
         return 5.0
 
 
-def flush_all_telemetry() -> None:
-    """Flush all pending buffered recall telemetry across all namespaces."""
-    with _TELEMETRY_LOCK:
-        paths = list(_TELEMETRY_BUFFERS.keys())
+# Backward-compatibility aliases for config helpers
+_get_telemetry_batch_limit = _get_tracking_batch_limit
+_get_telemetry_flush_seconds = _get_tracking_flush_seconds
+
+
+def flush_all_access_tracking() -> None:
+    """Flush all pending buffered recall access tracking across all namespaces."""
+    with _ACCESS_TRACKING_LOCK:
+        paths = list(_ACCESS_TRACKING_BUFFERS.keys())
     for p in paths:
         try:
-            _flush_telemetry_for_db_path(p)
+            _flush_access_tracking_for_db_path(p)
         except Exception:
             continue
 
 
-def _requeue_telemetry(
+# Backward-compatibility alias
+flush_all_telemetry = flush_all_access_tracking
+
+
+def _requeue_access_tracking(
     resolved: Path,
     namespace: str,
     inc_items: list[tuple[str, tuple[int, str]]],
     q_rows: list[tuple],
 ) -> None:
-    with _TELEMETRY_LOCK:
-        buf = _TELEMETRY_BUFFERS.get(resolved)
+    with _ACCESS_TRACKING_LOCK:
+        buf = _ACCESS_TRACKING_BUFFERS.get(resolved)
         if buf is None:
-            buf = _TelemetryBuffer(db_path=resolved, namespace=namespace)
-            _TELEMETRY_BUFFERS[resolved] = buf
+            buf = _AccessTrackingBuffer(db_path=resolved, namespace=namespace)
+            _ACCESS_TRACKING_BUFFERS[resolved] = buf
         for mid, (delta, accessed_at) in inc_items:
             prev = buf.access_increments.get(mid)
             if prev is None:
@@ -1423,10 +1461,14 @@ def _requeue_telemetry(
             buf.first_event_ts = time.monotonic()
 
 
-def _flush_telemetry_for_db_path(db_path: Path) -> None:
+# Backward-compatibility alias
+_requeue_telemetry = _requeue_access_tracking
+
+
+def _flush_access_tracking_for_db_path(db_path: Path) -> None:
     resolved = db_path.resolve()
-    with _TELEMETRY_LOCK:
-        buf = _TELEMETRY_BUFFERS.pop(resolved, None)
+    with _ACCESS_TRACKING_LOCK:
+        buf = _ACCESS_TRACKING_BUFFERS.pop(resolved, None)
         if buf is None or (not buf.access_increments and not buf.query_rows):
             return
         inc_items = list(buf.access_increments.items())
@@ -1434,7 +1476,7 @@ def _flush_telemetry_for_db_path(db_path: Path) -> None:
         ns = buf.namespace
 
     if not resolved.exists():
-        _requeue_telemetry(resolved, ns, inc_items, q_rows)
+        _requeue_access_tracking(resolved, ns, inc_items, q_rows)
         return
 
     try:
@@ -1497,7 +1539,11 @@ def _flush_telemetry_for_db_path(db_path: Path) -> None:
                             vcache.mtime_ns = new_stamp[0]
                             vcache.file_size = new_stamp[1]
     except Exception:
-        _requeue_telemetry(resolved, ns, inc_items, q_rows)
+        _requeue_access_tracking(resolved, ns, inc_items, q_rows)
+
+
+# Backward-compatibility alias
+_flush_telemetry_for_db_path = _flush_access_tracking_for_db_path
 
 
 def _scrub_contradictions_in_tx(
@@ -1549,15 +1595,15 @@ def _scrub_queries_in_tx(conn: sqlite3.Connection, namespace: str, content: str)
             continue
 
 
-def _scrub_pending_query_telemetry(namespace: str, content: Optional[str]) -> None:
+def _scrub_pending_query_tracking(namespace: str, content: Optional[str]) -> None:
     """Drop buffered recall queries that reproduce content being deleted or redacted (Finding S12)."""
     clean = (content or "").strip()
     if not clean:
         return
     clean_low = clean.lower()
     trunc_low = clean[:512].lower()
-    with _TELEMETRY_LOCK:
-        for buf in _TELEMETRY_BUFFERS.values():
+    with _ACCESS_TRACKING_LOCK:
+        for buf in _ACCESS_TRACKING_BUFFERS.values():
             if buf.namespace != namespace or not buf.query_rows:
                 continue
             kept = []
@@ -1577,6 +1623,10 @@ def _scrub_pending_query_telemetry(namespace: str, content: Optional[str]) -> No
                 buf.query_rows = kept
 
 
+# Backward-compatibility alias
+_scrub_pending_query_telemetry = _scrub_pending_query_tracking
+
+
 _FTS_PERMANENT_ERROR_MARKERS = (
     "no such table",
     "no such module",
@@ -1594,7 +1644,7 @@ def _is_permanent_fts_error(exc: BaseException) -> bool:
 
 def close_store_connection(db_path: Path) -> None:
     try:
-        _flush_telemetry_for_db_path(db_path)
+        _flush_access_tracking_for_db_path(db_path)
     except Exception:
         pass
     with _CACHE_LOCK:
@@ -3508,6 +3558,14 @@ class MeshStore:
                     _mix_memo[_em] = _mixed
                 if not _mixed:
                     valid_indices.append(idx)
+            if len(valid_indices) < len(ids_snap) and not os.environ.get("MESH_QUIET"):
+                excluded_cnt = len(ids_snap) - len(valid_indices)
+                warnings.warn(
+                    f"Excluded {excluded_cnt} memories from semantic search due to mixed embedding space "
+                    f"(query uses '{query_embedding_model}'). Run 'mesh reembed' to re-embed historical memories.",
+                    UserWarning,
+                    stacklevel=2,
+                )
             if not valid_indices:
                 return {"documents": [[]], "distances": [[]], "metadatas": [[]], "ids": [[]]}
             valid_arr = np.asarray(valid_indices, dtype=np.int64)
@@ -3888,12 +3946,12 @@ class MeshStore:
         # (+1.0 per exact token hit, +0.5 per synonym hit, masked rows only).
         from collections import Counter as _HitCounter
 
-        _exact_hits = _HitCounter()
+        _exact_hits: _HitCounter[str] = _HitCounter()
         for tok in q_content_tokens:
             t_hits = cache.token_to_ids.get(tok)
             if t_hits:
                 _exact_hits.update(t_hits)
-        _syn_hits = _HitCounter()
+        _syn_hits: _HitCounter[str] = _HitCounter()
         for syn_set in q_synonyms.values():
             for syn in syn_set:
                 s_hits = cache.token_to_ids.get(syn)
@@ -4293,7 +4351,7 @@ class MeshStore:
                         (self.namespace,),
                     ).fetchall()
 
-        results: list[dict[str, Any]] = []
+        db_results: list[dict[str, Any]] = []
         for r in rows:
             d = {col: r[col] for col in r.keys() if col != "embedding"}
             d["content"] = decrypt_text_if_encrypted(d.get("content"))
@@ -4310,8 +4368,8 @@ class MeshStore:
                     d["embedding"] = arr.tolist() if arr.size == EMBEDDING_DIM else None
                 else:
                     d["embedding"] = None
-            results.append(d)
-        return results
+            db_results.append(d)
+        return db_results
 
     def get_exportable_work_items(
         self,
@@ -4527,13 +4585,13 @@ class MeshStore:
         if not clean_id or not self.db_path.exists():
             return False
 
-        # Pending telemetry only needs flushing when it could still reference this row;
+        # Pending access tracking only needs flushing when it could still reference this row;
         # queries mentioning the content are scrubbed from the buffer in-memory below.
-        with _TELEMETRY_LOCK:
-            _tb = _TELEMETRY_BUFFERS.get(self.db_path)
+        with _ACCESS_TRACKING_LOCK:
+            _tb = _ACCESS_TRACKING_BUFFERS.get(self.db_path)
             _has_pending = bool(_tb is not None and (_tb.access_increments or _tb.query_rows))
         if _has_pending:
-            self.flush_telemetry()
+            self.flush_access_tracking()
         purged_content: Optional[str] = None
         deleted = False
 
@@ -4657,13 +4715,13 @@ class MeshStore:
         if not self.db_path.exists():
             clear_audit_log(self.namespace)
             return
-        self.flush_telemetry()
+        self.flush_access_tracking()
         with namespace_write_lock(self.namespace):
-            with _TELEMETRY_LOCK:
+            with _ACCESS_TRACKING_LOCK:
                 resolved = self.db_path.resolve()
-                buf = _TELEMETRY_BUFFERS.get(resolved)
+                buf = _ACCESS_TRACKING_BUFFERS.get(resolved)
                 if buf is not None and buf.namespace == self.namespace:
-                    _TELEMETRY_BUFFERS.pop(resolved, None)
+                    _ACCESS_TRACKING_BUFFERS.pop(resolved, None)
             with _CACHE_LOCK:
                 with self._connect() as conn:
                     conn.execute("BEGIN IMMEDIATE")
@@ -4694,10 +4752,15 @@ class MeshStore:
                 self._invalidate_cache()
         clear_audit_log(self.namespace)
 
-    # --- Telemetry, Query Logging & Contradiction Management ---
+    # --- Access Tracking, Query Logging & Contradiction Management ---
 
     def flush_telemetry(self) -> None:
-        _flush_telemetry_for_db_path(self.db_path)
+        """Flush pending buffered access counts and queries for this store's DB."""
+        _flush_access_tracking_for_db_path(self.db_path)
+
+    def flush_access_tracking(self) -> None:
+        """Flush pending buffered access counts and queries for this store's DB."""
+        self.flush_telemetry()
 
     def _resolved_db_path(self) -> Path:
         """`self.db_path.resolve()` memoised per store for the path-trust TTL."""
@@ -4711,13 +4774,13 @@ class MeshStore:
             self.__dict__["_rdb_cache"] = (time.monotonic(), resolved)
         return resolved
 
-    def _maybe_lazy_flush_telemetry(self) -> None:
+    def _maybe_lazy_flush_access_tracking(self) -> None:
         resolved = self._resolved_db_path()
-        batch_limit = _get_telemetry_batch_limit()
-        flush_secs = _get_telemetry_flush_seconds()
+        batch_limit = _get_tracking_batch_limit()
+        flush_secs = _get_tracking_flush_seconds()
         should_flush = False
-        with _TELEMETRY_LOCK:
-            buf = _TELEMETRY_BUFFERS.get(resolved)
+        with _ACCESS_TRACKING_LOCK:
+            buf = _ACCESS_TRACKING_BUFFERS.get(resolved)
             if buf is not None and buf.event_count > 0:
                 if batch_limit <= 0 or flush_secs <= 0.0:
                     should_flush = True
@@ -4726,7 +4789,10 @@ class MeshStore:
                 elif (time.monotonic() - buf.first_event_ts) >= flush_secs:
                     should_flush = True
         if should_flush:
-            _flush_telemetry_for_db_path(resolved)
+            _flush_access_tracking_for_db_path(resolved)
+
+    # Backward-compatibility alias
+    _maybe_lazy_flush_telemetry = _maybe_lazy_flush_access_tracking
 
     def increment_access(self, memory_id: str) -> None:
         self.increment_access_batch([memory_id])
@@ -4735,7 +4801,7 @@ class MeshStore:
         valid_ids = [mid for mid in dict.fromkeys(memory_ids) if mid]
         if not valid_ids:
             return
-        self.record_recall_telemetry(
+        self.record_recall_access(
             memory_ids=valid_ids,
             query_text="",
             agent_id="unknown",
@@ -4743,7 +4809,7 @@ class MeshStore:
             result_count=len(valid_ids),
             private_query=False,
         )
-        self.flush_telemetry()
+        self.flush_access_tracking()
 
     def log_query(
         self,
@@ -4753,7 +4819,7 @@ class MeshStore:
         result_count: int = 0,
         private_query: bool = False,
     ) -> None:
-        self.record_recall_telemetry(
+        self.record_recall_access(
             memory_ids=[],
             query_text=query_text,
             agent_id=agent_id,
@@ -4761,9 +4827,9 @@ class MeshStore:
             result_count=result_count,
             private_query=private_query,
         )
-        self.flush_telemetry()
+        self.flush_access_tracking()
 
-    def record_recall_telemetry(
+    def record_recall_access(
         self,
         memory_ids: list[str],
         query_text: str,
@@ -4774,10 +4840,9 @@ class MeshStore:
     ) -> None:
         """
         Update in-memory `access_count`/`accessed_at` via copy-on-write immediately and
-        buffer SQLite telemetry writes.
-        Finding S12: If `query_text` contains a live credential (`is_credential`), redacts it via
-        `redact_secrets_local` and forces `private_query=True` so secrets never leak into
-        `top_topics` or `memory_gaps` even on 0-hit queries.
+        buffer SQLite access tracking writes.
+        All query text is passed through `redact_secrets_local` before storage.
+        If `MESH_LOG_QUERY_TEXT` is disabled (0/false/no), query text is omitted entirely.
         """
         if not self.db_path.exists():
             if not self.create:
@@ -4787,11 +4852,18 @@ class MeshStore:
         valid_ids = [mid for mid in dict.fromkeys(memory_ids) if mid]
         now = _utc_now_iso()
         qid = str(uuid.uuid4())
-        clean_query = (query_text or "").strip()[:512]
+        raw_query = (query_text or "").strip()[:512]
         is_priv_q = bool(private_query)
-        if clean_query and is_credential(clean_query):
-            clean_query = redact_secrets_local(clean_query)
-            is_priv_q = True
+
+        # Secret redaction on query text and check setting
+        log_query_text_enabled = os.environ.get("MESH_LOG_QUERY_TEXT", "1").strip().lower() not in ("0", "false", "no")
+        if raw_query:
+            if is_credential(raw_query):
+                is_priv_q = True
+            # Always pass through secret redaction
+            clean_query = redact_secrets_local(raw_query) if log_query_text_enabled else ""
+        else:
+            clean_query = ""
 
         resolved = self._resolved_db_path()
 
@@ -4808,23 +4880,23 @@ class MeshStore:
                         }
 
         overflow_path: Optional[Path] = None
-        with _TELEMETRY_LOCK:
-            buf = _TELEMETRY_BUFFERS.get(resolved)
+        with _ACCESS_TRACKING_LOCK:
+            buf = _ACCESS_TRACKING_BUFFERS.get(resolved)
             if buf is None:
-                if len(_TELEMETRY_BUFFERS) >= _get_max_pool_size():
-                    for cand_p in _TELEMETRY_BUFFERS:
+                if len(_ACCESS_TRACKING_BUFFERS) >= _get_max_pool_size():
+                    for cand_p in _ACCESS_TRACKING_BUFFERS:
                         if cand_p != resolved:
                             overflow_path = cand_p
                             break
-                buf = _TelemetryBuffer(resolved, self.namespace)
-                _TELEMETRY_BUFFERS[resolved] = buf
+                buf = _AccessTrackingBuffer(resolved, self.namespace)
+                _ACCESS_TRACKING_BUFFERS[resolved] = buf
             if buf.event_count == 0:
                 buf.first_event_ts = time.monotonic()
             buf.event_count += 1
             for mid in valid_ids:
                 prev_cnt, _ = buf.access_increments.get(mid, (0, now))
                 buf.access_increments[mid] = (prev_cnt + 1, now)
-            if clean_query:
+            if clean_query or not log_query_text_enabled:
                 buf.query_rows.append(
                     (
                         qid,
@@ -4840,10 +4912,13 @@ class MeshStore:
 
         if overflow_path is not None:
             try:
-                _flush_telemetry_for_db_path(overflow_path)
+                _flush_access_tracking_for_db_path(overflow_path)
             except Exception:
                 pass
-        self._maybe_lazy_flush_telemetry()
+        self._maybe_lazy_flush_access_tracking()
+
+    # Backward-compatibility alias
+    record_recall_telemetry = record_recall_access
 
     def log_contradiction(
         self,

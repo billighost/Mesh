@@ -1,0 +1,2759 @@
+{
+  "metadata": {
+    "target_commit": "8c36bf8670e0de799f2ad0ad39e2fe8e88d7a7fc",
+    "branch": "feat/ci-evidence",
+    "platform": "Windows-11-10.0.22000-SP0",
+    "python_version": "3.14.0",
+    "timestamp": "2026-10-27T01:59:50Z",
+    "corpus": {
+      "name": "LongMemEval-derived",
+      "questions_count": 50,
+      "turns_count": 1319,
+      "layout": "All turns pooled in a single shared store per runner",
+      "opaque_tags": true
+    },
+    "competitor_interface_matrix": {
+      "mesh": {
+        "package_version": "0.8.3",
+        "commit": "8c36bf8670e0de799f2ad0ad39e2fe8e88d7a7fc",
+        "class_a_supported": true,
+        "class_b_supported": true,
+        "class_c_supported": true,
+        "class_c_framework_version": "1.30.0"
+      },
+      "mem0": {
+        "package_version": "2.2.1",
+        "class_a_supported": true,
+        "class_b_supported": false,
+        "class_b_note": "not offered (no CLI console scripts in mem0ai)",
+        "class_b_url": "https://pypi.org/project/mem0ai/",
+        "class_c_supported": false,
+        "class_c_note": "not offered locally (official MCP is cloud HTTP endpoint https://mcp.mem0.ai/mcp; local repo was archived)",
+        "class_c_url": "https://docs.mem0.ai/mcp"
+      },
+      "basic_memory": {
+        "package_version": "0.24.1",
+        "class_a_supported": false,
+        "class_a_note": "no documented Python API",
+        "class_a_url": "https://pypi.org/project/basic-memory/",
+        "class_b_supported": true,
+        "class_c_supported": true,
+        "class_c_framework_version": "FastMCP 4.1.4"
+      },
+      "auxly": {
+        "package_version": "1.5.0",
+        "class_a_supported": false,
+        "class_a_note": "not offered (compiled Go binary)",
+        "class_b_supported": true,
+        "class_c_supported": true,
+        "class_c_tools": [
+          "auxly_memory_search",
+          "auxly_memory_recall"
+        ]
+      }
+    }
+  },
+  "class_a_library": {
+    "mesh_sdk": {
+      "tool": "Mesh (SDK)",
+      "class": "Class A",
+      "count_verification": {
+        "expected_turns": 1320,
+        "stored_count": 1320,
+        "shortfall": 0,
+        "verified_equal": true,
+        "audit_notes": {
+          "quarantined_count": 0,
+          "contradictions_detected": 0,
+          "deduplicated_dropped": 0,
+          "notes": "Mesh store exact SQLite count verified; zero turns dropped or hidden."
+        }
+      },
+      "ingestion_timing": {
+        "write_seconds": 19.849,
+        "time_to_searchable_seconds": 0.02,
+        "total_ingest_seconds": 19.869,
+        "items_per_second": 66.5
+      },
+      "known_item_preflight": {
+        "passed": true,
+        "rank": 1,
+        "query": "cerulean observatory celestial frequency"
+      },
+      "accuracy_metrics": {
+        "recall_at_1": 0.34,
+        "recall_at_1_ci": [
+          0.22,
+          0.48
+        ],
+        "recall_at_5": 0.86,
+        "recall_at_5_ci": [
+          0.76,
+          0.94
+        ],
+        "recall_at_10": 0.94,
+        "recall_at_10_ci": [
+          0.86,
+          1.0
+        ],
+        "mrr": 0.5754,
+        "mrr_ci": [
+          0.481,
+          0.6713
+        ],
+        "ndcg_at_10": 0.6657,
+        "ndcg_at_10_ci": [
+          0.5847,
+          0.7463
+        ]
+      },
+      "latency_metrics": {
+        "p50_ms": 33.29,
+        "p95_ms": 59.25,
+        "mean_ms": 35.23
+      },
+      "peak_ram_mb": 0.0,
+      "raw_inspections_first_5": [
+        {
+          "question_idx": 1,
+          "question_id": "gpt4_2655b836",
+          "question_text": "What was the first issue I had with my new car after its first service?",
+          "gold_answer": "GPS system not functioning correctly",
+          "gold_turn_tags": [
+            "[turn:00000]",
+            "[turn:00014]"
+          ],
+          "first_hit_rank": 5,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00075]",
+              "snippet": "[turn:00075] Wise decision to get the \"check engine\" light checked out!\n\nMaintenance costs are an essential factor to consider when buying a",
+              "is_hit": false
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00880]",
+              "snippet": "[turn:00880] I'm happy to help you with your internet speed issues and negotiating with your provider!\n\nFirstly, congratulations on getting ",
+              "is_hit": false
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00874]",
+              "snippet": "[turn:00874] It sounds like slow speeds and connectivity issues are impacting your work-from-home experience and entertainment setup.\n\n**Str",
+              "is_hit": false
+            },
+            {
+              "rank": 4,
+              "id": "[turn:01064]",
+              "snippet": "[turn:01064] Congratulations on your acceptance to UC Berkeley's exchange program! I'd be happy to help you prepare for your semester abroad",
+              "is_hit": false
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00000]",
+              "snippet": "[turn:00000] I'm thinking of getting my car detailed soon. Do you know any good detailers in the area or have any recommendations? By the wa",
+              "is_hit": true
+            }
+          ]
+        },
+        {
+          "question_idx": 2,
+          "question_id": "gpt4_2487a7cb",
+          "question_text": "Which event did I attend first, the 'Effective Time Management' workshop or the 'Data Analysis using Python' webinar?",
+          "gold_answer": "'Data Analysis using Python' webinar",
+          "gold_turn_tags": [
+            "[turn:00050]",
+            "[turn:00046]"
+          ],
+          "first_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00050]",
+              "snippet": "[turn:00050] I'm actually familiar with some of these resources, I participated in a webinar on \"Data Analysis using Python\" two months ago,",
+              "is_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00048]",
+              "snippet": "[turn:00048] I'm trying to work on a project that involves data analysis, and I was wondering if you could recommend some resources for lear",
+              "is_hit": false
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00046]",
+              "snippet": "[turn:00046] I've been thinking about my goals and priorities lately, and I realized that I want to focus more on learning new skills and ex",
+              "is_hit": true
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00049]",
+              "snippet": "[turn:00049] Data visualization is a crucial step in data analysis, and Python is an excellent choice for it. Here are some top-notch resour",
+              "is_hit": false
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00051]",
+              "snippet": "[turn:00051] That's great to hear that you already have some background in Python and data analysis!\n\nBoth Matplotlib and Seaborn are excell",
+              "is_hit": false
+            }
+          ]
+        },
+        {
+          "question_idx": 3,
+          "question_id": "gpt4_76048e76",
+          "question_text": "Which vehicle did I take care of first in February, the bike or the car?",
+          "gold_answer": "bike",
+          "gold_turn_tags": [
+            "[turn:00072]",
+            "[turn:00060]"
+          ],
+          "first_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00060]",
+              "snippet": "[turn:00060] I'm thinking of getting a new bike rack for my car. Do you have any recommendations? By the way, I've been having some issues w",
+              "is_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00000]",
+              "snippet": "[turn:00000] I'm thinking of getting my car detailed soon. Do you know any good detailers in the area or have any recommendations? By the wa",
+              "is_hit": false
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00035]",
+              "snippet": "[turn:00035] Getting a car wax and detailing done before your trip is an excellent idea. It'll not only protect your car's paint job and int",
+              "is_hit": false
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00001]",
+              "snippet": "[turn:00001] I'm happy to help you with your question! However, I'm a large language model, I don't have personal experiences or knowledge o",
+              "is_hit": false
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00080]",
+              "snippet": "[turn:00080] I'm glad to hear about the advanced safety features of the Corolla Hybrid. By the way, I recently had to take my bike in for re",
+              "is_hit": true
+            }
+          ]
+        },
+        {
+          "question_idx": 4,
+          "question_id": "gpt4_2312f94c",
+          "question_text": "Which device did I got first, the Samsung Galaxy S22 or the Dell XPS 13?",
+          "gold_answer": "Samsung Galaxy S22",
+          "gold_turn_tags": [
+            "[turn:00084]",
+            "[turn:00096]"
+          ],
+          "first_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00099]",
+              "snippet": "[turn:00099] The Anker PowerCore 20000 is a great portable power bank with a capacity of 20,000mAh. It's a popular and well-reviewed product",
+              "is_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00096]",
+              "snippet": "[turn:00096] I'm planning a trip to Hawaii and I need to pack the right adapters for my devices. Can you help me figure out what kind of pow",
+              "is_hit": true
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00097]",
+              "snippet": "[turn:00097] Congratulations on your new laptop and smartphone!\n\nI'd be happy to help you with the power adapters for your trip to Hawaii.\n\n",
+              "is_hit": true
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00085]",
+              "snippet": "[turn:00085] A trip to Hawaii sounds like a wonderful idea! I'd be happy to help you with some must-visit places to add to your itinerary.\n\n",
+              "is_hit": true
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00089]",
+              "snippet": "[turn:00089] That's a great idea! A portable power bank is a must-have travel accessory, especially when you're planning to be outdoors and ",
+              "is_hit": true
+            }
+          ]
+        },
+        {
+          "question_idx": 5,
+          "question_id": "0bb5a684",
+          "question_text": "How many days before the team meeting I was preparing for did I attend the workshop on 'Effective Communication in the Workplace'?",
+          "gold_answer": "7 days. 8 days (including the last day) is also acceptable.",
+          "gold_turn_tags": [
+            "[turn:00120]",
+            "[turn:00108]"
+          ],
+          "first_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00108]",
+              "snippet": "[turn:00108] I'm preparing for an upcoming meeting with my team and I want to make sure I'm effectively communicating our project updates. I",
+              "is_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00109]",
+              "snippet": "[turn:00109] Congratulations on taking the initiative to improve your communication skills! Attending the workshop on \"Effective Communicati",
+              "is_hit": false
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00112]",
+              "snippet": "[turn:00112] I'm glad I attended that workshop on \"Effective Communication in the Workplace\" on January 10th, as it helped me realize the im",
+              "is_hit": false
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00116]",
+              "snippet": "[turn:00116] I'll definitely consider using some of these interactive tools to make my presentation more engaging. Since I attended a worksh",
+              "is_hit": false
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00118]",
+              "snippet": "[turn:00118] I'd like to ask about the importance of self-awareness in effective communication. As I reflect on the workshop I attended on \"",
+              "is_hit": false
+            }
+          ]
+        }
+      ]
+    },
+    "mem0_sdk": {
+      "tool": "Mem0 (SDK)",
+      "class": "Class A",
+      "count_verification": {
+        "expected_turns": 1320,
+        "stored_count": 1320,
+        "shortfall": 0,
+        "verified_equal": true,
+        "audit_notes": {
+          "stored_points_count": 1320,
+          "notes": "Mem0 Qdrant vector store point count verified."
+        }
+      },
+      "ingestion_timing": {
+        "write_seconds": 157.391,
+        "time_to_searchable_seconds": 0.528,
+        "total_ingest_seconds": 157.919,
+        "items_per_second": 8.4
+      },
+      "known_item_preflight": {
+        "passed": true,
+        "rank": 1,
+        "query": "cerulean observatory celestial frequency"
+      },
+      "accuracy_metrics": {
+        "recall_at_1": 0.4,
+        "recall_at_1_ci": [
+          0.26,
+          0.54
+        ],
+        "recall_at_5": 0.78,
+        "recall_at_5_ci": [
+          0.66,
+          0.88
+        ],
+        "recall_at_10": 0.92,
+        "recall_at_10_ci": [
+          0.84,
+          0.98
+        ],
+        "mrr": 0.5554,
+        "mrr_ci": [
+          0.4376,
+          0.6604
+        ],
+        "ndcg_at_10": 0.643,
+        "ndcg_at_10_ci": [
+          0.5419,
+          0.7317
+        ]
+      },
+      "latency_metrics": {
+        "p50_ms": 253.93,
+        "p95_ms": 586.56,
+        "mean_ms": 337.64
+      },
+      "peak_ram_mb": 327.83,
+      "raw_inspections_first_5": [
+        {
+          "question_idx": 1,
+          "question_id": "gpt4_2655b836",
+          "question_text": "What was the first issue I had with my new car after its first service?",
+          "gold_answer": "GPS system not functioning correctly",
+          "gold_turn_tags": [
+            "[turn:00000]",
+            "[turn:00014]"
+          ],
+          "first_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00014]",
+              "snippet": "[turn:00014] I've been doing some research and found a local detailer with great reviews. I was thinking of taking my car there, but I'm als",
+              "is_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00000]",
+              "snippet": "[turn:00000] I'm thinking of getting my car detailed soon. Do you know any good detailers in the area or have any recommendations? By the wa",
+              "is_hit": true
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00015]",
+              "snippet": "[turn:00015] That's great to hear that the dealership was able to fix your GPS issue! As for common issues with GPS systems in newer cars, y",
+              "is_hit": false
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00001]",
+              "snippet": "[turn:00001] I'm happy to help you with your question! However, I'm a large language model, I don't have personal experiences or knowledge o",
+              "is_hit": false
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00011]",
+              "snippet": "[turn:00011] I'm glad to hear that you're happy with your new car accessories!\n\nAs for finding a good detailer in your area, I'd be happy to",
+              "is_hit": false
+            }
+          ]
+        },
+        {
+          "question_idx": 2,
+          "question_id": "gpt4_2487a7cb",
+          "question_text": "Which event did I attend first, the 'Effective Time Management' workshop or the 'Data Analysis using Python' webinar?",
+          "gold_answer": "'Data Analysis using Python' webinar",
+          "gold_turn_tags": [
+            "[turn:00046]",
+            "[turn:00050]"
+          ],
+          "first_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00050]",
+              "snippet": "[turn:00050] I'm actually familiar with some of these resources, I participated in a webinar on \"Data Analysis using Python\" two months ago,",
+              "is_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00037]",
+              "snippet": "[turn:00037] Congratulations on taking the first step towards improving your time management skills! There are many fantastic apps and tools",
+              "is_hit": false
+            },
+            {
+              "rank": 3,
+              "id": "[turn:01098]",
+              "snippet": "[turn:01098] Hosting live events or webinars within the Facebook group is an excellent way to take your community engagement to the next lev",
+              "is_hit": false
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00049]",
+              "snippet": "[turn:00049] Data visualization is a crucial step in data analysis, and Python is an excellent choice for it. Here are some top-notch resour",
+              "is_hit": false
+            },
+            {
+              "rank": 5,
+              "id": "[turn:01097]",
+              "snippet": "[turn:01097] I'd like to explore the idea of hosting live events or webinars within the Facebook group. This could be a great way to provide",
+              "is_hit": false
+            }
+          ]
+        },
+        {
+          "question_idx": 3,
+          "question_id": "gpt4_76048e76",
+          "question_text": "Which vehicle did I take care of first in February, the bike or the car?",
+          "gold_answer": "bike",
+          "gold_turn_tags": [
+            "[turn:00060]",
+            "[turn:00072]"
+          ],
+          "first_hit_rank": 2,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00024]",
+              "snippet": "[turn:00024] I'm thinking of planning a road trip soon and I'm trying to figure out the best route to take. I've got a new car, a silver Hon",
+              "is_hit": false
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00070]",
+              "snippet": "[turn:00070] By the way, speaking of bikes, I'm glad I got my bike repaired back in mid-February. The gears were acting up, and I couldn't s",
+              "is_hit": true
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00060]",
+              "snippet": "[turn:00060] I'm thinking of getting a new bike rack for my car. Do you have any recommendations? By the way, I've been having some issues w",
+              "is_hit": true
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00062]",
+              "snippet": "[turn:00062] I have a hybrid bike, and I want to carry just one bike. My car is a Toyota Corolla. I'm not sure about the type of mount, but ",
+              "is_hit": true
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00095]",
+              "snippet": "[turn:00095] Renting a car is a great way to explore Maui and drive the Road to Hana at your own pace. Here are some top car rental company ",
+              "is_hit": false
+            }
+          ]
+        },
+        {
+          "question_idx": 4,
+          "question_id": "gpt4_2312f94c",
+          "question_text": "Which device did I got first, the Samsung Galaxy S22 or the Dell XPS 13?",
+          "gold_answer": "Samsung Galaxy S22",
+          "gold_turn_tags": [
+            "[turn:00084]",
+            "[turn:00096]"
+          ],
+          "first_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00099]",
+              "snippet": "[turn:00099] The Anker PowerCore 20000 is a great portable power bank with a capacity of 20,000mAh. It's a popular and well-reviewed product",
+              "is_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00096]",
+              "snippet": "[turn:00096] I'm planning a trip to Hawaii and I need to pack the right adapters for my devices. Can you help me figure out what kind of pow",
+              "is_hit": true
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00097]",
+              "snippet": "[turn:00097] Congratulations on your new laptop and smartphone!\n\nI'd be happy to help you with the power adapters for your trip to Hawaii.\n\n",
+              "is_hit": true
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00634]",
+              "snippet": "[turn:00634] Congratulations on scoring a great deal on your iPhone 13 Pro!\n\nI'd be happy to help you find some excellent case and screen pr",
+              "is_hit": false
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00633]",
+              "snippet": "[turn:00633] I'm looking to upgrade my phone case and screen protector. Can you show me some options for iPhone 13 Pro cases and screen prot",
+              "is_hit": false
+            }
+          ]
+        },
+        {
+          "question_idx": 5,
+          "question_id": "0bb5a684",
+          "question_text": "How many days before the team meeting I was preparing for did I attend the workshop on 'Effective Communication in the Workplace'?",
+          "gold_answer": "7 days. 8 days (including the last day) is also acceptable.",
+          "gold_turn_tags": [
+            "[turn:00120]",
+            "[turn:00108]"
+          ],
+          "first_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00108]",
+              "snippet": "[turn:00108] I'm preparing for an upcoming meeting with my team and I want to make sure I'm effectively communicating our project updates. I",
+              "is_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00109]",
+              "snippet": "[turn:00109] Congratulations on taking the initiative to improve your communication skills! Attending the workshop on \"Effective Communicati",
+              "is_hit": false
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00120]",
+              "snippet": "[turn:00120] I'm preparing for an upcoming team meeting and want to make sure I'm well-prepared to communicate effectively. I remember makin",
+              "is_hit": true
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00110]",
+              "snippet": "[turn:00110] That's really helpful, thanks for the tips! I'll make sure to focus on structuring my presentation in a logical order and using",
+              "is_hit": false
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00116]",
+              "snippet": "[turn:00116] I'll definitely consider using some of these interactive tools to make my presentation more engaging. Since I attended a worksh",
+              "is_hit": false
+            }
+          ]
+        }
+      ]
+    },
+    "basic_memory": {
+      "status": "no documented Python API",
+      "url": "https://pypi.org/project/basic-memory/"
+    },
+    "auxly": {
+      "status": "not offered (compiled Go binary)"
+    }
+  },
+  "class_b_cli": {
+    "mesh_cli_cold": {
+      "tool": "Mesh CLI (Cold)",
+      "class": "Class B",
+      "count_verification": {
+        "expected_turns": 1320,
+        "stored_count": 1320,
+        "shortfall": 0,
+        "verified_equal": true,
+        "audit_notes": {
+          "daemon_active": false,
+          "mode": "cold_process_spawn"
+        }
+      },
+      "ingestion_timing": {
+        "write_seconds": 20.366,
+        "time_to_searchable_seconds": 5.651,
+        "total_ingest_seconds": 26.016,
+        "items_per_second": 64.8
+      },
+      "known_item_preflight": {
+        "passed": true,
+        "rank": 1,
+        "query": "cerulean observatory celestial frequency"
+      },
+      "accuracy_metrics": {
+        "recall_at_1": 0.34,
+        "recall_at_1_ci": [
+          0.22,
+          0.48
+        ],
+        "recall_at_5": 0.86,
+        "recall_at_5_ci": [
+          0.76,
+          0.94
+        ],
+        "recall_at_10": 0.94,
+        "recall_at_10_ci": [
+          0.86,
+          1.0
+        ],
+        "mrr": 0.5754,
+        "mrr_ci": [
+          0.481,
+          0.6713
+        ],
+        "ndcg_at_10": 0.6657,
+        "ndcg_at_10_ci": [
+          0.5847,
+          0.7463
+        ]
+      },
+      "latency_metrics": {
+        "p50_ms": 4013.96,
+        "p95_ms": 4959.11,
+        "mean_ms": 4034.27
+      },
+      "peak_ram_mb": 0.0,
+      "raw_inspections_first_5": [
+        {
+          "question_idx": 1,
+          "question_id": "gpt4_2655b836",
+          "question_text": "What was the first issue I had with my new car after its first service?",
+          "gold_answer": "GPS system not functioning correctly",
+          "gold_turn_tags": [
+            "[turn:00000]",
+            "[turn:00014]"
+          ],
+          "first_hit_rank": 5,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00075]",
+              "snippet": "[turn:00075] Wise decision to get the \"check engine\" light checked out!\n\nMaintenance costs are an essential factor to consider when buying a",
+              "is_hit": false
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00880]",
+              "snippet": "[turn:00880] I'm happy to help you with your internet speed issues and negotiating with your provider!\n\nFirstly, congratulations on getting ",
+              "is_hit": false
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00874]",
+              "snippet": "[turn:00874] It sounds like slow speeds and connectivity issues are impacting your work-from-home experience and entertainment setup.\n\n**Str",
+              "is_hit": false
+            },
+            {
+              "rank": 4,
+              "id": "[turn:01064]",
+              "snippet": "[turn:01064] Congratulations on your acceptance to UC Berkeley's exchange program! I'd be happy to help you prepare for your semester abroad",
+              "is_hit": false
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00000]",
+              "snippet": "[turn:00000] I'm thinking of getting my car detailed soon. Do you know any good detailers in the area or have any recommendations? By the wa",
+              "is_hit": true
+            }
+          ]
+        },
+        {
+          "question_idx": 2,
+          "question_id": "gpt4_2487a7cb",
+          "question_text": "Which event did I attend first, the 'Effective Time Management' workshop or the 'Data Analysis using Python' webinar?",
+          "gold_answer": "'Data Analysis using Python' webinar",
+          "gold_turn_tags": [
+            "[turn:00050]",
+            "[turn:00046]"
+          ],
+          "first_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00050]",
+              "snippet": "[turn:00050] I'm actually familiar with some of these resources, I participated in a webinar on \"Data Analysis using Python\" two months ago,",
+              "is_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00048]",
+              "snippet": "[turn:00048] I'm trying to work on a project that involves data analysis, and I was wondering if you could recommend some resources for lear",
+              "is_hit": false
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00046]",
+              "snippet": "[turn:00046] I've been thinking about my goals and priorities lately, and I realized that I want to focus more on learning new skills and ex",
+              "is_hit": true
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00049]",
+              "snippet": "[turn:00049] Data visualization is a crucial step in data analysis, and Python is an excellent choice for it. Here are some top-notch resour",
+              "is_hit": false
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00051]",
+              "snippet": "[turn:00051] That's great to hear that you already have some background in Python and data analysis!\n\nBoth Matplotlib and Seaborn are excell",
+              "is_hit": false
+            }
+          ]
+        },
+        {
+          "question_idx": 3,
+          "question_id": "gpt4_76048e76",
+          "question_text": "Which vehicle did I take care of first in February, the bike or the car?",
+          "gold_answer": "bike",
+          "gold_turn_tags": [
+            "[turn:00072]",
+            "[turn:00060]"
+          ],
+          "first_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00060]",
+              "snippet": "[turn:00060] I'm thinking of getting a new bike rack for my car. Do you have any recommendations? By the way, I've been having some issues w",
+              "is_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00000]",
+              "snippet": "[turn:00000] I'm thinking of getting my car detailed soon. Do you know any good detailers in the area or have any recommendations? By the wa",
+              "is_hit": false
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00035]",
+              "snippet": "[turn:00035] Getting a car wax and detailing done before your trip is an excellent idea. It'll not only protect your car's paint job and int",
+              "is_hit": false
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00001]",
+              "snippet": "[turn:00001] I'm happy to help you with your question! However, I'm a large language model, I don't have personal experiences or knowledge o",
+              "is_hit": false
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00080]",
+              "snippet": "[turn:00080] I'm glad to hear about the advanced safety features of the Corolla Hybrid. By the way, I recently had to take my bike in for re",
+              "is_hit": true
+            }
+          ]
+        },
+        {
+          "question_idx": 4,
+          "question_id": "gpt4_2312f94c",
+          "question_text": "Which device did I got first, the Samsung Galaxy S22 or the Dell XPS 13?",
+          "gold_answer": "Samsung Galaxy S22",
+          "gold_turn_tags": [
+            "[turn:00084]",
+            "[turn:00096]"
+          ],
+          "first_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00099]",
+              "snippet": "[turn:00099] The Anker PowerCore 20000 is a great portable power bank with a capacity of 20,000mAh. It's a popular and well-reviewed product",
+              "is_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00096]",
+              "snippet": "[turn:00096] I'm planning a trip to Hawaii and I need to pack the right adapters for my devices. Can you help me figure out what kind of pow",
+              "is_hit": true
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00097]",
+              "snippet": "[turn:00097] Congratulations on your new laptop and smartphone!\n\nI'd be happy to help you with the power adapters for your trip to Hawaii.\n\n",
+              "is_hit": true
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00085]",
+              "snippet": "[turn:00085] A trip to Hawaii sounds like a wonderful idea! I'd be happy to help you with some must-visit places to add to your itinerary.\n\n",
+              "is_hit": true
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00089]",
+              "snippet": "[turn:00089] That's a great idea! A portable power bank is a must-have travel accessory, especially when you're planning to be outdoors and ",
+              "is_hit": true
+            }
+          ]
+        },
+        {
+          "question_idx": 5,
+          "question_id": "0bb5a684",
+          "question_text": "How many days before the team meeting I was preparing for did I attend the workshop on 'Effective Communication in the Workplace'?",
+          "gold_answer": "7 days. 8 days (including the last day) is also acceptable.",
+          "gold_turn_tags": [
+            "[turn:00120]",
+            "[turn:00108]"
+          ],
+          "first_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00108]",
+              "snippet": "[turn:00108] I'm preparing for an upcoming meeting with my team and I want to make sure I'm effectively communicating our project updates. I",
+              "is_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00109]",
+              "snippet": "[turn:00109] Congratulations on taking the initiative to improve your communication skills! Attending the workshop on \"Effective Communicati",
+              "is_hit": false
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00112]",
+              "snippet": "[turn:00112] I'm glad I attended that workshop on \"Effective Communication in the Workplace\" on January 10th, as it helped me realize the im",
+              "is_hit": false
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00116]",
+              "snippet": "[turn:00116] I'll definitely consider using some of these interactive tools to make my presentation more engaging. Since I attended a worksh",
+              "is_hit": false
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00118]",
+              "snippet": "[turn:00118] I'd like to ask about the importance of self-awareness in effective communication. As I reflect on the workshop I attended on \"",
+              "is_hit": false
+            }
+          ]
+        }
+      ]
+    },
+    "mesh_cli_daemon": {
+      "tool": "Mesh CLI (Daemon Running)",
+      "class": "Class B",
+      "count_verification": {
+        "expected_turns": 1320,
+        "stored_count": 1320,
+        "shortfall": 0,
+        "verified_equal": true,
+        "audit_notes": {
+          "daemon_active": true,
+          "daemon_port": "17788",
+          "commit_hook": "1a88951",
+          "test_ref": "tests/test_remediation.py:344, tests/test_phase1.py:229"
+        }
+      },
+      "ingestion_timing": {
+        "write_seconds": 20.448,
+        "time_to_searchable_seconds": 37.172,
+        "total_ingest_seconds": 57.62,
+        "items_per_second": 64.6
+      },
+      "known_item_preflight": {
+        "passed": true,
+        "rank": 1,
+        "query": "cerulean observatory celestial frequency"
+      },
+      "accuracy_metrics": {
+        "recall_at_1": 0.34,
+        "recall_at_1_ci": [
+          0.22,
+          0.48
+        ],
+        "recall_at_5": 0.86,
+        "recall_at_5_ci": [
+          0.76,
+          0.94
+        ],
+        "recall_at_10": 0.94,
+        "recall_at_10_ci": [
+          0.86,
+          1.0
+        ],
+        "mrr": 0.5754,
+        "mrr_ci": [
+          0.481,
+          0.6713
+        ],
+        "ndcg_at_10": 0.6657,
+        "ndcg_at_10_ci": [
+          0.5847,
+          0.7463
+        ]
+      },
+      "latency_metrics": {
+        "p50_ms": 493.48,
+        "p95_ms": 67199.39,
+        "mean_ms": 7734.63
+      },
+      "peak_ram_mb": 0.0,
+      "raw_inspections_first_5": [
+        {
+          "question_idx": 1,
+          "question_id": "gpt4_2655b836",
+          "question_text": "What was the first issue I had with my new car after its first service?",
+          "gold_answer": "GPS system not functioning correctly",
+          "gold_turn_tags": [
+            "[turn:00000]",
+            "[turn:00014]"
+          ],
+          "first_hit_rank": 5,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00075]",
+              "snippet": "[turn:00075] Wise decision to get the \"check engine\" light checked out!\n\nMaintenance costs are an essential factor to consider when buying a",
+              "is_hit": false
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00880]",
+              "snippet": "[turn:00880] I'm happy to help you with your internet speed issues and negotiating with your provider!\n\nFirstly, congratulations on getting ",
+              "is_hit": false
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00874]",
+              "snippet": "[turn:00874] It sounds like slow speeds and connectivity issues are impacting your work-from-home experience and entertainment setup.\n\n**Str",
+              "is_hit": false
+            },
+            {
+              "rank": 4,
+              "id": "[turn:01064]",
+              "snippet": "[turn:01064] Congratulations on your acceptance to UC Berkeley's exchange program! I'd be happy to help you prepare for your semester abroad",
+              "is_hit": false
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00000]",
+              "snippet": "[turn:00000] I'm thinking of getting my car detailed soon. Do you know any good detailers in the area or have any recommendations? By the wa",
+              "is_hit": true
+            }
+          ]
+        },
+        {
+          "question_idx": 2,
+          "question_id": "gpt4_2487a7cb",
+          "question_text": "Which event did I attend first, the 'Effective Time Management' workshop or the 'Data Analysis using Python' webinar?",
+          "gold_answer": "'Data Analysis using Python' webinar",
+          "gold_turn_tags": [
+            "[turn:00050]",
+            "[turn:00046]"
+          ],
+          "first_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00050]",
+              "snippet": "[turn:00050] I'm actually familiar with some of these resources, I participated in a webinar on \"Data Analysis using Python\" two months ago,",
+              "is_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00048]",
+              "snippet": "[turn:00048] I'm trying to work on a project that involves data analysis, and I was wondering if you could recommend some resources for lear",
+              "is_hit": false
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00046]",
+              "snippet": "[turn:00046] I've been thinking about my goals and priorities lately, and I realized that I want to focus more on learning new skills and ex",
+              "is_hit": true
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00049]",
+              "snippet": "[turn:00049] Data visualization is a crucial step in data analysis, and Python is an excellent choice for it. Here are some top-notch resour",
+              "is_hit": false
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00051]",
+              "snippet": "[turn:00051] That's great to hear that you already have some background in Python and data analysis!\n\nBoth Matplotlib and Seaborn are excell",
+              "is_hit": false
+            }
+          ]
+        },
+        {
+          "question_idx": 3,
+          "question_id": "gpt4_76048e76",
+          "question_text": "Which vehicle did I take care of first in February, the bike or the car?",
+          "gold_answer": "bike",
+          "gold_turn_tags": [
+            "[turn:00072]",
+            "[turn:00060]"
+          ],
+          "first_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00060]",
+              "snippet": "[turn:00060] I'm thinking of getting a new bike rack for my car. Do you have any recommendations? By the way, I've been having some issues w",
+              "is_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00000]",
+              "snippet": "[turn:00000] I'm thinking of getting my car detailed soon. Do you know any good detailers in the area or have any recommendations? By the wa",
+              "is_hit": false
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00035]",
+              "snippet": "[turn:00035] Getting a car wax and detailing done before your trip is an excellent idea. It'll not only protect your car's paint job and int",
+              "is_hit": false
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00001]",
+              "snippet": "[turn:00001] I'm happy to help you with your question! However, I'm a large language model, I don't have personal experiences or knowledge o",
+              "is_hit": false
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00080]",
+              "snippet": "[turn:00080] I'm glad to hear about the advanced safety features of the Corolla Hybrid. By the way, I recently had to take my bike in for re",
+              "is_hit": true
+            }
+          ]
+        },
+        {
+          "question_idx": 4,
+          "question_id": "gpt4_2312f94c",
+          "question_text": "Which device did I got first, the Samsung Galaxy S22 or the Dell XPS 13?",
+          "gold_answer": "Samsung Galaxy S22",
+          "gold_turn_tags": [
+            "[turn:00084]",
+            "[turn:00096]"
+          ],
+          "first_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00099]",
+              "snippet": "[turn:00099] The Anker PowerCore 20000 is a great portable power bank with a capacity of 20,000mAh. It's a popular and well-reviewed product",
+              "is_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00096]",
+              "snippet": "[turn:00096] I'm planning a trip to Hawaii and I need to pack the right adapters for my devices. Can you help me figure out what kind of pow",
+              "is_hit": true
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00097]",
+              "snippet": "[turn:00097] Congratulations on your new laptop and smartphone!\n\nI'd be happy to help you with the power adapters for your trip to Hawaii.\n\n",
+              "is_hit": true
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00085]",
+              "snippet": "[turn:00085] A trip to Hawaii sounds like a wonderful idea! I'd be happy to help you with some must-visit places to add to your itinerary.\n\n",
+              "is_hit": true
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00089]",
+              "snippet": "[turn:00089] That's a great idea! A portable power bank is a must-have travel accessory, especially when you're planning to be outdoors and ",
+              "is_hit": true
+            }
+          ]
+        },
+        {
+          "question_idx": 5,
+          "question_id": "0bb5a684",
+          "question_text": "How many days before the team meeting I was preparing for did I attend the workshop on 'Effective Communication in the Workplace'?",
+          "gold_answer": "7 days. 8 days (including the last day) is also acceptable.",
+          "gold_turn_tags": [
+            "[turn:00120]",
+            "[turn:00108]"
+          ],
+          "first_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00108]",
+              "snippet": "[turn:00108] I'm preparing for an upcoming meeting with my team and I want to make sure I'm effectively communicating our project updates. I",
+              "is_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00109]",
+              "snippet": "[turn:00109] Congratulations on taking the initiative to improve your communication skills! Attending the workshop on \"Effective Communicati",
+              "is_hit": false
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00112]",
+              "snippet": "[turn:00112] I'm glad I attended that workshop on \"Effective Communication in the Workplace\" on January 10th, as it helped me realize the im",
+              "is_hit": false
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00116]",
+              "snippet": "[turn:00116] I'll definitely consider using some of these interactive tools to make my presentation more engaging. Since I attended a worksh",
+              "is_hit": false
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00118]",
+              "snippet": "[turn:00118] I'd like to ask about the importance of self-awareness in effective communication. As I reflect on the workshop I attended on \"",
+              "is_hit": false
+            }
+          ]
+        }
+      ]
+    },
+    "basic_memory_cli": {
+      "tool": "Basic Memory (CLI)",
+      "class": "Class B",
+      "count_verification": {
+        "expected_turns": 1320,
+        "stored_count": 1320,
+        "shortfall": 0,
+        "verified_equal": true,
+        "audit_notes": {
+          "files_count": 114,
+          "layout": "one file per session"
+        }
+      },
+      "ingestion_timing": {
+        "write_seconds": 110.517,
+        "time_to_searchable_seconds": 14.098,
+        "total_ingest_seconds": 124.615,
+        "items_per_second": 11.9
+      },
+      "known_item_preflight": {
+        "passed": true,
+        "rank": 1,
+        "query": "cerulean observatory celestial frequency"
+      },
+      "accuracy_metrics": {
+        "recall_at_1": 0.62,
+        "recall_at_1_ci": [
+          0.48,
+          0.76
+        ],
+        "recall_at_5": 0.76,
+        "recall_at_5_ci": [
+          0.64,
+          0.88
+        ],
+        "recall_at_10": 0.8,
+        "recall_at_10_ci": [
+          0.7,
+          0.9
+        ],
+        "mrr": 0.6857,
+        "mrr_ci": [
+          0.5692,
+          0.8065
+        ],
+        "ndcg_at_10": 0.7134,
+        "ndcg_at_10_ci": [
+          0.6001,
+          0.8245
+        ]
+      },
+      "latency_metrics": {
+        "p50_ms": 15460.0,
+        "p95_ms": 16886.5,
+        "mean_ms": 15540.36
+      },
+      "peak_ram_mb": 0.0,
+      "raw_inspections_first_5": [
+        {
+          "question_idx": 1,
+          "question_id": "gpt4_2655b836",
+          "question_text": "What was the first issue I had with my new car after its first service?",
+          "gold_answer": "GPS system not functioning correctly",
+          "gold_turn_tags": [
+            "[turn:00000]",
+            "[turn:00014]"
+          ],
+          "first_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00000]",
+              "snippet": "# Session gpt4_2655b836_s0\r\n\r\n[turn:00000] I'm thinking of getting my car detailed soon. Do you know any good detailers in the area or have ",
+              "is_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00012]",
+              "snippet": "# Session gpt4_2655b836_s1\r\n\r\n[turn:00012] I'm thinking of getting a car wax and detailing done soon. Can you give me some tips on what to l",
+              "is_hit": true
+            }
+          ]
+        },
+        {
+          "question_idx": 2,
+          "question_id": "gpt4_2487a7cb",
+          "question_text": "Which event did I attend first, the 'Effective Time Management' workshop or the 'Data Analysis using Python' webinar?",
+          "gold_answer": "'Data Analysis using Python' webinar",
+          "gold_turn_tags": [
+            "[turn:00050]",
+            "[turn:00046]"
+          ],
+          "first_hit_rank": null,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00465]",
+              "snippet": "# Session gpt4_93159ced_s0\r\n\r\n[turn:00465] I'm looking to get some advice on managing my time more efficiently. Lately, I've been working lo",
+              "is_hit": false
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00036]",
+              "snippet": "# Session gpt4_2487a7cb_s0\r\n\r\n[turn:00036] I'm trying to get more organized and stay on top of my tasks. Can you recommend any apps or tools",
+              "is_hit": false
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00108]",
+              "snippet": "# Session 0bb5a684_s0\r\n\r\n[turn:00108] I'm preparing for an upcoming meeting with my team and I want to make sure I'm effectively communicati",
+              "is_hit": false
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00693]",
+              "snippet": "# Session c9f37c46_s0\r\n\r\n[turn:00693] I'm looking for some comedy recommendations. I've been really into stand-up lately - I think it starte",
+              "is_hit": false
+            },
+            {
+              "rank": 5,
+              "id": "[turn:01063]",
+              "snippet": "# Session gpt4_4cd9eba1_s1\r\n\r\n[turn:01063] I'm preparing for my semester abroad at the University of California, Berkeley, and I was wonderi",
+              "is_hit": false
+            }
+          ]
+        },
+        {
+          "question_idx": 3,
+          "question_id": "gpt4_76048e76",
+          "question_text": "Which vehicle did I take care of first in February, the bike or the car?",
+          "gold_answer": "bike",
+          "gold_turn_tags": [
+            "[turn:00072]",
+            "[turn:00060]"
+          ],
+          "first_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00060]",
+              "snippet": "# Session gpt4_76048e76_s0\r\n\r\n[turn:00060] I'm thinking of getting a new bike rack for my car. Do you have any recommendations? By the way, ",
+              "is_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00000]",
+              "snippet": "# Session gpt4_2655b836_s0\r\n\r\n[turn:00000] I'm thinking of getting my car detailed soon. Do you know any good detailers in the area or have ",
+              "is_hit": false
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00012]",
+              "snippet": "# Session gpt4_2655b836_s1\r\n\r\n[turn:00012] I'm thinking of getting a car wax and detailing done soon. Can you give me some tips on what to l",
+              "is_hit": false
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00072]",
+              "snippet": "# Session gpt4_76048e76_s1\r\n\r\n[turn:00072] I'm thinking of getting a newer car and I'm researching the new hybrid model of my current Toyota",
+              "is_hit": true
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00739]",
+              "snippet": "# Session dcfa8644_s0\r\n\r\n[turn:00739] I'm thinking of organizing my shoe collection and I was wondering if you could help me with some shoe ",
+              "is_hit": false
+            }
+          ]
+        },
+        {
+          "question_idx": 4,
+          "question_id": "gpt4_2312f94c",
+          "question_text": "Which device did I got first, the Samsung Galaxy S22 or the Dell XPS 13?",
+          "gold_answer": "Samsung Galaxy S22",
+          "gold_turn_tags": [
+            "[turn:00084]",
+            "[turn:00096]"
+          ],
+          "first_hit_rank": null,
+          "top_5_results": []
+        },
+        {
+          "question_idx": 5,
+          "question_id": "0bb5a684",
+          "question_text": "How many days before the team meeting I was preparing for did I attend the workshop on 'Effective Communication in the Workplace'?",
+          "gold_answer": "7 days. 8 days (including the last day) is also acceptable.",
+          "gold_turn_tags": [
+            "[turn:00120]",
+            "[turn:00108]"
+          ],
+          "first_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00108]",
+              "snippet": "# Session 0bb5a684_s0\r\n\r\n[turn:00108] I'm preparing for an upcoming meeting with my team and I want to make sure I'm effectively communicati",
+              "is_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00501]",
+              "snippet": "# Session gpt4_2d58bcd6_s1\r\n\r\n[turn:00501] I'm looking for some book recommendations. I've been trying to read more diversely and I just fin",
+              "is_hit": false
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00705]",
+              "snippet": "# Session c9f37c46_s1\r\n\r\n[turn:00705] I'm looking for some advice on writing jokes. I've recently gotten into stand-up comedy and I'm trying",
+              "is_hit": false
+            },
+            {
+              "rank": 4,
+              "id": "[turn:01063]",
+              "snippet": "# Session gpt4_4cd9eba1_s1\r\n\r\n[turn:01063] I'm preparing for my semester abroad at the University of California, Berkeley, and I was wonderi",
+              "is_hit": false
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00995]",
+              "snippet": "# Session gpt4_d31cdae3_s1\r\n\r\n[turn:00995] I'm trying to plan a trip to Arizona and I was wondering if you could recommend some must-see att",
+              "is_hit": false
+            }
+          ]
+        }
+      ]
+    },
+    "auxly_cli": {
+      "tool": "Auxly CLI (Keyword-only)",
+      "class": "Class B",
+      "count_verification": {
+        "expected_turns": 1320,
+        "stored_count": 1320,
+        "shortfall": 0,
+        "verified_equal": true,
+        "audit_notes": {
+          "files_count": 114,
+          "layout": "one file per session"
+        }
+      },
+      "ingestion_timing": {
+        "write_seconds": 0.119,
+        "time_to_searchable_seconds": 1.6,
+        "total_ingest_seconds": 1.718,
+        "items_per_second": 11133.8
+      },
+      "known_item_preflight": {
+        "passed": true,
+        "rank": 1,
+        "query": "cerulean observatory celestial frequency"
+      },
+      "accuracy_metrics": {
+        "recall_at_1": 0.14,
+        "recall_at_1_ci": [
+          0.04,
+          0.24
+        ],
+        "recall_at_5": 0.24,
+        "recall_at_5_ci": [
+          0.12,
+          0.36
+        ],
+        "recall_at_10": 0.24,
+        "recall_at_10_ci": [
+          0.12,
+          0.36
+        ],
+        "mrr": 0.1747,
+        "mrr_ci": [
+          0.0787,
+          0.274
+        ],
+        "ndcg_at_10": 0.1907,
+        "ndcg_at_10_ci": [
+          0.0933,
+          0.2955
+        ]
+      },
+      "latency_metrics": {
+        "p50_ms": 470.53,
+        "p95_ms": 798.62,
+        "mean_ms": 529.31
+      },
+      "peak_ram_mb": 0.0,
+      "raw_inspections_first_5": [
+        {
+          "question_idx": 1,
+          "question_id": "gpt4_2655b836",
+          "question_text": "What was the first issue I had with my new car after its first service?",
+          "gold_answer": "GPS system not functioning correctly",
+          "gold_turn_tags": [
+            "[turn:00014]",
+            "[turn:00000]"
+          ],
+          "first_hit_rank": 5,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "gpt4_2312f94c_s0.md",
+              "snippet": "But first, congratulations on your new Samsung Galaxy S22! It's great to hear you're loving it so far. To ensure your phone stays charged th",
+              "is_hit": false
+            },
+            {
+              "rank": 2,
+              "id": "gpt4_2655b836_s1.md",
+              "snippet": "2. **Ask for referrals**: Ask friends, family, or coworkers who have had their cars detailed recently for recommendations. They can provide ",
+              "is_hit": false
+            },
+            {
+              "rank": 3,
+              "id": "gpt4_d9af6064_s0.md",
+              "snippet": "Let's tackle the streaming service issue first. Since you're having trouble connecting it to your smart TV, I'll ask a few questions:",
+              "is_hit": false
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00747]",
+              "snippet": "[turn:00747] I think I'll try cleaning my sneakers at home first, but if the stains are really tough, I might take them to a professional. B",
+              "is_hit": false
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00000]",
+              "snippet": "[turn:00000] I'm thinking of getting my car detailed soon. Do you know any good detailers in the area or have any recommendations? By the wa",
+              "is_hit": true
+            }
+          ]
+        },
+        {
+          "question_idx": 2,
+          "question_id": "gpt4_2487a7cb",
+          "question_text": "Which event did I attend first, the 'Effective Time Management' workshop or the 'Data Analysis using Python' webinar?",
+          "gold_answer": "'Data Analysis using Python' webinar",
+          "gold_turn_tags": [
+            "[turn:00050]",
+            "[turn:00046]"
+          ],
+          "first_hit_rank": null,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "f0853d11_s1.md",
+              "snippet": "PurpleStride is a 5K walk/run event that takes place in June, July, and August, with some locations hosting events in September and October.",
+              "is_hit": false
+            },
+            {
+              "rank": 2,
+              "id": "gpt4_cd90e484_s0.md",
+              "snippet": "9. **Be patient and persistent**: Bird identification takes time and practice. Don't get discouraged if you struggle at first. Keep practici",
+              "is_hit": false
+            },
+            {
+              "rank": 3,
+              "id": "gpt4_0a05b494_s1.md",
+              "snippet": "3. **Attend Shared Events**: Attend events, workshops, or classes where you're likely to run into your acquaintances. This can help you stay",
+              "is_hit": false
+            },
+            {
+              "rank": 4,
+              "id": "gpt4_93f6379c_s1.md",
+              "snippet": "Live events and webinars can be particularly effective for:",
+              "is_hit": false
+            },
+            {
+              "rank": 5,
+              "id": "c9f37c46_s1.md",
+              "snippet": "Remember, writing jokes is a process, and it takes time to develop your skills. Don't get discouraged if your first draft isn't perfect. Kee",
+              "is_hit": false
+            }
+          ]
+        },
+        {
+          "question_idx": 3,
+          "question_id": "gpt4_76048e76",
+          "question_text": "Which vehicle did I take care of first in February, the bike or the car?",
+          "gold_answer": "bike",
+          "gold_turn_tags": [
+            "[turn:00060]",
+            "[turn:00072]"
+          ],
+          "first_hit_rank": null,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00017]",
+              "snippet": "[turn:00017] Advanced paint finishes, like those found on many modern vehicles, require special care to maintain their appearance and protec",
+              "is_hit": false
+            },
+            {
+              "rank": 2,
+              "id": "gpt4_2655b836_s0.md",
+              "snippet": "As for your car service experience on March 15th, I'm glad to hear it was a great experience! It's always important to keep your car well-ma",
+              "is_hit": false
+            },
+            {
+              "rank": 3,
+              "id": "gpt4_2655b836_s2.md",
+              "snippet": "3. **Autoglym**: A premium brand that offers high-end car care products, Autoglym is a great choice for those who want the best protection a",
+              "is_hit": false
+            },
+            {
+              "rank": 4,
+              "id": "gpt4_76048e76_s1.md",
+              "snippet": "By the way, kudos on washing your current Corolla! It's great that you're taking good care of your vehicle. I'm sure it felt refreshing to g",
+              "is_hit": false
+            },
+            {
+              "rank": 5,
+              "id": "gpt4_76048e76_s1.md",
+              "snippet": "It's great that you've been taking care of your current Corolla, and it's even more impressive that you've been doing some maintenance tasks",
+              "is_hit": false
+            }
+          ]
+        },
+        {
+          "question_idx": 4,
+          "question_id": "gpt4_2312f94c",
+          "question_text": "Which device did I got first, the Samsung Galaxy S22 or the Dell XPS 13?",
+          "gold_answer": "Samsung Galaxy S22",
+          "gold_turn_tags": [
+            "[turn:00084]",
+            "[turn:00096]"
+          ],
+          "first_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00096]",
+              "snippet": "[turn:00096] I'm planning a trip to Hawaii and I need to pack the right adapters for my devices. Can you help me figure out what kind of pow",
+              "is_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "gpt4_2312f94c_s0.md",
+              "snippet": "But first, congratulations on your new Samsung Galaxy S22! It's great to hear you're loving it so far. To ensure your phone stays charged th",
+              "is_hit": true
+            },
+            {
+              "rank": 3,
+              "id": "982b5123_s0.md",
+              "snippet": "5. **Be Prepared:** Pack a first-aid kit, sunscreen, insect repellent, and a map/compass or GPS device.",
+              "is_hit": false
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00088]",
+              "snippet": "[turn:00088] I'm also planning to use my portable power bank, Anker PowerCore 20000, that I bought from Amazon a week before I got my new ph",
+              "is_hit": false
+            },
+            {
+              "rank": 5,
+              "id": "gpt4_2312f94c_s0.md",
+              "snippet": "3. **Prioritize your devices:** If you have multiple devices to charge, prioritize the ones that need it most. For example, if your phone is",
+              "is_hit": false
+            }
+          ]
+        },
+        {
+          "question_idx": 5,
+          "question_id": "0bb5a684",
+          "question_text": "How many days before the team meeting I was preparing for did I attend the workshop on 'Effective Communication in the Workplace'?",
+          "gold_answer": "7 days. 8 days (including the last day) is also acceptable.",
+          "gold_turn_tags": [
+            "[turn:00120]",
+            "[turn:00108]"
+          ],
+          "first_hit_rank": null,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "gpt4_2312f94c_s0.md",
+              "snippet": "These are just a few of the many amazing places to visit in Hawaii. Make sure to check the opening hours, ticket prices, and any specific re",
+              "is_hit": false
+            },
+            {
+              "rank": 2,
+              "id": "a3045048_s0.md",
+              "snippet": "1. **Watch Engraving Services:** Many online retailers, like Amazon or WatchShop, offer watch engraving services for certain models. They mi",
+              "is_hit": false
+            },
+            {
+              "rank": 3,
+              "id": "a3838d2b_s2.md",
+              "snippet": "4. **Teamwork**: Ability to work collaboratively with others is essential for many projects.",
+              "is_hit": false
+            },
+            {
+              "rank": 4,
+              "id": "c9f37c46_s0.md",
+              "snippet": "3. **Watch and Learn**: Attend as many live comedy shows as you can, paying attention to structure, pacing, and audience interaction.",
+              "is_hit": false
+            },
+            {
+              "rank": 5,
+              "id": "gpt4_2655b836_s2.md",
+              "snippet": "2. How many days do you have for the trip?",
+              "is_hit": false
+            }
+          ]
+        }
+      ]
+    },
+    "mem0": {
+      "status": "not offered",
+      "url": "https://pypi.org/project/mem0ai/"
+    }
+  },
+  "class_c_mcp": {
+    "basic_memory_mcp": {
+      "tool": "Basic Memory MCP (FastMCP v4.1.4)",
+      "class": "Class C",
+      "count_verification": {
+        "expected_turns": 1320,
+        "stored_count": 1320,
+        "shortfall": 0,
+        "verified_equal": true,
+        "audit_notes": {
+          "layout": "one note per turn with unique title (turn tag) in basic-memory folder",
+          "framework": "FastMCP 4.1.4",
+          "note_count": 1320
+        }
+      },
+      "ingestion_timing": {
+        "write_seconds": 276.997,
+        "time_to_searchable_seconds": 3.053,
+        "total_ingest_seconds": 280.049,
+        "items_per_second": 4.8
+      },
+      "known_item_preflight": {
+        "passed": true,
+        "rank": 1,
+        "query": "cerulean observatory celestial frequency"
+      },
+      "accuracy_metrics": {
+        "recall_at_1": 0.36,
+        "recall_at_1_ci": [
+          0.22,
+          0.5
+        ],
+        "recall_at_5": 0.74,
+        "recall_at_5_ci": [
+          0.62,
+          0.86
+        ],
+        "recall_at_10": 0.88,
+        "recall_at_10_ci": [
+          0.78,
+          0.96
+        ],
+        "mrr": 0.5307,
+        "mrr_ci": [
+          0.4276,
+          0.6361
+        ],
+        "ndcg_at_10": 0.6146,
+        "ndcg_at_10_ci": [
+          0.5254,
+          0.7078
+        ]
+      },
+      "latency_metrics": {
+        "p50_ms": 121.93,
+        "p95_ms": 276.72,
+        "mean_ms": 244.0
+      },
+      "peak_ram_mb": 0.0,
+      "raw_inspections_first_5": [
+        {
+          "question_idx": 1,
+          "question_id": "gpt4_2655b836",
+          "question_text": "What was the first issue I had with my new car after its first service?",
+          "gold_answer": "GPS system not functioning correctly",
+          "gold_turn_tags": [
+            "[turn:00014]",
+            "[turn:00000]"
+          ],
+          "first_hit_rank": 4,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00011]",
+              "snippet": "[turn:00011]",
+              "is_hit": false
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00072]",
+              "snippet": "[turn:00072]",
+              "is_hit": false
+            },
+            {
+              "rank": 3,
+              "id": "[turn:01072]",
+              "snippet": "[turn:01072]",
+              "is_hit": false
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00000]",
+              "snippet": "[turn:00000]",
+              "is_hit": true
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00001]",
+              "snippet": "[turn:00001]",
+              "is_hit": false
+            }
+          ]
+        },
+        {
+          "question_idx": 2,
+          "question_id": "gpt4_2487a7cb",
+          "question_text": "Which event did I attend first, the 'Effective Time Management' workshop or the 'Data Analysis using Python' webinar?",
+          "gold_answer": "'Data Analysis using Python' webinar",
+          "gold_turn_tags": [
+            "[turn:00050]",
+            "[turn:00046]"
+          ],
+          "first_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00046]",
+              "snippet": "[turn:00046]",
+              "is_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00118]",
+              "snippet": "[turn:00118]",
+              "is_hit": false
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00108]",
+              "snippet": "[turn:00108]",
+              "is_hit": false
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00116]",
+              "snippet": "[turn:00116]",
+              "is_hit": false
+            },
+            {
+              "rank": 5,
+              "id": "[turn:01074]",
+              "snippet": "[turn:01074]",
+              "is_hit": false
+            }
+          ]
+        },
+        {
+          "question_idx": 3,
+          "question_id": "gpt4_76048e76",
+          "question_text": "Which vehicle did I take care of first in February, the bike or the car?",
+          "gold_answer": "bike",
+          "gold_turn_tags": [
+            "[turn:00060]",
+            "[turn:00072]"
+          ],
+          "first_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00060]",
+              "snippet": "[turn:00060]",
+              "is_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00001]",
+              "snippet": "[turn:00001]",
+              "is_hit": false
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00013]",
+              "snippet": "[turn:00013]",
+              "is_hit": false
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00070]",
+              "snippet": "[turn:00070]",
+              "is_hit": false
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00065]",
+              "snippet": "[turn:00065]",
+              "is_hit": false
+            }
+          ]
+        },
+        {
+          "question_idx": 4,
+          "question_id": "gpt4_2312f94c",
+          "question_text": "Which device did I got first, the Samsung Galaxy S22 or the Dell XPS 13?",
+          "gold_answer": "Samsung Galaxy S22",
+          "gold_turn_tags": [
+            "[turn:00084]",
+            "[turn:00096]"
+          ],
+          "first_hit_rank": null,
+          "top_5_results": []
+        },
+        {
+          "question_idx": 5,
+          "question_id": "0bb5a684",
+          "question_text": "How many days before the team meeting I was preparing for did I attend the workshop on 'Effective Communication in the Workplace'?",
+          "gold_answer": "7 days. 8 days (including the last day) is also acceptable.",
+          "gold_turn_tags": [
+            "[turn:00120]",
+            "[turn:00108]"
+          ],
+          "first_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00108]",
+              "snippet": "[turn:00108]",
+              "is_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00112]",
+              "snippet": "[turn:00112]",
+              "is_hit": false
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00120]",
+              "snippet": "[turn:00120]",
+              "is_hit": true
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00131]",
+              "snippet": "[turn:00131]",
+              "is_hit": false
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00127]",
+              "snippet": "[turn:00127]",
+              "is_hit": false
+            }
+          ]
+        }
+      ]
+    },
+    "auxly_mcp_search": {
+      "tool": "Auxly MCP (Search)",
+      "class": "Class C",
+      "count_verification": {
+        "expected_turns": 1320,
+        "stored_count": 1320,
+        "shortfall": 0,
+        "verified_equal": true,
+        "audit_notes": {
+          "pending_list_empty": true,
+          "stats_raw": "\ud83d\udcca Memory Stats\nTotal entries: 114\nWrites today: 114\n\nBy Provider:\n  antigravity-cli: 114\n",
+          "tool_documented": "auxly_memory_search"
+        }
+      },
+      "ingestion_timing": {
+        "write_seconds": 3.51,
+        "time_to_searchable_seconds": 0.355,
+        "total_ingest_seconds": 3.865,
+        "items_per_second": 376.1
+      },
+      "known_item_preflight": {
+        "passed": true,
+        "rank": 1,
+        "query": "cerulean observatory celestial frequency"
+      },
+      "accuracy_metrics": {
+        "recall_at_1": 0.18,
+        "recall_at_1_ci": [
+          0.08,
+          0.3
+        ],
+        "recall_at_5": 0.22,
+        "recall_at_5_ci": [
+          0.1,
+          0.34
+        ],
+        "recall_at_10": 0.24,
+        "recall_at_10_ci": [
+          0.12,
+          0.36
+        ],
+        "mrr": 0.1995,
+        "mrr_ci": [
+          0.1,
+          0.3124
+        ],
+        "ndcg_at_10": 0.2093,
+        "ndcg_at_10_ci": [
+          0.1052,
+          0.3226
+        ]
+      },
+      "latency_metrics": {
+        "p50_ms": 428.09,
+        "p95_ms": 955.5,
+        "mean_ms": 527.19
+      },
+      "peak_ram_mb": 0.0,
+      "raw_inspections_first_5": [
+        {
+          "question_idx": 1,
+          "question_id": "gpt4_2655b836",
+          "question_text": "What was the first issue I had with my new car after its first service?",
+          "gold_answer": "GPS system not functioning correctly",
+          "gold_turn_tags": [
+            "[turn:00014]",
+            "[turn:00000]"
+          ],
+          "first_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00000]",
+              "snippet": "[turn:00000] I'm thinking of getting my car detailed soon. Do you know any good detailers in the area or have any recommendations? By the wa",
+              "is_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "gpt4_d9af6064_s0.md",
+              "snippet": "Let's tackle the streaming service issue first. Since you're having trouble connecting it to your smart TV, I'll ask a few questions:",
+              "is_hit": false
+            },
+            {
+              "rank": 3,
+              "id": "gpt4_2312f94c_s0.md",
+              "snippet": "But first, congratulations on your new Samsung Galaxy S22! It's great to hear you're loving it so far. To ensure your phone stays charged th",
+              "is_hit": false
+            },
+            {
+              "rank": 4,
+              "id": "gpt4_2655b836_s1.md",
+              "snippet": "2. **Ask for referrals**: Ask friends, family, or coworkers who have had their cars detailed recently for recommendations. They can provide ",
+              "is_hit": false
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00747]",
+              "snippet": "[turn:00747] I think I'll try cleaning my sneakers at home first, but if the stains are really tough, I might take them to a professional. B",
+              "is_hit": false
+            }
+          ]
+        },
+        {
+          "question_idx": 2,
+          "question_id": "gpt4_2487a7cb",
+          "question_text": "Which event did I attend first, the 'Effective Time Management' workshop or the 'Data Analysis using Python' webinar?",
+          "gold_answer": "'Data Analysis using Python' webinar",
+          "gold_turn_tags": [
+            "[turn:00046]",
+            "[turn:00050]"
+          ],
+          "first_hit_rank": null,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "gpt4_0a05b494_s1.md",
+              "snippet": "3. **Attend Shared Events**: Attend events, workshops, or classes where you're likely to run into your acquaintances. This can help you stay",
+              "is_hit": false
+            },
+            {
+              "rank": 2,
+              "id": "gpt4_93f6379c_s1.md",
+              "snippet": "Live events and webinars can be particularly effective for:",
+              "is_hit": false
+            },
+            {
+              "rank": 3,
+              "id": "f0853d11_s1.md",
+              "snippet": "PurpleStride is a 5K walk/run event that takes place in June, July, and August, with some locations hosting events in September and October.",
+              "is_hit": false
+            },
+            {
+              "rank": 4,
+              "id": "c9f37c46_s1.md",
+              "snippet": "Remember, writing jokes is a process, and it takes time to develop your skills. Don't get discouraged if your first draft isn't perfect. Kee",
+              "is_hit": false
+            },
+            {
+              "rank": 5,
+              "id": "gpt4_cd90e484_s0.md",
+              "snippet": "9. **Be patient and persistent**: Bird identification takes time and practice. Don't get discouraged if you struggle at first. Keep practici",
+              "is_hit": false
+            }
+          ]
+        },
+        {
+          "question_idx": 3,
+          "question_id": "gpt4_76048e76",
+          "question_text": "Which vehicle did I take care of first in February, the bike or the car?",
+          "gold_answer": "bike",
+          "gold_turn_tags": [
+            "[turn:00072]",
+            "[turn:00060]"
+          ],
+          "first_hit_rank": null,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "gpt4_2655b836_s0.md",
+              "snippet": "As for your car service experience on March 15th, I'm glad to hear it was a great experience! It's always important to keep your car well-ma",
+              "is_hit": false
+            },
+            {
+              "rank": 2,
+              "id": "gpt4_2655b836_s2.md",
+              "snippet": "3. **Autoglym**: A premium brand that offers high-end car care products, Autoglym is a great choice for those who want the best protection a",
+              "is_hit": false
+            },
+            {
+              "rank": 3,
+              "id": "gpt4_76048e76_s1.md",
+              "snippet": "By the way, kudos on washing your current Corolla! It's great that you're taking good care of your vehicle. I'm sure it felt refreshing to g",
+              "is_hit": false
+            },
+            {
+              "rank": 4,
+              "id": "gpt4_76048e76_s1.md",
+              "snippet": "It's great that you've been taking care of your current Corolla, and it's even more impressive that you've been doing some maintenance tasks",
+              "is_hit": false
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00017]",
+              "snippet": "[turn:00017] Advanced paint finishes, like those found on many modern vehicles, require special care to maintain their appearance and protec",
+              "is_hit": false
+            }
+          ]
+        },
+        {
+          "question_idx": 4,
+          "question_id": "gpt4_2312f94c",
+          "question_text": "Which device did I got first, the Samsung Galaxy S22 or the Dell XPS 13?",
+          "gold_answer": "Samsung Galaxy S22",
+          "gold_turn_tags": [
+            "[turn:00096]",
+            "[turn:00084]"
+          ],
+          "first_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00096]",
+              "snippet": "[turn:00096] I'm planning a trip to Hawaii and I need to pack the right adapters for my devices. Can you help me figure out what kind of pow",
+              "is_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "gpt4_2312f94c_s0.md",
+              "snippet": "But first, congratulations on your new Samsung Galaxy S22! It's great to hear you're loving it so far. To ensure your phone stays charged th",
+              "is_hit": true
+            },
+            {
+              "rank": 3,
+              "id": "982b5123_s0.md",
+              "snippet": "5. **Be Prepared:** Pack a first-aid kit, sunscreen, insect repellent, and a map/compass or GPS device.",
+              "is_hit": false
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00088]",
+              "snippet": "[turn:00088] I'm also planning to use my portable power bank, Anker PowerCore 20000, that I bought from Amazon a week before I got my new ph",
+              "is_hit": false
+            },
+            {
+              "rank": 5,
+              "id": "gpt4_2312f94c_s0.md",
+              "snippet": "3. **Prioritize your devices:** If you have multiple devices to charge, prioritize the ones that need it most. For example, if your phone is",
+              "is_hit": false
+            }
+          ]
+        },
+        {
+          "question_idx": 5,
+          "question_id": "0bb5a684",
+          "question_text": "How many days before the team meeting I was preparing for did I attend the workshop on 'Effective Communication in the Workplace'?",
+          "gold_answer": "7 days. 8 days (including the last day) is also acceptable.",
+          "gold_turn_tags": [
+            "[turn:00120]",
+            "[turn:00108]"
+          ],
+          "first_hit_rank": null,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00328]",
+              "snippet": "[turn:00328] Oxybenzone and octinoxate are two common chemical active ingredients found in many chemical-based sunscreens. While they're eff",
+              "is_hit": false
+            },
+            {
+              "rank": 2,
+              "id": "gpt4_2312f94c_s0.md",
+              "snippet": "These are just a few of the many amazing places to visit in Hawaii. Make sure to check the opening hours, ticket prices, and any specific re",
+              "is_hit": false
+            },
+            {
+              "rank": 3,
+              "id": "gpt4_9a159967_s2.md",
+              "snippet": "2. **Lyft**: Lyft is another popular ride-sharing service that operates in many cities. If you haven't tried it before, you can download the",
+              "is_hit": false
+            },
+            {
+              "rank": 4,
+              "id": "a3045048_s0.md",
+              "snippet": "1. **Watch Engraving Services:** Many online retailers, like Amazon or WatchShop, offer watch engraving services for certain models. They mi",
+              "is_hit": false
+            },
+            {
+              "rank": 5,
+              "id": "[turn:01133]",
+              "snippet": "[turn:01133] I actually got a soprano ukulele, and I really love its bright and cheerful sound. I didn't try out many ukes before buying thi",
+              "is_hit": false
+            }
+          ]
+        }
+      ]
+    },
+    "auxly_mcp_recall": {
+      "tool": "Auxly MCP (Recall)",
+      "class": "Class C",
+      "count_verification": {
+        "expected_turns": 1320,
+        "stored_count": 1320,
+        "shortfall": 0,
+        "verified_equal": true,
+        "audit_notes": {
+          "pending_list_empty": true,
+          "tool_documented": "auxly_memory_recall (semantic with keyword fallback)"
+        }
+      },
+      "ingestion_timing": {
+        "write_seconds": 3.51,
+        "time_to_searchable_seconds": 0.355,
+        "total_ingest_seconds": 3.865,
+        "items_per_second": 376.1
+      },
+      "known_item_preflight": {
+        "passed": true,
+        "rank": 1,
+        "query": "cerulean observatory celestial frequency"
+      },
+      "accuracy_metrics": {
+        "recall_at_1": 0.14,
+        "recall_at_1_ci": [
+          0.04,
+          0.24
+        ],
+        "recall_at_5": 0.24,
+        "recall_at_5_ci": [
+          0.12,
+          0.36
+        ],
+        "recall_at_10": 0.24,
+        "recall_at_10_ci": [
+          0.12,
+          0.36
+        ],
+        "mrr": 0.175,
+        "mrr_ci": [
+          0.0817,
+          0.27
+        ],
+        "ndcg_at_10": 0.1912,
+        "ndcg_at_10_ci": [
+          0.0958,
+          0.2939
+        ]
+      },
+      "latency_metrics": {
+        "p50_ms": 852.75,
+        "p95_ms": 1057.04,
+        "mean_ms": 876.97
+      },
+      "peak_ram_mb": 0.0,
+      "raw_inspections_first_5": [
+        {
+          "question_idx": 1,
+          "question_id": "gpt4_2655b836",
+          "question_text": "What was the first issue I had with my new car after its first service?",
+          "gold_answer": "GPS system not functioning correctly",
+          "gold_turn_tags": [
+            "[turn:00014]",
+            "[turn:00000]"
+          ],
+          "first_hit_rank": 3,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00747]",
+              "snippet": "[turn:00747] I think I'll try cleaning my sneakers at home first, but if the stains are really tough, I might take them to a professional. B",
+              "is_hit": false
+            },
+            {
+              "rank": 2,
+              "id": "gpt4_d9af6064_s0.md",
+              "snippet": "Let's tackle the streaming service issue first. Since you're having trouble connecting it to your smart TV, I'll ask a few questions:",
+              "is_hit": false
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00000]",
+              "snippet": "[turn:00000] I'm thinking of getting my car detailed soon. Do you know any good detailers in the area or have any recommendations? By the wa",
+              "is_hit": true
+            },
+            {
+              "rank": 4,
+              "id": "gpt4_2312f94c_s0.md",
+              "snippet": "But first, congratulations on your new Samsung Galaxy S22! It's great to hear you're loving it so far. To ensure your phone stays charged th",
+              "is_hit": false
+            },
+            {
+              "rank": 5,
+              "id": "gpt4_2655b836_s1.md",
+              "snippet": "2. **Ask for referrals**: Ask friends, family, or coworkers who have had their cars detailed recently for recommendations. They can provide ",
+              "is_hit": false
+            }
+          ]
+        },
+        {
+          "question_idx": 2,
+          "question_id": "gpt4_2487a7cb",
+          "question_text": "Which event did I attend first, the 'Effective Time Management' workshop or the 'Data Analysis using Python' webinar?",
+          "gold_answer": "'Data Analysis using Python' webinar",
+          "gold_turn_tags": [
+            "[turn:00046]",
+            "[turn:00050]"
+          ],
+          "first_hit_rank": null,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "gpt4_93f6379c_s1.md",
+              "snippet": "Live events and webinars can be particularly effective for:",
+              "is_hit": false
+            },
+            {
+              "rank": 2,
+              "id": "gpt4_0a05b494_s1.md",
+              "snippet": "3. **Attend Shared Events**: Attend events, workshops, or classes where you're likely to run into your acquaintances. This can help you stay",
+              "is_hit": false
+            },
+            {
+              "rank": 3,
+              "id": "gpt4_cd90e484_s0.md",
+              "snippet": "9. **Be patient and persistent**: Bird identification takes time and practice. Don't get discouraged if you struggle at first. Keep practici",
+              "is_hit": false
+            },
+            {
+              "rank": 4,
+              "id": "f0853d11_s1.md",
+              "snippet": "PurpleStride is a 5K walk/run event that takes place in June, July, and August, with some locations hosting events in September and October.",
+              "is_hit": false
+            },
+            {
+              "rank": 5,
+              "id": "c9f37c46_s1.md",
+              "snippet": "Remember, writing jokes is a process, and it takes time to develop your skills. Don't get discouraged if your first draft isn't perfect. Kee",
+              "is_hit": false
+            }
+          ]
+        },
+        {
+          "question_idx": 3,
+          "question_id": "gpt4_76048e76",
+          "question_text": "Which vehicle did I take care of first in February, the bike or the car?",
+          "gold_answer": "bike",
+          "gold_turn_tags": [
+            "[turn:00072]",
+            "[turn:00060]"
+          ],
+          "first_hit_rank": null,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "gpt4_2655b836_s0.md",
+              "snippet": "As for your car service experience on March 15th, I'm glad to hear it was a great experience! It's always important to keep your car well-ma",
+              "is_hit": false
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00017]",
+              "snippet": "[turn:00017] Advanced paint finishes, like those found on many modern vehicles, require special care to maintain their appearance and protec",
+              "is_hit": false
+            },
+            {
+              "rank": 3,
+              "id": "gpt4_2655b836_s2.md",
+              "snippet": "3. **Autoglym**: A premium brand that offers high-end car care products, Autoglym is a great choice for those who want the best protection a",
+              "is_hit": false
+            },
+            {
+              "rank": 4,
+              "id": "gpt4_76048e76_s1.md",
+              "snippet": "By the way, kudos on washing your current Corolla! It's great that you're taking good care of your vehicle. I'm sure it felt refreshing to g",
+              "is_hit": false
+            },
+            {
+              "rank": 5,
+              "id": "gpt4_76048e76_s1.md",
+              "snippet": "It's great that you've been taking care of your current Corolla, and it's even more impressive that you've been doing some maintenance tasks",
+              "is_hit": false
+            }
+          ]
+        },
+        {
+          "question_idx": 4,
+          "question_id": "gpt4_2312f94c",
+          "question_text": "Which device did I got first, the Samsung Galaxy S22 or the Dell XPS 13?",
+          "gold_answer": "Samsung Galaxy S22",
+          "gold_turn_tags": [
+            "[turn:00096]",
+            "[turn:00084]"
+          ],
+          "first_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00096]",
+              "snippet": "[turn:00096] I'm planning a trip to Hawaii and I need to pack the right adapters for my devices. Can you help me figure out what kind of pow",
+              "is_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "gpt4_2312f94c_s0.md",
+              "snippet": "But first, congratulations on your new Samsung Galaxy S22! It's great to hear you're loving it so far. To ensure your phone stays charged th",
+              "is_hit": true
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00869]",
+              "snippet": "[turn:00869] I'm with XYZ Internet, and I currently have a 500 Mbps plan. I recently got a new router on January 15th, which has improved my",
+              "is_hit": false
+            },
+            {
+              "rank": 4,
+              "id": "982b5123_s0.md",
+              "snippet": "5. **Be Prepared:** Pack a first-aid kit, sunscreen, insect repellent, and a map/compass or GPS device.",
+              "is_hit": false
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00088]",
+              "snippet": "[turn:00088] I'm also planning to use my portable power bank, Anker PowerCore 20000, that I bought from Amazon a week before I got my new ph",
+              "is_hit": false
+            }
+          ]
+        },
+        {
+          "question_idx": 5,
+          "question_id": "0bb5a684",
+          "question_text": "How many days before the team meeting I was preparing for did I attend the workshop on 'Effective Communication in the Workplace'?",
+          "gold_answer": "7 days. 8 days (including the last day) is also acceptable.",
+          "gold_turn_tags": [
+            "[turn:00120]",
+            "[turn:00108]"
+          ],
+          "first_hit_rank": null,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "c9f37c46_s0.md",
+              "snippet": "3. **Watch and Learn**: Attend as many live comedy shows as you can, paying attention to structure, pacing, and audience interaction.",
+              "is_hit": false
+            },
+            {
+              "rank": 2,
+              "id": "gpt4_8c8961ae_s0.md",
+              "snippet": "2. **Attend travel events or meetups**: Many cities have travel events, meetups, or language exchange events that can be a great way to meet",
+              "is_hit": false
+            },
+            {
+              "rank": 3,
+              "id": "gpt4_9a159967_s2.md",
+              "snippet": "2. **Lyft**: Lyft is another popular ride-sharing service that operates in many cities. If you haven't tried it before, you can download the",
+              "is_hit": false
+            },
+            {
+              "rank": 4,
+              "id": "[turn:01133]",
+              "snippet": "[turn:01133] I actually got a soprano ukulele, and I really love its bright and cheerful sound. I didn't try out many ukes before buying thi",
+              "is_hit": false
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00328]",
+              "snippet": "[turn:00328] Oxybenzone and octinoxate are two common chemical active ingredients found in many chemical-based sunscreens. While they're eff",
+              "is_hit": false
+            }
+          ]
+        }
+      ]
+    },
+    "mem0": {
+      "status": "not offered locally",
+      "url": "https://docs.mem0.ai/mcp",
+      "note": "Official MCP server is cloud-hosted HTTP https://mcp.mem0.ai/mcp; local repo is archived."
+    },
+    "mesh_mcp": {
+      "tool": "Mesh MCP (Framework v1.30.0, Package v0.8.3)",
+      "class": "Class C",
+      "count_verification": {
+        "expected_turns": 1320,
+        "stored_count": 1320,
+        "shortfall": 0,
+        "verified_equal": true,
+        "audit_notes": {
+          "quarantined_count": 0,
+          "contradictions_detected": 0,
+          "deduplicated_dropped": 0,
+          "tools_exposed": 17,
+          "framework": "FastMCP 1.30.0",
+          "package_version": "0.8.3",
+          "notes": "Mesh store exact SQLite count verified via mesh_inspect; zero turns dropped or hidden."
+        }
+      },
+      "ingestion_timing": {
+        "write_seconds": 44.224,
+        "time_to_searchable_seconds": 0.044,
+        "total_ingest_seconds": 44.267,
+        "items_per_second": 29.8
+      },
+      "known_item_preflight": {
+        "passed": true,
+        "rank": 1,
+        "query": "cerulean observatory celestial frequency"
+      },
+      "accuracy_metrics": {
+        "recall_at_1": 0.34,
+        "recall_at_1_ci": [
+          0.22,
+          0.48
+        ],
+        "recall_at_5": 0.86,
+        "recall_at_5_ci": [
+          0.76,
+          0.94
+        ],
+        "recall_at_10": 0.94,
+        "recall_at_10_ci": [
+          0.86,
+          1.0
+        ],
+        "mrr": 0.5754,
+        "mrr_ci": [
+          0.481,
+          0.6713
+        ],
+        "ndcg_at_10": 0.6657,
+        "ndcg_at_10_ci": [
+          0.5847,
+          0.7463
+        ]
+      },
+      "latency_metrics": {
+        "p50_ms": 66.34,
+        "p95_ms": 110.03,
+        "mean_ms": 66.17
+      },
+      "peak_ram_mb": 0.0,
+      "raw_inspections_first_5": [
+        {
+          "question_idx": 1,
+          "question_id": "gpt4_2655b836",
+          "question_text": "What was the first issue I had with my new car after its first service?",
+          "gold_answer": "GPS system not functioning correctly",
+          "gold_turn_tags": [
+            "[turn:00000]",
+            "[turn:00014]"
+          ],
+          "first_hit_rank": 5,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00075]",
+              "snippet": "[turn:00075] Wise decision to get the \"check engine\" light checked out!\n\nMaintenance costs are an essential factor to consider when buying a",
+              "is_hit": false
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00880]",
+              "snippet": "[turn:00880] I'm happy to help you with your internet speed issues and negotiating with your provider!\n\nFirstly, congratulations on getting ",
+              "is_hit": false
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00874]",
+              "snippet": "[turn:00874] It sounds like slow speeds and connectivity issues are impacting your work-from-home experience and entertainment setup.\n\n**Str",
+              "is_hit": false
+            },
+            {
+              "rank": 4,
+              "id": "[turn:01064]",
+              "snippet": "[turn:01064] Congratulations on your acceptance to UC Berkeley's exchange program! I'd be happy to help you prepare for your semester abroad",
+              "is_hit": false
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00000]",
+              "snippet": "[turn:00000] I'm thinking of getting my car detailed soon. Do you know any good detailers in the area or have any recommendations? By the wa",
+              "is_hit": true
+            }
+          ]
+        },
+        {
+          "question_idx": 2,
+          "question_id": "gpt4_2487a7cb",
+          "question_text": "Which event did I attend first, the 'Effective Time Management' workshop or the 'Data Analysis using Python' webinar?",
+          "gold_answer": "'Data Analysis using Python' webinar",
+          "gold_turn_tags": [
+            "[turn:00050]",
+            "[turn:00046]"
+          ],
+          "first_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00050]",
+              "snippet": "[turn:00050] I'm actually familiar with some of these resources, I participated in a webinar on \"Data Analysis using Python\" two months ago,",
+              "is_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00048]",
+              "snippet": "[turn:00048] I'm trying to work on a project that involves data analysis, and I was wondering if you could recommend some resources for lear",
+              "is_hit": false
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00046]",
+              "snippet": "[turn:00046] I've been thinking about my goals and priorities lately, and I realized that I want to focus more on learning new skills and ex",
+              "is_hit": true
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00049]",
+              "snippet": "[turn:00049] Data visualization is a crucial step in data analysis, and Python is an excellent choice for it. Here are some top-notch resour",
+              "is_hit": false
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00051]",
+              "snippet": "[turn:00051] That's great to hear that you already have some background in Python and data analysis!\n\nBoth Matplotlib and Seaborn are excell",
+              "is_hit": false
+            }
+          ]
+        },
+        {
+          "question_idx": 3,
+          "question_id": "gpt4_76048e76",
+          "question_text": "Which vehicle did I take care of first in February, the bike or the car?",
+          "gold_answer": "bike",
+          "gold_turn_tags": [
+            "[turn:00072]",
+            "[turn:00060]"
+          ],
+          "first_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00060]",
+              "snippet": "[turn:00060] I'm thinking of getting a new bike rack for my car. Do you have any recommendations? By the way, I've been having some issues w",
+              "is_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00000]",
+              "snippet": "[turn:00000] I'm thinking of getting my car detailed soon. Do you know any good detailers in the area or have any recommendations? By the wa",
+              "is_hit": false
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00035]",
+              "snippet": "[turn:00035] Getting a car wax and detailing done before your trip is an excellent idea. It'll not only protect your car's paint job and int",
+              "is_hit": false
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00001]",
+              "snippet": "[turn:00001] I'm happy to help you with your question! However, I'm a large language model, I don't have personal experiences or knowledge o",
+              "is_hit": false
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00080]",
+              "snippet": "[turn:00080] I'm glad to hear about the advanced safety features of the Corolla Hybrid. By the way, I recently had to take my bike in for re",
+              "is_hit": true
+            }
+          ]
+        },
+        {
+          "question_idx": 4,
+          "question_id": "gpt4_2312f94c",
+          "question_text": "Which device did I got first, the Samsung Galaxy S22 or the Dell XPS 13?",
+          "gold_answer": "Samsung Galaxy S22",
+          "gold_turn_tags": [
+            "[turn:00096]",
+            "[turn:00084]"
+          ],
+          "first_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00099]",
+              "snippet": "[turn:00099] The Anker PowerCore 20000 is a great portable power bank with a capacity of 20,000mAh. It's a popular and well-reviewed product",
+              "is_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00096]",
+              "snippet": "[turn:00096] I'm planning a trip to Hawaii and I need to pack the right adapters for my devices. Can you help me figure out what kind of pow",
+              "is_hit": true
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00097]",
+              "snippet": "[turn:00097] Congratulations on your new laptop and smartphone!\n\nI'd be happy to help you with the power adapters for your trip to Hawaii.\n\n",
+              "is_hit": true
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00085]",
+              "snippet": "[turn:00085] A trip to Hawaii sounds like a wonderful idea! I'd be happy to help you with some must-visit places to add to your itinerary.\n\n",
+              "is_hit": true
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00089]",
+              "snippet": "[turn:00089] That's a great idea! A portable power bank is a must-have travel accessory, especially when you're planning to be outdoors and ",
+              "is_hit": true
+            }
+          ]
+        },
+        {
+          "question_idx": 5,
+          "question_id": "0bb5a684",
+          "question_text": "How many days before the team meeting I was preparing for did I attend the workshop on 'Effective Communication in the Workplace'?",
+          "gold_answer": "7 days. 8 days (including the last day) is also acceptable.",
+          "gold_turn_tags": [
+            "[turn:00108]",
+            "[turn:00120]"
+          ],
+          "first_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00108]",
+              "snippet": "[turn:00108] I'm preparing for an upcoming meeting with my team and I want to make sure I'm effectively communicating our project updates. I",
+              "is_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00109]",
+              "snippet": "[turn:00109] Congratulations on taking the initiative to improve your communication skills! Attending the workshop on \"Effective Communicati",
+              "is_hit": false
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00112]",
+              "snippet": "[turn:00112] I'm glad I attended that workshop on \"Effective Communication in the Workplace\" on January 10th, as it helped me realize the im",
+              "is_hit": false
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00116]",
+              "snippet": "[turn:00116] I'll definitely consider using some of these interactive tools to make my presentation more engaging. Since I attended a worksh",
+              "is_hit": false
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00118]",
+              "snippet": "[turn:00118] I'd like to ask about the importance of self-awareness in effective communication. As I reflect on the workshop I attended on \"",
+              "is_hit": false
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

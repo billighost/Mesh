@@ -6,10 +6,10 @@ import Terminal from "./ui/Terminal";
 
 
 const agensiLines = [
-  '$ memory: "staging db moved to :5439"',
-  "ok  updated db-cfg-92",
-  "ok  resolved conf-412",
-  "ok  all agents recall :5439",
+  '$ mesh brief --max-tokens 500',
+  "ok  2 open goals / 5 tasks / 1 conflict",
+  '$ mesh task done task-12 --summary "auth live"',
+  "ok  logged / evidence recorded / changelog updated",
 ];
 
 export default function AgensiSection() {
@@ -21,7 +21,7 @@ export default function AgensiSection() {
           route="DISTRIBUTION"
           id="agensi-title"
           title="Free on Agensi. Security scanned. 27 agents."
-          lede="Mesh is published as a free, security-scanned SKILL.md skill on Agensi. Use it from Claude Code, Cursor, Codex CLI, Muse, Dots, OpenClaw, Manus, Grok, and 18 more — or install the package yourself."
+          lede="Mesh is published as a free, security-scanned SKILL.md skill on Agensi. Use it from Claude Code, Claude Desktop, Cursor, Windsurf, Codex, Gemini CLI, Antigravity, and 20 more — or install the package directly and configure it yourself."
           meta="listing attributes / via Agensi"
         />
 
@@ -32,10 +32,12 @@ export default function AgensiSection() {
               <Badge tone="accent">Free</Badge>
               <Badge tone="ok">Security scanned</Badge>
               <Badge>27 agents</Badge>
+              <Badge>17 MCP tools</Badge>
             </div>
             <p>
-              The listing includes a worked session, the install flow, and the agents it
-              supports. One click gets the skill; the package is the same local engine.
+              The listing includes a worked session, the full install flow, and example
+              task and memory workflows. One click gets the skill; the package is the
+              same local engine that runs in your terminal.
             </p>
             <div className="agensi__actions">
               <Button href={AGENSI_URL} iconRight="arrowUpRight">
@@ -60,14 +62,14 @@ export default function AgensiSection() {
             />
             <div className="agensi__rows">
               <div className="agensi__row">
-                <strong>db-cfg-92</strong>
-                staging database port is 5439
-                <Badge>fact</Badge>
+                <strong>goal-4</strong>
+                ship checkout v2
+                <Badge>goal / high</Badge>
               </div>
               <div className="agensi__row">
-                <strong>conf-412</strong>
-                overwrote old port (5432)
-                <Badge>conflict</Badge>
+                <strong>task-12</strong>
+                auth service is live (RS256)
+                <Badge>done</Badge>
               </div>
             </div>
           </div>

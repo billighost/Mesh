@@ -10,6 +10,8 @@ import sys
 
 def main() -> None:
     cmd = [sys.executable, "-m", "pytest", "-v", "--tb=short", "-ra"]
+    if os.environ.get("HYPOTHESIS_PROFILE"):
+        cmd.extend([f"--hypothesis-profile={os.environ['HYPOTHESIS_PROFILE']}", "--hypothesis-show-statistics"])
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,

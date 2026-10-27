@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import sys as _fast_sys
 
-if __name__ == "__main__" and len(_fast_sys.argv) == 2 and _fast_sys.argv[1] in ("-v", "--version", "version"):
+if len(_fast_sys.argv) == 2 and _fast_sys.argv[1] in ("-v", "--version", "version"):
     from .version import VERSION as _FAST_VERSION
 
     print(f"mesh {_FAST_VERSION}")
@@ -385,13 +385,13 @@ def _check_daemon_write_response(proxied: Optional[dict[str, Any]], cmd_label: s
     return proxied
 
 
-def _namespace_degraded_counts(namespace: str) -> tuple[int, int]:
-    """Return `(hash_384_count, needs_reembed_count)` for an existing namespace DB without creating one."""
+def _namespace_degraded_counts(namespace: str) -> tuple[int, int, int]:
+    """Return `(hash_384_count, needs_reembed_count, mixed_space_count)` for an existing namespace DB without creating one."""
     from .audit import ensure_secure_mesh_dir
 
     db_path = ensure_secure_mesh_dir().resolve() / f"mesh_{namespace}.db"
     if not db_path.exists():
-        return 0, 0
+        return 0, 0, 0
 
     from .store import _CACHE_LOCK, _VECTOR_CACHE
 
@@ -400,8 +400,10 @@ def _namespace_degraded_counts(namespace: str) -> tuple[int, int]:
         if entry is not None and entry.rows_by_id:
             rows = list(entry.rows_by_id.values())
             hash_cnt = sum(1 for r in rows if r.get("embedding_model") == "hash-384")
+            onnx_cnt = sum(1 for r in rows if r.get("embedding_model") == "onnx-minilm-l6-v2")
             reembed_cnt = sum(1 for r in rows if r.get("embedding_model") in ("needs-reembed", "unknown") or not r.get("embedding"))
-            return hash_cnt, reembed_cnt
+            mixed_cnt = min(hash_cnt, onnx_cnt) if (hash_cnt > 0 and onnx_cnt > 0) else 0
+            return hash_cnt, reembed_cnt, mixed_cnt
     try:
         from .store import MeshStore
 
@@ -414,6 +416,13 @@ def _namespace_degraded_counts(namespace: str) -> tuple[int, int]:
                 ).fetchone()[0]
                 or 0
             )
+            onnx_cnt = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM memories WHERE namespace = ? AND embedding_model = 'onnx-minilm-l6-v2'",
+                    (namespace,),
+                ).fetchone()[0]
+                or 0
+            )
             reembed_cnt = int(
                 conn.execute(
                     "SELECT COUNT(*) FROM memories WHERE namespace = ? AND (embedding_model = 'needs-reembed' OR embedding_model = 'unknown' OR embedding IS NULL)",
@@ -421,9 +430,10 @@ def _namespace_degraded_counts(namespace: str) -> tuple[int, int]:
                 ).fetchone()[0]
                 or 0
             )
-            return hash_cnt, reembed_cnt
+            mixed_cnt = min(hash_cnt, onnx_cnt) if (hash_cnt > 0 and onnx_cnt > 0) else 0
+            return hash_cnt, reembed_cnt, mixed_cnt
     except Exception:
-        return 0, 0
+        return 0, 0, 0
 
 
 # --- Smart Command & Flag Typo Recovery ---
@@ -513,7 +523,7 @@ _install_colorize_memo()
 class _FastArgumentParser(argparse.ArgumentParser):
     def _get_formatter(self) -> Any:
         try:
-            formatter = self.formatter_class(prog=self.prog, width=_cached_term_width())
+            formatter = self.formatter_class(prog=self.prog, width=_cached_term_width())  # type: ignore[call-arg]
         except TypeError:
             return super()._get_formatter()
         set_color = getattr(formatter, "_set_color", None)
@@ -593,8 +603,16 @@ def setup_cmd() -> None:
     parser.add_argument("--namespace", default=None, metavar="NAME", help="Namespace to use (default: $MESH_NAMESPACE or 'shared')")
     parser.add_argument("--no-startup", action="store_true", help="Don't register login auto-start")
     parser.add_argument("--wait", action="store_true", help="Wait for the model download to finish")
+    parser.add_argument("--strict", action="store_true", help="Strict mode: fail fast if model cannot be downloaded (MESH_REQUIRE_MODEL=1)")
     parser.add_argument("--yes", "-y", action="store_true", help="Skip interactive y/n permission prompts")
     args = parser.parse_args()
+
+    assume_yes = (
+        args.yes
+        or os.environ.get("MESH_AUTO_DOWNLOAD_MODEL", "").strip().lower() in ("1", "true", "yes")
+    )
+    if args.strict:
+        os.environ["MESH_REQUIRE_MODEL"] = "1"
 
     from .daemon import (
         DAEMON_LOG_FILE,
@@ -616,7 +634,7 @@ def setup_cmd() -> None:
 
     # 1 ─ login auto-start
     if not args.no_startup:
-        if request_user_permission("register the Mesh daemon for OS login auto-start", assume_yes=args.yes):
+        if request_user_permission("register the Mesh daemon for OS login auto-start", assume_yes=assume_yes):
             info = install_startup(
                 host=DEFAULT_HOST,
                 port=DEFAULT_PORT,
@@ -631,7 +649,7 @@ def setup_cmd() -> None:
     # 2 ─ background daemon
     if request_user_permission(
         f"start the background Mesh HTTP daemon on {DEFAULT_HOST}:{DEFAULT_PORT}",
-        assume_yes=args.yes,
+        assume_yes=assume_yes,
     ):
         with ui.spinner("Starting background daemon…"):
             res = start_daemon(host=DEFAULT_HOST, port=DEFAULT_PORT, idle_timeout=DEFAULT_IDLE_TIMEOUT, lazy=True, wait=args.wait)
@@ -650,15 +668,17 @@ def setup_cmd() -> None:
         ui.success("Embedding model ready", _tilde(str(pair[0].parent)))
     elif request_user_permission(
         f"download the ONNX embedding model into {_tilde(str(_ONNX_MODEL_DIR))}",
-        assume_yes=args.yes,
+        assume_yes=assume_yes,
     ):
-        if args.wait or args.yes:
+        if args.wait or assume_yes:
             with ui.spinner("Downloading embedding model (this can take a minute)…"):
                 pair = ensure_model_downloaded(blocking=True, timeout=120.0, assume_yes=True)
             if pair is not None:
                 ui.success("Embedding model downloaded", _tilde(str(pair[0].parent)))
                 _daemon_request("/warmup", payload={"namespace": ns}, method="POST")
             else:
+                if args.strict:
+                    ui.fail("Strict mode: ONNX model download failed and MESH_REQUIRE_MODEL is set.")
                 ui.warn(
                     "Embedding model isn't ready yet",
                     "Mesh will use its built-in fallback until the download finishes. Check with `mesh doctor`.",
@@ -668,6 +688,8 @@ def setup_cmd() -> None:
             ensure_model_downloaded(blocking=False, assume_yes=True, detached=True)
             ui.info("Downloading embedding model in the background", _tilde(str(_ONNX_MODEL_DIR)))
     else:
+        if args.strict:
+            ui.fail("Strict mode: ONNX model download declined/skipped and MESH_REQUIRE_MODEL is set.")
         skipped_steps += 1
         ui.step("Embedding model download skipped", "Mesh will use its built-in fallback (lower search quality).")
 
@@ -1959,7 +1981,8 @@ def doctor_cmd() -> None:
             conn.execute("CREATE VIRTUAL TABLE _doc_fts USING fts5(content, tokenize='porter unicode61')")
             conn.execute("INSERT INTO _doc_fts(content) VALUES ('mesh doctor fts5 check')")
             r = conn.execute("SELECT COUNT(*) FROM _doc_fts WHERE _doc_fts MATCH 'mesh'").fetchone()
-            assert r and int(r[0]) == 1
+            if not (r and int(r[0]) == 1):
+                raise RuntimeError("FTS5 verification match query failed")
         row("ok", "SQLite + FTS5", f"SQLite {sqlite3.sqlite_version} with Porter stemming")
     except Exception as e:
         row("fail", "SQLite + FTS5", str(e), "Install a Python build whose SQLite includes FTS5")
@@ -2121,13 +2144,15 @@ def doctor_cmd() -> None:
                 counts["warn"] += 1
                 print(f"{pad}{ui.style(ui.sym('warn'), 'warn')} {ns_name}: {ui.style(str(n_info['error']), 'error')}")
                 continue
-            h_cnt, r_cnt = _namespace_degraded_counts(ns_name)
-            if h_cnt > 0 or r_cnt > 0:
+            h_cnt, r_cnt, m_cnt = _namespace_degraded_counts(ns_name)
+            if h_cnt > 0 or r_cnt > 0 or m_cnt > 0:
                 bits = []
                 if h_cnt:
                     bits.append(f"{h_cnt} on fallback embeddings")
                 if r_cnt:
                     bits.append(f"{r_cnt} need re-embedding")
+                if m_cnt:
+                    bits.append(f"{m_cnt} in mixed embedding space (run 'mesh reembed')")
                 print(f"{pad}{ui.style(ui.sym('warn'), 'warn')} {ns_name}: {n_info['memory_count']} memories, {ui.style(', '.join(bits), 'warn')}")
 
     # Summary
@@ -2375,28 +2400,44 @@ def export_cmd() -> None:
 
     parser = _parser(
         "export",
-        "Back up a namespace to a JSON file (private memories are never exported).",
+        "Export memories to a JSON, Markdown, or CSV file (JSON supports encrypted exports and lossless round-trip import).",
         [
-            ("mesh export backup.json", "export the active namespace"),
-            ("mesh export work.json --namespace work --no-embeddings", "smaller file"),
+            ("mesh export backup.json", "export active namespace to JSON (lossless round-trip)"),
+            ("mesh export summary.md", "export human-readable Markdown summary (one-way)"),
+            ("mesh export report.csv", "export spreadsheet CSV (formula-safe, one-way)"),
+            ("mesh export work.json --namespace work --no-embeddings", "smaller JSON file without vectors"),
             ("mesh export backup.enc.json --encrypt", "authenticated encrypted export"),
         ],
     )
-    parser.add_argument("output", help="Destination .json path")
+    parser.add_argument("output", help="Destination file path (.json, .md, or .csv)")
+    parser.add_argument("--format", choices=["json", "markdown", "csv"], default=None, help="Export format (json, markdown, csv). Inferred from file extension if omitted.")
     parser.add_argument("--namespace", default=None, metavar="NAME", help="Namespace to use (default: $MESH_NAMESPACE or 'shared')")
-    parser.add_argument("--no-embeddings", action="store_true", help="Omit vectors (smaller, re-embedded on import)")
+    parser.add_argument("--no-embeddings", action="store_true", help="Omit vectors (default for markdown and csv)")
     parser.add_argument("--encrypt", action="store_true", help="Encrypt the exported JSON file (Finding S5)")
     parser.add_argument("--passphrase", default=None, help="Passphrase for --encrypt (or set MESH_PASSPHRASE)")
     args = parser.parse_args()
     ns = _resolve_namespace(args.namespace)
     from .io import export_namespace
 
+    fmt = args.format
+    if not fmt:
+        out_lower = args.output.lower()
+        if out_lower.endswith(".md") or out_lower.endswith(".markdown"):
+            fmt = "markdown"
+        elif out_lower.endswith(".csv"):
+            fmt = "csv"
+        else:
+            fmt = "json"
+
+    incl_emb = False if args.no_embeddings else None
+
     try:
-        with ui.spinner(f"Exporting {ns}…"):
+        with ui.spinner(f"Exporting {ns} ({fmt})…"):
             export_namespace(
                 namespace=ns,
                 output_path=args.output,
-                include_embeddings=not args.no_embeddings,
+                format=fmt,
+                include_embeddings=incl_emb,
                 encrypt=bool(args.encrypt),
                 passphrase=args.passphrase,
             )
@@ -2433,6 +2474,146 @@ def import_cmd() -> None:
             )
     except (FileNotFoundError, ValueError) as e:
         ui.fail(str(e))
+
+
+def reembed_cmd(argv: Optional[list[str]] = None) -> None:
+    parser = _parser(
+        "reembed",
+        "Re-embed memories with the active ONNX model to standardize vector spaces and eliminate hash-384 fallbacks.",
+        [
+            ("mesh reembed", "re-embed fallback and mixed-space memories in current namespace"),
+            ("mesh reembed --all", "re-embed across all namespaces"),
+            ("mesh reembed --force", "re-embed all memories even if already on ONNX"),
+            ("mesh reembed --dry-run", "preview count without writing"),
+        ],
+    )
+    parser.add_argument("--namespace", default=None, metavar="NAME", help="Target namespace (default: current or 'shared')")
+    parser.add_argument("--all", action="store_true", help="Re-embed across all namespaces")
+    parser.add_argument("--force", action="store_true", help="Re-embed all memories even if already on ONNX")
+    parser.add_argument("--batch-size", type=int, default=32, help="Batch size for embedding calculation (default: 32)")
+    parser.add_argument("--dry-run", action="store_true", help="Preview memories needing re-embedding without writing")
+    parser.add_argument("--no-backup", action="store_true", help="Skip automatic safety database backup before re-embedding")
+    if argv is None:
+        raw_args = sys.argv[1:]
+        if raw_args and raw_args[0] == "reembed":
+            raw_args = raw_args[1:]
+        args = parser.parse_args(raw_args)
+    else:
+        args = parser.parse_args(argv)
+
+    import shutil
+    from datetime import datetime, timezone
+    from .crypto import is_encryption_enabled
+    from .memory import _encode_uncached_texts_with_tag, _has_local_onnx_pair
+    from .namespaces import list_namespaces
+    from .store import MeshStore, encrypt_blob_for_storage, namespace_write_lock, np
+
+    pair = _has_local_onnx_pair()
+    if pair is None:
+        ui.fail(
+            "ONNX embedding model is not yet downloaded",
+            "Run `mesh setup --yes` to download the model first.",
+        )
+        return
+
+    target_namespaces = [n["namespace"] for n in list_namespaces()] if args.all else [_resolve_namespace(args.namespace)]
+
+    total_reembedded = 0
+    for ns in target_namespaces:
+        try:
+            store = MeshStore(namespace=ns, create=False)
+        except Exception:
+            continue
+
+        with store._connect() as conn:
+            if args.force:
+                rows = conn.execute(
+                    "SELECT id, content, embedding_model FROM memories WHERE namespace = ?",
+                    (ns,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT id, content, embedding_model FROM memories WHERE namespace = ? AND (embedding_model != 'onnx-minilm-l6-v2' OR embedding_model IS NULL OR embedding IS NULL)",
+                    (ns,),
+                ).fetchall()
+
+        if not rows:
+            ui.info(f"Namespace '{ns}': All memories already use onnx-minilm-l6-v2.")
+            continue
+
+        if args.dry_run:
+            ui.note(f"Namespace '{ns}': {len(rows)} memories would be re-embedded (dry-run).")
+            continue
+
+        if not args.no_backup and store.db_path.exists():
+            try:
+                db_size = store.db_path.stat().st_size
+                usage = shutil.disk_usage(store.db_path.parent)
+                min_required = db_size * 2 + 10 * 1024 * 1024
+                if usage.free < min_required:
+                    raise OSError(
+                        f"Insufficient disk space for safety backup on {store.db_path.parent}: "
+                        f"{usage.free // (1024 * 1024)}MB free, {min_required // (1024 * 1024)}MB required. "
+                        f"Free disk space or run with --no-backup to proceed without backup."
+                    )
+                ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+                backup_path = store.db_path.with_name(f"{store.db_path.name}.bak-reembed-{ts}")
+                shutil.copy2(store.db_path, backup_path)
+                from .audit import secure_file_permissions
+                secure_file_permissions(backup_path)
+                ui.note(f"Safety backup created at {backup_path.name}")
+
+                # Cleanup rule: retain up to 3 most recent backups
+                existing_backups = sorted(
+                    store.db_path.parent.glob(f"{store.db_path.name}.bak-reembed-*"),
+                    key=lambda p: p.name,
+                )
+                if len(existing_backups) > 3:
+                    for old_bak in existing_backups[:-3]:
+                        try:
+                            old_bak.unlink()
+                        except Exception as del_err:
+                            ui.warn(f"Could not remove old backup {old_bak.name}: {del_err}")
+            except Exception as b_err:
+                ui.warn(f"Reembed safety backup error: {b_err}")
+                if isinstance(b_err, OSError) and "Insufficient disk space" in str(b_err):
+                    raise
+
+        with ui.spinner(f"Re-embedding {len(rows)} memories in '{ns}'…"):
+            reembedded_in_ns = 0
+            batch_size = max(1, min(args.batch_size, 128))
+            for i in range(0, len(rows), batch_size):
+                batch = rows[i : i + batch_size]
+                texts = [r[1] for r in batch]
+                vecs, tag = _encode_uncached_texts_with_tag(texts)
+
+                with namespace_write_lock(ns):
+                    with store._connect() as conn:
+                        conn.execute("BEGIN IMMEDIATE")
+                        try:
+                            for (mid, content, _), vec in zip(batch, vecs):
+                                vec_arr = np.asarray(vec, dtype=np.float32)
+                                blob_to_write: Any = vec_arr.tobytes()
+                                if is_encryption_enabled():
+                                    blob_to_write = encrypt_blob_for_storage(blob_to_write)
+                                conn.execute(
+                                    "UPDATE memories SET embedding = ?, embedding_model = ? WHERE id = ? AND namespace = ?",
+                                    (blob_to_write, tag, mid, ns),
+                                )
+                            conn.commit()
+                        except Exception:
+                            if conn.in_transaction:
+                                conn.rollback()
+                            raise
+                reembedded_in_ns += len(batch)
+
+            store._invalidate_cache()
+            total_reembedded += reembedded_in_ns
+            ui.success(f"Re-embedded {reembedded_in_ns} memories in '{ns}' to '{tag}'")
+
+    if not args.dry_run and total_reembedded > 0:
+        print()
+        ui.success(f"Re-embedding complete: {total_reembedded} total memories updated across {len(target_namespaces)} namespace(s).")
 
 
 def namespaces_cmd() -> None:
@@ -2689,9 +2870,9 @@ def status_cmd() -> None:
 
     try:
         st: Optional[dict[str, Any]] = namespace_stats(ns)
-        h_cnt, r_cnt = _namespace_degraded_counts(ns)
+        h_cnt, r_cnt, m_cnt = _namespace_degraded_counts(ns)
     except ValueError:
-        st, h_cnt, r_cnt = None, 0, 0
+        st, h_cnt, r_cnt, m_cnt = None, 0, 0, 0
 
     work_stats: dict[str, Any] = {
         "total": 0,
@@ -2722,7 +2903,7 @@ def status_cmd() -> None:
                 "memory_counts": st.get("memory_count", 0) if st else 0,
                 "memory_counts_by_type": st.get("type_breakdown", {}) if st else {},
                 "work_items_count": work_stats,
-                "pending_reembed": {"hash_384": h_cnt, "needs_reembed": r_cnt},
+                "pending_reembed": {"hash_384": h_cnt, "needs_reembed": r_cnt, "mixed_space": m_cnt},
                 "daemon_port_open": port,
             }
         )
@@ -2757,8 +2938,15 @@ def status_cmd() -> None:
         )
     )
     rows.append(("Daemon", ui.style(f"running on :{port}", "brand") if port else ui.style("not running", "muted")))
-    if h_cnt > 0 or r_cnt > 0:
-        rows.append(("Pending", ui.style(f"{h_cnt} on fallback embeddings, {r_cnt} need re-embedding", "warn")))
+    if h_cnt > 0 or r_cnt > 0 or m_cnt > 0:
+        pend_bits = []
+        if h_cnt:
+            pend_bits.append(f"{h_cnt} on fallback embeddings")
+        if r_cnt:
+            pend_bits.append(f"{r_cnt} need re-embedding")
+        if m_cnt:
+            pend_bits.append(f"{m_cnt} in mixed space")
+        rows.append(("Pending", ui.style(", ".join(pend_bits), "warn")))
     ui.kv(rows)
 
     if st is None:
@@ -2817,7 +3005,7 @@ _HELP_SECTIONS: list[tuple[str, list[tuple[str, str, str]]]] = [
             ("doctor", "Diagnose problems and suggest fixes", ""),
             ("encrypt-db", "Encrypt databases at rest (with backup & VACUUM)", "encrypt"),
             ("daemon <action>", "start · stop · restart · status · warmup · rotate-token", ""),
-            ("audit export", "Export content-free audit telemetry as JSON", ""),
+            ("audit export", "Export content-free audit events as JSON", ""),
             ("install-skills", "Teach your AI coding agents to use Mesh", ""),
             ("completion", "Tab-completion for your shell", ""),
         ],
@@ -3234,8 +3422,8 @@ def log_cmd() -> None:
 
 
 def audit_cmd() -> None:
-    """Inspect and export content-free operational telemetry."""
-    parser = _parser("audit", "Content-free operational telemetry and metrics (timing, tool names, NEVER memory text).")
+    """Inspect and export content-free operational audit events."""
+    parser = _parser("audit", "Content-free operational metrics and audit events (timing, tool names, NEVER memory text).")
     sub = parser.add_subparsers(dest="subcommand", metavar="ACTION")
 
     p_export = sub.add_parser("export", help="Export content-free audit events as JSON")
@@ -3300,6 +3488,7 @@ def _get_command_mapping() -> dict[str, Callable[[], None]]:
         "install": install_cmd,
         "uninstall": uninstall_cmd,
         "install-skills": install_skills_cmd,
+        "reembed": reembed_cmd,
     }
 
 

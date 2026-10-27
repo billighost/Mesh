@@ -1365,6 +1365,10 @@ header {
     <button class="btn btn-primary" onclick="openModal()">+ New</button>
   </header>
 
+  <div id="embedding-fallback-banner" style="display:none;background:rgba(245,158,11,0.15);border:1px solid rgba(245,158,11,0.4);color:var(--amber);padding:8px 14px;border-radius:6px;margin:10px 0;font-size:12px;align-items:center;gap:8px;">
+    <span>⚠️ <strong>Embedding fallback active (hash-384):</strong> Search quality is reduced. Run <code>mesh setup</code> in your terminal to download the verified ONNX model.</span>
+  </div>
+
   <div class="subnav">
     <div class="tabs">
       <button class="tab active" onclick="showTab('memories', this)">Memories <span class="tab-count" id="tc-memories">0</span></button>
@@ -1577,6 +1581,11 @@ async function refreshAll() {
     document.getElementById('m-gaps').textContent = stats.memory_gaps;
     document.getElementById('tc-memories').textContent = stats.total_memories;
     document.getElementById('tc-conflicts').textContent = stats.open_contradictions;
+    const fallbackBanner = document.getElementById('embedding-fallback-banner');
+    if (fallbackBanner) {
+      const isDegraded = stats.engine && (stats.engine.embedding_degraded || stats.engine.model_tag === 'hash-384');
+      fallbackBanner.style.display = isDegraded ? 'flex' : 'none';
+    }
   }
   await populateNamespaceDropdown();
   await loadMemories();

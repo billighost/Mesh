@@ -155,8 +155,8 @@
     },
     {
       "path": "reproduce/run_sessions_and_quiz.py",
-      "size_bytes": 14040,
-      "sha256": "649b18724965762ac314b424ef42122ede7af8aa675affcc3dde6f732fa57d9e"
+      "size_bytes": 14047,
+      "sha256": "a7ac11d4b006b9f8f05fe214a463e3760718ef6ee03562f77e84080b3e730c6e"
     },
     {
       "path": "reproduce/test_c001_concurrency.py",

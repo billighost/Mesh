@@ -9,6 +9,7 @@ import HowItWorks from "./components/HowItWorks";
 import SearchExplorer from "./components/SearchExplorer";
 import MemorySection from "./components/MemorySection";
 import UnderTheHood from "./components/UnderTheHood";
+import PerformanceSection from "./components/PerformanceSection";
 import InterfacesSection from "./components/InterfacesSection";
 import AgensiSection from "./components/AgensiSection";
 import InstallSection from "./components/InstallSection";
@@ -30,6 +31,7 @@ export default function App() {
           <SearchExplorer />
           <MemorySection />
           <UnderTheHood />
+          <PerformanceSection />
           <InterfacesSection />
           <AgensiSection />
           <InstallSection />
