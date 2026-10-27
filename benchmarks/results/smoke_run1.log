@@ -1,0 +1,102 @@
+===================================================================================================================
+  PHASE 7 SMOKE TEST - MULTI-CLASS INTERFACE EVALUATION REPORT
+===================================================================================================================
+
+Commit       : 77a093f3a7b13f461f1396722c292b75bbfcadf7 (feat/ci-evidence)
+Platform     : Windows-11-10.0.22000-SP0 | Python 3.14.0
+Timestamp    : 2026-10-27T05:20:10Z
+Corpus       : LongMemEval-derived (50 questions, 1319 turns pooled)
+
+===============================================================================================================================================================================
+INDEPENDENT TABLE 1: TURN-LEVEL RETRIEVAL ACCURACY (BY INTERFACE CLASS)
+A hit requires the returned memory to be a single turn containing the gold turn tag.
+Tools storing per session (Auxly) are marked 'not comparable at turn level'.
+===============================================================================================================================================================================
+Tool                             Class      Recall@1 (95% CI)         Recall@5 (95% CI)         Recall@10 (95% CI)        MRR (95% CI)              NDCG@10 (95% CI)         
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+CLASS A: IN-PROCESS LIBRARY / PYTHON SDK
+  Mesh (SDK)                     Class A    0.2800 [0.1600, 0.4000]   0.8200 [0.7000, 0.9200]   0.9400 [0.8600, 1.0000]   0.5345 [0.4445, 0.6222]   0.6344 [0.5534, 0.7078]  
+  Mem0 (SDK)                     Class A    0.3600 [0.2200, 0.5000]   0.7800 [0.6600, 0.8800]   0.9200 [0.8400, 0.9800]   0.5220 [0.4122, 0.6267]   0.6176 [0.5216, 0.7042]  
+  Basic Memory                   Class A    no documented Python API
+  Auxly                          Class A    not offered (compiled Go binary)
+
+CLASS B: CLI SUBPROCESS
+  Mesh CLI (Cold)                Class B    0.2800 [0.1600, 0.4000]   0.8200 [0.7000, 0.9200]   0.9400 [0.8600, 1.0000]   0.5345 [0.4445, 0.6222]   0.6344 [0.5534, 0.7078]  
+  Mesh CLI (Daemon Running)      Class B    0.2800 [0.1600, 0.4000]   0.8200 [0.7000, 0.9200]   0.9400 [0.8600, 1.0000]   0.5345 [0.4445, 0.6222]   0.6344 [0.5534, 0.7078]  
+  Basic Memory (CLI)             Class B    0.3800 [0.2400, 0.5200]   0.7800 [0.6600, 0.8800]   0.9000 [0.8000, 0.9800]   0.5633 [0.4598, 0.6639]   0.6448 [0.5555, 0.7351]  
+  Auxly CLI (Raw Query)          Class B    not comparable at turn level (stores per session)
+  Mem0                           Class B    not offered
+
+CLASS C: MCP STDIO (PERSISTENT SERVER SESSION)
+  Mesh MCP (Framework v1.30.0, Package v0.8.3) Class C    0.2800 [0.1600, 0.4000]   0.8200 [0.7000, 0.9200]   0.9400 [0.8600, 1.0000]   0.5345 [0.4445, 0.6222]   0.6344 [0.5534, 0.7078]  
+  Basic Memory MCP (FastMCP v4.1.4) Class C    0.3800 [0.2400, 0.5200]   0.7800 [0.6600, 0.8800]   0.9200 [0.8400, 0.9800]   0.5653 [0.4631, 0.6659]   0.6506 [0.5612, 0.7374]  
+  Auxly MCP (Search)             Class C    not comparable at turn level (stores per session)
+  Auxly MCP (Recall)             Class C    not comparable at turn level (stores per session)
+  Mem0                           Class C    not offered locally
+
+===============================================================================================================================================================================
+INDEPENDENT TABLE 2: SESSION-LEVEL RETRIEVAL ACCURACY (BY INTERFACE CLASS)
+Every returned turn tag mapped to session ID, deduplicated keeping first rank.
+Gold = the dataset's gold evidence sessions (any turn with has_answer=True in that session).
+===============================================================================================================================================================================
+Tool                             Class      Recall@1 (95% CI)         Recall@5 (95% CI)         Recall@10 (95% CI)        MRR (95% CI)              NDCG@10 (95% CI)         
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+CLASS A: IN-PROCESS LIBRARY / PYTHON SDK
+  Mesh (SDK)                     Class A    0.8200 [0.7200, 0.9200]   0.9800 [0.9200, 1.0000]   0.9800 [0.9200, 1.0000]   0.8840 [0.8107, 0.9533]   0.9082 [0.8459, 0.9607]  
+  Mem0 (SDK)                     Class A    0.8600 [0.7600, 0.9400]   0.9800 [0.9400, 1.0000]   0.9800 [0.9400, 1.0000]   0.9083 [0.8350, 0.9667]   0.9265 [0.8617, 0.9752]  
+  Basic Memory                   Class A    no documented Python API
+  Auxly                          Class A    not offered (compiled Go binary)
+
+CLASS B: CLI SUBPROCESS
+  Mesh CLI (Cold)                Class B    0.8200 [0.7200, 0.9200]   0.9800 [0.9200, 1.0000]   0.9800 [0.9200, 1.0000]   0.8840 [0.8107, 0.9533]   0.9082 [0.8459, 0.9607]  
+  Mesh CLI (Daemon Running)      Class B    0.8200 [0.7200, 0.9200]   0.9800 [0.9200, 1.0000]   0.9800 [0.9200, 1.0000]   0.8840 [0.8107, 0.9533]   0.9082 [0.8459, 0.9607]  
+  Basic Memory (CLI)             Class B    0.8400 [0.7400, 0.9400]   0.9600 [0.9000, 1.0000]   0.9600 [0.9000, 1.0000]   0.8883 [0.8083, 0.9567]   0.9065 [0.8352, 0.9639]  
+  Auxly CLI (Raw Query)          Class B    0.0000 [0.0000, 0.0000]   0.0000 [0.0000, 0.0000]   0.0000 [0.0000, 0.0000]   0.0000 [0.0000, 0.0000]   0.0000 [0.0000, 0.0000]  
+  Mem0                           Class B    not offered
+
+CLASS C: MCP STDIO (PERSISTENT SERVER SESSION)
+  Mesh MCP (Framework v1.30.0, Package v0.8.3) Class C    0.8200 [0.7200, 0.9200]   0.9800 [0.9200, 1.0000]   0.9800 [0.9200, 1.0000]   0.8840 [0.8107, 0.9533]   0.9082 [0.8459, 0.9607]  
+  Basic Memory MCP (FastMCP v4.1.4) Class C    0.8400 [0.7400, 0.9400]   0.9600 [0.9000, 1.0000]   0.9600 [0.9000, 1.0000]   0.8883 [0.8083, 0.9567]   0.9065 [0.8352, 0.9639]  
+  Auxly MCP (Search)             Class C    0.0000 [0.0000, 0.0000]   0.0000 [0.0000, 0.0000]   0.0000 [0.0000, 0.0000]   0.0000 [0.0000, 0.0000]   0.0000 [0.0000, 0.0000]  
+  Auxly MCP (Recall)             Class C    0.0000 [0.0000, 0.0000]   0.0000 [0.0000, 0.0000]   0.0000 [0.0000, 0.0000]   0.0000 [0.0000, 0.0000]   0.0000 [0.0000, 0.0000]  
+  Mem0                           Class C    not offered locally
+
+===================================================================================================================
+INDEPENDENT TABLE 3: QUERY LATENCY METRICS (WITH BOOTSTRAP 95% CIs)
+===================================================================================================================
+Tool                               Class      p50 [95% CI]           p95 [95% CI]           p99 [95% CI]           Mean Latency
+-------------------------------------------------------------------------------------------------------------------
+Mesh (SDK)                         Class A    26.40 [23.28, 30.90]   43.79 [42.30, 46.61]   46.56 [43.70, 47.24]      28.69 ms
+Mem0 (SDK)                         Class A    216.07 [213.44, 221.60] 259.58 [241.29, 718.16] 687.64 [251.12, 1061.61]   237.26 ms
+Mesh CLI (Cold)                    Class B    3278.53 [3169.77, 3445.77] 3962.75 [3758.57, 4206.29] 4196.96 [3888.62, 4311.23]  3392.80 ms
+Mesh CLI (Daemon Running)          Class B    414.15 [405.43, 422.19] 457.05 [443.86, 460.29] 460.27 [454.10, 460.51]   415.70 ms
+Basic Memory (CLI)                 Class B    13127.99 [13092.35, 13172.15] 13896.27 [13794.24, 14298.01] 14280.53 [13861.24, 14494.64] 13288.03 ms
+Auxly CLI (Raw Query)              Class B    263.08 [259.69, 267.35] 375.83 [292.50, 403.20] 402.64 [354.49, 409.43]   278.80 ms
+Mesh MCP (Framework v1.30.0, Package v0.8.3) Class C    62.33 [55.29, 71.35]   94.64 [81.80, 114.92]  114.40 [90.35, 120.68]    65.36 ms
+Basic Memory MCP (FastMCP v4.1.4)  Class C    138.23 [129.78, 145.60] 340.50 [190.24, 3030.85] 3006.24 [215.65, 3307.72]   263.61 ms
+Auxly MCP (Search)                 Class C    517.32 [488.10, 545.69] 965.58 [725.86, 1198.60] 1190.00 [904.92, 1295.31]   558.76 ms
+Auxly MCP (Recall)                 Class C    770.41 [710.66, 863.38] 1772.61 [1157.39, 2837.30] 2832.91 [1353.60, 2886.77]   898.54 ms
+
+===================================================================================================================
+INDEPENDENT TABLE 4: INGESTION, SEARCHABILITY & SYSTEM RESOURCE FOOTPRINT
+===================================================================================================================
+Tool                               Class      Write Time   Searchable   Count Match      Peak RAM     Disk Size   
+-------------------------------------------------------------------------------------------------------------------
+Mesh (SDK)                         Class A       17.69 s       0.02 s   1320/1320             0.0 MB     20.50 MB
+Mem0 (SDK)                         Class A       96.92 s       0.29 s   1320/1320           329.7 MB     10.34 MB
+Mesh CLI (Cold)                    Class B       16.06 s       3.89 s   1320/1320             0.0 MB     98.12 MB
+Mesh CLI (Daemon Running)          Class B       15.36 s       2.74 s   1320/1320             0.0 MB     98.24 MB
+Basic Memory (CLI)                 Class B      299.44 s      13.19 s   1320/1320             0.0 MB     24.08 MB
+Auxly CLI (Raw Query)              Class B        0.12 s       1.54 s   1320/1320             0.0 MB      1.59 MB
+Mesh MCP (Framework v1.30.0, Package v0.8.3) Class C       30.61 s       0.04 s   1320/1320             0.0 MB    107.48 MB
+Basic Memory MCP (FastMCP v4.1.4)  Class C      292.00 s       3.81 s   1320/1320             0.0 MB     23.88 MB
+Auxly MCP (Search)                 Class C       14.10 s       0.56 s   1320/1320             0.0 MB      6.28 MB
+Auxly MCP (Recall)                 Class C       14.10 s       0.56 s   1320/1320             0.0 MB      6.28 MB
+
+===================================================================================================================
+INDEPENDENT TABLE 5: CROSS-CLASS PARITY AUDIT
+===================================================================================================================
+[PARITY VERIFIED] Mesh retrieval scores are identical across ['SDK', 'CLI Cold', 'CLI Daemon', 'MCP'].
+[PARITY WARNING] Basic Memory CLI vs MCP score difference on ['turn_mrr']: CLI={'turn_r1': 0.38, 'turn_mrr': 0.5633, 'sess_r1': 0.84, 'sess_mrr': 0.8883} vs MCP={'turn_r1': 0.38, 'turn_mrr': 0.5653, 'sess_r1': 0.84, 'sess_mrr': 0.8883}
+
+===================================================================================================================

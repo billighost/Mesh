@@ -1,0 +1,5123 @@
+{
+  "metadata": {
+    "target_commit": "77a093f3a7b13f461f1396722c292b75bbfcadf7",
+    "branch": "feat/ci-evidence",
+    "platform": "Windows-11-10.0.22000-SP0",
+    "python_version": "3.14.0",
+    "timestamp": "2026-10-27T07:05:31Z",
+    "corpus": {
+      "name": "LongMemEval-derived",
+      "questions_count": 50,
+      "turns_count": 1319,
+      "layout": "All turns pooled in a single shared store per runner",
+      "opaque_tags": true
+    },
+    "competitor_interface_matrix": {
+      "mesh": {
+        "package_version": "0.8.3",
+        "commit": "77a093f3a7b13f461f1396722c292b75bbfcadf7",
+        "class_a_supported": true,
+        "class_b_supported": true,
+        "class_c_supported": true,
+        "class_c_framework_version": "1.30.0"
+      },
+      "mem0": {
+        "package_version": "2.2.1",
+        "class_a_supported": true,
+        "class_b_supported": false,
+        "class_b_note": "not offered (no CLI console scripts in mem0ai)",
+        "class_b_url": "https://pypi.org/project/mem0ai/",
+        "class_c_supported": false,
+        "class_c_note": "not offered locally (official MCP is cloud HTTP endpoint https://mcp.mem0.ai/mcp; local repo was archived)",
+        "class_c_url": "https://docs.mem0.ai/mcp"
+      },
+      "basic_memory": {
+        "package_version": "0.24.1",
+        "class_a_supported": false,
+        "class_a_note": "no documented Python API",
+        "class_a_url": "https://pypi.org/project/basic-memory/",
+        "class_b_supported": true,
+        "class_c_supported": true,
+        "class_c_framework_version": "FastMCP 4.1.4"
+      },
+      "auxly": {
+        "package_version": "1.5.0",
+        "class_a_supported": false,
+        "class_a_note": "not offered (compiled Go binary)",
+        "class_b_supported": true,
+        "class_c_supported": true,
+        "class_c_tools": [
+          "auxly_memory_search",
+          "auxly_memory_recall"
+        ]
+      }
+    }
+  },
+  "class_a_library": {
+    "mesh_sdk": {
+      "tool": "Mesh (SDK)",
+      "class": "Class A",
+      "storage_unit": "turn",
+      "count_verification": {
+        "expected_turns": 1320,
+        "stored_count": 1320,
+        "shortfall": 0,
+        "verified_equal": true,
+        "audit_notes": {
+          "quarantined_count": 0,
+          "contradictions_detected": 0,
+          "deduplicated_dropped": 0,
+          "notes": "Mesh store exact SQLite count verified; zero turns dropped or hidden."
+        }
+      },
+      "ingestion_timing": {
+        "write_seconds": 20.146,
+        "time_to_searchable_seconds": 0.014,
+        "total_ingest_seconds": 20.161,
+        "items_per_second": 65.5
+      },
+      "known_item_preflight": {
+        "passed": true,
+        "rank": 1,
+        "query": "cerulean observatory celestial frequency"
+      },
+      "turn_level_metrics": {
+        "status": "evaluated",
+        "recall_at_1": 0.28,
+        "recall_at_1_ci": [
+          0.16,
+          0.4
+        ],
+        "recall_at_5": 0.82,
+        "recall_at_5_ci": [
+          0.7,
+          0.92
+        ],
+        "recall_at_10": 0.94,
+        "recall_at_10_ci": [
+          0.86,
+          1.0
+        ],
+        "mrr": 0.5345,
+        "mrr_ci": [
+          0.4445,
+          0.6222
+        ],
+        "ndcg_at_10": 0.6344,
+        "ndcg_at_10_ci": [
+          0.5534,
+          0.7078
+        ]
+      },
+      "session_level_metrics": {
+        "status": "evaluated",
+        "recall_at_1": 0.82,
+        "recall_at_1_ci": [
+          0.72,
+          0.92
+        ],
+        "recall_at_5": 0.98,
+        "recall_at_5_ci": [
+          0.92,
+          1.0
+        ],
+        "recall_at_10": 0.98,
+        "recall_at_10_ci": [
+          0.92,
+          1.0
+        ],
+        "mrr": 0.884,
+        "mrr_ci": [
+          0.8107,
+          0.9533
+        ],
+        "ndcg_at_10": 0.9082,
+        "ndcg_at_10_ci": [
+          0.8459,
+          0.9607
+        ]
+      },
+      "accuracy_metrics": {
+        "turn_level": {
+          "status": "evaluated",
+          "recall_at_1": 0.28,
+          "recall_at_1_ci": [
+            0.16,
+            0.4
+          ],
+          "recall_at_5": 0.82,
+          "recall_at_5_ci": [
+            0.7,
+            0.92
+          ],
+          "recall_at_10": 0.94,
+          "recall_at_10_ci": [
+            0.86,
+            1.0
+          ],
+          "mrr": 0.5345,
+          "mrr_ci": [
+            0.4445,
+            0.6222
+          ],
+          "ndcg_at_10": 0.6344,
+          "ndcg_at_10_ci": [
+            0.5534,
+            0.7078
+          ]
+        },
+        "session_level": {
+          "status": "evaluated",
+          "recall_at_1": 0.82,
+          "recall_at_1_ci": [
+            0.72,
+            0.92
+          ],
+          "recall_at_5": 0.98,
+          "recall_at_5_ci": [
+            0.92,
+            1.0
+          ],
+          "recall_at_10": 0.98,
+          "recall_at_10_ci": [
+            0.92,
+            1.0
+          ],
+          "mrr": 0.884,
+          "mrr_ci": [
+            0.8107,
+            0.9533
+          ],
+          "ndcg_at_10": 0.9082,
+          "ndcg_at_10_ci": [
+            0.8459,
+            0.9607
+          ]
+        },
+        "recall_at_1": 0.28,
+        "recall_at_1_ci": [
+          0.16,
+          0.4
+        ],
+        "recall_at_5": 0.82,
+        "recall_at_5_ci": [
+          0.7,
+          0.92
+        ],
+        "recall_at_10": 0.94,
+        "recall_at_10_ci": [
+          0.86,
+          1.0
+        ],
+        "mrr": 0.5345,
+        "mrr_ci": [
+          0.4445,
+          0.6222
+        ],
+        "ndcg_at_10": 0.6344,
+        "ndcg_at_10_ci": [
+          0.5534,
+          0.7078
+        ]
+      },
+      "latency_metrics": {
+        "p50_ms": 30.0,
+        "p50_ms_ci": [
+          27.19,
+          33.68
+        ],
+        "p95_ms": 48.6,
+        "p95_ms_ci": [
+          42.0,
+          55.25
+        ],
+        "p99_ms": 54.88,
+        "p99_ms_ci": [
+          46.62,
+          59.39
+        ],
+        "mean_ms": 31.06,
+        "latencies_ms": [
+          22.96,
+          50.19,
+          27.46,
+          36.68,
+          33.68,
+          45.86,
+          28.64,
+          24.72,
+          29.92,
+          28.16,
+          17.4,
+          36.39,
+          32.44,
+          23.33,
+          36.06,
+          19.99,
+          19.17,
+          18.14,
+          30.87,
+          19.93,
+          36.91,
+          20.37,
+          39.0,
+          30.08,
+          23.62,
+          34.93,
+          26.88,
+          43.83,
+          44.46,
+          20.07,
+          22.4,
+          33.94,
+          30.9,
+          34.39,
+          13.97,
+          26.82,
+          21.35,
+          43.56,
+          33.57,
+          23.79,
+          48.48,
+          36.96,
+          28.1,
+          32.24,
+          20.9,
+          59.39,
+          35.57,
+          28.21,
+          27.57,
+          48.7
+        ]
+      },
+      "latencies_ms": [
+        22.96,
+        50.19,
+        27.46,
+        36.68,
+        33.68,
+        45.86,
+        28.64,
+        24.72,
+        29.92,
+        28.16,
+        17.4,
+        36.39,
+        32.44,
+        23.33,
+        36.06,
+        19.99,
+        19.17,
+        18.14,
+        30.87,
+        19.93,
+        36.91,
+        20.37,
+        39.0,
+        30.08,
+        23.62,
+        34.93,
+        26.88,
+        43.83,
+        44.46,
+        20.07,
+        22.4,
+        33.94,
+        30.9,
+        34.39,
+        13.97,
+        26.82,
+        21.35,
+        43.56,
+        33.57,
+        23.79,
+        48.48,
+        36.96,
+        28.1,
+        32.24,
+        20.9,
+        59.39,
+        35.57,
+        28.21,
+        27.57,
+        48.7
+      ],
+      "peak_ram_mb": 0.0,
+      "disk_footprint_mb": 20.52,
+      "raw_inspections_first_5": [
+        {
+          "question_idx": 1,
+          "question_id": "gpt4_2655b836",
+          "question_text": "What was the first issue I had with my new car after its first service?",
+          "gold_answer": "GPS system not functioning correctly",
+          "gold_turn_tags": [
+            "[turn:00000]",
+            "[turn:00014]"
+          ],
+          "gold_sessions": [
+            "gpt4_2655b836_s0",
+            "gpt4_2655b836_s1"
+          ],
+          "first_turn_hit_rank": 5,
+          "first_session_hit_rank": 5,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00075]",
+              "session_id": "gpt4_76048e76_s1",
+              "snippet": "[turn:00075] Wise decision to get the \"check engine\" light checked out!\n\nMaintenance costs are an essential factor to consider when buying a",
+              "turn_hit": false,
+              "session_hit": false
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00880]",
+              "session_id": "gpt4_d9af6064_s1",
+              "snippet": "[turn:00880] I'm happy to help you with your internet speed issues and negotiating with your provider!\n\nFirstly, congratulations on getting ",
+              "turn_hit": false,
+              "session_hit": false
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00874]",
+              "session_id": "gpt4_d9af6064_s0",
+              "snippet": "[turn:00874] It sounds like slow speeds and connectivity issues are impacting your work-from-home experience and entertainment setup.\n\n**Str",
+              "turn_hit": false,
+              "session_hit": false
+            },
+            {
+              "rank": 4,
+              "id": "[turn:01064]",
+              "session_id": "gpt4_4cd9eba1_s1",
+              "snippet": "[turn:01064] Congratulations on your acceptance to UC Berkeley's exchange program! I'd be happy to help you prepare for your semester abroad",
+              "turn_hit": false,
+              "session_hit": false
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00000]",
+              "session_id": "gpt4_2655b836_s0",
+              "snippet": "[turn:00000] I'm thinking of getting my car detailed soon. Do you know any good detailers in the area or have any recommendations? By the wa",
+              "turn_hit": true,
+              "session_hit": true
+            }
+          ]
+        },
+        {
+          "question_idx": 2,
+          "question_id": "gpt4_2487a7cb",
+          "question_text": "Which event did I attend first, the 'Effective Time Management' workshop or the 'Data Analysis using Python' webinar?",
+          "gold_answer": "'Data Analysis using Python' webinar",
+          "gold_turn_tags": [
+            "[turn:00046]",
+            "[turn:00050]"
+          ],
+          "gold_sessions": [
+            "gpt4_2487a7cb_s0",
+            "gpt4_2487a7cb_s1"
+          ],
+          "first_turn_hit_rank": 1,
+          "first_session_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00050]",
+              "session_id": "gpt4_2487a7cb_s1",
+              "snippet": "[turn:00050] I'm actually familiar with some of these resources, I participated in a webinar on \"Data Analysis using Python\" two months ago,",
+              "turn_hit": true,
+              "session_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00048]",
+              "session_id": "gpt4_2487a7cb_s1",
+              "snippet": "[turn:00048] I'm trying to work on a project that involves data analysis, and I was wondering if you could recommend some resources for lear",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00046]",
+              "session_id": "gpt4_2487a7cb_s0",
+              "snippet": "[turn:00046] I've been thinking about my goals and priorities lately, and I realized that I want to focus more on learning new skills and ex",
+              "turn_hit": true,
+              "session_hit": true
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00049]",
+              "session_id": "gpt4_2487a7cb_s1",
+              "snippet": "[turn:00049] Data visualization is a crucial step in data analysis, and Python is an excellent choice for it. Here are some top-notch resour",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00051]",
+              "session_id": "gpt4_2487a7cb_s1",
+              "snippet": "[turn:00051] That's great to hear that you already have some background in Python and data analysis!\n\nBoth Matplotlib and Seaborn are excell",
+              "turn_hit": false,
+              "session_hit": true
+            }
+          ]
+        },
+        {
+          "question_idx": 3,
+          "question_id": "gpt4_76048e76",
+          "question_text": "Which vehicle did I take care of first in February, the bike or the car?",
+          "gold_answer": "bike",
+          "gold_turn_tags": [
+            "[turn:00060]",
+            "[turn:00072]"
+          ],
+          "gold_sessions": [
+            "gpt4_76048e76_s0",
+            "gpt4_76048e76_s1"
+          ],
+          "first_turn_hit_rank": 1,
+          "first_session_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00060]",
+              "session_id": "gpt4_76048e76_s0",
+              "snippet": "[turn:00060] I'm thinking of getting a new bike rack for my car. Do you have any recommendations? By the way, I've been having some issues w",
+              "turn_hit": true,
+              "session_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00000]",
+              "session_id": "gpt4_2655b836_s0",
+              "snippet": "[turn:00000] I'm thinking of getting my car detailed soon. Do you know any good detailers in the area or have any recommendations? By the wa",
+              "turn_hit": false,
+              "session_hit": false
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00035]",
+              "session_id": "gpt4_2655b836_s2",
+              "snippet": "[turn:00035] Getting a car wax and detailing done before your trip is an excellent idea. It'll not only protect your car's paint job and int",
+              "turn_hit": false,
+              "session_hit": false
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00001]",
+              "session_id": "gpt4_2655b836_s0",
+              "snippet": "[turn:00001] I'm happy to help you with your question! However, I'm a large language model, I don't have personal experiences or knowledge o",
+              "turn_hit": false,
+              "session_hit": false
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00080]",
+              "session_id": "gpt4_76048e76_s1",
+              "snippet": "[turn:00080] I'm glad to hear about the advanced safety features of the Corolla Hybrid. By the way, I recently had to take my bike in for re",
+              "turn_hit": false,
+              "session_hit": true
+            }
+          ]
+        },
+        {
+          "question_idx": 4,
+          "question_id": "gpt4_2312f94c",
+          "question_text": "Which device did I got first, the Samsung Galaxy S22 or the Dell XPS 13?",
+          "gold_answer": "Samsung Galaxy S22",
+          "gold_turn_tags": [
+            "[turn:00084]",
+            "[turn:00096]"
+          ],
+          "gold_sessions": [
+            "gpt4_2312f94c_s0",
+            "gpt4_2312f94c_s1"
+          ],
+          "first_turn_hit_rank": 2,
+          "first_session_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00099]",
+              "session_id": "gpt4_2312f94c_s1",
+              "snippet": "[turn:00099] The Anker PowerCore 20000 is a great portable power bank with a capacity of 20,000mAh. It's a popular and well-reviewed product",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00096]",
+              "session_id": "gpt4_2312f94c_s1",
+              "snippet": "[turn:00096] I'm planning a trip to Hawaii and I need to pack the right adapters for my devices. Can you help me figure out what kind of pow",
+              "turn_hit": true,
+              "session_hit": true
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00097]",
+              "session_id": "gpt4_2312f94c_s1",
+              "snippet": "[turn:00097] Congratulations on your new laptop and smartphone!\n\nI'd be happy to help you with the power adapters for your trip to Hawaii.\n\n",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00085]",
+              "session_id": "gpt4_2312f94c_s0",
+              "snippet": "[turn:00085] A trip to Hawaii sounds like a wonderful idea! I'd be happy to help you with some must-visit places to add to your itinerary.\n\n",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00089]",
+              "session_id": "gpt4_2312f94c_s0",
+              "snippet": "[turn:00089] That's a great idea! A portable power bank is a must-have travel accessory, especially when you're planning to be outdoors and ",
+              "turn_hit": false,
+              "session_hit": true
+            }
+          ]
+        },
+        {
+          "question_idx": 5,
+          "question_id": "0bb5a684",
+          "question_text": "How many days before the team meeting I was preparing for did I attend the workshop on 'Effective Communication in the Workplace'?",
+          "gold_answer": "7 days. 8 days (including the last day) is also acceptable.",
+          "gold_turn_tags": [
+            "[turn:00108]",
+            "[turn:00120]"
+          ],
+          "gold_sessions": [
+            "0bb5a684_s0",
+            "0bb5a684_s1"
+          ],
+          "first_turn_hit_rank": 1,
+          "first_session_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00108]",
+              "session_id": "0bb5a684_s0",
+              "snippet": "[turn:00108] I'm preparing for an upcoming meeting with my team and I want to make sure I'm effectively communicating our project updates. I",
+              "turn_hit": true,
+              "session_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00109]",
+              "session_id": "0bb5a684_s0",
+              "snippet": "[turn:00109] Congratulations on taking the initiative to improve your communication skills! Attending the workshop on \"Effective Communicati",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00112]",
+              "session_id": "0bb5a684_s0",
+              "snippet": "[turn:00112] I'm glad I attended that workshop on \"Effective Communication in the Workplace\" on January 10th, as it helped me realize the im",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00116]",
+              "session_id": "0bb5a684_s0",
+              "snippet": "[turn:00116] I'll definitely consider using some of these interactive tools to make my presentation more engaging. Since I attended a worksh",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00118]",
+              "session_id": "0bb5a684_s0",
+              "snippet": "[turn:00118] I'd like to ask about the importance of self-awareness in effective communication. As I reflect on the workshop I attended on \"",
+              "turn_hit": false,
+              "session_hit": true
+            }
+          ]
+        }
+      ]
+    },
+    "mem0_sdk": {
+      "tool": "Mem0 (SDK)",
+      "class": "Class A",
+      "storage_unit": "turn",
+      "count_verification": {
+        "expected_turns": 1320,
+        "stored_count": 1320,
+        "shortfall": 0,
+        "verified_equal": true,
+        "audit_notes": {
+          "stored_points_count": 1320,
+          "notes": "Mem0 Qdrant vector store point count verified."
+        }
+      },
+      "ingestion_timing": {
+        "write_seconds": 106.008,
+        "time_to_searchable_seconds": 0.327,
+        "total_ingest_seconds": 106.335,
+        "items_per_second": 12.5
+      },
+      "known_item_preflight": {
+        "passed": true,
+        "rank": 1,
+        "query": "cerulean observatory celestial frequency"
+      },
+      "turn_level_metrics": {
+        "status": "evaluated",
+        "recall_at_1": 0.36,
+        "recall_at_1_ci": [
+          0.22,
+          0.5
+        ],
+        "recall_at_5": 0.78,
+        "recall_at_5_ci": [
+          0.66,
+          0.88
+        ],
+        "recall_at_10": 0.92,
+        "recall_at_10_ci": [
+          0.84,
+          0.98
+        ],
+        "mrr": 0.522,
+        "mrr_ci": [
+          0.4122,
+          0.6267
+        ],
+        "ndcg_at_10": 0.6176,
+        "ndcg_at_10_ci": [
+          0.5216,
+          0.7042
+        ]
+      },
+      "session_level_metrics": {
+        "status": "evaluated",
+        "recall_at_1": 0.86,
+        "recall_at_1_ci": [
+          0.76,
+          0.94
+        ],
+        "recall_at_5": 0.98,
+        "recall_at_5_ci": [
+          0.94,
+          1.0
+        ],
+        "recall_at_10": 0.98,
+        "recall_at_10_ci": [
+          0.94,
+          1.0
+        ],
+        "mrr": 0.9083,
+        "mrr_ci": [
+          0.835,
+          0.9667
+        ],
+        "ndcg_at_10": 0.9265,
+        "ndcg_at_10_ci": [
+          0.8617,
+          0.9752
+        ]
+      },
+      "accuracy_metrics": {
+        "turn_level": {
+          "status": "evaluated",
+          "recall_at_1": 0.36,
+          "recall_at_1_ci": [
+            0.22,
+            0.5
+          ],
+          "recall_at_5": 0.78,
+          "recall_at_5_ci": [
+            0.66,
+            0.88
+          ],
+          "recall_at_10": 0.92,
+          "recall_at_10_ci": [
+            0.84,
+            0.98
+          ],
+          "mrr": 0.522,
+          "mrr_ci": [
+            0.4122,
+            0.6267
+          ],
+          "ndcg_at_10": 0.6176,
+          "ndcg_at_10_ci": [
+            0.5216,
+            0.7042
+          ]
+        },
+        "session_level": {
+          "status": "evaluated",
+          "recall_at_1": 0.86,
+          "recall_at_1_ci": [
+            0.76,
+            0.94
+          ],
+          "recall_at_5": 0.98,
+          "recall_at_5_ci": [
+            0.94,
+            1.0
+          ],
+          "recall_at_10": 0.98,
+          "recall_at_10_ci": [
+            0.94,
+            1.0
+          ],
+          "mrr": 0.9083,
+          "mrr_ci": [
+            0.835,
+            0.9667
+          ],
+          "ndcg_at_10": 0.9265,
+          "ndcg_at_10_ci": [
+            0.8617,
+            0.9752
+          ]
+        },
+        "recall_at_1": 0.36,
+        "recall_at_1_ci": [
+          0.22,
+          0.5
+        ],
+        "recall_at_5": 0.78,
+        "recall_at_5_ci": [
+          0.66,
+          0.88
+        ],
+        "recall_at_10": 0.92,
+        "recall_at_10_ci": [
+          0.84,
+          0.98
+        ],
+        "mrr": 0.522,
+        "mrr_ci": [
+          0.4122,
+          0.6267
+        ],
+        "ndcg_at_10": 0.6176,
+        "ndcg_at_10_ci": [
+          0.5216,
+          0.7042
+        ]
+      },
+      "latency_metrics": {
+        "p50_ms": 240.86,
+        "p50_ms_ci": [
+          236.17,
+          247.53
+        ],
+        "p95_ms": 406.3,
+        "p95_ms_ci": [
+          337.29,
+          672.89
+        ],
+        "p99_ms": 656.05,
+        "p99_ms_ci": [
+          363.93,
+          862.31
+        ],
+        "mean_ms": 272.96,
+        "latencies_ms": [
+          215.52,
+          238.87,
+          248.07,
+          235.38,
+          242.99,
+          247.53,
+          211.51,
+          276.71,
+          238.31,
+          218.17,
+          862.31,
+          228.55,
+          239.7,
+          241.69,
+          236.62,
+          247.18,
+          221.91,
+          251.56,
+          274.3,
+          239.68,
+          217.59,
+          242.19,
+          227.86,
+          209.01,
+          215.69,
+          258.37,
+          234.21,
+          247.53,
+          235.25,
+          238.57,
+          232.19,
+          241.99,
+          211.54,
+          227.88,
+          435.49,
+          199.55,
+          215.38,
+          240.02,
+          235.72,
+          244.83,
+          327.4,
+          441.38,
+          339.34,
+          348.21,
+          370.62,
+          363.93,
+          345.38,
+          326.83,
+          301.53,
+          256.14
+        ]
+      },
+      "latencies_ms": [
+        215.52,
+        238.87,
+        248.07,
+        235.38,
+        242.99,
+        247.53,
+        211.51,
+        276.71,
+        238.31,
+        218.17,
+        862.31,
+        228.55,
+        239.7,
+        241.69,
+        236.62,
+        247.18,
+        221.91,
+        251.56,
+        274.3,
+        239.68,
+        217.59,
+        242.19,
+        227.86,
+        209.01,
+        215.69,
+        258.37,
+        234.21,
+        247.53,
+        235.25,
+        238.57,
+        232.19,
+        241.99,
+        211.54,
+        227.88,
+        435.49,
+        199.55,
+        215.38,
+        240.02,
+        235.72,
+        244.83,
+        327.4,
+        441.38,
+        339.34,
+        348.21,
+        370.62,
+        363.93,
+        345.38,
+        326.83,
+        301.53,
+        256.14
+      ],
+      "peak_ram_mb": 328.37,
+      "disk_footprint_mb": 10.34,
+      "raw_inspections_first_5": [
+        {
+          "question_idx": 1,
+          "question_id": "gpt4_2655b836",
+          "question_text": "What was the first issue I had with my new car after its first service?",
+          "gold_answer": "GPS system not functioning correctly",
+          "gold_turn_tags": [
+            "[turn:00000]",
+            "[turn:00014]"
+          ],
+          "gold_sessions": [
+            "gpt4_2655b836_s0",
+            "gpt4_2655b836_s1"
+          ],
+          "first_turn_hit_rank": 1,
+          "first_session_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00014]",
+              "session_id": "gpt4_2655b836_s1",
+              "snippet": "[turn:00014] I've been doing some research and found a local detailer with great reviews. I was thinking of taking my car there, but I'm als",
+              "turn_hit": true,
+              "session_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00000]",
+              "session_id": "gpt4_2655b836_s0",
+              "snippet": "[turn:00000] I'm thinking of getting my car detailed soon. Do you know any good detailers in the area or have any recommendations? By the wa",
+              "turn_hit": true,
+              "session_hit": true
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00015]",
+              "session_id": "gpt4_2655b836_s1",
+              "snippet": "[turn:00015] That's great to hear that the dealership was able to fix your GPS issue! As for common issues with GPS systems in newer cars, y",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00001]",
+              "session_id": "gpt4_2655b836_s0",
+              "snippet": "[turn:00001] I'm happy to help you with your question! However, I'm a large language model, I don't have personal experiences or knowledge o",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00011]",
+              "session_id": "gpt4_2655b836_s0",
+              "snippet": "[turn:00011] I'm glad to hear that you're happy with your new car accessories!\n\nAs for finding a good detailer in your area, I'd be happy to",
+              "turn_hit": false,
+              "session_hit": true
+            }
+          ]
+        },
+        {
+          "question_idx": 2,
+          "question_id": "gpt4_2487a7cb",
+          "question_text": "Which event did I attend first, the 'Effective Time Management' workshop or the 'Data Analysis using Python' webinar?",
+          "gold_answer": "'Data Analysis using Python' webinar",
+          "gold_turn_tags": [
+            "[turn:00046]",
+            "[turn:00050]"
+          ],
+          "gold_sessions": [
+            "gpt4_2487a7cb_s0",
+            "gpt4_2487a7cb_s1"
+          ],
+          "first_turn_hit_rank": 1,
+          "first_session_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00050]",
+              "session_id": "gpt4_2487a7cb_s1",
+              "snippet": "[turn:00050] I'm actually familiar with some of these resources, I participated in a webinar on \"Data Analysis using Python\" two months ago,",
+              "turn_hit": true,
+              "session_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00037]",
+              "session_id": "gpt4_2487a7cb_s0",
+              "snippet": "[turn:00037] Congratulations on taking the first step towards improving your time management skills! There are many fantastic apps and tools",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 3,
+              "id": "[turn:01098]",
+              "session_id": "gpt4_93f6379c_s1",
+              "snippet": "[turn:01098] Hosting live events or webinars within the Facebook group is an excellent way to take your community engagement to the next lev",
+              "turn_hit": false,
+              "session_hit": false
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00049]",
+              "session_id": "gpt4_2487a7cb_s1",
+              "snippet": "[turn:00049] Data visualization is a crucial step in data analysis, and Python is an excellent choice for it. Here are some top-notch resour",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 5,
+              "id": "[turn:01097]",
+              "session_id": "gpt4_93f6379c_s1",
+              "snippet": "[turn:01097] I'd like to explore the idea of hosting live events or webinars within the Facebook group. This could be a great way to provide",
+              "turn_hit": false,
+              "session_hit": false
+            }
+          ]
+        },
+        {
+          "question_idx": 3,
+          "question_id": "gpt4_76048e76",
+          "question_text": "Which vehicle did I take care of first in February, the bike or the car?",
+          "gold_answer": "bike",
+          "gold_turn_tags": [
+            "[turn:00060]",
+            "[turn:00072]"
+          ],
+          "gold_sessions": [
+            "gpt4_76048e76_s0",
+            "gpt4_76048e76_s1"
+          ],
+          "first_turn_hit_rank": 3,
+          "first_session_hit_rank": 2,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00024]",
+              "session_id": "gpt4_2655b836_s2",
+              "snippet": "[turn:00024] I'm thinking of planning a road trip soon and I'm trying to figure out the best route to take. I've got a new car, a silver Hon",
+              "turn_hit": false,
+              "session_hit": false
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00070]",
+              "session_id": "gpt4_76048e76_s0",
+              "snippet": "[turn:00070] By the way, speaking of bikes, I'm glad I got my bike repaired back in mid-February. The gears were acting up, and I couldn't s",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00060]",
+              "session_id": "gpt4_76048e76_s0",
+              "snippet": "[turn:00060] I'm thinking of getting a new bike rack for my car. Do you have any recommendations? By the way, I've been having some issues w",
+              "turn_hit": true,
+              "session_hit": true
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00062]",
+              "session_id": "gpt4_76048e76_s0",
+              "snippet": "[turn:00062] I have a hybrid bike, and I want to carry just one bike. My car is a Toyota Corolla. I'm not sure about the type of mount, but ",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00095]",
+              "session_id": "gpt4_2312f94c_s0",
+              "snippet": "[turn:00095] Renting a car is a great way to explore Maui and drive the Road to Hana at your own pace. Here are some top car rental company ",
+              "turn_hit": false,
+              "session_hit": false
+            }
+          ]
+        },
+        {
+          "question_idx": 4,
+          "question_id": "gpt4_2312f94c",
+          "question_text": "Which device did I got first, the Samsung Galaxy S22 or the Dell XPS 13?",
+          "gold_answer": "Samsung Galaxy S22",
+          "gold_turn_tags": [
+            "[turn:00084]",
+            "[turn:00096]"
+          ],
+          "gold_sessions": [
+            "gpt4_2312f94c_s0",
+            "gpt4_2312f94c_s1"
+          ],
+          "first_turn_hit_rank": 2,
+          "first_session_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00099]",
+              "session_id": "gpt4_2312f94c_s1",
+              "snippet": "[turn:00099] The Anker PowerCore 20000 is a great portable power bank with a capacity of 20,000mAh. It's a popular and well-reviewed product",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00096]",
+              "session_id": "gpt4_2312f94c_s1",
+              "snippet": "[turn:00096] I'm planning a trip to Hawaii and I need to pack the right adapters for my devices. Can you help me figure out what kind of pow",
+              "turn_hit": true,
+              "session_hit": true
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00097]",
+              "session_id": "gpt4_2312f94c_s1",
+              "snippet": "[turn:00097] Congratulations on your new laptop and smartphone!\n\nI'd be happy to help you with the power adapters for your trip to Hawaii.\n\n",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00634]",
+              "session_id": "c8090214_s1",
+              "snippet": "[turn:00634] Congratulations on scoring a great deal on your iPhone 13 Pro!\n\nI'd be happy to help you find some excellent case and screen pr",
+              "turn_hit": false,
+              "session_hit": false
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00633]",
+              "session_id": "c8090214_s1",
+              "snippet": "[turn:00633] I'm looking to upgrade my phone case and screen protector. Can you show me some options for iPhone 13 Pro cases and screen prot",
+              "turn_hit": false,
+              "session_hit": false
+            }
+          ]
+        },
+        {
+          "question_idx": 5,
+          "question_id": "0bb5a684",
+          "question_text": "How many days before the team meeting I was preparing for did I attend the workshop on 'Effective Communication in the Workplace'?",
+          "gold_answer": "7 days. 8 days (including the last day) is also acceptable.",
+          "gold_turn_tags": [
+            "[turn:00108]",
+            "[turn:00120]"
+          ],
+          "gold_sessions": [
+            "0bb5a684_s0",
+            "0bb5a684_s1"
+          ],
+          "first_turn_hit_rank": 1,
+          "first_session_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00108]",
+              "session_id": "0bb5a684_s0",
+              "snippet": "[turn:00108] I'm preparing for an upcoming meeting with my team and I want to make sure I'm effectively communicating our project updates. I",
+              "turn_hit": true,
+              "session_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00109]",
+              "session_id": "0bb5a684_s0",
+              "snippet": "[turn:00109] Congratulations on taking the initiative to improve your communication skills! Attending the workshop on \"Effective Communicati",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00120]",
+              "session_id": "0bb5a684_s1",
+              "snippet": "[turn:00120] I'm preparing for an upcoming team meeting and want to make sure I'm well-prepared to communicate effectively. I remember makin",
+              "turn_hit": true,
+              "session_hit": true
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00110]",
+              "session_id": "0bb5a684_s0",
+              "snippet": "[turn:00110] That's really helpful, thanks for the tips! I'll make sure to focus on structuring my presentation in a logical order and using",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00116]",
+              "session_id": "0bb5a684_s0",
+              "snippet": "[turn:00116] I'll definitely consider using some of these interactive tools to make my presentation more engaging. Since I attended a worksh",
+              "turn_hit": false,
+              "session_hit": true
+            }
+          ]
+        }
+      ]
+    },
+    "basic_memory": {
+      "status": "no documented Python API",
+      "url": "https://pypi.org/project/basic-memory/"
+    },
+    "auxly": {
+      "status": "not offered (compiled Go binary)"
+    }
+  },
+  "class_b_cli": {
+    "mesh_cli_cold": {
+      "tool": "Mesh CLI (Cold)",
+      "class": "Class B",
+      "storage_unit": "turn",
+      "count_verification": {
+        "expected_turns": 1320,
+        "stored_count": 1320,
+        "shortfall": 0,
+        "verified_equal": true,
+        "audit_notes": {
+          "daemon_active": false,
+          "mode": "cold_process_spawn"
+        }
+      },
+      "ingestion_timing": {
+        "write_seconds": 17.319,
+        "time_to_searchable_seconds": 3.837,
+        "total_ingest_seconds": 21.155,
+        "items_per_second": 76.2
+      },
+      "known_item_preflight": {
+        "passed": true,
+        "rank": 1,
+        "query": "cerulean observatory celestial frequency"
+      },
+      "turn_level_metrics": {
+        "status": "evaluated",
+        "recall_at_1": 0.28,
+        "recall_at_1_ci": [
+          0.16,
+          0.4
+        ],
+        "recall_at_5": 0.82,
+        "recall_at_5_ci": [
+          0.7,
+          0.92
+        ],
+        "recall_at_10": 0.94,
+        "recall_at_10_ci": [
+          0.86,
+          1.0
+        ],
+        "mrr": 0.5345,
+        "mrr_ci": [
+          0.4445,
+          0.6222
+        ],
+        "ndcg_at_10": 0.6344,
+        "ndcg_at_10_ci": [
+          0.5534,
+          0.7078
+        ]
+      },
+      "session_level_metrics": {
+        "status": "evaluated",
+        "recall_at_1": 0.82,
+        "recall_at_1_ci": [
+          0.72,
+          0.92
+        ],
+        "recall_at_5": 0.98,
+        "recall_at_5_ci": [
+          0.92,
+          1.0
+        ],
+        "recall_at_10": 0.98,
+        "recall_at_10_ci": [
+          0.92,
+          1.0
+        ],
+        "mrr": 0.884,
+        "mrr_ci": [
+          0.8107,
+          0.9533
+        ],
+        "ndcg_at_10": 0.9082,
+        "ndcg_at_10_ci": [
+          0.8459,
+          0.9607
+        ]
+      },
+      "accuracy_metrics": {
+        "turn_level": {
+          "status": "evaluated",
+          "recall_at_1": 0.28,
+          "recall_at_1_ci": [
+            0.16,
+            0.4
+          ],
+          "recall_at_5": 0.82,
+          "recall_at_5_ci": [
+            0.7,
+            0.92
+          ],
+          "recall_at_10": 0.94,
+          "recall_at_10_ci": [
+            0.86,
+            1.0
+          ],
+          "mrr": 0.5345,
+          "mrr_ci": [
+            0.4445,
+            0.6222
+          ],
+          "ndcg_at_10": 0.6344,
+          "ndcg_at_10_ci": [
+            0.5534,
+            0.7078
+          ]
+        },
+        "session_level": {
+          "status": "evaluated",
+          "recall_at_1": 0.82,
+          "recall_at_1_ci": [
+            0.72,
+            0.92
+          ],
+          "recall_at_5": 0.98,
+          "recall_at_5_ci": [
+            0.92,
+            1.0
+          ],
+          "recall_at_10": 0.98,
+          "recall_at_10_ci": [
+            0.92,
+            1.0
+          ],
+          "mrr": 0.884,
+          "mrr_ci": [
+            0.8107,
+            0.9533
+          ],
+          "ndcg_at_10": 0.9082,
+          "ndcg_at_10_ci": [
+            0.8459,
+            0.9607
+          ]
+        },
+        "recall_at_1": 0.28,
+        "recall_at_1_ci": [
+          0.16,
+          0.4
+        ],
+        "recall_at_5": 0.82,
+        "recall_at_5_ci": [
+          0.7,
+          0.92
+        ],
+        "recall_at_10": 0.94,
+        "recall_at_10_ci": [
+          0.86,
+          1.0
+        ],
+        "mrr": 0.5345,
+        "mrr_ci": [
+          0.4445,
+          0.6222
+        ],
+        "ndcg_at_10": 0.6344,
+        "ndcg_at_10_ci": [
+          0.5534,
+          0.7078
+        ]
+      },
+      "latency_metrics": {
+        "p50_ms": 3498.51,
+        "p50_ms_ci": [
+          3454.59,
+          3711.63
+        ],
+        "p95_ms": 4699.34,
+        "p95_ms_ci": [
+          4291.04,
+          5292.57
+        ],
+        "p99_ms": 5271.12,
+        "p99_ms_ci": [
+          4513.25,
+          5533.79
+        ],
+        "mean_ms": 3737.95,
+        "latencies_ms": [
+          4997.73,
+          4846.04,
+          4506.17,
+          3306.7,
+          3303.08,
+          3463.19,
+          3380.63,
+          3671.32,
+          4065.51,
+          3703.81,
+          3358.06,
+          3490.7,
+          3930.66,
+          3711.63,
+          3397.54,
+          4089.93,
+          3462.78,
+          3236.96,
+          3342.38,
+          3385.31,
+          3716.29,
+          3327.74,
+          4034.52,
+          3895.75,
+          4398.34,
+          3460.57,
+          3352.91,
+          3353.16,
+          3448.61,
+          3688.69,
+          3242.58,
+          3460.58,
+          3941.05,
+          3481.1,
+          3427.24,
+          3765.07,
+          3384.71,
+          4384.37,
+          3340.75,
+          4520.05,
+          4291.04,
+          5533.79,
+          3806.06,
+          3336.56,
+          3506.32,
+          3477.25,
+          3612.6,
+          3630.22,
+          3420.02,
+          4009.51
+        ]
+      },
+      "latencies_ms": [
+        4997.73,
+        4846.04,
+        4506.17,
+        3306.7,
+        3303.08,
+        3463.19,
+        3380.63,
+        3671.32,
+        4065.51,
+        3703.81,
+        3358.06,
+        3490.7,
+        3930.66,
+        3711.63,
+        3397.54,
+        4089.93,
+        3462.78,
+        3236.96,
+        3342.38,
+        3385.31,
+        3716.29,
+        3327.74,
+        4034.52,
+        3895.75,
+        4398.34,
+        3460.57,
+        3352.91,
+        3353.16,
+        3448.61,
+        3688.69,
+        3242.58,
+        3460.58,
+        3941.05,
+        3481.1,
+        3427.24,
+        3765.07,
+        3384.71,
+        4384.37,
+        3340.75,
+        4520.05,
+        4291.04,
+        5533.79,
+        3806.06,
+        3336.56,
+        3506.32,
+        3477.25,
+        3612.6,
+        3630.22,
+        3420.02,
+        4009.51
+      ],
+      "peak_ram_mb": 0.0,
+      "disk_footprint_mb": 98.13,
+      "raw_inspections_first_5": [
+        {
+          "question_idx": 1,
+          "question_id": "gpt4_2655b836",
+          "question_text": "What was the first issue I had with my new car after its first service?",
+          "gold_answer": "GPS system not functioning correctly",
+          "gold_turn_tags": [
+            "[turn:00000]",
+            "[turn:00014]"
+          ],
+          "gold_sessions": [
+            "gpt4_2655b836_s0",
+            "gpt4_2655b836_s1"
+          ],
+          "first_turn_hit_rank": 5,
+          "first_session_hit_rank": 5,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00075]",
+              "session_id": "gpt4_76048e76_s1",
+              "snippet": "[turn:00075] Wise decision to get the \"check engine\" light checked out!\n\nMaintenance costs are an essential factor to consider when buying a",
+              "turn_hit": false,
+              "session_hit": false
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00880]",
+              "session_id": "gpt4_d9af6064_s1",
+              "snippet": "[turn:00880] I'm happy to help you with your internet speed issues and negotiating with your provider!\n\nFirstly, congratulations on getting ",
+              "turn_hit": false,
+              "session_hit": false
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00874]",
+              "session_id": "gpt4_d9af6064_s0",
+              "snippet": "[turn:00874] It sounds like slow speeds and connectivity issues are impacting your work-from-home experience and entertainment setup.\n\n**Str",
+              "turn_hit": false,
+              "session_hit": false
+            },
+            {
+              "rank": 4,
+              "id": "[turn:01064]",
+              "session_id": "gpt4_4cd9eba1_s1",
+              "snippet": "[turn:01064] Congratulations on your acceptance to UC Berkeley's exchange program! I'd be happy to help you prepare for your semester abroad",
+              "turn_hit": false,
+              "session_hit": false
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00000]",
+              "session_id": "gpt4_2655b836_s0",
+              "snippet": "[turn:00000] I'm thinking of getting my car detailed soon. Do you know any good detailers in the area or have any recommendations? By the wa",
+              "turn_hit": true,
+              "session_hit": true
+            }
+          ]
+        },
+        {
+          "question_idx": 2,
+          "question_id": "gpt4_2487a7cb",
+          "question_text": "Which event did I attend first, the 'Effective Time Management' workshop or the 'Data Analysis using Python' webinar?",
+          "gold_answer": "'Data Analysis using Python' webinar",
+          "gold_turn_tags": [
+            "[turn:00046]",
+            "[turn:00050]"
+          ],
+          "gold_sessions": [
+            "gpt4_2487a7cb_s0",
+            "gpt4_2487a7cb_s1"
+          ],
+          "first_turn_hit_rank": 1,
+          "first_session_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00050]",
+              "session_id": "gpt4_2487a7cb_s1",
+              "snippet": "[turn:00050] I'm actually familiar with some of these resources, I participated in a webinar on \"Data Analysis using Python\" two months ago,",
+              "turn_hit": true,
+              "session_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00048]",
+              "session_id": "gpt4_2487a7cb_s1",
+              "snippet": "[turn:00048] I'm trying to work on a project that involves data analysis, and I was wondering if you could recommend some resources for lear",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00046]",
+              "session_id": "gpt4_2487a7cb_s0",
+              "snippet": "[turn:00046] I've been thinking about my goals and priorities lately, and I realized that I want to focus more on learning new skills and ex",
+              "turn_hit": true,
+              "session_hit": true
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00049]",
+              "session_id": "gpt4_2487a7cb_s1",
+              "snippet": "[turn:00049] Data visualization is a crucial step in data analysis, and Python is an excellent choice for it. Here are some top-notch resour",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00051]",
+              "session_id": "gpt4_2487a7cb_s1",
+              "snippet": "[turn:00051] That's great to hear that you already have some background in Python and data analysis!\n\nBoth Matplotlib and Seaborn are excell",
+              "turn_hit": false,
+              "session_hit": true
+            }
+          ]
+        },
+        {
+          "question_idx": 3,
+          "question_id": "gpt4_76048e76",
+          "question_text": "Which vehicle did I take care of first in February, the bike or the car?",
+          "gold_answer": "bike",
+          "gold_turn_tags": [
+            "[turn:00060]",
+            "[turn:00072]"
+          ],
+          "gold_sessions": [
+            "gpt4_76048e76_s0",
+            "gpt4_76048e76_s1"
+          ],
+          "first_turn_hit_rank": 1,
+          "first_session_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00060]",
+              "session_id": "gpt4_76048e76_s0",
+              "snippet": "[turn:00060] I'm thinking of getting a new bike rack for my car. Do you have any recommendations? By the way, I've been having some issues w",
+              "turn_hit": true,
+              "session_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00000]",
+              "session_id": "gpt4_2655b836_s0",
+              "snippet": "[turn:00000] I'm thinking of getting my car detailed soon. Do you know any good detailers in the area or have any recommendations? By the wa",
+              "turn_hit": false,
+              "session_hit": false
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00035]",
+              "session_id": "gpt4_2655b836_s2",
+              "snippet": "[turn:00035] Getting a car wax and detailing done before your trip is an excellent idea. It'll not only protect your car's paint job and int",
+              "turn_hit": false,
+              "session_hit": false
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00001]",
+              "session_id": "gpt4_2655b836_s0",
+              "snippet": "[turn:00001] I'm happy to help you with your question! However, I'm a large language model, I don't have personal experiences or knowledge o",
+              "turn_hit": false,
+              "session_hit": false
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00080]",
+              "session_id": "gpt4_76048e76_s1",
+              "snippet": "[turn:00080] I'm glad to hear about the advanced safety features of the Corolla Hybrid. By the way, I recently had to take my bike in for re",
+              "turn_hit": false,
+              "session_hit": true
+            }
+          ]
+        },
+        {
+          "question_idx": 4,
+          "question_id": "gpt4_2312f94c",
+          "question_text": "Which device did I got first, the Samsung Galaxy S22 or the Dell XPS 13?",
+          "gold_answer": "Samsung Galaxy S22",
+          "gold_turn_tags": [
+            "[turn:00084]",
+            "[turn:00096]"
+          ],
+          "gold_sessions": [
+            "gpt4_2312f94c_s0",
+            "gpt4_2312f94c_s1"
+          ],
+          "first_turn_hit_rank": 2,
+          "first_session_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00099]",
+              "session_id": "gpt4_2312f94c_s1",
+              "snippet": "[turn:00099] The Anker PowerCore 20000 is a great portable power bank with a capacity of 20,000mAh. It's a popular and well-reviewed product",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00096]",
+              "session_id": "gpt4_2312f94c_s1",
+              "snippet": "[turn:00096] I'm planning a trip to Hawaii and I need to pack the right adapters for my devices. Can you help me figure out what kind of pow",
+              "turn_hit": true,
+              "session_hit": true
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00097]",
+              "session_id": "gpt4_2312f94c_s1",
+              "snippet": "[turn:00097] Congratulations on your new laptop and smartphone!\n\nI'd be happy to help you with the power adapters for your trip to Hawaii.\n\n",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00085]",
+              "session_id": "gpt4_2312f94c_s0",
+              "snippet": "[turn:00085] A trip to Hawaii sounds like a wonderful idea! I'd be happy to help you with some must-visit places to add to your itinerary.\n\n",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00089]",
+              "session_id": "gpt4_2312f94c_s0",
+              "snippet": "[turn:00089] That's a great idea! A portable power bank is a must-have travel accessory, especially when you're planning to be outdoors and ",
+              "turn_hit": false,
+              "session_hit": true
+            }
+          ]
+        },
+        {
+          "question_idx": 5,
+          "question_id": "0bb5a684",
+          "question_text": "How many days before the team meeting I was preparing for did I attend the workshop on 'Effective Communication in the Workplace'?",
+          "gold_answer": "7 days. 8 days (including the last day) is also acceptable.",
+          "gold_turn_tags": [
+            "[turn:00108]",
+            "[turn:00120]"
+          ],
+          "gold_sessions": [
+            "0bb5a684_s0",
+            "0bb5a684_s1"
+          ],
+          "first_turn_hit_rank": 1,
+          "first_session_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00108]",
+              "session_id": "0bb5a684_s0",
+              "snippet": "[turn:00108] I'm preparing for an upcoming meeting with my team and I want to make sure I'm effectively communicating our project updates. I",
+              "turn_hit": true,
+              "session_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00109]",
+              "session_id": "0bb5a684_s0",
+              "snippet": "[turn:00109] Congratulations on taking the initiative to improve your communication skills! Attending the workshop on \"Effective Communicati",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00112]",
+              "session_id": "0bb5a684_s0",
+              "snippet": "[turn:00112] I'm glad I attended that workshop on \"Effective Communication in the Workplace\" on January 10th, as it helped me realize the im",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00116]",
+              "session_id": "0bb5a684_s0",
+              "snippet": "[turn:00116] I'll definitely consider using some of these interactive tools to make my presentation more engaging. Since I attended a worksh",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00118]",
+              "session_id": "0bb5a684_s0",
+              "snippet": "[turn:00118] I'd like to ask about the importance of self-awareness in effective communication. As I reflect on the workshop I attended on \"",
+              "turn_hit": false,
+              "session_hit": true
+            }
+          ]
+        }
+      ]
+    },
+    "mesh_cli_daemon": {
+      "tool": "Mesh CLI (Daemon Running)",
+      "class": "Class B",
+      "storage_unit": "turn",
+      "count_verification": {
+        "expected_turns": 1320,
+        "stored_count": 1320,
+        "shortfall": 0,
+        "verified_equal": true,
+        "audit_notes": {
+          "daemon_active": true,
+          "daemon_port": "17788",
+          "commit_hook": "1a88951",
+          "test_ref": "tests/test_remediation.py:344, tests/test_phase1.py:229"
+        }
+      },
+      "ingestion_timing": {
+        "write_seconds": 17.417,
+        "time_to_searchable_seconds": 36.601,
+        "total_ingest_seconds": 54.018,
+        "items_per_second": 75.8
+      },
+      "known_item_preflight": {
+        "passed": true,
+        "rank": 1,
+        "query": "cerulean observatory celestial frequency"
+      },
+      "turn_level_metrics": {
+        "status": "evaluated",
+        "recall_at_1": 0.28,
+        "recall_at_1_ci": [
+          0.16,
+          0.4
+        ],
+        "recall_at_5": 0.82,
+        "recall_at_5_ci": [
+          0.7,
+          0.92
+        ],
+        "recall_at_10": 0.94,
+        "recall_at_10_ci": [
+          0.86,
+          1.0
+        ],
+        "mrr": 0.534,
+        "mrr_ci": [
+          0.4442,
+          0.6222
+        ],
+        "ndcg_at_10": 0.6339,
+        "ndcg_at_10_ci": [
+          0.5531,
+          0.7075
+        ]
+      },
+      "session_level_metrics": {
+        "status": "evaluated",
+        "recall_at_1": 0.82,
+        "recall_at_1_ci": [
+          0.72,
+          0.92
+        ],
+        "recall_at_5": 0.98,
+        "recall_at_5_ci": [
+          0.92,
+          1.0
+        ],
+        "recall_at_10": 0.98,
+        "recall_at_10_ci": [
+          0.92,
+          1.0
+        ],
+        "mrr": 0.884,
+        "mrr_ci": [
+          0.8107,
+          0.9533
+        ],
+        "ndcg_at_10": 0.9082,
+        "ndcg_at_10_ci": [
+          0.8459,
+          0.9607
+        ]
+      },
+      "accuracy_metrics": {
+        "turn_level": {
+          "status": "evaluated",
+          "recall_at_1": 0.28,
+          "recall_at_1_ci": [
+            0.16,
+            0.4
+          ],
+          "recall_at_5": 0.82,
+          "recall_at_5_ci": [
+            0.7,
+            0.92
+          ],
+          "recall_at_10": 0.94,
+          "recall_at_10_ci": [
+            0.86,
+            1.0
+          ],
+          "mrr": 0.534,
+          "mrr_ci": [
+            0.4442,
+            0.6222
+          ],
+          "ndcg_at_10": 0.6339,
+          "ndcg_at_10_ci": [
+            0.5531,
+            0.7075
+          ]
+        },
+        "session_level": {
+          "status": "evaluated",
+          "recall_at_1": 0.82,
+          "recall_at_1_ci": [
+            0.72,
+            0.92
+          ],
+          "recall_at_5": 0.98,
+          "recall_at_5_ci": [
+            0.92,
+            1.0
+          ],
+          "recall_at_10": 0.98,
+          "recall_at_10_ci": [
+            0.92,
+            1.0
+          ],
+          "mrr": 0.884,
+          "mrr_ci": [
+            0.8107,
+            0.9533
+          ],
+          "ndcg_at_10": 0.9082,
+          "ndcg_at_10_ci": [
+            0.8459,
+            0.9607
+          ]
+        },
+        "recall_at_1": 0.28,
+        "recall_at_1_ci": [
+          0.16,
+          0.4
+        ],
+        "recall_at_5": 0.82,
+        "recall_at_5_ci": [
+          0.7,
+          0.92
+        ],
+        "recall_at_10": 0.94,
+        "recall_at_10_ci": [
+          0.86,
+          1.0
+        ],
+        "mrr": 0.534,
+        "mrr_ci": [
+          0.4442,
+          0.6222
+        ],
+        "ndcg_at_10": 0.6339,
+        "ndcg_at_10_ci": [
+          0.5531,
+          0.7075
+        ]
+      },
+      "latency_metrics": {
+        "p50_ms": 441.72,
+        "p50_ms_ci": [
+          436.25,
+          454.75
+        ],
+        "p95_ms": 54711.11,
+        "p95_ms_ci": [
+          495.36,
+          75026.99
+        ],
+        "p99_ms": 74654.58,
+        "p99_ms_ci": [
+          40656.37,
+          79216.61
+        ],
+        "mean_ms": 6217.54,
+        "latencies_ms": [
+          49515.48,
+          58962.08,
+          69906.34,
+          79216.61,
+          33020.09,
+          446.92,
+          469.44,
+          410.19,
+          452.75,
+          433.09,
+          400.12,
+          456.76,
+          487.41,
+          480.72,
+          449.04,
+          436.77,
+          423.97,
+          424.86,
+          489.17,
+          447.02,
+          656.12,
+          423.26,
+          436.5,
+          434.13,
+          425.88,
+          440.2,
+          435.44,
+          469.67,
+          491.98,
+          441.25,
+          412.24,
+          432.39,
+          442.02,
+          469.65,
+          412.89,
+          449.25,
+          416.94,
+          465.09,
+          440.58,
+          401.63,
+          495.36,
+          441.41,
+          438.38,
+          424.23,
+          423.72,
+          522.25,
+          473.19,
+          435.74,
+          421.77,
+          475.12
+        ]
+      },
+      "latencies_ms": [
+        49515.48,
+        58962.08,
+        69906.34,
+        79216.61,
+        33020.09,
+        446.92,
+        469.44,
+        410.19,
+        452.75,
+        433.09,
+        400.12,
+        456.76,
+        487.41,
+        480.72,
+        449.04,
+        436.77,
+        423.97,
+        424.86,
+        489.17,
+        447.02,
+        656.12,
+        423.26,
+        436.5,
+        434.13,
+        425.88,
+        440.2,
+        435.44,
+        469.67,
+        491.98,
+        441.25,
+        412.24,
+        432.39,
+        442.02,
+        469.65,
+        412.89,
+        449.25,
+        416.94,
+        465.09,
+        440.58,
+        401.63,
+        495.36,
+        441.41,
+        438.38,
+        424.23,
+        423.72,
+        522.25,
+        473.19,
+        435.74,
+        421.77,
+        475.12
+      ],
+      "peak_ram_mb": 0.0,
+      "disk_footprint_mb": 102.38,
+      "raw_inspections_first_5": [
+        {
+          "question_idx": 1,
+          "question_id": "gpt4_2655b836",
+          "question_text": "What was the first issue I had with my new car after its first service?",
+          "gold_answer": "GPS system not functioning correctly",
+          "gold_turn_tags": [
+            "[turn:00000]",
+            "[turn:00014]"
+          ],
+          "gold_sessions": [
+            "gpt4_2655b836_s0",
+            "gpt4_2655b836_s1"
+          ],
+          "first_turn_hit_rank": 5,
+          "first_session_hit_rank": 5,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00075]",
+              "session_id": "gpt4_76048e76_s1",
+              "snippet": "[turn:00075] Wise decision to get the \"check engine\" light checked out!\n\nMaintenance costs are an essential factor to consider when buying a",
+              "turn_hit": false,
+              "session_hit": false
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00880]",
+              "session_id": "gpt4_d9af6064_s1",
+              "snippet": "[turn:00880] I'm happy to help you with your internet speed issues and negotiating with your provider!\n\nFirstly, congratulations on getting ",
+              "turn_hit": false,
+              "session_hit": false
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00874]",
+              "session_id": "gpt4_d9af6064_s0",
+              "snippet": "[turn:00874] It sounds like slow speeds and connectivity issues are impacting your work-from-home experience and entertainment setup.\n\n**Str",
+              "turn_hit": false,
+              "session_hit": false
+            },
+            {
+              "rank": 4,
+              "id": "[turn:01064]",
+              "session_id": "gpt4_4cd9eba1_s1",
+              "snippet": "[turn:01064] Congratulations on your acceptance to UC Berkeley's exchange program! I'd be happy to help you prepare for your semester abroad",
+              "turn_hit": false,
+              "session_hit": false
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00000]",
+              "session_id": "gpt4_2655b836_s0",
+              "snippet": "[turn:00000] I'm thinking of getting my car detailed soon. Do you know any good detailers in the area or have any recommendations? By the wa",
+              "turn_hit": true,
+              "session_hit": true
+            }
+          ]
+        },
+        {
+          "question_idx": 2,
+          "question_id": "gpt4_2487a7cb",
+          "question_text": "Which event did I attend first, the 'Effective Time Management' workshop or the 'Data Analysis using Python' webinar?",
+          "gold_answer": "'Data Analysis using Python' webinar",
+          "gold_turn_tags": [
+            "[turn:00046]",
+            "[turn:00050]"
+          ],
+          "gold_sessions": [
+            "gpt4_2487a7cb_s0",
+            "gpt4_2487a7cb_s1"
+          ],
+          "first_turn_hit_rank": 1,
+          "first_session_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00050]",
+              "session_id": "gpt4_2487a7cb_s1",
+              "snippet": "[turn:00050] I'm actually familiar with some of these resources, I participated in a webinar on \"Data Analysis using Python\" two months ago,",
+              "turn_hit": true,
+              "session_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00048]",
+              "session_id": "gpt4_2487a7cb_s1",
+              "snippet": "[turn:00048] I'm trying to work on a project that involves data analysis, and I was wondering if you could recommend some resources for lear",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00046]",
+              "session_id": "gpt4_2487a7cb_s0",
+              "snippet": "[turn:00046] I've been thinking about my goals and priorities lately, and I realized that I want to focus more on learning new skills and ex",
+              "turn_hit": true,
+              "session_hit": true
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00049]",
+              "session_id": "gpt4_2487a7cb_s1",
+              "snippet": "[turn:00049] Data visualization is a crucial step in data analysis, and Python is an excellent choice for it. Here are some top-notch resour",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00051]",
+              "session_id": "gpt4_2487a7cb_s1",
+              "snippet": "[turn:00051] That's great to hear that you already have some background in Python and data analysis!\n\nBoth Matplotlib and Seaborn are excell",
+              "turn_hit": false,
+              "session_hit": true
+            }
+          ]
+        },
+        {
+          "question_idx": 3,
+          "question_id": "gpt4_76048e76",
+          "question_text": "Which vehicle did I take care of first in February, the bike or the car?",
+          "gold_answer": "bike",
+          "gold_turn_tags": [
+            "[turn:00060]",
+            "[turn:00072]"
+          ],
+          "gold_sessions": [
+            "gpt4_76048e76_s0",
+            "gpt4_76048e76_s1"
+          ],
+          "first_turn_hit_rank": 1,
+          "first_session_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00060]",
+              "session_id": "gpt4_76048e76_s0",
+              "snippet": "[turn:00060] I'm thinking of getting a new bike rack for my car. Do you have any recommendations? By the way, I've been having some issues w",
+              "turn_hit": true,
+              "session_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00000]",
+              "session_id": "gpt4_2655b836_s0",
+              "snippet": "[turn:00000] I'm thinking of getting my car detailed soon. Do you know any good detailers in the area or have any recommendations? By the wa",
+              "turn_hit": false,
+              "session_hit": false
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00035]",
+              "session_id": "gpt4_2655b836_s2",
+              "snippet": "[turn:00035] Getting a car wax and detailing done before your trip is an excellent idea. It'll not only protect your car's paint job and int",
+              "turn_hit": false,
+              "session_hit": false
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00001]",
+              "session_id": "gpt4_2655b836_s0",
+              "snippet": "[turn:00001] I'm happy to help you with your question! However, I'm a large language model, I don't have personal experiences or knowledge o",
+              "turn_hit": false,
+              "session_hit": false
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00080]",
+              "session_id": "gpt4_76048e76_s1",
+              "snippet": "[turn:00080] I'm glad to hear about the advanced safety features of the Corolla Hybrid. By the way, I recently had to take my bike in for re",
+              "turn_hit": false,
+              "session_hit": true
+            }
+          ]
+        },
+        {
+          "question_idx": 4,
+          "question_id": "gpt4_2312f94c",
+          "question_text": "Which device did I got first, the Samsung Galaxy S22 or the Dell XPS 13?",
+          "gold_answer": "Samsung Galaxy S22",
+          "gold_turn_tags": [
+            "[turn:00084]",
+            "[turn:00096]"
+          ],
+          "gold_sessions": [
+            "gpt4_2312f94c_s0",
+            "gpt4_2312f94c_s1"
+          ],
+          "first_turn_hit_rank": 2,
+          "first_session_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00099]",
+              "session_id": "gpt4_2312f94c_s1",
+              "snippet": "[turn:00099] The Anker PowerCore 20000 is a great portable power bank with a capacity of 20,000mAh. It's a popular and well-reviewed product",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00096]",
+              "session_id": "gpt4_2312f94c_s1",
+              "snippet": "[turn:00096] I'm planning a trip to Hawaii and I need to pack the right adapters for my devices. Can you help me figure out what kind of pow",
+              "turn_hit": true,
+              "session_hit": true
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00097]",
+              "session_id": "gpt4_2312f94c_s1",
+              "snippet": "[turn:00097] Congratulations on your new laptop and smartphone!\n\nI'd be happy to help you with the power adapters for your trip to Hawaii.\n\n",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00085]",
+              "session_id": "gpt4_2312f94c_s0",
+              "snippet": "[turn:00085] A trip to Hawaii sounds like a wonderful idea! I'd be happy to help you with some must-visit places to add to your itinerary.\n\n",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00089]",
+              "session_id": "gpt4_2312f94c_s0",
+              "snippet": "[turn:00089] That's a great idea! A portable power bank is a must-have travel accessory, especially when you're planning to be outdoors and ",
+              "turn_hit": false,
+              "session_hit": true
+            }
+          ]
+        },
+        {
+          "question_idx": 5,
+          "question_id": "0bb5a684",
+          "question_text": "How many days before the team meeting I was preparing for did I attend the workshop on 'Effective Communication in the Workplace'?",
+          "gold_answer": "7 days. 8 days (including the last day) is also acceptable.",
+          "gold_turn_tags": [
+            "[turn:00108]",
+            "[turn:00120]"
+          ],
+          "gold_sessions": [
+            "0bb5a684_s0",
+            "0bb5a684_s1"
+          ],
+          "first_turn_hit_rank": 1,
+          "first_session_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00108]",
+              "session_id": "0bb5a684_s0",
+              "snippet": "[turn:00108] I'm preparing for an upcoming meeting with my team and I want to make sure I'm effectively communicating our project updates. I",
+              "turn_hit": true,
+              "session_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00109]",
+              "session_id": "0bb5a684_s0",
+              "snippet": "[turn:00109] Congratulations on taking the initiative to improve your communication skills! Attending the workshop on \"Effective Communicati",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00112]",
+              "session_id": "0bb5a684_s0",
+              "snippet": "[turn:00112] I'm glad I attended that workshop on \"Effective Communication in the Workplace\" on January 10th, as it helped me realize the im",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00116]",
+              "session_id": "0bb5a684_s0",
+              "snippet": "[turn:00116] I'll definitely consider using some of these interactive tools to make my presentation more engaging. Since I attended a worksh",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00118]",
+              "session_id": "0bb5a684_s0",
+              "snippet": "[turn:00118] I'd like to ask about the importance of self-awareness in effective communication. As I reflect on the workshop I attended on \"",
+              "turn_hit": false,
+              "session_hit": true
+            }
+          ]
+        }
+      ]
+    },
+    "basic_memory_cli": {
+      "tool": "Basic Memory (CLI)",
+      "class": "Class B",
+      "storage_unit": "turn",
+      "count_verification": {
+        "expected_turns": 1320,
+        "stored_count": 1320,
+        "shortfall": 0,
+        "verified_equal": true,
+        "audit_notes": {
+          "layout": "one note per turn with unique title (turn tag) in notes_dir",
+          "note_count": 1320,
+          "parity_with_mcp": true
+        }
+      },
+      "ingestion_timing": {
+        "write_seconds": 46774.929,
+        "time_to_searchable_seconds": 26.964,
+        "total_ingest_seconds": 46801.893,
+        "items_per_second": 0.0
+      },
+      "known_item_preflight": {
+        "passed": true,
+        "rank": 1,
+        "query": "cerulean observatory celestial frequency"
+      },
+      "turn_level_metrics": {
+        "status": "evaluated",
+        "recall_at_1": 0.38,
+        "recall_at_1_ci": [
+          0.24,
+          0.52
+        ],
+        "recall_at_5": 0.78,
+        "recall_at_5_ci": [
+          0.66,
+          0.88
+        ],
+        "recall_at_10": 0.9,
+        "recall_at_10_ci": [
+          0.8,
+          0.98
+        ],
+        "mrr": 0.5633,
+        "mrr_ci": [
+          0.4598,
+          0.6639
+        ],
+        "ndcg_at_10": 0.6448,
+        "ndcg_at_10_ci": [
+          0.5555,
+          0.7351
+        ]
+      },
+      "session_level_metrics": {
+        "status": "evaluated",
+        "recall_at_1": 0.84,
+        "recall_at_1_ci": [
+          0.74,
+          0.94
+        ],
+        "recall_at_5": 0.96,
+        "recall_at_5_ci": [
+          0.9,
+          1.0
+        ],
+        "recall_at_10": 0.96,
+        "recall_at_10_ci": [
+          0.9,
+          1.0
+        ],
+        "mrr": 0.8883,
+        "mrr_ci": [
+          0.8083,
+          0.9567
+        ],
+        "ndcg_at_10": 0.9065,
+        "ndcg_at_10_ci": [
+          0.8352,
+          0.9639
+        ]
+      },
+      "accuracy_metrics": {
+        "turn_level": {
+          "status": "evaluated",
+          "recall_at_1": 0.38,
+          "recall_at_1_ci": [
+            0.24,
+            0.52
+          ],
+          "recall_at_5": 0.78,
+          "recall_at_5_ci": [
+            0.66,
+            0.88
+          ],
+          "recall_at_10": 0.9,
+          "recall_at_10_ci": [
+            0.8,
+            0.98
+          ],
+          "mrr": 0.5633,
+          "mrr_ci": [
+            0.4598,
+            0.6639
+          ],
+          "ndcg_at_10": 0.6448,
+          "ndcg_at_10_ci": [
+            0.5555,
+            0.7351
+          ]
+        },
+        "session_level": {
+          "status": "evaluated",
+          "recall_at_1": 0.84,
+          "recall_at_1_ci": [
+            0.74,
+            0.94
+          ],
+          "recall_at_5": 0.96,
+          "recall_at_5_ci": [
+            0.9,
+            1.0
+          ],
+          "recall_at_10": 0.96,
+          "recall_at_10_ci": [
+            0.9,
+            1.0
+          ],
+          "mrr": 0.8883,
+          "mrr_ci": [
+            0.8083,
+            0.9567
+          ],
+          "ndcg_at_10": 0.9065,
+          "ndcg_at_10_ci": [
+            0.8352,
+            0.9639
+          ]
+        },
+        "recall_at_1": 0.38,
+        "recall_at_1_ci": [
+          0.24,
+          0.52
+        ],
+        "recall_at_5": 0.78,
+        "recall_at_5_ci": [
+          0.66,
+          0.88
+        ],
+        "recall_at_10": 0.9,
+        "recall_at_10_ci": [
+          0.8,
+          0.98
+        ],
+        "mrr": 0.5633,
+        "mrr_ci": [
+          0.4598,
+          0.6639
+        ],
+        "ndcg_at_10": 0.6448,
+        "ndcg_at_10_ci": [
+          0.5555,
+          0.7351
+        ]
+      },
+      "latency_metrics": {
+        "p50_ms": 19359.1,
+        "p50_ms_ci": [
+          18548.62,
+          20201.01
+        ],
+        "p95_ms": 24068.96,
+        "p95_ms_ci": [
+          21792.79,
+          24968.27
+        ],
+        "p99_ms": 24961.19,
+        "p99_ms_ci": [
+          23262.7,
+          25047.86
+        ],
+        "mean_ms": 19266.06,
+        "latencies_ms": [
+          23786.8,
+          24871.0,
+          21718.43,
+          20104.71,
+          19980.45,
+          22717.21,
+          20393.08,
+          19001.81,
+          20089.22,
+          25047.86,
+          19724.99,
+          18388.11,
+          17817.76,
+          19053.34,
+          18188.35,
+          20367.13,
+          20677.35,
+          20322.53,
+          20312.79,
+          17711.13,
+          22009.88,
+          16579.02,
+          19725.34,
+          18825.8,
+          19968.39,
+          18623.12,
+          21413.29,
+          20650.68,
+          13921.35,
+          22595.58,
+          24299.82,
+          20731.73,
+          15438.22,
+          14483.77,
+          17739.87,
+          19238.32,
+          20811.62,
+          20625.6,
+          17284.64,
+          18908.88,
+          17397.05,
+          17068.73,
+          16433.61,
+          16209.52,
+          16137.87,
+          19263.74,
+          19454.46,
+          15443.12,
+          14425.84,
+          17320.28
+        ]
+      },
+      "latencies_ms": [
+        23786.8,
+        24871.0,
+        21718.43,
+        20104.71,
+        19980.45,
+        22717.21,
+        20393.08,
+        19001.81,
+        20089.22,
+        25047.86,
+        19724.99,
+        18388.11,
+        17817.76,
+        19053.34,
+        18188.35,
+        20367.13,
+        20677.35,
+        20322.53,
+        20312.79,
+        17711.13,
+        22009.88,
+        16579.02,
+        19725.34,
+        18825.8,
+        19968.39,
+        18623.12,
+        21413.29,
+        20650.68,
+        13921.35,
+        22595.58,
+        24299.82,
+        20731.73,
+        15438.22,
+        14483.77,
+        17739.87,
+        19238.32,
+        20811.62,
+        20625.6,
+        17284.64,
+        18908.88,
+        17397.05,
+        17068.73,
+        16433.61,
+        16209.52,
+        16137.87,
+        19263.74,
+        19454.46,
+        15443.12,
+        14425.84,
+        17320.28
+      ],
+      "peak_ram_mb": 0.0,
+      "disk_footprint_mb": 23.97,
+      "raw_inspections_first_5": [
+        {
+          "question_idx": 1,
+          "question_id": "gpt4_2655b836",
+          "question_text": "What was the first issue I had with my new car after its first service?",
+          "gold_answer": "GPS system not functioning correctly",
+          "gold_turn_tags": [
+            "[turn:00000]",
+            "[turn:00014]"
+          ],
+          "gold_sessions": [
+            "gpt4_2655b836_s0",
+            "gpt4_2655b836_s1"
+          ],
+          "first_turn_hit_rank": 4,
+          "first_session_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00011]",
+              "session_id": "gpt4_2655b836_s0",
+              "snippet": "[turn:00011] I'm glad to hear that you're happy with your new car accessories!\r\n\r\nAs for finding a good detailer in your area, I'd be happy ",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00072]",
+              "session_id": "gpt4_76048e76_s1",
+              "snippet": "[turn:00072] I'm thinking of getting a newer car and I'm researching the new hybrid model of my current Toyota Corolla. Do you have any info",
+              "turn_hit": false,
+              "session_hit": false
+            },
+            {
+              "rank": 3,
+              "id": "[turn:01072]",
+              "session_id": "gpt4_4cd9eba1_s1",
+              "snippet": "[turn:01072] UC Berkeley is known for its vibrant student life, with over 1,200 student organizations and a strong commitment to community s",
+              "turn_hit": false,
+              "session_hit": false
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00000]",
+              "session_id": "gpt4_2655b836_s0",
+              "snippet": "[turn:00000] I'm thinking of getting my car detailed soon. Do you know any good detailers in the area or have any recommendations? By the wa",
+              "turn_hit": true,
+              "session_hit": true
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00001]",
+              "session_id": "gpt4_2655b836_s0",
+              "snippet": "[turn:00001] I'm happy to help you with your question! However, I'm a large language model, I don't have personal experiences or knowledge o",
+              "turn_hit": false,
+              "session_hit": true
+            }
+          ]
+        },
+        {
+          "question_idx": 2,
+          "question_id": "gpt4_2487a7cb",
+          "question_text": "Which event did I attend first, the 'Effective Time Management' workshop or the 'Data Analysis using Python' webinar?",
+          "gold_answer": "'Data Analysis using Python' webinar",
+          "gold_turn_tags": [
+            "[turn:00046]",
+            "[turn:00050]"
+          ],
+          "gold_sessions": [
+            "gpt4_2487a7cb_s0",
+            "gpt4_2487a7cb_s1"
+          ],
+          "first_turn_hit_rank": 1,
+          "first_session_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00050]",
+              "session_id": "gpt4_2487a7cb_s1",
+              "snippet": "[turn:00050] I'm actually familiar with some of these resources, I participated in a webinar on \"Data Analysis using Python\" two months ago,",
+              "turn_hit": true,
+              "session_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00049]",
+              "session_id": "gpt4_2487a7cb_s1",
+              "snippet": "[turn:00049] Data visualization is a crucial step in data analysis, and Python is an excellent choice for it. Here are some top-notch resour",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00046]",
+              "session_id": "gpt4_2487a7cb_s0",
+              "snippet": "[turn:00046] I've been thinking about my goals and priorities lately, and I realized that I want to focus more on learning new skills and ex",
+              "turn_hit": true,
+              "session_hit": true
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00048]",
+              "session_id": "gpt4_2487a7cb_s1",
+              "snippet": "[turn:00048] I'm trying to work on a project that involves data analysis, and I was wondering if you could recommend some resources for lear",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00053]",
+              "session_id": "gpt4_2487a7cb_s1",
+              "snippet": "[turn:00053] Effective communication of insights is a crucial step in the data analysis process, and it's often overlooked. Here are some ti",
+              "turn_hit": false,
+              "session_hit": true
+            }
+          ]
+        },
+        {
+          "question_idx": 3,
+          "question_id": "gpt4_76048e76",
+          "question_text": "Which vehicle did I take care of first in February, the bike or the car?",
+          "gold_answer": "bike",
+          "gold_turn_tags": [
+            "[turn:00060]",
+            "[turn:00072]"
+          ],
+          "gold_sessions": [
+            "gpt4_76048e76_s0",
+            "gpt4_76048e76_s1"
+          ],
+          "first_turn_hit_rank": 1,
+          "first_session_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00060]",
+              "session_id": "gpt4_76048e76_s0",
+              "snippet": "[turn:00060] I'm thinking of getting a new bike rack for my car. Do you have any recommendations? By the way, I've been having some issues w",
+              "turn_hit": true,
+              "session_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00001]",
+              "session_id": "gpt4_2655b836_s0",
+              "snippet": "[turn:00001] I'm happy to help you with your question! However, I'm a large language model, I don't have personal experiences or knowledge o",
+              "turn_hit": false,
+              "session_hit": false
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00013]",
+              "session_id": "gpt4_2655b836_s1",
+              "snippet": "[turn:00013] Choosing the right detailer can make all the difference in getting your car looking its best. Here are some valuable tips to he",
+              "turn_hit": false,
+              "session_hit": false
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00070]",
+              "session_id": "gpt4_76048e76_s0",
+              "snippet": "[turn:00070] By the way, speaking of bikes, I'm glad I got my bike repaired back in mid-February. The gears were acting up, and I couldn't s",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00065]",
+              "session_id": "gpt4_76048e76_s0",
+              "snippet": "[turn:00065] Hitch-mounted racks are super convenient and easy to use.\r\n\r\nBoth the Saris Bones and Kuat Transfer are high-quality hitch-moun",
+              "turn_hit": false,
+              "session_hit": true
+            }
+          ]
+        },
+        {
+          "question_idx": 4,
+          "question_id": "gpt4_2312f94c",
+          "question_text": "Which device did I got first, the Samsung Galaxy S22 or the Dell XPS 13?",
+          "gold_answer": "Samsung Galaxy S22",
+          "gold_turn_tags": [
+            "[turn:00084]",
+            "[turn:00096]"
+          ],
+          "gold_sessions": [
+            "gpt4_2312f94c_s0",
+            "gpt4_2312f94c_s1"
+          ],
+          "first_turn_hit_rank": null,
+          "first_session_hit_rank": null,
+          "top_5_results": []
+        },
+        {
+          "question_idx": 5,
+          "question_id": "0bb5a684",
+          "question_text": "How many days before the team meeting I was preparing for did I attend the workshop on 'Effective Communication in the Workplace'?",
+          "gold_answer": "7 days. 8 days (including the last day) is also acceptable.",
+          "gold_turn_tags": [
+            "[turn:00108]",
+            "[turn:00120]"
+          ],
+          "gold_sessions": [
+            "0bb5a684_s0",
+            "0bb5a684_s1"
+          ],
+          "first_turn_hit_rank": 1,
+          "first_session_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00108]",
+              "session_id": "0bb5a684_s0",
+              "snippet": "[turn:00108] I'm preparing for an upcoming meeting with my team and I want to make sure I'm effectively communicating our project updates. I",
+              "turn_hit": true,
+              "session_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00112]",
+              "session_id": "0bb5a684_s0",
+              "snippet": "[turn:00112] I'm glad I attended that workshop on \"Effective Communication in the Workplace\" on January 10th, as it helped me realize the im",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00118]",
+              "session_id": "0bb5a684_s0",
+              "snippet": "[turn:00118] I'd like to ask about the importance of self-awareness in effective communication. As I reflect on the workshop I attended on \"",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00116]",
+              "session_id": "0bb5a684_s0",
+              "snippet": "[turn:00116] I'll definitely consider using some of these interactive tools to make my presentation more engaging. Since I attended a worksh",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00109]",
+              "session_id": "0bb5a684_s0",
+              "snippet": "[turn:00109] Congratulations on taking the initiative to improve your communication skills! Attending the workshop on \"Effective Communicati",
+              "turn_hit": false,
+              "session_hit": true
+            }
+          ]
+        }
+      ]
+    },
+    "auxly_cli": {
+      "tool": "Auxly CLI (Raw Query)",
+      "class": "Class B",
+      "storage_unit": "session",
+      "count_verification": {
+        "expected_turns": 1320,
+        "stored_count": 1320,
+        "shortfall": 0,
+        "verified_equal": true,
+        "audit_notes": {
+          "files_count": 114,
+          "layout": "one file per session",
+          "query_handling": "raw query text (symmetric with other tools)"
+        }
+      },
+      "ingestion_timing": {
+        "write_seconds": 0.38,
+        "time_to_searchable_seconds": 6.485,
+        "total_ingest_seconds": 6.865,
+        "items_per_second": 3471.3
+      },
+      "known_item_preflight": {
+        "passed": true,
+        "rank": 1,
+        "query": "cerulean observatory celestial frequency"
+      },
+      "turn_level_metrics": {
+        "status": "not comparable at turn level",
+        "note": "Tool stores per session rather than per turn",
+        "recall_at_1": null,
+        "recall_at_1_ci": null,
+        "recall_at_5": null,
+        "recall_at_5_ci": null,
+        "recall_at_10": null,
+        "recall_at_10_ci": null,
+        "mrr": null,
+        "mrr_ci": null,
+        "ndcg_at_10": null,
+        "ndcg_at_10_ci": null
+      },
+      "session_level_metrics": {
+        "status": "evaluated",
+        "recall_at_1": 0.0,
+        "recall_at_1_ci": [
+          0.0,
+          0.0
+        ],
+        "recall_at_5": 0.0,
+        "recall_at_5_ci": [
+          0.0,
+          0.0
+        ],
+        "recall_at_10": 0.0,
+        "recall_at_10_ci": [
+          0.0,
+          0.0
+        ],
+        "mrr": 0.0,
+        "mrr_ci": [
+          0.0,
+          0.0
+        ],
+        "ndcg_at_10": 0.0,
+        "ndcg_at_10_ci": [
+          0.0,
+          0.0
+        ]
+      },
+      "accuracy_metrics": {
+        "turn_level": {
+          "status": "not comparable at turn level",
+          "note": "Tool stores per session rather than per turn",
+          "recall_at_1": null,
+          "recall_at_1_ci": null,
+          "recall_at_5": null,
+          "recall_at_5_ci": null,
+          "recall_at_10": null,
+          "recall_at_10_ci": null,
+          "mrr": null,
+          "mrr_ci": null,
+          "ndcg_at_10": null,
+          "ndcg_at_10_ci": null
+        },
+        "session_level": {
+          "status": "evaluated",
+          "recall_at_1": 0.0,
+          "recall_at_1_ci": [
+            0.0,
+            0.0
+          ],
+          "recall_at_5": 0.0,
+          "recall_at_5_ci": [
+            0.0,
+            0.0
+          ],
+          "recall_at_10": 0.0,
+          "recall_at_10_ci": [
+            0.0,
+            0.0
+          ],
+          "mrr": 0.0,
+          "mrr_ci": [
+            0.0,
+            0.0
+          ],
+          "ndcg_at_10": 0.0,
+          "ndcg_at_10_ci": [
+            0.0,
+            0.0
+          ]
+        },
+        "recall_at_1": 0.0,
+        "recall_at_1_ci": [
+          0.0,
+          0.0
+        ],
+        "recall_at_5": 0.0,
+        "recall_at_5_ci": [
+          0.0,
+          0.0
+        ],
+        "recall_at_10": 0.0,
+        "recall_at_10_ci": [
+          0.0,
+          0.0
+        ],
+        "mrr": 0.0,
+        "mrr_ci": [
+          0.0,
+          0.0
+        ],
+        "ndcg_at_10": 0.0,
+        "ndcg_at_10_ci": [
+          0.0,
+          0.0
+        ]
+      },
+      "latency_metrics": {
+        "p50_ms": 414.89,
+        "p50_ms_ci": [
+          372.32,
+          461.26
+        ],
+        "p95_ms": 580.62,
+        "p95_ms_ci": [
+          522.64,
+          765.91
+        ],
+        "p99_ms": 759.2,
+        "p99_ms_ci": [
+          551.78,
+          841.4
+        ],
+        "mean_ms": 418.51,
+        "latencies_ms": [
+          456.53,
+          467.19,
+          413.61,
+          347.99,
+          391.86,
+          365.77,
+          465.99,
+          297.71,
+          411.2,
+          282.97,
+          271.49,
+          472.73,
+          314.57,
+          372.32,
+          335.21,
+          438.95,
+          467.19,
+          536.15,
+          403.23,
+          385.98,
+          544.01,
+          527.63,
+          489.51,
+          416.17,
+          522.64,
+          309.47,
+          317.45,
+          494.28,
+          281.8,
+          467.86,
+          274.56,
+          409.81,
+          559.25,
+          459.7,
+          598.1,
+          370.35,
+          420.87,
+          841.4,
+          673.66,
+          417.55,
+          509.38,
+          481.02,
+          477.21,
+          342.58,
+          303.95,
+          267.58,
+          267.12,
+          283.42,
+          279.0,
+          419.72
+        ]
+      },
+      "latencies_ms": [
+        456.53,
+        467.19,
+        413.61,
+        347.99,
+        391.86,
+        365.77,
+        465.99,
+        297.71,
+        411.2,
+        282.97,
+        271.49,
+        472.73,
+        314.57,
+        372.32,
+        335.21,
+        438.95,
+        467.19,
+        536.15,
+        403.23,
+        385.98,
+        544.01,
+        527.63,
+        489.51,
+        416.17,
+        522.64,
+        309.47,
+        317.45,
+        494.28,
+        281.8,
+        467.86,
+        274.56,
+        409.81,
+        559.25,
+        459.7,
+        598.1,
+        370.35,
+        420.87,
+        841.4,
+        673.66,
+        417.55,
+        509.38,
+        481.02,
+        477.21,
+        342.58,
+        303.95,
+        267.58,
+        267.12,
+        283.42,
+        279.0,
+        419.72
+      ],
+      "peak_ram_mb": 0.0,
+      "disk_footprint_mb": 1.59,
+      "raw_inspections_first_5": [
+        {
+          "question_idx": 1,
+          "question_id": "gpt4_2655b836",
+          "question_text": "What was the first issue I had with my new car after its first service?",
+          "gold_answer": "GPS system not functioning correctly",
+          "gold_turn_tags": [
+            "[turn:00000]",
+            "[turn:00014]"
+          ],
+          "gold_sessions": [
+            "gpt4_2655b836_s0",
+            "gpt4_2655b836_s1"
+          ],
+          "first_turn_hit_rank": null,
+          "first_session_hit_rank": null,
+          "top_5_results": []
+        },
+        {
+          "question_idx": 2,
+          "question_id": "gpt4_2487a7cb",
+          "question_text": "Which event did I attend first, the 'Effective Time Management' workshop or the 'Data Analysis using Python' webinar?",
+          "gold_answer": "'Data Analysis using Python' webinar",
+          "gold_turn_tags": [
+            "[turn:00046]",
+            "[turn:00050]"
+          ],
+          "gold_sessions": [
+            "gpt4_2487a7cb_s0",
+            "gpt4_2487a7cb_s1"
+          ],
+          "first_turn_hit_rank": null,
+          "first_session_hit_rank": null,
+          "top_5_results": []
+        },
+        {
+          "question_idx": 3,
+          "question_id": "gpt4_76048e76",
+          "question_text": "Which vehicle did I take care of first in February, the bike or the car?",
+          "gold_answer": "bike",
+          "gold_turn_tags": [
+            "[turn:00060]",
+            "[turn:00072]"
+          ],
+          "gold_sessions": [
+            "gpt4_76048e76_s0",
+            "gpt4_76048e76_s1"
+          ],
+          "first_turn_hit_rank": null,
+          "first_session_hit_rank": null,
+          "top_5_results": []
+        },
+        {
+          "question_idx": 4,
+          "question_id": "gpt4_2312f94c",
+          "question_text": "Which device did I got first, the Samsung Galaxy S22 or the Dell XPS 13?",
+          "gold_answer": "Samsung Galaxy S22",
+          "gold_turn_tags": [
+            "[turn:00084]",
+            "[turn:00096]"
+          ],
+          "gold_sessions": [
+            "gpt4_2312f94c_s0",
+            "gpt4_2312f94c_s1"
+          ],
+          "first_turn_hit_rank": null,
+          "first_session_hit_rank": null,
+          "top_5_results": []
+        },
+        {
+          "question_idx": 5,
+          "question_id": "0bb5a684",
+          "question_text": "How many days before the team meeting I was preparing for did I attend the workshop on 'Effective Communication in the Workplace'?",
+          "gold_answer": "7 days. 8 days (including the last day) is also acceptable.",
+          "gold_turn_tags": [
+            "[turn:00108]",
+            "[turn:00120]"
+          ],
+          "gold_sessions": [
+            "0bb5a684_s0",
+            "0bb5a684_s1"
+          ],
+          "first_turn_hit_rank": null,
+          "first_session_hit_rank": null,
+          "top_5_results": []
+        }
+      ]
+    },
+    "mem0": {
+      "status": "not offered",
+      "url": "https://pypi.org/project/mem0ai/"
+    }
+  },
+  "class_c_mcp": {
+    "mesh_mcp": {
+      "tool": "Mesh MCP (Framework v1.30.0, Package v0.8.3)",
+      "class": "Class C",
+      "storage_unit": "turn",
+      "count_verification": {
+        "expected_turns": 1320,
+        "stored_count": 1320,
+        "shortfall": 0,
+        "verified_equal": true,
+        "audit_notes": {
+          "quarantined_count": 0,
+          "contradictions_detected": 0,
+          "deduplicated_dropped": 0,
+          "tools_exposed": 17,
+          "framework": "FastMCP 1.30.0",
+          "package_version": "0.8.3",
+          "notes": "Mesh store exact SQLite count verified via mesh_inspect; zero turns dropped or hidden."
+        }
+      },
+      "ingestion_timing": {
+        "write_seconds": 37.392,
+        "time_to_searchable_seconds": 0.055,
+        "total_ingest_seconds": 37.448,
+        "items_per_second": 35.3
+      },
+      "known_item_preflight": {
+        "passed": true,
+        "rank": 1,
+        "query": "cerulean observatory celestial frequency"
+      },
+      "turn_level_metrics": {
+        "status": "evaluated",
+        "recall_at_1": 0.28,
+        "recall_at_1_ci": [
+          0.16,
+          0.4
+        ],
+        "recall_at_5": 0.82,
+        "recall_at_5_ci": [
+          0.7,
+          0.92
+        ],
+        "recall_at_10": 0.94,
+        "recall_at_10_ci": [
+          0.86,
+          1.0
+        ],
+        "mrr": 0.5345,
+        "mrr_ci": [
+          0.4445,
+          0.6222
+        ],
+        "ndcg_at_10": 0.6344,
+        "ndcg_at_10_ci": [
+          0.5534,
+          0.7078
+        ]
+      },
+      "session_level_metrics": {
+        "status": "evaluated",
+        "recall_at_1": 0.82,
+        "recall_at_1_ci": [
+          0.72,
+          0.92
+        ],
+        "recall_at_5": 0.98,
+        "recall_at_5_ci": [
+          0.92,
+          1.0
+        ],
+        "recall_at_10": 0.98,
+        "recall_at_10_ci": [
+          0.92,
+          1.0
+        ],
+        "mrr": 0.884,
+        "mrr_ci": [
+          0.8107,
+          0.9533
+        ],
+        "ndcg_at_10": 0.9082,
+        "ndcg_at_10_ci": [
+          0.8459,
+          0.9607
+        ]
+      },
+      "accuracy_metrics": {
+        "turn_level": {
+          "status": "evaluated",
+          "recall_at_1": 0.28,
+          "recall_at_1_ci": [
+            0.16,
+            0.4
+          ],
+          "recall_at_5": 0.82,
+          "recall_at_5_ci": [
+            0.7,
+            0.92
+          ],
+          "recall_at_10": 0.94,
+          "recall_at_10_ci": [
+            0.86,
+            1.0
+          ],
+          "mrr": 0.5345,
+          "mrr_ci": [
+            0.4445,
+            0.6222
+          ],
+          "ndcg_at_10": 0.6344,
+          "ndcg_at_10_ci": [
+            0.5534,
+            0.7078
+          ]
+        },
+        "session_level": {
+          "status": "evaluated",
+          "recall_at_1": 0.82,
+          "recall_at_1_ci": [
+            0.72,
+            0.92
+          ],
+          "recall_at_5": 0.98,
+          "recall_at_5_ci": [
+            0.92,
+            1.0
+          ],
+          "recall_at_10": 0.98,
+          "recall_at_10_ci": [
+            0.92,
+            1.0
+          ],
+          "mrr": 0.884,
+          "mrr_ci": [
+            0.8107,
+            0.9533
+          ],
+          "ndcg_at_10": 0.9082,
+          "ndcg_at_10_ci": [
+            0.8459,
+            0.9607
+          ]
+        },
+        "recall_at_1": 0.28,
+        "recall_at_1_ci": [
+          0.16,
+          0.4
+        ],
+        "recall_at_5": 0.82,
+        "recall_at_5_ci": [
+          0.7,
+          0.92
+        ],
+        "recall_at_10": 0.94,
+        "recall_at_10_ci": [
+          0.86,
+          1.0
+        ],
+        "mrr": 0.5345,
+        "mrr_ci": [
+          0.4445,
+          0.6222
+        ],
+        "ndcg_at_10": 0.6344,
+        "ndcg_at_10_ci": [
+          0.5534,
+          0.7078
+        ]
+      },
+      "latency_metrics": {
+        "p50_ms": 108.65,
+        "p50_ms_ci": [
+          93.64,
+          117.07
+        ],
+        "p95_ms": 218.87,
+        "p95_ms_ci": [
+          152.67,
+          310.74
+        ],
+        "p99_ms": 308.92,
+        "p99_ms_ci": [
+          204.1,
+          331.22
+        ],
+        "mean_ms": 117.17,
+        "latencies_ms": [
+          73.58,
+          89.28,
+          44.34,
+          80.98,
+          138.05,
+          285.72,
+          109.12,
+          109.09,
+          117.03,
+          108.2,
+          56.85,
+          141.87,
+          128.61,
+          131.95,
+          187.93,
+          65.95,
+          94.11,
+          73.81,
+          111.83,
+          90.12,
+          110.36,
+          59.5,
+          121.36,
+          112.68,
+          106.45,
+          97.77,
+          52.51,
+          85.38,
+          93.17,
+          54.57,
+          48.88,
+          60.16,
+          159.51,
+          137.7,
+          204.84,
+          143.76,
+          84.48,
+          144.31,
+          230.35,
+          123.68,
+          331.22,
+          94.2,
+          126.07,
+          97.41,
+          84.04,
+          203.32,
+          96.47,
+          79.48,
+          117.07,
+          159.42
+        ]
+      },
+      "latencies_ms": [
+        73.58,
+        89.28,
+        44.34,
+        80.98,
+        138.05,
+        285.72,
+        109.12,
+        109.09,
+        117.03,
+        108.2,
+        56.85,
+        141.87,
+        128.61,
+        131.95,
+        187.93,
+        65.95,
+        94.11,
+        73.81,
+        111.83,
+        90.12,
+        110.36,
+        59.5,
+        121.36,
+        112.68,
+        106.45,
+        97.77,
+        52.51,
+        85.38,
+        93.17,
+        54.57,
+        48.88,
+        60.16,
+        159.51,
+        137.7,
+        204.84,
+        143.76,
+        84.48,
+        144.31,
+        230.35,
+        123.68,
+        331.22,
+        94.2,
+        126.07,
+        97.41,
+        84.04,
+        203.32,
+        96.47,
+        79.48,
+        117.07,
+        159.42
+      ],
+      "peak_ram_mb": 0.0,
+      "disk_footprint_mb": 107.22,
+      "raw_inspections_first_5": [
+        {
+          "question_idx": 1,
+          "question_id": "gpt4_2655b836",
+          "question_text": "What was the first issue I had with my new car after its first service?",
+          "gold_answer": "GPS system not functioning correctly",
+          "gold_turn_tags": [
+            "[turn:00000]",
+            "[turn:00014]"
+          ],
+          "gold_sessions": [
+            "gpt4_2655b836_s0",
+            "gpt4_2655b836_s1"
+          ],
+          "first_turn_hit_rank": 5,
+          "first_session_hit_rank": 5,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00075]",
+              "session_id": "gpt4_76048e76_s1",
+              "snippet": "[turn:00075] Wise decision to get the \"check engine\" light checked out!\n\nMaintenance costs are an essential factor to consider when buying a",
+              "turn_hit": false,
+              "session_hit": false
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00880]",
+              "session_id": "gpt4_d9af6064_s1",
+              "snippet": "[turn:00880] I'm happy to help you with your internet speed issues and negotiating with your provider!\n\nFirstly, congratulations on getting ",
+              "turn_hit": false,
+              "session_hit": false
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00874]",
+              "session_id": "gpt4_d9af6064_s0",
+              "snippet": "[turn:00874] It sounds like slow speeds and connectivity issues are impacting your work-from-home experience and entertainment setup.\n\n**Str",
+              "turn_hit": false,
+              "session_hit": false
+            },
+            {
+              "rank": 4,
+              "id": "[turn:01064]",
+              "session_id": "gpt4_4cd9eba1_s1",
+              "snippet": "[turn:01064] Congratulations on your acceptance to UC Berkeley's exchange program! I'd be happy to help you prepare for your semester abroad",
+              "turn_hit": false,
+              "session_hit": false
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00000]",
+              "session_id": "gpt4_2655b836_s0",
+              "snippet": "[turn:00000] I'm thinking of getting my car detailed soon. Do you know any good detailers in the area or have any recommendations? By the wa",
+              "turn_hit": true,
+              "session_hit": true
+            }
+          ]
+        },
+        {
+          "question_idx": 2,
+          "question_id": "gpt4_2487a7cb",
+          "question_text": "Which event did I attend first, the 'Effective Time Management' workshop or the 'Data Analysis using Python' webinar?",
+          "gold_answer": "'Data Analysis using Python' webinar",
+          "gold_turn_tags": [
+            "[turn:00046]",
+            "[turn:00050]"
+          ],
+          "gold_sessions": [
+            "gpt4_2487a7cb_s0",
+            "gpt4_2487a7cb_s1"
+          ],
+          "first_turn_hit_rank": 1,
+          "first_session_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00050]",
+              "session_id": "gpt4_2487a7cb_s1",
+              "snippet": "[turn:00050] I'm actually familiar with some of these resources, I participated in a webinar on \"Data Analysis using Python\" two months ago,",
+              "turn_hit": true,
+              "session_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00048]",
+              "session_id": "gpt4_2487a7cb_s1",
+              "snippet": "[turn:00048] I'm trying to work on a project that involves data analysis, and I was wondering if you could recommend some resources for lear",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00046]",
+              "session_id": "gpt4_2487a7cb_s0",
+              "snippet": "[turn:00046] I've been thinking about my goals and priorities lately, and I realized that I want to focus more on learning new skills and ex",
+              "turn_hit": true,
+              "session_hit": true
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00049]",
+              "session_id": "gpt4_2487a7cb_s1",
+              "snippet": "[turn:00049] Data visualization is a crucial step in data analysis, and Python is an excellent choice for it. Here are some top-notch resour",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00051]",
+              "session_id": "gpt4_2487a7cb_s1",
+              "snippet": "[turn:00051] That's great to hear that you already have some background in Python and data analysis!\n\nBoth Matplotlib and Seaborn are excell",
+              "turn_hit": false,
+              "session_hit": true
+            }
+          ]
+        },
+        {
+          "question_idx": 3,
+          "question_id": "gpt4_76048e76",
+          "question_text": "Which vehicle did I take care of first in February, the bike or the car?",
+          "gold_answer": "bike",
+          "gold_turn_tags": [
+            "[turn:00060]",
+            "[turn:00072]"
+          ],
+          "gold_sessions": [
+            "gpt4_76048e76_s0",
+            "gpt4_76048e76_s1"
+          ],
+          "first_turn_hit_rank": 1,
+          "first_session_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00060]",
+              "session_id": "gpt4_76048e76_s0",
+              "snippet": "[turn:00060] I'm thinking of getting a new bike rack for my car. Do you have any recommendations? By the way, I've been having some issues w",
+              "turn_hit": true,
+              "session_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00000]",
+              "session_id": "gpt4_2655b836_s0",
+              "snippet": "[turn:00000] I'm thinking of getting my car detailed soon. Do you know any good detailers in the area or have any recommendations? By the wa",
+              "turn_hit": false,
+              "session_hit": false
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00035]",
+              "session_id": "gpt4_2655b836_s2",
+              "snippet": "[turn:00035] Getting a car wax and detailing done before your trip is an excellent idea. It'll not only protect your car's paint job and int",
+              "turn_hit": false,
+              "session_hit": false
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00001]",
+              "session_id": "gpt4_2655b836_s0",
+              "snippet": "[turn:00001] I'm happy to help you with your question! However, I'm a large language model, I don't have personal experiences or knowledge o",
+              "turn_hit": false,
+              "session_hit": false
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00080]",
+              "session_id": "gpt4_76048e76_s1",
+              "snippet": "[turn:00080] I'm glad to hear about the advanced safety features of the Corolla Hybrid. By the way, I recently had to take my bike in for re",
+              "turn_hit": false,
+              "session_hit": true
+            }
+          ]
+        },
+        {
+          "question_idx": 4,
+          "question_id": "gpt4_2312f94c",
+          "question_text": "Which device did I got first, the Samsung Galaxy S22 or the Dell XPS 13?",
+          "gold_answer": "Samsung Galaxy S22",
+          "gold_turn_tags": [
+            "[turn:00084]",
+            "[turn:00096]"
+          ],
+          "gold_sessions": [
+            "gpt4_2312f94c_s0",
+            "gpt4_2312f94c_s1"
+          ],
+          "first_turn_hit_rank": 2,
+          "first_session_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00099]",
+              "session_id": "gpt4_2312f94c_s1",
+              "snippet": "[turn:00099] The Anker PowerCore 20000 is a great portable power bank with a capacity of 20,000mAh. It's a popular and well-reviewed product",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00096]",
+              "session_id": "gpt4_2312f94c_s1",
+              "snippet": "[turn:00096] I'm planning a trip to Hawaii and I need to pack the right adapters for my devices. Can you help me figure out what kind of pow",
+              "turn_hit": true,
+              "session_hit": true
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00097]",
+              "session_id": "gpt4_2312f94c_s1",
+              "snippet": "[turn:00097] Congratulations on your new laptop and smartphone!\n\nI'd be happy to help you with the power adapters for your trip to Hawaii.\n\n",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00085]",
+              "session_id": "gpt4_2312f94c_s0",
+              "snippet": "[turn:00085] A trip to Hawaii sounds like a wonderful idea! I'd be happy to help you with some must-visit places to add to your itinerary.\n\n",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00089]",
+              "session_id": "gpt4_2312f94c_s0",
+              "snippet": "[turn:00089] That's a great idea! A portable power bank is a must-have travel accessory, especially when you're planning to be outdoors and ",
+              "turn_hit": false,
+              "session_hit": true
+            }
+          ]
+        },
+        {
+          "question_idx": 5,
+          "question_id": "0bb5a684",
+          "question_text": "How many days before the team meeting I was preparing for did I attend the workshop on 'Effective Communication in the Workplace'?",
+          "gold_answer": "7 days. 8 days (including the last day) is also acceptable.",
+          "gold_turn_tags": [
+            "[turn:00108]",
+            "[turn:00120]"
+          ],
+          "gold_sessions": [
+            "0bb5a684_s0",
+            "0bb5a684_s1"
+          ],
+          "first_turn_hit_rank": 1,
+          "first_session_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00108]",
+              "session_id": "0bb5a684_s0",
+              "snippet": "[turn:00108] I'm preparing for an upcoming meeting with my team and I want to make sure I'm effectively communicating our project updates. I",
+              "turn_hit": true,
+              "session_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00109]",
+              "session_id": "0bb5a684_s0",
+              "snippet": "[turn:00109] Congratulations on taking the initiative to improve your communication skills! Attending the workshop on \"Effective Communicati",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00112]",
+              "session_id": "0bb5a684_s0",
+              "snippet": "[turn:00112] I'm glad I attended that workshop on \"Effective Communication in the Workplace\" on January 10th, as it helped me realize the im",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00116]",
+              "session_id": "0bb5a684_s0",
+              "snippet": "[turn:00116] I'll definitely consider using some of these interactive tools to make my presentation more engaging. Since I attended a worksh",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00118]",
+              "session_id": "0bb5a684_s0",
+              "snippet": "[turn:00118] I'd like to ask about the importance of self-awareness in effective communication. As I reflect on the workshop I attended on \"",
+              "turn_hit": false,
+              "session_hit": true
+            }
+          ]
+        }
+      ]
+    },
+    "basic_memory_mcp": {
+      "tool": "Basic Memory MCP (FastMCP v4.1.4)",
+      "class": "Class C",
+      "storage_unit": "turn",
+      "count_verification": {
+        "expected_turns": 1320,
+        "stored_count": 1320,
+        "shortfall": 0,
+        "verified_equal": true,
+        "audit_notes": {
+          "layout": "one note per turn with unique title (turn tag) in basic-memory folder",
+          "framework": "FastMCP 4.1.4",
+          "note_count": 1320,
+          "parity_with_cli": true
+        }
+      },
+      "ingestion_timing": {
+        "write_seconds": 482.301,
+        "time_to_searchable_seconds": 6.057,
+        "total_ingest_seconds": 488.358,
+        "items_per_second": 2.7
+      },
+      "known_item_preflight": {
+        "passed": true,
+        "rank": 1,
+        "query": "cerulean observatory celestial frequency"
+      },
+      "turn_level_metrics": {
+        "status": "evaluated",
+        "recall_at_1": 0.38,
+        "recall_at_1_ci": [
+          0.24,
+          0.52
+        ],
+        "recall_at_5": 0.78,
+        "recall_at_5_ci": [
+          0.66,
+          0.88
+        ],
+        "recall_at_10": 0.92,
+        "recall_at_10_ci": [
+          0.84,
+          0.98
+        ],
+        "mrr": 0.5653,
+        "mrr_ci": [
+          0.4631,
+          0.6659
+        ],
+        "ndcg_at_10": 0.6506,
+        "ndcg_at_10_ci": [
+          0.5612,
+          0.7374
+        ]
+      },
+      "session_level_metrics": {
+        "status": "evaluated",
+        "recall_at_1": 0.84,
+        "recall_at_1_ci": [
+          0.74,
+          0.94
+        ],
+        "recall_at_5": 0.96,
+        "recall_at_5_ci": [
+          0.9,
+          1.0
+        ],
+        "recall_at_10": 0.96,
+        "recall_at_10_ci": [
+          0.9,
+          1.0
+        ],
+        "mrr": 0.8883,
+        "mrr_ci": [
+          0.8083,
+          0.9567
+        ],
+        "ndcg_at_10": 0.9065,
+        "ndcg_at_10_ci": [
+          0.8352,
+          0.9639
+        ]
+      },
+      "accuracy_metrics": {
+        "turn_level": {
+          "status": "evaluated",
+          "recall_at_1": 0.38,
+          "recall_at_1_ci": [
+            0.24,
+            0.52
+          ],
+          "recall_at_5": 0.78,
+          "recall_at_5_ci": [
+            0.66,
+            0.88
+          ],
+          "recall_at_10": 0.92,
+          "recall_at_10_ci": [
+            0.84,
+            0.98
+          ],
+          "mrr": 0.5653,
+          "mrr_ci": [
+            0.4631,
+            0.6659
+          ],
+          "ndcg_at_10": 0.6506,
+          "ndcg_at_10_ci": [
+            0.5612,
+            0.7374
+          ]
+        },
+        "session_level": {
+          "status": "evaluated",
+          "recall_at_1": 0.84,
+          "recall_at_1_ci": [
+            0.74,
+            0.94
+          ],
+          "recall_at_5": 0.96,
+          "recall_at_5_ci": [
+            0.9,
+            1.0
+          ],
+          "recall_at_10": 0.96,
+          "recall_at_10_ci": [
+            0.9,
+            1.0
+          ],
+          "mrr": 0.8883,
+          "mrr_ci": [
+            0.8083,
+            0.9567
+          ],
+          "ndcg_at_10": 0.9065,
+          "ndcg_at_10_ci": [
+            0.8352,
+            0.9639
+          ]
+        },
+        "recall_at_1": 0.38,
+        "recall_at_1_ci": [
+          0.24,
+          0.52
+        ],
+        "recall_at_5": 0.78,
+        "recall_at_5_ci": [
+          0.66,
+          0.88
+        ],
+        "recall_at_10": 0.92,
+        "recall_at_10_ci": [
+          0.84,
+          0.98
+        ],
+        "mrr": 0.5653,
+        "mrr_ci": [
+          0.4631,
+          0.6659
+        ],
+        "ndcg_at_10": 0.6506,
+        "ndcg_at_10_ci": [
+          0.5612,
+          0.7374
+        ]
+      },
+      "latency_metrics": {
+        "p50_ms": 191.52,
+        "p50_ms_ci": [
+          155.45,
+          241.5
+        ],
+        "p95_ms": 808.58,
+        "p95_ms_ci": [
+          360.09,
+          5165.36
+        ],
+        "p99_ms": 5067.14,
+        "p99_ms_ci": [
+          639.54,
+          6270.3
+        ],
+        "mean_ms": 427.48,
+        "latencies_ms": [
+          888.79,
+          710.56,
+          241.61,
+          6270.3,
+          233.24,
+          315.43,
+          565.62,
+          185.38,
+          245.78,
+          155.45,
+          145.68,
+          174.61,
+          204.24,
+          221.33,
+          213.13,
+          260.77,
+          358.72,
+          274.27,
+          177.42,
+          121.7,
+          131.75,
+          177.39,
+          3814.88,
+          124.08,
+          256.54,
+          188.31,
+          241.5,
+          361.22,
+          139.95,
+          118.28,
+          143.6,
+          137.01,
+          282.02,
+          154.96,
+          115.82,
+          345.79,
+          279.71,
+          192.67,
+          215.41,
+          190.37,
+          259.89,
+          118.61,
+          137.57,
+          118.44,
+          141.79,
+          129.97,
+          138.58,
+          155.26,
+          446.91,
+          151.5
+        ]
+      },
+      "latencies_ms": [
+        888.79,
+        710.56,
+        241.61,
+        6270.3,
+        233.24,
+        315.43,
+        565.62,
+        185.38,
+        245.78,
+        155.45,
+        145.68,
+        174.61,
+        204.24,
+        221.33,
+        213.13,
+        260.77,
+        358.72,
+        274.27,
+        177.42,
+        121.7,
+        131.75,
+        177.39,
+        3814.88,
+        124.08,
+        256.54,
+        188.31,
+        241.5,
+        361.22,
+        139.95,
+        118.28,
+        143.6,
+        137.01,
+        282.02,
+        154.96,
+        115.82,
+        345.79,
+        279.71,
+        192.67,
+        215.41,
+        190.37,
+        259.89,
+        118.61,
+        137.57,
+        118.44,
+        141.79,
+        129.97,
+        138.58,
+        155.26,
+        446.91,
+        151.5
+      ],
+      "peak_ram_mb": 0.0,
+      "disk_footprint_mb": 24.2,
+      "raw_inspections_first_5": [
+        {
+          "question_idx": 1,
+          "question_id": "gpt4_2655b836",
+          "question_text": "What was the first issue I had with my new car after its first service?",
+          "gold_answer": "GPS system not functioning correctly",
+          "gold_turn_tags": [
+            "[turn:00000]",
+            "[turn:00014]"
+          ],
+          "gold_sessions": [
+            "gpt4_2655b836_s0",
+            "gpt4_2655b836_s1"
+          ],
+          "first_turn_hit_rank": 4,
+          "first_session_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00011]",
+              "session_id": "gpt4_2655b836_s0",
+              "snippet": "[turn:00011]",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00072]",
+              "session_id": "gpt4_76048e76_s1",
+              "snippet": "[turn:00072]",
+              "turn_hit": false,
+              "session_hit": false
+            },
+            {
+              "rank": 3,
+              "id": "[turn:01072]",
+              "session_id": "gpt4_4cd9eba1_s1",
+              "snippet": "[turn:01072]",
+              "turn_hit": false,
+              "session_hit": false
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00000]",
+              "session_id": "gpt4_2655b836_s0",
+              "snippet": "[turn:00000]",
+              "turn_hit": true,
+              "session_hit": true
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00001]",
+              "session_id": "gpt4_2655b836_s0",
+              "snippet": "[turn:00001]",
+              "turn_hit": false,
+              "session_hit": true
+            }
+          ]
+        },
+        {
+          "question_idx": 2,
+          "question_id": "gpt4_2487a7cb",
+          "question_text": "Which event did I attend first, the 'Effective Time Management' workshop or the 'Data Analysis using Python' webinar?",
+          "gold_answer": "'Data Analysis using Python' webinar",
+          "gold_turn_tags": [
+            "[turn:00046]",
+            "[turn:00050]"
+          ],
+          "gold_sessions": [
+            "gpt4_2487a7cb_s0",
+            "gpt4_2487a7cb_s1"
+          ],
+          "first_turn_hit_rank": 1,
+          "first_session_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00050]",
+              "session_id": "gpt4_2487a7cb_s1",
+              "snippet": "[turn:00050]",
+              "turn_hit": true,
+              "session_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00049]",
+              "session_id": "gpt4_2487a7cb_s1",
+              "snippet": "[turn:00049]",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00046]",
+              "session_id": "gpt4_2487a7cb_s0",
+              "snippet": "[turn:00046]",
+              "turn_hit": true,
+              "session_hit": true
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00048]",
+              "session_id": "gpt4_2487a7cb_s1",
+              "snippet": "[turn:00048]",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00053]",
+              "session_id": "gpt4_2487a7cb_s1",
+              "snippet": "[turn:00053]",
+              "turn_hit": false,
+              "session_hit": true
+            }
+          ]
+        },
+        {
+          "question_idx": 3,
+          "question_id": "gpt4_76048e76",
+          "question_text": "Which vehicle did I take care of first in February, the bike or the car?",
+          "gold_answer": "bike",
+          "gold_turn_tags": [
+            "[turn:00060]",
+            "[turn:00072]"
+          ],
+          "gold_sessions": [
+            "gpt4_76048e76_s0",
+            "gpt4_76048e76_s1"
+          ],
+          "first_turn_hit_rank": 1,
+          "first_session_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00060]",
+              "session_id": "gpt4_76048e76_s0",
+              "snippet": "[turn:00060]",
+              "turn_hit": true,
+              "session_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00001]",
+              "session_id": "gpt4_2655b836_s0",
+              "snippet": "[turn:00001]",
+              "turn_hit": false,
+              "session_hit": false
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00013]",
+              "session_id": "gpt4_2655b836_s1",
+              "snippet": "[turn:00013]",
+              "turn_hit": false,
+              "session_hit": false
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00070]",
+              "session_id": "gpt4_76048e76_s0",
+              "snippet": "[turn:00070]",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00065]",
+              "session_id": "gpt4_76048e76_s0",
+              "snippet": "[turn:00065]",
+              "turn_hit": false,
+              "session_hit": true
+            }
+          ]
+        },
+        {
+          "question_idx": 4,
+          "question_id": "gpt4_2312f94c",
+          "question_text": "Which device did I got first, the Samsung Galaxy S22 or the Dell XPS 13?",
+          "gold_answer": "Samsung Galaxy S22",
+          "gold_turn_tags": [
+            "[turn:00084]",
+            "[turn:00096]"
+          ],
+          "gold_sessions": [
+            "gpt4_2312f94c_s0",
+            "gpt4_2312f94c_s1"
+          ],
+          "first_turn_hit_rank": null,
+          "first_session_hit_rank": null,
+          "top_5_results": []
+        },
+        {
+          "question_idx": 5,
+          "question_id": "0bb5a684",
+          "question_text": "How many days before the team meeting I was preparing for did I attend the workshop on 'Effective Communication in the Workplace'?",
+          "gold_answer": "7 days. 8 days (including the last day) is also acceptable.",
+          "gold_turn_tags": [
+            "[turn:00108]",
+            "[turn:00120]"
+          ],
+          "gold_sessions": [
+            "0bb5a684_s0",
+            "0bb5a684_s1"
+          ],
+          "first_turn_hit_rank": 1,
+          "first_session_hit_rank": 1,
+          "top_5_results": [
+            {
+              "rank": 1,
+              "id": "[turn:00108]",
+              "session_id": "0bb5a684_s0",
+              "snippet": "[turn:00108]",
+              "turn_hit": true,
+              "session_hit": true
+            },
+            {
+              "rank": 2,
+              "id": "[turn:00112]",
+              "session_id": "0bb5a684_s0",
+              "snippet": "[turn:00112]",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 3,
+              "id": "[turn:00118]",
+              "session_id": "0bb5a684_s0",
+              "snippet": "[turn:00118]",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 4,
+              "id": "[turn:00116]",
+              "session_id": "0bb5a684_s0",
+              "snippet": "[turn:00116]",
+              "turn_hit": false,
+              "session_hit": true
+            },
+            {
+              "rank": 5,
+              "id": "[turn:00109]",
+              "session_id": "0bb5a684_s0",
+              "snippet": "[turn:00109]",
+              "turn_hit": false,
+              "session_hit": true
+            }
+          ]
+        }
+      ]
+    },
+    "auxly_mcp_search": {
+      "tool": "Auxly MCP (Search)",
+      "class": "Class C",
+      "storage_unit": "session",
+      "count_verification": {
+        "expected_turns": 1320,
+        "stored_count": 1320,
+        "shortfall": 0,
+        "verified_equal": true,
+        "audit_notes": {
+          "pending_list_empty": true,
+          "stats_raw": "\ud83d\udcca Memory Stats\nTotal entries: 114\nWrites today: 114\n\nBy Provider:\n  claude: 114\n",
+          "tool_documented": "auxly_memory_search",
+          "query_handling": "raw query text (symmetric with other tools)"
+        }
+      },
+      "ingestion_timing": {
+        "write_seconds": 3.202,
+        "time_to_searchable_seconds": 0.3,
+        "total_ingest_seconds": 3.502,
+        "items_per_second": 412.3
+      },
+      "known_item_preflight": {
+        "passed": true,
+        "rank": 1,
+        "query": "cerulean observatory celestial frequency"
+      },
+      "turn_level_metrics": {
+        "status": "not comparable at turn level",
+        "note": "Tool stores per session rather than per turn",
+        "recall_at_1": null,
+        "recall_at_1_ci": null,
+        "recall_at_5": null,
+        "recall_at_5_ci": null,
+        "recall_at_10": null,
+        "recall_at_10_ci": null,
+        "mrr": null,
+        "mrr_ci": null,
+        "ndcg_at_10": null,
+        "ndcg_at_10_ci": null
+      },
+      "session_level_metrics": {
+        "status": "evaluated",
+        "recall_at_1": 0.0,
+        "recall_at_1_ci": [
+          0.0,
+          0.0
+        ],
+        "recall_at_5": 0.0,
+        "recall_at_5_ci": [
+          0.0,
+          0.0
+        ],
+        "recall_at_10": 0.0,
+        "recall_at_10_ci": [
+          0.0,
+          0.0
+        ],
+        "mrr": 0.0,
+        "mrr_ci": [
+          0.0,
+          0.0
+        ],
+        "ndcg_at_10": 0.0,
+        "ndcg_at_10_ci": [
+          0.0,
+          0.0
+        ]
+      },
+      "accuracy_metrics": {
+        "turn_level": {
+          "status": "not comparable at turn level",
+          "note": "Tool stores per session rather than per turn",
+          "recall_at_1": null,
+          "recall_at_1_ci": null,
+          "recall_at_5": null,
+          "recall_at_5_ci": null,
+          "recall_at_10": null,
+          "recall_at_10_ci": null,
+          "mrr": null,
+          "mrr_ci": null,
+          "ndcg_at_10": null,
+          "ndcg_at_10_ci": null
+        },
+        "session_level": {
+          "status": "evaluated",
+          "recall_at_1": 0.0,
+          "recall_at_1_ci": [
+            0.0,
+            0.0
+          ],
+          "recall_at_5": 0.0,
+          "recall_at_5_ci": [
+            0.0,
+            0.0
+          ],
+          "recall_at_10": 0.0,
+          "recall_at_10_ci": [
+            0.0,
+            0.0
+          ],
+          "mrr": 0.0,
+          "mrr_ci": [
+            0.0,
+            0.0
+          ],
+          "ndcg_at_10": 0.0,
+          "ndcg_at_10_ci": [
+            0.0,
+            0.0
+          ]
+        },
+        "recall_at_1": 0.0,
+        "recall_at_1_ci": [
+          0.0,
+          0.0
+        ],
+        "recall_at_5": 0.0,
+        "recall_at_5_ci": [
+          0.0,
+          0.0
+        ],
+        "recall_at_10": 0.0,
+        "recall_at_10_ci": [
+          0.0,
+          0.0
+        ],
+        "mrr": 0.0,
+        "mrr_ci": [
+          0.0,
+          0.0
+        ],
+        "ndcg_at_10": 0.0,
+        "ndcg_at_10_ci": [
+          0.0,
+          0.0
+        ]
+      },
+      "latency_metrics": {
+        "p50_ms": 278.81,
+        "p50_ms_ci": [
+          257.57,
+          311.0
+        ],
+        "p95_ms": 485.45,
+        "p95_ms_ci": [
+          386.82,
+          712.1
+        ],
+        "p99_ms": 701.06,
+        "p99_ms_ci": [
+          434.67,
+          836.28
+        ],
+        "mean_ms": 315.08,
+        "latencies_ms": [
+          263.58,
+          275.79,
+          306.85,
+          279.28,
+          330.5,
+          357.1,
+          426.41,
+          252.55,
+          240.54,
+          230.46,
+          344.22,
+          419.75,
+          560.32,
+          364.5,
+          405.09,
+          326.74,
+          298.14,
+          323.41,
+          298.58,
+          354.23,
+          520.5,
+          836.28,
+          244.26,
+          250.83,
+          241.57,
+          237.47,
+          235.1,
+          234.89,
+          242.96,
+          232.19,
+          257.78,
+          241.81,
+          232.07,
+          246.77,
+          372.02,
+          359.15,
+          271.67,
+          278.35,
+          251.76,
+          327.41,
+          295.66,
+          248.8,
+          376.77,
+          290.71,
+          442.6,
+          289.15,
+          259.54,
+          251.59,
+          268.94,
+          257.36
+        ]
+      },
+      "latencies_ms": [
+        263.58,
+        275.79,
+        306.85,
+        279.28,
+        330.5,
+        357.1,
+        426.41,
+        252.55,
+        240.54,
+        230.46,
+        344.22,
+        419.75,
+        560.32,
+        364.5,
+        405.09,
+        326.74,
+        298.14,
+        323.41,
+        298.58,
+        354.23,
+        520.5,
+        836.28,
+        244.26,
+        250.83,
+        241.57,
+        237.47,
+        235.1,
+        234.89,
+        242.96,
+        232.19,
+        257.78,
+        241.81,
+        232.07,
+        246.77,
+        372.02,
+        359.15,
+        271.67,
+        278.35,
+        251.76,
+        327.41,
+        295.66,
+        248.8,
+        376.77,
+        290.71,
+        442.6,
+        289.15,
+        259.54,
+        251.59,
+        268.94,
+        257.36
+      ],
+      "peak_ram_mb": 0.0,
+      "disk_footprint_mb": 6.28,
+      "raw_inspections_first_5": [
+        {
+          "question_idx": 1,
+          "question_id": "gpt4_2655b836",
+          "question_text": "What was the first issue I had with my new car after its first service?",
+          "gold_answer": "GPS system not functioning correctly",
+          "gold_turn_tags": [
+            "[turn:00000]",
+            "[turn:00014]"
+          ],
+          "gold_sessions": [
+            "gpt4_2655b836_s0",
+            "gpt4_2655b836_s1"
+          ],
+          "first_turn_hit_rank": null,
+          "first_session_hit_rank": null,
+          "top_5_results": []
+        },
+        {
+          "question_idx": 2,
+          "question_id": "gpt4_2487a7cb",
+          "question_text": "Which event did I attend first, the 'Effective Time Management' workshop or the 'Data Analysis using Python' webinar?",
+          "gold_answer": "'Data Analysis using Python' webinar",
+          "gold_turn_tags": [
+            "[turn:00046]",
+            "[turn:00050]"
+          ],
+          "gold_sessions": [
+            "gpt4_2487a7cb_s0",
+            "gpt4_2487a7cb_s1"
+          ],
+          "first_turn_hit_rank": null,
+          "first_session_hit_rank": null,
+          "top_5_results": []
+        },
+        {
+          "question_idx": 3,
+          "question_id": "gpt4_76048e76",
+          "question_text": "Which vehicle did I take care of first in February, the bike or the car?",
+          "gold_answer": "bike",
+          "gold_turn_tags": [
+            "[turn:00060]",
+            "[turn:00072]"
+          ],
+          "gold_sessions": [
+            "gpt4_76048e76_s0",
+            "gpt4_76048e76_s1"
+          ],
+          "first_turn_hit_rank": null,
+          "first_session_hit_rank": null,
+          "top_5_results": []
+        },
+        {
+          "question_idx": 4,
+          "question_id": "gpt4_2312f94c",
+          "question_text": "Which device did I got first, the Samsung Galaxy S22 or the Dell XPS 13?",
+          "gold_answer": "Samsung Galaxy S22",
+          "gold_turn_tags": [
+            "[turn:00084]",
+            "[turn:00096]"
+          ],
+          "gold_sessions": [
+            "gpt4_2312f94c_s0",
+            "gpt4_2312f94c_s1"
+          ],
+          "first_turn_hit_rank": null,
+          "first_session_hit_rank": null,
+          "top_5_results": []
+        },
+        {
+          "question_idx": 5,
+          "question_id": "0bb5a684",
+          "question_text": "How many days before the team meeting I was preparing for did I attend the workshop on 'Effective Communication in the Workplace'?",
+          "gold_answer": "7 days. 8 days (including the last day) is also acceptable.",
+          "gold_turn_tags": [
+            "[turn:00108]",
+            "[turn:00120]"
+          ],
+          "gold_sessions": [
+            "0bb5a684_s0",
+            "0bb5a684_s1"
+          ],
+          "first_turn_hit_rank": null,
+          "first_session_hit_rank": null,
+          "top_5_results": []
+        }
+      ]
+    },
+    "auxly_mcp_recall": {
+      "tool": "Auxly MCP (Recall)",
+      "class": "Class C",
+      "storage_unit": "session",
+      "count_verification": {
+        "expected_turns": 1320,
+        "stored_count": 1320,
+        "shortfall": 0,
+        "verified_equal": true,
+        "audit_notes": {
+          "pending_list_empty": true,
+          "tool_documented": "auxly_memory_recall (semantic with keyword fallback)",
+          "query_handling": "raw query text (symmetric with other tools)"
+        }
+      },
+      "ingestion_timing": {
+        "write_seconds": 3.202,
+        "time_to_searchable_seconds": 0.3,
+        "total_ingest_seconds": 3.502,
+        "items_per_second": 412.3
+      },
+      "known_item_preflight": {
+        "passed": true,
+        "rank": 1,
+        "query": "cerulean observatory celestial frequency"
+      },
+      "turn_level_metrics": {
+        "status": "not comparable at turn level",
+        "note": "Tool stores per session rather than per turn",
+        "recall_at_1": null,
+        "recall_at_1_ci": null,
+        "recall_at_5": null,
+        "recall_at_5_ci": null,
+        "recall_at_10": null,
+        "recall_at_10_ci": null,
+        "mrr": null,
+        "mrr_ci": null,
+        "ndcg_at_10": null,
+        "ndcg_at_10_ci": null
+      },
+      "session_level_metrics": {
+        "status": "evaluated",
+        "recall_at_1": 0.0,
+        "recall_at_1_ci": [
+          0.0,
+          0.0
+        ],
+        "recall_at_5": 0.0,
+        "recall_at_5_ci": [
+          0.0,
+          0.0
+        ],
+        "recall_at_10": 0.0,
+        "recall_at_10_ci": [
+          0.0,
+          0.0
+        ],
+        "mrr": 0.0,
+        "mrr_ci": [
+          0.0,
+          0.0
+        ],
+        "ndcg_at_10": 0.0,
+        "ndcg_at_10_ci": [
+          0.0,
+          0.0
+        ]
+      },
+      "accuracy_metrics": {
+        "turn_level": {
+          "status": "not comparable at turn level",
+          "note": "Tool stores per session rather than per turn",
+          "recall_at_1": null,
+          "recall_at_1_ci": null,
+          "recall_at_5": null,
+          "recall_at_5_ci": null,
+          "recall_at_10": null,
+          "recall_at_10_ci": null,
+          "mrr": null,
+          "mrr_ci": null,
+          "ndcg_at_10": null,
+          "ndcg_at_10_ci": null
+        },
+        "session_level": {
+          "status": "evaluated",
+          "recall_at_1": 0.0,
+          "recall_at_1_ci": [
+            0.0,
+            0.0
+          ],
+          "recall_at_5": 0.0,
+          "recall_at_5_ci": [
+            0.0,
+            0.0
+          ],
+          "recall_at_10": 0.0,
+          "recall_at_10_ci": [
+            0.0,
+            0.0
+          ],
+          "mrr": 0.0,
+          "mrr_ci": [
+            0.0,
+            0.0
+          ],
+          "ndcg_at_10": 0.0,
+          "ndcg_at_10_ci": [
+            0.0,
+            0.0
+          ]
+        },
+        "recall_at_1": 0.0,
+        "recall_at_1_ci": [
+          0.0,
+          0.0
+        ],
+        "recall_at_5": 0.0,
+        "recall_at_5_ci": [
+          0.0,
+          0.0
+        ],
+        "recall_at_10": 0.0,
+        "recall_at_10_ci": [
+          0.0,
+          0.0
+        ],
+        "mrr": 0.0,
+        "mrr_ci": [
+          0.0,
+          0.0
+        ],
+        "ndcg_at_10": 0.0,
+        "ndcg_at_10_ci": [
+          0.0,
+          0.0
+        ]
+      },
+      "latency_metrics": {
+        "p50_ms": 713.56,
+        "p50_ms_ci": [
+          647.06,
+          805.37
+        ],
+        "p95_ms": 1228.47,
+        "p95_ms_ci": [
+          1109.17,
+          1422.45
+        ],
+        "p99_ms": 1413.08,
+        "p99_ms_ci": [
+          1195.67,
+          1527.89
+        ],
+        "mean_ms": 780.41,
+        "latencies_ms": [
+          781.52,
+          851.36,
+          995.13,
+          1134.31,
+          1096.74,
+          577.52,
+          662.41,
+          511.38,
+          528.73,
+          492.31,
+          599.23,
+          854.86,
+          598.08,
+          779.85,
+          705.56,
+          525.84,
+          721.56,
+          571.23,
+          575.42,
+          868.0,
+          683.98,
+          586.4,
+          533.35,
+          523.59,
+          569.52,
+          546.71,
+          637.16,
+          832.97,
+          667.24,
+          1206.02,
+          1184.91,
+          746.89,
+          843.18,
+          889.39,
+          647.06,
+          1246.83,
+          1293.59,
+          1099.45,
+          872.8,
+          536.66,
+          777.76,
+          928.23,
+          735.63,
+          599.51,
+          685.09,
+          798.95,
+          616.08,
+          655.66,
+          1117.13,
+          1527.89
+        ]
+      },
+      "latencies_ms": [
+        781.52,
+        851.36,
+        995.13,
+        1134.31,
+        1096.74,
+        577.52,
+        662.41,
+        511.38,
+        528.73,
+        492.31,
+        599.23,
+        854.86,
+        598.08,
+        779.85,
+        705.56,
+        525.84,
+        721.56,
+        571.23,
+        575.42,
+        868.0,
+        683.98,
+        586.4,
+        533.35,
+        523.59,
+        569.52,
+        546.71,
+        637.16,
+        832.97,
+        667.24,
+        1206.02,
+        1184.91,
+        746.89,
+        843.18,
+        889.39,
+        647.06,
+        1246.83,
+        1293.59,
+        1099.45,
+        872.8,
+        536.66,
+        777.76,
+        928.23,
+        735.63,
+        599.51,
+        685.09,
+        798.95,
+        616.08,
+        655.66,
+        1117.13,
+        1527.89
+      ],
+      "peak_ram_mb": 0.0,
+      "disk_footprint_mb": 6.28,
+      "raw_inspections_first_5": [
+        {
+          "question_idx": 1,
+          "question_id": "gpt4_2655b836",
+          "question_text": "What was the first issue I had with my new car after its first service?",
+          "gold_answer": "GPS system not functioning correctly",
+          "gold_turn_tags": [
+            "[turn:00000]",
+            "[turn:00014]"
+          ],
+          "gold_sessions": [
+            "gpt4_2655b836_s0",
+            "gpt4_2655b836_s1"
+          ],
+          "first_turn_hit_rank": null,
+          "first_session_hit_rank": null,
+          "top_5_results": []
+        },
+        {
+          "question_idx": 2,
+          "question_id": "gpt4_2487a7cb",
+          "question_text": "Which event did I attend first, the 'Effective Time Management' workshop or the 'Data Analysis using Python' webinar?",
+          "gold_answer": "'Data Analysis using Python' webinar",
+          "gold_turn_tags": [
+            "[turn:00046]",
+            "[turn:00050]"
+          ],
+          "gold_sessions": [
+            "gpt4_2487a7cb_s0",
+            "gpt4_2487a7cb_s1"
+          ],
+          "first_turn_hit_rank": null,
+          "first_session_hit_rank": null,
+          "top_5_results": []
+        },
+        {
+          "question_idx": 3,
+          "question_id": "gpt4_76048e76",
+          "question_text": "Which vehicle did I take care of first in February, the bike or the car?",
+          "gold_answer": "bike",
+          "gold_turn_tags": [
+            "[turn:00060]",
+            "[turn:00072]"
+          ],
+          "gold_sessions": [
+            "gpt4_76048e76_s0",
+            "gpt4_76048e76_s1"
+          ],
+          "first_turn_hit_rank": null,
+          "first_session_hit_rank": null,
+          "top_5_results": []
+        },
+        {
+          "question_idx": 4,
+          "question_id": "gpt4_2312f94c",
+          "question_text": "Which device did I got first, the Samsung Galaxy S22 or the Dell XPS 13?",
+          "gold_answer": "Samsung Galaxy S22",
+          "gold_turn_tags": [
+            "[turn:00084]",
+            "[turn:00096]"
+          ],
+          "gold_sessions": [
+            "gpt4_2312f94c_s0",
+            "gpt4_2312f94c_s1"
+          ],
+          "first_turn_hit_rank": null,
+          "first_session_hit_rank": null,
+          "top_5_results": []
+        },
+        {
+          "question_idx": 5,
+          "question_id": "0bb5a684",
+          "question_text": "How many days before the team meeting I was preparing for did I attend the workshop on 'Effective Communication in the Workplace'?",
+          "gold_answer": "7 days. 8 days (including the last day) is also acceptable.",
+          "gold_turn_tags": [
+            "[turn:00108]",
+            "[turn:00120]"
+          ],
+          "gold_sessions": [
+            "0bb5a684_s0",
+            "0bb5a684_s1"
+          ],
+          "first_turn_hit_rank": null,
+          "first_session_hit_rank": null,
+          "top_5_results": []
+        }
+      ]
+    },
+    "mem0": {
+      "status": "not offered locally",
+      "url": "https://docs.mem0.ai/mcp",
+      "note": "Official MCP server is cloud-hosted HTTP https://mcp.mem0.ai/mcp; local repo is archived."
+    }
+  }
+}
