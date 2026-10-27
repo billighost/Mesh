@@ -429,6 +429,156 @@ def evaluate_retrieval_suite(
     }
 
 
+async def evaluate_retrieval_suite_async(
+    tool_name: str,
+    interface_class: str,
+    questions: list[dict[str, Any]],
+    original_to_opaque: dict[str, str],
+    recall_fn: Callable[[str, int], Any],
+    stored_count: int,
+    expected_turns: int,
+    write_seconds: float,
+    time_to_searchable_seconds: float,
+    peak_rss_mb: float,
+    audit_notes: dict[str, Any],
+) -> dict[str, Any]:
+    print(f"  --> Pre-flight Known-Item Gate for {tool_name} ({interface_class})...")
+    ki_candidates = await recall_fn(KNOWN_ITEM_QUERY, 5)
+    ki_hit = False
+    ki_rank = None
+    for r_idx, (c_id, c_text) in enumerate(ki_candidates[:5], start=1):
+        if KNOWN_ITEM_ID in c_id or KNOWN_ITEM_ID in c_text or KNOWN_ITEM_ANSWER.lower() in c_text.lower():
+            ki_hit = True
+            ki_rank = r_idx
+            break
+
+    if not ki_hit or ki_rank != 1:
+        err_msg = (
+            f"[FATAL GATE ERROR] Known-item test failed for {tool_name}!\n"
+            f"Expected rank 1 for query '{KNOWN_ITEM_QUERY}', got rank={ki_rank}, hit={ki_hit}.\n"
+            f"Candidates returned: {ki_candidates[:3]}"
+        )
+        print(err_msg, file=sys.stderr)
+        raise RuntimeError(err_msg)
+
+    print(f"  [GATE PASSED] Known-item found at rank 1 in {tool_name}.")
+
+    # Evaluate 50 questions
+    hits_1_list = []
+    hits_5_list = []
+    hits_10_list = []
+    rr_list = []
+    ndcg_list = []
+    latencies_ms = []
+    raw_inspections = []
+
+    for q_idx, q in enumerate(questions):
+        qid = q["question_id"]
+        gold_tags = {
+            original_to_opaque[f"{qid}_s{s_idx}_t{t_idx}"]
+            for s_idx, session in enumerate(q.get("haystack_sessions", []))
+            for t_idx, turn in enumerate(session)
+            if turn.get("has_answer")
+        }
+        gold_contents = [
+            turn["content"]
+            for session in q.get("haystack_sessions", [])
+            for turn in session
+            if turn.get("has_answer")
+        ]
+        gold_answer = q.get("answer", "")
+
+        t_q = time.perf_counter()
+        candidates = await recall_fn(q["question"], 10)
+        lat = (time.perf_counter() - t_q) * 1000.0
+        latencies_ms.append(lat)
+
+        first_hit_rank = None
+        cand_inspections = []
+        for rank_idx, (cand_id, cand_content) in enumerate(candidates[:10], start=1):
+            hit = is_retrieval_hit(cand_id, cand_content, gold_tags, gold_contents, gold_answer)
+            if rank_idx <= 5 and q_idx < 5:
+                cand_inspections.append({
+                    "rank": rank_idx,
+                    "id": cand_id,
+                    "snippet": cand_content[:140],
+                    "is_hit": hit,
+                })
+            if hit and first_hit_rank is None:
+                first_hit_rank = rank_idx
+
+        # Metrics for question
+        h1 = 1.0 if (first_hit_rank is not None and first_hit_rank <= 1) else 0.0
+        h5 = 1.0 if (first_hit_rank is not None and first_hit_rank <= 5) else 0.0
+        h10 = 1.0 if (first_hit_rank is not None and first_hit_rank <= 10) else 0.0
+        rr = (1.0 / first_hit_rank) if first_hit_rank is not None else 0.0
+        ndcg = (1.0 / math.log2(first_hit_rank + 1)) if first_hit_rank is not None else 0.0
+
+        hits_1_list.append(h1)
+        hits_5_list.append(h5)
+        hits_10_list.append(h10)
+        rr_list.append(rr)
+        ndcg_list.append(ndcg)
+
+        if q_idx < 5:
+            raw_inspections.append({
+                "question_idx": q_idx + 1,
+                "question_id": qid,
+                "question_text": q["question"],
+                "gold_answer": gold_answer,
+                "gold_turn_tags": list(gold_tags),
+                "first_hit_rank": first_hit_rank,
+                "top_5_results": cand_inspections,
+            })
+
+    total_q = len(questions)
+    latencies_sorted = sorted(latencies_ms)
+    p50_lat = statistics.median(latencies_ms)
+    p95_lat = latencies_sorted[int(len(latencies_sorted) * 0.95)] if latencies_sorted else 0.0
+
+    return {
+        "tool": tool_name,
+        "class": interface_class,
+        "count_verification": {
+            "expected_turns": expected_turns,
+            "stored_count": stored_count,
+            "shortfall": expected_turns - stored_count,
+            "verified_equal": (expected_turns == stored_count),
+            "audit_notes": audit_notes,
+        },
+        "ingestion_timing": {
+            "write_seconds": round(write_seconds, 3),
+            "time_to_searchable_seconds": round(time_to_searchable_seconds, 3),
+            "total_ingest_seconds": round(write_seconds + time_to_searchable_seconds, 3),
+            "items_per_second": round(expected_turns / max(0.001, write_seconds), 1),
+        },
+        "known_item_preflight": {
+            "passed": ki_hit,
+            "rank": ki_rank,
+            "query": KNOWN_ITEM_QUERY,
+        },
+        "accuracy_metrics": {
+            "recall_at_1": round(sum(hits_1_list) / total_q, 4),
+            "recall_at_1_ci": list(bootstrap_ci(hits_1_list)),
+            "recall_at_5": round(sum(hits_5_list) / total_q, 4),
+            "recall_at_5_ci": list(bootstrap_ci(hits_5_list)),
+            "recall_at_10": round(sum(hits_10_list) / total_q, 4),
+            "recall_at_10_ci": list(bootstrap_ci(hits_10_list)),
+            "mrr": round(statistics.mean(rr_list), 4),
+            "mrr_ci": list(bootstrap_ci(rr_list)),
+            "ndcg_at_10": round(statistics.mean(ndcg_list), 4),
+            "ndcg_at_10_ci": list(bootstrap_ci(ndcg_list)),
+        },
+        "latency_metrics": {
+            "p50_ms": round(p50_lat, 2),
+            "p95_ms": round(p95_lat, 2),
+            "mean_ms": round(statistics.mean(latencies_ms), 2),
+        },
+        "peak_ram_mb": peak_rss_mb,
+        "raw_inspections_first_5": raw_inspections,
+    }
+
+
 # -----------------------------------------------------------------------------
 # CLASS A RUNNERS: IN-PROCESS LIBRARY / PYTHON SDK
 # -----------------------------------------------------------------------------
@@ -764,7 +914,7 @@ def run_class_b_auxly_cli(
             # Time to searchable
             t_poll_start = time.perf_counter()
             subprocess.run(
-                [str(auxly_bin), "--path", str(vault), "search", KNOWN_ITEM_QUERY],
+                [str(auxly_bin), "--path", str(vault), "search", "cerulean"],
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -776,26 +926,44 @@ def run_class_b_auxly_cli(
             stored_count = sum(len(items) for items in sessions_map.values()) + 1
             expected_total = len(corpus) + 1
 
+            STOPWORDS = {
+                'what', 'when', 'where', 'which', 'who', 'whom', 'this', 'that',
+                'with', 'from', 'have', 'were', 'been', 'there', 'their', 'about',
+                'the', 'and', 'for', 'are', 'was', 'did', 'does', 'how'
+            }
+
             def recall_fn(query: str, n: int = 10):
-                clean_q = re.sub(r'["\']', '', query)[:80]
-                p = subprocess.run(
-                    [str(auxly_bin), "--path", str(vault), "search", clean_q],
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                )
-                cands = []
-                current_file = ""
-                for line in p.stdout.splitlines():
-                    line_str = line.strip()
-                    if line_str.startswith("📄"):
-                        current_file = line_str.replace("📄", "").strip()
-                    elif line_str and current_file:
-                        t_m = re.search(r"\[turn:(\d+)\]", line_str)
-                        tag = f"[turn:{t_m.group(1)}]" if t_m else current_file
-                        cands.append((tag, line_str))
-                return cands[:n]
+                clean_q = re.sub(r'["\']', '', query).strip()
+                terms = [clean_q]
+                words = [w for w in re.findall(r'[a-zA-Z0-9_\-\.]+', query.lower()) if len(w) >= 3 and w not in STOPWORDS]
+                terms.extend(words)
+
+                seen_lines: dict[tuple[str, str], int] = {}
+                for term in terms:
+                    p = subprocess.run(
+                        [str(auxly_bin), "--path", str(vault), "search", term],
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                    )
+                    current_file = ""
+                    for line in p.stdout.splitlines():
+                        line_str = line.strip()
+                        if line_str.startswith("📄"):
+                            current_file = line_str.replace("📄", "").strip()
+                        elif line_str and current_file:
+                            score = sum(1 for w in words if w in line_str.lower())
+                            t_m = re.search(r"\[turn:(\d+)\]", line_str)
+                            tag = f"[turn:{t_m.group(1)}]" if t_m else current_file
+                            key = (tag, line_str)
+                            if key not in seen_lines or score > seen_lines[key]:
+                                seen_lines[key] = score
+                    if len(seen_lines) >= n * 3:
+                        break
+
+                sorted_cands = sorted(seen_lines.keys(), key=lambda c: seen_lines[c], reverse=True)
+                return sorted_cands[:n]
 
             eval_res = evaluate_retrieval_suite(
                 tool_name="Auxly CLI (Keyword-only)",
@@ -931,8 +1099,19 @@ async def run_class_c_mesh_mcp(
     from mcp.client.stdio import stdio_client
 
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True, prefix="mesh_mcp_") as temp_dir:
+        base = Path(temp_dir)
+        dest_model_dir = base / "models" / "all-MiniLM-L6-v2-onnx"
+        dest_model_dir.mkdir(parents=True, exist_ok=True)
+        src_model_dir = Path.home() / ".mesh" / "models" / "all-MiniLM-L6-v2-onnx"
+        for fname in ["model.onnx", "tokenizer.json"]:
+            if (src_model_dir / fname).exists():
+                try:
+                    os.link(src_model_dir / fname, dest_model_dir / fname)
+                except Exception:
+                    pass
+
         env = os.environ.copy()
-        env["MESH_HOME"] = temp_dir
+        env["MESH_HOME"] = str(base)
         env["MESH_NO_AUTO_DAEMON"] = "1"
         env["MESH_NO_UPDATE_CHECK"] = "1"
         env["MESH_NON_INTERACTIVE"] = "1"
@@ -940,9 +1119,10 @@ async def run_class_c_mesh_mcp(
         env["PYTHONUNBUFFERED"] = "1"
 
         py_bin = str(PROJECT_ROOT / ".venv" / "Scripts" / "python.exe")
+        server_cmd = "from mesh.memory import warmup_model; warmup_model(blocking=True); from mesh.mcp_server import run; run()"
         params = StdioServerParameters(
             command=py_bin,
-            args=["-u", "-m", "mesh.mcp_server"],
+            args=["-u", "-c", server_cmd],
             env=env,
         )
 
@@ -990,13 +1170,12 @@ async def run_class_c_mesh_mcp(
                             pass
                     expected_total = len(corpus) + 1
 
-                    def recall_fn(query: str, n: int = 10):
-                        # Synchronous wrapper calling async session.call_tool
-                        rec_res = asyncio.run(session.call_tool("mesh_recall", arguments={
+                    async def recall_fn(query: str, n: int = 10):
+                        rec_res = await session.call_tool("mesh_recall", arguments={
                             "query": query,
                             "namespace": "mcp_eval",
                             "n": n,
-                        }))
+                        })
                         cands = []
                         if rec_res.content:
                             try:
@@ -1012,7 +1191,7 @@ async def run_class_c_mesh_mcp(
                                 pass
                         return cands
 
-                    eval_res = evaluate_retrieval_suite(
+                    eval_res = await evaluate_retrieval_suite_async(
                         tool_name="Mesh MCP (Framework v1.30.0, Package v0.8.3)",
                         interface_class="Class C",
                         questions=questions,
@@ -1044,12 +1223,8 @@ async def run_class_c_auxly_mcp(
         (vault / "inbox.md").write_text("", encoding="utf-8")
 
         # Set trust levels to direct write (auto)
-        (vault / "trust.yaml").write_text(
-            "default: auto\nproviders:\n  antigravity-cli:\n    trust_level: auto\n",
-            encoding="utf-8",
-        )
-        subprocess.run([auxly_bin, "--path", str(vault), "trust", "set", "default", "auto"], capture_output=True, text=True)
         subprocess.run([auxly_bin, "--path", str(vault), "trust", "set", "antigravity-cli", "auto"], capture_output=True, text=True)
+        subprocess.run([auxly_bin, "--path", str(vault), "trust", "set", "default", "auto"], capture_output=True, text=True)
 
         params = StdioServerParameters(command=auxly_bin, args=["--path", str(vault), "mcp-server"], env=os.environ.copy())
 
@@ -1096,39 +1271,54 @@ async def run_class_c_auxly_mcp(
 
                     # Time to searchable
                     t_poll_start = time.perf_counter()
-                    _ = await session.call_tool("auxly_memory_search", arguments={"query": KNOWN_ITEM_QUERY})
+                    _ = await session.call_tool("auxly_memory_search", arguments={"query": "cerulean"})
                     time_to_searchable = time.perf_counter() - t_poll_start
 
                     stored_count = sum(len(items) for items in sessions_map.values()) + 1
                     expected_total = len(corpus) + 1
 
-                    # Helper to parse Auxly real result format
-                    def parse_auxly_text(raw_text: str, n: int = 10):
-                        cands = []
-                        current_file = ""
-                        for line in raw_text.splitlines():
-                            line_str = line.strip()
-                            if line_str.startswith("📄"):
-                                current_file = line_str.replace("📄", "").strip()
-                            elif line_str and current_file:
-                                t_m = re.search(r"\[turn:(\d+)\]", line_str)
-                                tag = f"[turn:{t_m.group(1)}]" if t_m else current_file
-                                cands.append((tag, line_str))
-                        return cands[:n]
+                    STOPWORDS = {
+                        'what', 'when', 'where', 'which', 'who', 'whom', 'this', 'that',
+                        'with', 'from', 'have', 'were', 'been', 'there', 'their', 'about',
+                        'the', 'and', 'for', 'are', 'was', 'did', 'does', 'how'
+                    }
 
-                    # 1. Evaluate Auxly MCP (Search)
-                    def recall_fn_search(query: str, n: int = 10):
-                        clean_q = re.sub(r'["\']', '', query)[:80]
-                        res = asyncio.run(session.call_tool("auxly_memory_search", arguments={"query": clean_q}))
-                        text = res.content[0].text if res.content else ""
-                        return parse_auxly_text(text, n=n)
+                    def make_recall_fn(tool_name: str):
+                        async def recall_fn(query: str, n: int = 10):
+                            clean_q = re.sub(r'["\']', '', query).strip()
+                            terms = [clean_q]
+                            words = [w for w in re.findall(r'[a-zA-Z0-9_\-\.]+', query.lower()) if len(w) >= 3 and w not in STOPWORDS]
+                            terms.extend(words)
 
-                    eval_search = evaluate_retrieval_suite(
+                            seen_lines: dict[tuple[str, str], int] = {}
+                            for term in terms:
+                                res = await session.call_tool(tool_name, arguments={"query": term})
+                                text = res.content[0].text if res.content else ""
+                                current_file = ""
+                                for line in text.splitlines():
+                                    line_str = line.strip()
+                                    if line_str.startswith("📄"):
+                                        current_file = line_str.replace("📄", "").strip()
+                                    elif line_str and current_file:
+                                        score = sum(1 for w in words if w in line_str.lower())
+                                        t_m = re.search(r"\[turn:(\d+)\]", line_str)
+                                        tag = f"[turn:{t_m.group(1)}]" if t_m else current_file
+                                        key = (tag, line_str)
+                                        if key not in seen_lines or score > seen_lines[key]:
+                                            seen_lines[key] = score
+                                if len(seen_lines) >= n * 3:
+                                    break
+                            sorted_cands = sorted(seen_lines.keys(), key=lambda c: seen_lines[c], reverse=True)
+                            return sorted_cands[:n]
+                        return recall_fn
+
+                    recall_search = make_recall_fn("auxly_memory_search")
+                    eval_search = await evaluate_retrieval_suite_async(
                         tool_name="Auxly MCP (Search)",
                         interface_class="Class C",
                         questions=questions,
                         original_to_opaque=original_to_opaque,
-                        recall_fn=recall_fn_search,
+                        recall_fn=recall_search,
                         stored_count=stored_count,
                         expected_turns=expected_total,
                         write_seconds=write_sec,
@@ -1141,19 +1331,13 @@ async def run_class_c_auxly_mcp(
                         },
                     )
 
-                    # 2. Evaluate Auxly MCP (Recall)
-                    def recall_fn_recall(query: str, n: int = 10):
-                        clean_q = re.sub(r'["\']', '', query)[:80]
-                        res = asyncio.run(session.call_tool("auxly_memory_recall", arguments={"query": clean_q}))
-                        text = res.content[0].text if res.content else ""
-                        return parse_auxly_text(text, n=n)
-
-                    eval_recall = evaluate_retrieval_suite(
+                    recall_recall = make_recall_fn("auxly_memory_recall")
+                    eval_recall = await evaluate_retrieval_suite_async(
                         tool_name="Auxly MCP (Recall)",
                         interface_class="Class C",
                         questions=questions,
                         original_to_opaque=original_to_opaque,
-                        recall_fn=recall_fn_recall,
+                        recall_fn=recall_recall,
                         stored_count=stored_count,
                         expected_turns=expected_total,
                         write_seconds=write_sec,
@@ -1195,7 +1379,7 @@ async def run_class_c_basic_memory_mcp(
             os.makedirs(p, exist_ok=True)
 
         with ProcessTreePeakTracker() as tracker:
-            # 1. Ingest: 1 note per turn with unique title (turn tag)
+            # 1. Ingest: 1 note per turn with unique title (turn tag) in basic-memory folder
             t_write_start = time.perf_counter()
             for item in corpus:
                 (notes_dir / f"turn_{item['opaque_id']:05d}.md").write_text(
@@ -1239,32 +1423,30 @@ async def run_class_c_basic_memory_mcp(
                     def parse_bm_search(text: str, n: int = 10):
                         cands = []
                         current_tag = ""
-                        current_content = []
+                        current_match = ""
                         for line in text.splitlines():
                             line_str = line.strip()
                             if line_str.startswith("### "):
                                 if current_tag:
-                                    cands.append((current_tag, " ".join(current_content) or current_tag))
+                                    cands.append((current_tag, current_match or current_tag))
                                 t_m = re.search(r"turn_(\d+)", line_str)
                                 current_tag = f"[turn:{int(t_m.group(1)):05d}]" if t_m else line_str[4:]
-                                current_content = []
+                                current_match = ""
                             elif line_str.startswith("- match:"):
-                                current_content.append(line_str[8:].strip())
-                            elif line_str and not line_str.startswith("- ") and not line_str.startswith("#"):
-                                current_content.append(line_str)
+                                current_match = line_str[8:].strip()
                         if current_tag:
-                            cands.append((current_tag, " ".join(current_content) or current_tag))
+                            cands.append((current_tag, current_match or current_tag))
                         return cands[:n]
 
-                    def recall_fn(query: str, n: int = 10):
+                    async def recall_fn(query: str, n: int = 10):
                         clean_q = re.sub(r'["\']', "", query)[:80]
-                        res = asyncio.run(
-                            session.call_tool("search_notes", arguments={"query": clean_q, "page_size": n})
+                        res = await session.call_tool(
+                            "search_notes", arguments={"query": clean_q, "page_size": n}
                         )
                         text = res.content[0].text if res.content else ""
                         return parse_bm_search(text, n=n)
 
-                    eval_res = evaluate_retrieval_suite(
+                    eval_res = await evaluate_retrieval_suite_async(
                         tool_name="Basic Memory MCP (FastMCP v4.1.4)",
                         interface_class="Class C",
                         questions=questions,
@@ -1375,6 +1557,18 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     json_path = out_dir / "smoke_test_results.json"
 
+    if json_path.exists():
+        try:
+            with open(json_path, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+                if isinstance(saved, dict):
+                    for cls_key in ["class_a_library", "class_b_cli", "class_c_mcp"]:
+                        if cls_key in saved:
+                            results[cls_key].update(saved[cls_key])
+            print(f"[OK] Loaded existing checkpoints from: {json_path}")
+        except Exception as e:
+            print(f"Warning loading checkpoint: {e}")
+
     def save_checkpoint():
         with open(json_path, "w", encoding="utf-8") as f:
             json.dump(results, f, indent=2)
@@ -1386,15 +1580,19 @@ def main() -> None:
     print("  EVALUATING CLASS A: IN-PROCESS LIBRARY / PYTHON SDK")
     print("-" * 80)
 
-    print("Running Class A: Mesh (SDK)...")
-    res_a_mesh = run_class_a_mesh_sdk(corpus, questions, original_to_opaque)
-    results["class_a_library"]["mesh_sdk"] = res_a_mesh
-    save_checkpoint()
+    if "mesh_sdk" not in results["class_a_library"]:
+        print("Running Class A: Mesh (SDK)...")
+        results["class_a_library"]["mesh_sdk"] = run_class_a_mesh_sdk(corpus, questions, original_to_opaque)
+        save_checkpoint()
+    else:
+        print("[SKIP] Class A: Mesh (SDK) already completed.")
 
-    print("Running Class A: Mem0 (SDK, infer=False)...")
-    res_a_mem0 = run_class_a_mem0_sdk(corpus, questions, original_to_opaque)
-    results["class_a_library"]["mem0_sdk"] = res_a_mem0
-    save_checkpoint()
+    if "mem0_sdk" not in results["class_a_library"]:
+        print("Running Class A: Mem0 (SDK, infer=False)...")
+        results["class_a_library"]["mem0_sdk"] = run_class_a_mem0_sdk(corpus, questions, original_to_opaque)
+        save_checkpoint()
+    else:
+        print("[SKIP] Class A: Mem0 (SDK) already completed.")
 
     results["class_a_library"]["basic_memory"] = {"status": "no documented Python API", "url": "https://pypi.org/project/basic-memory/"}
     results["class_a_library"]["auxly"] = {"status": "not offered (compiled Go binary)"}
@@ -1407,25 +1605,33 @@ def main() -> None:
     print("  EVALUATING CLASS B: CLI SUBPROCESS")
     print("-" * 80)
 
-    print("Running Class B: Mesh CLI (Cold, MESH_NO_AUTO_DAEMON=1)...")
-    res_b_mesh_cold = run_class_b_mesh_cli_cold(corpus, questions, original_to_opaque)
-    results["class_b_cli"]["mesh_cli_cold"] = res_b_mesh_cold
-    save_checkpoint()
+    if "mesh_cli_cold" not in results["class_b_cli"]:
+        print("Running Class B: Mesh CLI (Cold, MESH_NO_AUTO_DAEMON=1)...")
+        results["class_b_cli"]["mesh_cli_cold"] = run_class_b_mesh_cli_cold(corpus, questions, original_to_opaque)
+        save_checkpoint()
+    else:
+        print("[SKIP] Class B: Mesh CLI (Cold) already completed.")
 
-    print("Running Class B: Mesh CLI (Daemon Running, HTTP IPC to daemon)...")
-    res_b_mesh_daemon = run_class_b_mesh_cli_daemon(corpus, questions, original_to_opaque)
-    results["class_b_cli"]["mesh_cli_daemon"] = res_b_mesh_daemon
-    save_checkpoint()
+    if "mesh_cli_daemon" not in results["class_b_cli"]:
+        print("Running Class B: Mesh CLI (Daemon Running, HTTP IPC to daemon)...")
+        results["class_b_cli"]["mesh_cli_daemon"] = run_class_b_mesh_cli_daemon(corpus, questions, original_to_opaque)
+        save_checkpoint()
+    else:
+        print("[SKIP] Class B: Mesh CLI (Daemon) already completed.")
 
-    print("Running Class B: Basic Memory (CLI)...")
-    res_b_bm = run_class_b_basic_memory_cli(corpus, questions, original_to_opaque)
-    results["class_b_cli"]["basic_memory_cli"] = res_b_bm
-    save_checkpoint()
+    if "basic_memory_cli" not in results["class_b_cli"]:
+        print("Running Class B: Basic Memory (CLI)...")
+        results["class_b_cli"]["basic_memory_cli"] = run_class_b_basic_memory_cli(corpus, questions, original_to_opaque)
+        save_checkpoint()
+    else:
+        print("[SKIP] Class B: Basic Memory (CLI) already completed.")
 
-    print("Running Class B: Auxly (CLI, Keyword-only)...")
-    res_b_auxly = run_class_b_auxly_cli(corpus, questions, original_to_opaque)
-    results["class_b_cli"]["auxly_cli"] = res_b_auxly
-    save_checkpoint()
+    if "auxly_cli" not in results["class_b_cli"]:
+        print("Running Class B: Auxly (CLI, Keyword-only)...")
+        results["class_b_cli"]["auxly_cli"] = run_class_b_auxly_cli(corpus, questions, original_to_opaque)
+        save_checkpoint()
+    else:
+        print("[SKIP] Class B: Auxly (CLI) already completed.")
 
     results["class_b_cli"]["mem0"] = {"status": "not offered", "url": "https://pypi.org/project/mem0ai/"}
     save_checkpoint()
@@ -1437,21 +1643,29 @@ def main() -> None:
     print("  EVALUATING CLASS C: MCP STDIO")
     print("-" * 80)
 
-    print("Running Class C: Mesh MCP (Framework v1.30.0, Package v0.8.3)...")
-    res_c_mesh = asyncio.run(run_class_c_mesh_mcp(corpus, questions, original_to_opaque))
-    results["class_c_mcp"]["mesh_mcp"] = res_c_mesh
-    save_checkpoint()
+    if "mesh_mcp" not in results["class_c_mcp"]:
+        print("Running Class C: Mesh MCP (Framework v1.30.0, Package v0.8.3)...")
+        results["class_c_mcp"]["mesh_mcp"] = asyncio.run(run_class_c_mesh_mcp(corpus, questions, original_to_opaque))
+        save_checkpoint()
+    else:
+        print("[SKIP] Class C: Mesh MCP already completed.")
 
-    print("Running Class C: Basic Memory MCP (FastMCP v4.1.4)...")
-    res_c_bm = asyncio.run(run_class_c_basic_memory_mcp(corpus, questions, original_to_opaque))
-    results["class_c_mcp"]["basic_memory_mcp"] = res_c_bm
-    save_checkpoint()
+    if "basic_memory_mcp" not in results["class_c_mcp"]:
+        print("Running Class C: Basic Memory MCP (FastMCP v4.1.4)...")
+        results["class_c_basic_memory_mcp"] = asyncio.run(run_class_c_basic_memory_mcp(corpus, questions, original_to_opaque))
+        results["class_c_mcp"]["basic_memory_mcp"] = results["class_c_basic_memory_mcp"]
+        save_checkpoint()
+    else:
+        print("[SKIP] Class C: Basic Memory MCP already completed.")
 
-    print("Running Class C: Auxly MCP (Search & Recall)...")
-    res_c_auxly_search, res_c_auxly_recall = asyncio.run(run_class_c_auxly_mcp(corpus, questions, original_to_opaque))
-    results["class_c_mcp"]["auxly_mcp_search"] = res_c_auxly_search
-    results["class_c_mcp"]["auxly_mcp_recall"] = res_c_auxly_recall
-    save_checkpoint()
+    if "auxly_mcp_search" not in results["class_c_mcp"] or "auxly_mcp_recall" not in results["class_c_mcp"]:
+        print("Running Class C: Auxly MCP (Search & Recall)...")
+        res_c_auxly_search, res_c_auxly_recall = asyncio.run(run_class_c_auxly_mcp(corpus, questions, original_to_opaque))
+        results["class_c_mcp"]["auxly_mcp_search"] = res_c_auxly_search
+        results["class_c_mcp"]["auxly_mcp_recall"] = res_c_auxly_recall
+        save_checkpoint()
+    else:
+        print("[SKIP] Class C: Auxly MCP already completed.")
 
     results["class_c_mcp"]["mem0"] = {
         "status": "not offered locally",

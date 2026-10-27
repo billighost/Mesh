@@ -1839,7 +1839,7 @@ def _execute_tool_sync_impl(
                         "namespace": mesh.namespace,
                         "namespace_exists": True,
                         "total": total_matching,
-                        "memories": memories,
+                        "memories": [{k: v for k, v in m.items() if not k.startswith("_")} for m in memories],
                         "untrusted_reference_data": True,
                         "notice": _UNTRUSTED_NOTICE,
                     }
