@@ -819,6 +819,8 @@ It binds loopback by default. Non-loopback binding requires an explicit `--host`
 | `MESH_UNIX_SOCKET` | POSIX Unix socket path (mode `0600`). |
 | `MESH_AUTH_TOKEN`, `MESH_TOKEN` | Token overrides for server/client. Prefer the generated `~/.mesh/auth_token`. |
 | `MESH_FORCE_DAEMON_PROBE` | `1` forces port probing even if `daemon.pid` is absent. |
+| `MESH_DAEMON_REQUEST_TIMEOUT` | CLI-to-daemon HTTP request timeout in seconds (default 10.0 s, minimum 1.0 s). |
+| `MESH_DAEMON_VERIFY_TIMEOUT` | Daemon identity verification timeout in seconds (default 1.0 s, minimum 0.2 s). |
 | `MESH_CSRF` | CSRF protection control for browser surfaces. |
 | `MESH_IN_DAEMON` | Internal: marks a process running inside the daemon. |
 
