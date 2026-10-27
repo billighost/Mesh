@@ -1266,7 +1266,7 @@ async def run_class_c_auxly_mcp(
                     stats_text = stats_res.content[0].text if stats_res.content else ""
 
                     # Verify pending queue empty
-                    if "pending approval" in pending_text.lower():
+                    if "no pending approvals" not in pending_text.lower():
                         raise RuntimeError(f"Auxly pending queue is not empty: {pending_text}")
 
                     # Time to searchable
