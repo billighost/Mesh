@@ -1,27 +1,29 @@
 # Benchmarks State & Tracking
 
-**Document Version:** 1.2.0  
-**Current Step:** STEP 1 Complete -> STEP 2 Smoke Rerun (3 Sequential Runs)  
-**Target Commit / Base:** `afa203c` (`feat/ci-evidence`)  
-**Timestamp:** 2026-10-27T06:19:00+01:00  
+**Document Version:** 1.3.0  
+**Current Step:** CHECKPOINT A REACHED (Awaiting User Review & Approval)  
+**Target Commit / Base:** `77a093f` (`feat/ci-evidence`)  
+**Timestamp:** 2026-10-27T21:49:00+01:00  
 
 ---
 
 ## 1. Current Step
-- **Active Step:** STEP 1 (Fixes) Completed cleanly. Ready for STEP 2 (Smoke Rerun: 3 clean, sequential runs).
+- **Active Step:** CHECKPOINT A: STEP 1 (Fixes) and STEP 2 (3 Sequential Smoke Runs) completed cleanly.
 - **Sub-tasks Status:**
-  1. **Scoring Unit (Two-Level Reporting):** COMPLETED (`f38c1de` / `afa203c`). Independent tables for turn-level and session-level retrieval metrics; Basic Memory CLI aligned to 1-note-per-turn; cross-class parity verification verified identical across all runners.
-  2. **Mesh Daemon-mode CLI Tail Latency:** COMPLETED (`129c203` / `0f944c0`). Fast `wmic` process lookup with PowerShell fallback; server child PID persistence; configurable timeouts (`MESH_DAEMON_REQUEST_TIMEOUT=10.0s`). Zero spurious duplicate daemons; 18 new unit tests passing.
+  1. **Scoring Unit (Two-Level Reporting):** COMPLETED (`f38c1de` / `afa203c`). Independent tables for turn-level and session-level retrieval metrics; Basic Memory CLI aligned to 1-note-per-turn; cross-class parity verified.
+  2. **Mesh Daemon-mode CLI Tail Latency:** COMPLETED (`129c203` / `0f944c0`). Fast `wmic` process lookup with PowerShell fallback; server child PID persistence; configurable timeouts (`MESH_DAEMON_REQUEST_TIMEOUT=10.0s`). Zero spurious duplicate daemons; 18 new unit tests passing. In Run 1, p50 was 414.15 ms and p95 was 457.05 ms.
   3. **Mesh Ranking Analysis:** COMPLETED. All 33 non-rank-1 queries analyzed and cataloged in `benchmarks/results/mesh_ranking_analysis.json`. Lexical distractor interference cataloged in backlog. Algorithm left strictly untouched.
   4. **Query Handling (Symmetric Raw Text):** COMPLETED (`f38c1de` / `afa203c`). Exact raw question text sent to all tools. Auxly-only word splitting loop removed; Auxly evaluated as-is (keyword-only).
-  5. **Repeatability & Determinism:** COMPLETED. 100% deterministic turn-tag ranking confirmed across runs. Root causes of Smoke 1 vs Smoke 2 shifts documented and verified.
+  5. **Repeatability & Determinism:** COMPLETED. 100% deterministic turn-tag ranking confirmed across all 3 independent smoke runs.
   6. **Complete Tables & Metrics:** COMPLETED (`f38c1de` / `afa203c`). Full bootstrap 95% CIs on Recall@1/5/10, MRR, NDCG@10, latency p50/p95/p99, RAM, disk, time-to-searchable, and raw top-5 audit inspections.
-  7. **Commit Hygiene:** COMPLETED. `mesh_inspect` serialization fix isolated in `0cb4636` (zero impact on recall); daemon fix in `0f944c0`; harness fixes in `afa203c`.
+  7. **Commit Hygiene:** COMPLETED. Product fixes isolated from harness commits.
   8. **Security Leftovers:** COMPLETED. Bandit B105 and B406 false positives documented; pip-audit clean; CI bandit artifact in place.
+  9. **3 Sequential Smoke Runs:** COMPLETED. All 3 runs executed sequentially and exclusively from clean stores; results captured in `smoke_run[1-3]_results.json` and `.log`.
 
 ---
 
 ## 2. Completed Items & Commits
+- `77a093f`: benchmarks: update STATE.md to v1.2.0 and record ranking analysis findings
 - `afa203c`: merge task/harness-fixes: implement two-level scoring, symmetric query handling, and complete metrics tables
 - `f38c1de`: benchmarks: implement two-level scoring, symmetric query handling, and complete metrics tables
 - `0f944c0`: merge task/daemon-fix: eliminate CLI tail latency, timeouts, and process tracking on Windows
@@ -43,15 +45,12 @@
 ---
 
 ## 3. Running Subagents & Worktrees
-- None. All subagents killed and worktrees cleaned up. Main agent has exclusive machine access.
+- None.
 
 ---
 
 ## 4. Next Action
-1. Commit `benchmarks/STATE.md` and `benchmarks/results/mesh_ranking_analysis.json` so the working tree is 100% clean.
-2. Execute 3 sequential, exclusive smoke runs of the 50-question set from clean stores on an idle machine.
-3. Save each run's raw outputs (`smoke_test_results_run1.json`, `run2.json`, `run3.json`).
-4. Compile Checkpoint A report and STOP for user go-ahead.
+- **STOP AT CHECKPOINT A**: Submit Checkpoint A report to user and await explicit confirmation before proceeding to STEP 3 (Pilot 100-question run).
 
 ---
 
