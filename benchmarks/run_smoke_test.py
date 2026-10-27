@@ -1159,7 +1159,7 @@ async def run_class_c_mesh_mcp(
                     # Count verification via mesh_inspect
                     insp_res = await session.call_tool("mesh_inspect", arguments={
                         "namespace": "mcp_eval",
-                        "limit": 10000,
+                        "limit": 100,
                     })
                     stored_count = 0
                     if insp_res.content:
