@@ -19,7 +19,7 @@ def prepare_pilot(seed: int = 42, count: int = 20) -> list[dict]:
         data = json.load(f)
 
     print(f"Total questions in source: {len(data)}")
-    
+
     # Exclude abstention questions
     non_abs = [
         q for q in data
@@ -44,12 +44,12 @@ def prepare_pilot(seed: int = 42, count: int = 20) -> list[dict]:
         q_id = q.get("question_id")
         q_type = q.get("question_type", "unknown")
         type_counts[q_type] = type_counts.get(q_type, 0) + 1
-        
+
         haystack = q.get("haystack_sessions", [])
         num_sessions = len(haystack)
         num_turns = sum(len(s) for s in haystack)
         total_turns += num_turns
-        
+
         stats.append({
             "index": idx,
             "question_id": q_id,
