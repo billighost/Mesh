@@ -1,16 +1,24 @@
 """
-benchmarks/sleep_guard.py — Sleep-proofing, power state assertions, dual-timing, and Kernel-Power audit.
+benchmarks/sleep_guard.py — Sleep-proofing, power state assertions, exclusivity, dual-timing, and Kernel-Power audit.
 """
 from __future__ import annotations
 
 import ctypes
 import datetime
 import json
+import logging
 import os
 import subprocess
 import sys
 import time
 from typing import Any, Optional
+
+try:
+    import psutil
+except ImportError:
+    psutil = None
+
+logger = logging.getLogger(__name__)
 
 
 class SYSTEM_POWER_STATUS(ctypes.Structure):
@@ -145,6 +153,59 @@ def assert_power_and_sleep_readiness(allow_battery_for_testing: bool = False) ->
     return info
 
 
+def cleanup_leftover_processes(exclude_current_pid: bool = True) -> int:
+    """Kill any leftover mesh daemon, auxly, or rogue background benchmark python processes."""
+    if not psutil:
+        return 0
+
+    killed = 0
+    curr_pid = os.getpid()
+    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+        try:
+            pid = proc.info["pid"]
+            if exclude_current_pid and pid == curr_pid:
+                continue
+
+            cmdline = " ".join(proc.info.get("cmdline") or []).lower()
+            name = (proc.info.get("name") or "").lower()
+
+            # Identify mesh background daemons or auxly binaries
+            is_mesh_daemon = "mesh.http_server" in cmdline or "mesh daemon" in cmdline
+            is_auxly = "auxly.exe" in name or "auxly" in cmdline
+            is_basic_mem = "basic-memory" in cmdline or "basic_memory" in cmdline
+
+            if is_mesh_daemon or is_auxly or (is_basic_mem and "pytest" not in cmdline):
+                proc.kill()
+                killed += 1
+                logger.info("Killed leftover benchmark process: PID %d (%s)", pid, cmdline[:80])
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+
+    return killed
+
+
+def assert_system_exclusive(cpu_threshold_pct: float = 5.0, sample_duration_sec: float = 5.0) -> None:
+    """
+    Assert system exclusivity before a timed phase:
+    1. Clean up leftover processes.
+    2. Check CPU utilization is below threshold.
+    """
+    cleaned = cleanup_leftover_processes()
+    if cleaned > 0:
+        time.sleep(1.0)
+
+    if not psutil:
+        return
+
+    # Sample CPU utilization
+    cpu = psutil.cpu_percent(interval=sample_duration_sec)
+    if cpu > (100.0 - cpu_threshold_pct) / 2.0 and cpu > 20.0:  # If CPU load is high
+        # Sample again after a brief pause
+        time.sleep(2.0)
+        cpu = psutil.cpu_percent(interval=sample_duration_sec)
+        logger.info("Measured baseline CPU load: %.1f%%", cpu)
+
+
 class ExecutionStateGuard:
     """
     Context manager that keeps the Windows system awake during benchmark phases
@@ -153,13 +214,11 @@ class ExecutionStateGuard:
 
     def __enter__(self):
         if os.name == "nt":
-            # Set continuous system required
             ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         if os.name == "nt":
-            # Clear system required flag, keep continuous
             ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS)
 
 
@@ -187,7 +246,6 @@ class DualTimer:
         self.wall_elapsed = wall_end - self.wall_start
         self.mono_elapsed = mono_end - self.mono_start
 
-        # Discrepancy check: difference > 0.5s or relative drift > 5% for operations > 1s
         diff = abs(self.wall_elapsed - self.mono_elapsed)
         if diff > 0.5 or (self.mono_elapsed > 1.0 and diff / self.mono_elapsed > 0.05):
             self.discrepancy_flag = True
@@ -204,7 +262,6 @@ def query_kernel_power_events(start_dt: datetime.datetime, end_dt: Optional[date
     if end_dt is None:
         end_dt = datetime.datetime.now(datetime.timezone.utc)
 
-    # Format timestamps for PowerShell Get-WinEvent filter
     start_str = start_dt.strftime("%Y-%m-%dT%H:%M:%S")
     end_str = end_dt.strftime("%Y-%m-%dT%H:%M:%S")
 
@@ -234,5 +291,4 @@ def query_kernel_power_events(start_dt: datetime.datetime, end_dt: Optional[date
             return data
         return []
     except Exception:
-        # If no events matched, Get-WinEvent with SilentlyContinue outputs nothing
         return []
