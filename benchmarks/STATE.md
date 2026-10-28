@@ -1,9 +1,9 @@
 # Benchmarks State & Tracking
 
-**Document Version:** 1.5.0  
-**Current Step:** STEP 3 (Pilot with Official Per-Question Haystacks)  
-**Target Commit / Base:** `1cc9eba` (`feat/ci-evidence`)  
-**Timestamp:** 2026-10-28T02:28:00+01:00  
+**Document Version:** 1.6.0  
+**Current Step:** STEP 3 (Running 20-Question Pilot across Classes A, B, C)  
+**Target Commit / Base:** `707933c` (`feat/ci-evidence`)  
+**Timestamp:** 2026-10-28T03:17:00+01:00  
 
 ---
 
@@ -24,6 +24,7 @@
 ---
 
 ## 2. Completed Items & Commits
+- `707933c`: feat(benchmarks): implement official 20-question LongMemEval-S pilot harness
 - `1cc9eba`: test(benchmarks): add parallel worker directory and environment isolation test
 - `2f0bcb7`: feat(benchmarks): add official LongMemEval-S 20-question pilot sampler
 - `7769597`: feat(benchmarks): implement sleep-proofing guard, power assertions, and Kernel-Power event auditor
