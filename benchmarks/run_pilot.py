@@ -43,6 +43,8 @@ from benchmarks.sleep_guard import (
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("mesh_pilot")
 
+os.environ["MESH_MAX_CONTENT_LENGTH"] = "131072"
+
 PILOT_DATASET_PATH = PROJECT_ROOT / "benchmarks" / "data" / "longmemeval_pilot_20.json"
 RESULTS_DIR = PROJECT_ROOT / "benchmarks" / "results"
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -385,6 +387,7 @@ def eval_mesh_sdk_question(q_data: dict[str, Any], q_idx: int) -> dict[str, Any]
         os.environ["MESH_NO_AUTO_DAEMON"] = "1"
         os.environ["MESH_NO_MODEL_DOWNLOAD"] = "1"
         os.environ["MESH_SYNC_ONNX"] = "1"
+        os.environ["MESH_MAX_CONTENT_LENGTH"] = "131072"
         ns = f"pilot_q_{q_idx}"
 
         # Synchronously warm up model so zero hash-384 fallback occurs
@@ -459,12 +462,14 @@ def eval_mesh_cli_daemon_question(q_data: dict[str, Any], q_idx: int) -> dict[st
         env["MESH_NO_UPDATE_CHECK"] = "1"
         env["MESH_NO_MODEL_DOWNLOAD"] = "1"
         env["MESH_SYNC_ONNX"] = "1"
+        env["MESH_MAX_CONTENT_LENGTH"] = "131072"
         ns = f"pilot_daemon_{q_idx}"
 
         os.environ["MESH_HOME"] = str(base)
         os.environ["MESH_HTTP_PORT"] = str(test_port)
         os.environ["MESH_PORT"] = str(test_port)
         os.environ["MESH_SYNC_ONNX"] = "1"
+        os.environ["MESH_MAX_CONTENT_LENGTH"] = "131072"
 
         with ProcessTreePeakTracker() as tracker:
             # 1. Start daemon and wait for readiness probe
@@ -541,6 +546,7 @@ async def eval_mesh_mcp_question_async(q_data: dict[str, Any], q_idx: int) -> di
         env["MESH_NO_MODEL_DOWNLOAD"] = "1"
         env["MESH_NO_UPDATE_CHECK"] = "1"
         env["MESH_SYNC_ONNX"] = "1"
+        env["MESH_MAX_CONTENT_LENGTH"] = "131072"
         ns = f"pilot_mcp_{q_idx}"
 
         server_cmd = (
@@ -831,12 +837,14 @@ def eval_mesh_cli_cold_question(q_data: dict[str, Any], q_idx: int) -> dict[str,
         env["MESH_NO_UPDATE_CHECK"] = "1"
         env["MESH_NO_MODEL_DOWNLOAD"] = "1"
         env["MESH_SYNC_ONNX"] = "1"
+        env["MESH_MAX_CONTENT_LENGTH"] = "131072"
         ns = f"pilot_cold_{q_idx}"
 
         os.environ["MESH_HOME"] = str(base)
         os.environ["MESH_NO_AUTO_DAEMON"] = "1"
         os.environ["MESH_NO_MODEL_DOWNLOAD"] = "1"
         os.environ["MESH_SYNC_ONNX"] = "1"
+        os.environ["MESH_MAX_CONTENT_LENGTH"] = "131072"
 
         warmup_model(assume_yes=True, blocking=True)
 
