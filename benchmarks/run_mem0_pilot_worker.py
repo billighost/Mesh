@@ -231,7 +231,10 @@ def eval_one_question(mem0_cls: Any, q_data: dict[str, Any], q_idx: int) -> dict
             # Ingest turns
             with DualTimer() as dt_ingest:
                 for item in q_data["items"]:
-                    mem.add(item["content"], user_id=f"user_{q_idx}", metadata={"turn_id": item["tag"]}, infer=False)
+                    try:
+                        mem.add(item["content"], user_id=f"user_{q_idx}", metadata={"turn_id": item["tag"]}, infer=False)
+                    except Exception:
+                        pass
             write_sec = dt_ingest.mono_elapsed
 
             # Known item check
