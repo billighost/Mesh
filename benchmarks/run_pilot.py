@@ -399,7 +399,10 @@ def eval_mesh_sdk_question(q_data: dict[str, Any], q_idx: int) -> dict[str, Any]
             # Ingestion
             with DualTimer() as dt_ingest:
                 for item in q_data["items"]:
-                    mesh.learn(item["content"], tags=[item["tag"]])
+                    try:
+                        mesh.learn(item["content"], tags=[item["tag"]])
+                    except ValueError:
+                        pass
             write_sec = dt_ingest.mono_elapsed
 
             # Known item check
@@ -852,7 +855,10 @@ def eval_mesh_cli_cold_question(q_data: dict[str, Any], q_idx: int) -> dict[str,
             mesh = Mesh(namespace=ns, agent_id="eval_agent")
             with DualTimer() as dt_ingest:
                 for item in q_data["items"]:
-                    mesh.learn(item["content"], tags=[item["tag"]])
+                    try:
+                        mesh.learn(item["content"], tags=[item["tag"]])
+                    except ValueError:
+                        pass
             write_sec = dt_ingest.mono_elapsed
 
             mesh.close()
