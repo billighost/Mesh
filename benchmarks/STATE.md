@@ -1,30 +1,35 @@
 # Benchmarks State & Tracking
 
-**Document Version:** 1.4.0  
+**Document Version:** 1.5.0  
 **Current Step:** STEP 3 (Pilot with Official Per-Question Haystacks)  
-**Target Commit / Base:** `589e2df` (`feat/ci-evidence`)  
-**Timestamp:** 2026-10-27T23:15:00+01:00  
+**Target Commit / Base:** `1cc9eba` (`feat/ci-evidence`)  
+**Timestamp:** 2026-10-28T02:28:00+01:00  
 
 ---
 
 ## 1. Current Step: STEP 3 (Pilot Run - 20 Seeded Questions)
 - **Status:** Checkpoint A approved by user. Active execution of STEP 3.
 - **Protocol:** Official LongMemEval-S per-question haystack protocol:
-  - 20 questions (seeded subset, `seed=42`).
-  - Fresh store created per question, per tool, per interface class.
-  - Ingest that question's haystack turns (one memory per turn with opaque `[turn:<idx>]` suffix), query once, record metrics, write time, query latency, disk footprint, then destroy/clean up store.
-  - Exclude abstention questions (`_abs`) from retrieval scoring.
-- **Measurements & Projections:**
-  - Measure turns per question, ingest time, query time, disk footprint, and RAM per question.
+  - 20 seeded questions (`seed=42`) sampled from 470 non-abstention questions in official `longmemeval_s_cleaned.json`.
+  - Fresh store provisioned per question, per tool, per interface class.
+  - Ingest that question's haystack turns (one memory per turn with opaque `[turn:<idx>]` at START of memory text), query once with raw and keyword variants, record metrics, write time, query latency, per-file disk footprint, and process-tree peak RAM via psutil, then destroy/clean up store.
+  - Abstention questions (`_abs`) excluded from retrieval scoring.
+  - Measure turns per question, ingest time, query time, disk footprint (data vs model/asset breakdown), and process-tree peak RAM per question.
   - Project full 500-question wall-clock totals for every tool and class under:
     (a) Sequential execution.
     (b) 2 or 3 parallel workers.
-  - Validate parallel worker isolation harness under `benchmarks/work/<worker>/` (gitignored, distinct ports, isolated `HOME`/`APPDATA`/`MESH_HOME`).
+  - Validate parallel worker isolation harness under `benchmarks/work/<worker>/` (distinct ports, isolated `HOME`/`APPDATA`/`MESH_HOME`).
 - **Target Deliverable:** Deliver **CHECKPOINT B** report and STOP for user time-budget approval before starting STEP 4.
 
 ---
 
 ## 2. Completed Items & Commits
+- `1cc9eba`: test(benchmarks): add parallel worker directory and environment isolation test
+- `2f0bcb7`: feat(benchmarks): add official LongMemEval-S 20-question pilot sampler
+- `7769597`: feat(benchmarks): implement sleep-proofing guard, power assertions, and Kernel-Power event auditor
+- `a619acd`: feat(daemon): add /ready probe, startup model warmup wait, and cache isolation
+- `0c7723f`: benchmarks: ignore raw LongMemEval datasets, pilot subsets, and worker directories
+- `48cfdfb`: docs(benchmarks): update STATE.md to v1.4.0 for STEP 3 pilot execution
 - `589e2df`: benchmarks: record 3 sequential smoke test runs across Classes A, B, and C at Checkpoint A
 - `d3c50d4`: docs(benchmarks): update STATE.md to v1.3.0 at Checkpoint A
 - `77a093f`: benchmarks: update STATE.md to v1.2.0 and record ranking analysis findings
@@ -43,8 +48,6 @@
 - `e57f6fe`: fix(benchmarks): use mesh.store.list(quarantined_only=True) for quarantine audit
 - `85d635a`: test(benchmarks): commit Phase 7 multi-class smoke test harness before execution
 - `9058771`: docs(benchmarks): adopt comprehensive Interface Classes protocol (Class A, B, C) in Phase 7 Plan
-- `1df4d50`: test(benchmarks): implement Phase 7 plan and execute smoke test (B.1-B.10)
-- `9a21be1`: feat(audit): apply Fixes A.1-A.4 for access tracking, doc URLs, backup hardening, and CI bandit artifacts
 
 ---
 
@@ -54,16 +57,24 @@
 ---
 
 ## 4. Next Action
-1. Download official LongMemEval S dataset (`longmemeval_s.json`) if not present, verify SHA-256 and MIT license.
-2. Generate seeded 20-question pilot dataset (`benchmarks/data/longmemeval_pilot_20.json`, seed 42) from non-abstention questions.
-3. Implement pilot runner with per-question fresh stores and worker isolation validation.
-4. Execute pilot run across Classes A, B, and C.
-5. Compute per-question averages and 500-question projections for sequential vs parallel workers.
-6. Compile CHECKPOINT B report and STOP for user time-budget approval.
+1. Implement `benchmarks/run_pilot.py` incorporating:
+   - Per-question fresh store lifecycle.
+   - Tag placement at start of turn text (`[turn:<idx>] <content>`).
+   - 3,000+ char long-turn snippet check.
+   - Symmetric keyword extraction query variant (`extract_keywords`).
+   - Auxly 1 file per turn layout for turn-level comparability.
+   - Per-file disk footprint breakdown (data vs shared model cache).
+   - Process-tree peak RAM monitoring via `psutil`.
+   - DualTimer wall vs monotonic tracking and Kernel-Power sleep event audit.
+2. Execute pilot across Classes A, B, and C.
+3. Compute per-question averages and 500-question projections for sequential vs parallel workers.
+4. Compile CHECKPOINT B report and STOP for user time-budget approval.
 
 ---
 
 ## 5. Decisions Made
-1. **Checkpoint A Approved:** Proceeding to STEP 3 Pilot per brief specifications.
-2. **Per-Question Store Lifecycle:** Each question in the pilot provisions a completely fresh, isolated store per tool and class, ingests the question's haystack sessions, runs the query, measures resources, and tears down the store.
-3. **Worker Isolation Validation:** Parallel worker directories structured under `benchmarks/work/<worker>/` with distinct ports and environment variables.
+1. **Sleep Contamination Root Cause Confirmed & Corrected:** Windows System Event Viewer Kernel-Power log confirmed event ID 42 (Sleep) and 107 (Resume) during smoke run 3. The 46,774 s Basic Memory CLI write figure was caused by user closing laptop lid and laptop sleeping, NOT tool or harness instability. Run 1 write speed (~0.23 s/write) stands as the uncontaminated valid measurement. Smoke run 2 cold CLI p50 of 20.9 s was contaminated by disk cleanup overlap and is discarded.
+2. **Sleep-Proofing Protocol Active:** `benchmarks/sleep_guard.py` enforces AC line check, AC sleep timeout = 0s check, `ExecutionStateGuard(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)`, `DualTimer`, and post-run Kernel-Power event log verification.
+3. **Daemon Readiness Probe Implemented:** Daemon preloads model on start and exposes `GET /ready` (returns 503 while warming, 200 when ready). `start_daemon(wait=True)` polls readiness probe up to `MESH_DAEMON_READY_TIMEOUT` (30s) and returns `startup_duration_seconds`.
+4. **Official Dataset Verified:** Downloaded official `longmemeval_s_cleaned.json` (SHA-256: `d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442`). Sampled 20 seeded non-abstention questions (`seed=42`, total 9,782 turns, mean 489.1 turns/question).
+5. **Worker Isolation Verified:** Parallel worker directory isolation verified under `benchmarks/work/<worker>/` via `tests/test_worker_isolation.py`.
