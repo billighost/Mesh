@@ -431,6 +431,32 @@ def get_daemon_health(
     return None
 
 
+def get_daemon_readiness(
+    host: str = DEFAULT_HOST,
+    port: int = DEFAULT_PORT,
+    timeout: float = 0.6,
+) -> Optional[dict[str, Any]]:
+    """
+    Check if the daemon is ready to answer queries (/ready endpoint returns HTTP 200).
+    Returns response dict if ready, or None if warming up (HTTP 503) or unreachable.
+    """
+    url = f"http://{host}:{port}/ready"
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={"Accept": "application/json"},
+            method="GET",
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if resp.status == 200:
+                data = json.loads(resp.read().decode("utf-8"))
+                if isinstance(data, dict) and data.get("status") == "ready":
+                    return data
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+        pass
+    return None
+
+
 def verify_daemon_identity(
     host: str = DEFAULT_HOST,
     port: int = DEFAULT_PORT,
@@ -765,6 +791,7 @@ def start_daemon(
     idle_timeout: float = DEFAULT_IDLE_TIMEOUT,
     lazy: bool = False,
     wait: bool = True,
+    wait_for_ready: bool = True,
     interactive_prompt: bool = False,
     assume_yes: bool = False,
 ) -> dict[str, Any]:
@@ -777,6 +804,7 @@ def start_daemon(
         pid = existing_ident.get("pid") or _read_pid_file()
         if pid:
             _write_pid_file(int(pid))
+        ready_info = get_daemon_readiness(host=host, port=port, timeout=0.35) if (wait and wait_for_ready and not lazy) else None
         return {
             "running": True,
             "already_running": True,
@@ -784,6 +812,7 @@ def start_daemon(
             "host": host,
             "port": port,
             "health": existing_ident,
+            "ready": ready_info is not None if (wait and wait_for_ready and not lazy) else True,
         }
 
     existing_pid = _read_pid_file()
@@ -916,6 +945,41 @@ def start_daemon(
     if verified is not None:
         daemon_pid = int(verified.get("pid") or proc.pid)
         _write_pid_file(daemon_pid)
+
+        is_ready = True
+        startup_sec = 0.0
+        if wait and wait_for_ready and not lazy:
+            t0_ready = time.perf_counter()
+            ready_timeout = env_float("MESH_DAEMON_READY_TIMEOUT", 30.0, minimum=1.0)
+            is_ready = False
+            deadline = time.time() + ready_timeout
+            while time.time() < deadline:
+                if proc.poll() is not None:
+                    break
+                r_info = get_daemon_readiness(host=host, port=port, timeout=0.35)
+                if r_info is not None:
+                    is_ready = True
+                    break
+                time.sleep(0.08)
+            startup_sec = round(time.perf_counter() - t0_ready, 3)
+
+            if not is_ready:
+                return {
+                    "running": proc.poll() is None,
+                    "already_running": False,
+                    "spawning": False,
+                    "retryable": False,
+                    "pid": daemon_pid,
+                    "host": host,
+                    "port": port,
+                    "health": verified,
+                    "ready": False,
+                    "error": (
+                        f"Mesh daemon (PID {daemon_pid}) started on {host}:{port} but readiness probe "
+                        f"timed out after {ready_timeout}s while warming models. Check daemon log."
+                    ),
+                }
+
         return {
             "running": True,
             "already_running": False,
@@ -923,6 +987,8 @@ def start_daemon(
             "host": host,
             "port": port,
             "health": verified,
+            "ready": is_ready,
+            "startup_duration_seconds": startup_sec,
         }
 
     proc_dead = proc.poll() is not None

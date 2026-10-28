@@ -1920,10 +1920,16 @@ def _embed_cached_with_tag(cleaned_text: str) -> tuple[np.ndarray, str]:
     with _EMBED_CACHE_LOCK:
         cached = _EMBED_CACHE.get(cleaned_text)
         if cached is not None:
-            if _model is not None:
-                tag = _backend_to_model_tag(_model_backend, _model)
-                if cached[1] != tag and tag != "hash-384":
+            force_hash = os.environ.get("MESH_FORCE_HASH_EMBED", "").strip().lower() in ("1", "true", "yes")
+            if force_hash:
+                if cached[1] != "hash-384":
                     cached = None
+            elif _model is not None:
+                tag = _backend_to_model_tag(_model_backend, _model)
+                if cached[1] != tag:
+                    cached = None
+            elif cached[1] == "hash-384":
+                cached = None
             if cached is not None:
                 _EMBED_CACHE.move_to_end(cleaned_text)
                 return cached

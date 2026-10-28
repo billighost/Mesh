@@ -609,12 +609,14 @@ Auth: every route except `GET /health` requires the bearer token from `~/.mesh/a
 ```bash
 TOKEN=$(cat ~/.mesh/auth_token)
 curl -s http://127.0.0.1:7701/health
+curl -s http://127.0.0.1:7701/ready
 curl -s http://127.0.0.1:7701/engine -H "Authorization: Bearer $TOKEN"
 ```
 
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/health` | Liveness; unauthenticated |
+| GET | `/ready` | Readiness probe; returns 200 when models are warmed, 503 while warming; unauthenticated |
 | GET | `/engine` | Engine/model state |
 | POST | `/warmup` | Load the model (`namespace`, `namespaces`, `blocking=false`) |
 | POST | `/unload` | Release model memory |
@@ -821,6 +823,7 @@ It binds loopback by default. Non-loopback binding requires an explicit `--host`
 | `MESH_FORCE_DAEMON_PROBE` | `1` forces port probing even if `daemon.pid` is absent. |
 | `MESH_DAEMON_REQUEST_TIMEOUT` | CLI-to-daemon HTTP request timeout in seconds (default 10.0 s, minimum 1.0 s). |
 | `MESH_DAEMON_VERIFY_TIMEOUT` | Daemon identity verification timeout in seconds (default 1.0 s, minimum 0.2 s). |
+| `MESH_DAEMON_READY_TIMEOUT` | Daemon model-warming readiness probe timeout in seconds (default 30.0 s, minimum 1.0 s). |
 | `MESH_CSRF` | CSRF protection control for browser surfaces. |
 | `MESH_IN_DAEMON` | Internal: marks a process running inside the daemon. |
 
