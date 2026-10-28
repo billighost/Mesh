@@ -1,23 +1,22 @@
 # Benchmarks State & Tracking
 
-**Document Version:** 1.7.0  
-**Current Step:** CHECKPOINT B (Official 20-Question LongMemEval-S Pilot Run Complete)  
-**Target Commit / Base:** `26204a3` (`feat/ci-evidence`)  
-**Timestamp:** 2026-10-28T07:05:00+01:00  
+**Document Version:** 1.7.1  
+**Current Step:** CHECKPOINT B REVIEWED (Awaiting Pilot v2 Issue List)  
+**Target Commit / Base:** `6988c89` (`feat/ci-evidence`)  
+**Timestamp:** 2026-10-28T10:38:00+01:00  
 
 ---
 
-## 1. Current Step: CHECKPOINT B (Pilot Evaluation Complete)
-- **Status:** STEP 3 (20-question official LongMemEval-S pilot run) completed successfully across all 3 interface classes (Class A, Class B, Class C) and 9 evaluators.
-- **Sleep-Proofing Audit:** Zero Kernel-Power sleep/resume events (Event ID 42 / 107) detected across the entire 3-hour run window. Run is 100% exclusive and uncontaminated.
-- **Known-Item Gate:** Mesh SDK (20/20), Mem0 SDK (20/20), Mesh CLI Daemon (20/20), Mesh CLI Cold (20/20), Auxly CLI (20/20), Auxly MCP (20/20), Mesh MCP (20/20) all passed Rank 1 known-item check. Basic Memory CLI (0/20) and Basic Memory MCP (0/20) failed known-item tag recovery due to snippet/frontmatter truncation.
-- **Long-Turn Tag Gate (3,000+ chars):** Mesh SDK (20/20), Mem0 SDK (20/20), Mesh CLI Daemon (20/20), Mesh CLI Cold (20/20), and Mesh MCP (20/20) preserved tags at start of long turns. Auxly CLI (0/20), Auxly MCP (0/20), Basic Memory CLI (0/20), and Basic Memory MCP (0/20) dropped tags due to snippet truncation.
-- **Target Deliverable:** Deliver **CHECKPOINT B REPORT** and STOP for user time-budget and parallel worker configuration approval before starting STEP 4.
+## 1. Current Step: CHECKPOINT B REVIEWED -> PILOT v2
+- **Status:** Checkpoint B reviewed by user. Time budget and worker configuration approved in principle (2 workers; PASS 1 ~6.7 h, PASS 2 ~1.2 h).
+- **Directive:** Do NOT start STEP 4. Fix specified issues and execute PILOT v2 (same 20 questions, same seed=42) and stop at CHECKPOINT B2.
+- **Rule:** No pilot number may be quoted anywhere outside `STATE.md`.
+- **Awaiting:** User issue list for PILOT v2 (prompt received ended after "First fix the issues below and run PILOT v2...").
 
 ---
 
 ## 2. Completed Items & Commits
-- `26204a3`: fix(benchmarks): handle distractor exceptions gracefully in mem0 worker
+- `6988c89`: docs(benchmarks): update STATE.md to v1.7.0 and record 20-question pilot results at Checkpoint B
 - `6751daa`: fix(benchmarks): handle guard rejection of adversarial distractor turns in LongMemEval
 - `b464306`: fix(benchmarks): set MESH_MAX_CONTENT_LENGTH to 131072 for long-turn LongMemEval questions
 - `707933c`: feat(benchmarks): implement official 20-question LongMemEval-S pilot harness
@@ -81,6 +80,8 @@
 ---
 
 ## 6. Next Action
-1. Stop at CHECKPOINT B.
-2. Deliver the Checkpoint B report to the user.
-3. Wait for the user's explicit time-budget and parallel worker configuration approval before starting STEP 4.
+1. Receive and log user issue list for PILOT v2 under Decisions Made.
+2. Implement fixes in dedicated commits with tests.
+3. Execute PILOT v2 (same 20 questions, same seed=42) under exclusive sleep-proofing.
+4. Update `benchmarks/STATE.md` with Pilot v2 results and projections.
+5. Deliver CHECKPOINT B2 report and STOP for user approval.
