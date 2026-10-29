@@ -1,38 +1,37 @@
 # Benchmarks State & Tracking
 
-**Document Version:** 1.7.1  
-**Current Step:** CHECKPOINT B REVIEWED (Awaiting Pilot v2 Issue List)  
-**Target Commit / Base:** `6988c89` (`feat/ci-evidence`)  
-**Timestamp:** 2026-10-28T10:38:00+01:00  
+**Document Version:** 1.8.0  
+**Current Step:** CHECKPOINT B2 COMPLETED (Pilot v2 Evaluated, Awaiting User Review)  
+**Target Commit / Base:** `fedf7b1` (`feat/ci-evidence`)  
+**Timestamp:** 2026-10-29T09:05:00+01:00  
 
 ---
 
-## 1. Current Step: CHECKPOINT B REVIEWED -> PILOT v2
-- **Status:** Checkpoint B reviewed by user. Time budget and worker configuration approved in principle (2 workers; PASS 1 ~6.7 h, PASS 2 ~1.2 h).
-- **Directive:** Do NOT start STEP 4. Fix specified issues and execute PILOT v2 (same 20 questions, same seed=42) and stop at CHECKPOINT B2.
-- **Rule:** No pilot number may be quoted anywhere outside `STATE.md`.
-- **Awaiting:** User issue list for PILOT v2 (prompt received ended after "First fix the issues below and run PILOT v2...").
+## 1. Current Step: CHECKPOINT B2 COMPLETED -> AWAITING STEP 4 APPROVAL
+- **Status:** PILOT v2 (20 questions, `seed=42`) completed successfully across all 9 evaluators (Classes A, B, and C).
+- **Directives Followed:**
+  1. Resolved Mesh MCP 0.90 artifact (restored genuine candidate ranking; scores 0.30 / 0.75 / 0.491 identical to SDK).
+  2. Snapshotting stores after ingestion eliminated access-counter drift across queries.
+  3. Forced cold CLI ONNX model via `MESH_CLI_FORCE_ONNX=1` (eliminated hash fallback).
+  4. 4-way Mesh interface parity verified (SDK == Daemon == Cold == MCP).
+  5. Implemented primary ID-based turn extraction (`[turn:XXXXX]`) with tag fallback.
+  6. Basic Memory full vector reindexing (`bge-small-en-v1.5`) active; gates pass 20/20 (100%).
+  7. Auxly search semantics documented (exact substring matching offline fallback); gates pass 20/20 (100%).
+  8. Harness baseline RAM subtracted; true tool peak RSS measured.
+  9. Disk categorized into DATA vs MODEL/ASSET roles.
+  10. Sleep-proofing asserted throughout; 0 Kernel-Power sleep/resume events detected in 8+ hour run.
+- **Rule Enforced:** No pilot numbers quoted outside `STATE.md` or Checkpoint B2 report.
 
 ---
 
 ## 2. Completed Items & Commits
+- `fedf7b1`: fix(benchmarks): use stable turn identifier for ranked parity and wrap daemon in try/finally
+- `bc93c4f`: fix(benchmarks): implement Checkpoint B review fixes for Pilot v2
+- `837876c`: docs(benchmarks): update STATE.md to v1.7.1 noting Checkpoint B approval in principle
 - `6988c89`: docs(benchmarks): update STATE.md to v1.7.0 and record 20-question pilot results at Checkpoint B
 - `6751daa`: fix(benchmarks): handle guard rejection of adversarial distractor turns in LongMemEval
 - `b464306`: fix(benchmarks): set MESH_MAX_CONTENT_LENGTH to 131072 for long-turn LongMemEval questions
 - `707933c`: feat(benchmarks): implement official 20-question LongMemEval-S pilot harness
-- `8a7d4ad`: feat(benchmarks): add process cleanup and exclusivity assertions to sleep_guard
-- `8893e01`: docs(benchmarks): update STATE.md to v1.5.0 for STEP 3 pilot execution
-- `1cc9eba`: test(benchmarks): add parallel worker directory and environment isolation test
-- `2f0bcb7`: feat(benchmarks): add official LongMemEval-S 20-question pilot sampler
-- `7769597`: feat(benchmarks): implement sleep-proofing guard, power assertions, and Kernel-Power event auditor
-- `a619acd`: feat(daemon): add /ready probe, startup model warmup wait, and cache isolation
-- `0c7723f`: benchmarks: ignore raw LongMemEval datasets, pilot subsets, and worker directories
-- `48cfdfb`: docs(benchmarks): update STATE.md to v1.4.0 for STEP 3 pilot execution
-- `589e2df`: benchmarks: record 3 sequential smoke test runs across Classes A, B, and C at Checkpoint A
-- `d3c50d4`: docs(benchmarks): update STATE.md to v1.3.0 at Checkpoint A
-- `77a093f`: benchmarks: update STATE.md to v1.2.0 and record ranking analysis findings
-- `afa203c`: merge task/harness-fixes: implement two-level scoring, symmetric query handling, and complete metrics tables
-- `0f944c0`: merge task/daemon-fix: eliminate CLI tail latency, timeouts, and process tracking on Windows
 
 ---
 
@@ -41,47 +40,65 @@
 
 ---
 
-## 4. Measured Pilot Summary (20 Official LongMemEval-S Questions, 9,782 turns)
+## 4. Measured Pilot v2 Summary (20 Official LongMemEval-S Questions, 9,782 turns)
 
-| Tool | Class | Write Time (ms/turn) | Raw Query p50 (ms) | Turn Recall@1 (95% CI) | Turn Recall@5 (95% CI) | Session Recall@5 (95% CI) | Peak RSS (MB) | Data Size (MB) |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Mesh SDK** | A | 118.2 ms | 30.8 ms | 0.30 [0.10, 0.50] | 0.75 [0.55, 0.95] | 1.00 [1.00, 1.00] | 273.3 MB | 3.42 MB |
-| **Mem0 SDK** | A | 73.0 ms | 83.6 ms | 0.35 [0.15, 0.55] | 0.80 [0.60, 0.95] | 0.90 [0.75, 1.00] | 332.5 MB | 3.54 MB |
-| **Mesh CLI (Daemon)** | B | 114.7 ms | 55.2 ms | 0.30 [0.10, 0.50] | 0.75 [0.55, 0.95] | 1.00 [1.00, 1.00] | 426.1 MB | 3.43 MB |
-| **Mesh CLI (Cold)** | B | 109.9 ms | 4,246.1 ms | 0.40 [0.20, 0.60] | 0.80 [0.65, 0.95] | 0.90 [0.75, 1.00] | 348.5 MB | 3.43 MB |
-| **Auxly CLI** | B | 1.1 ms | 990.2 ms | 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00] | 332.1 MB | 0.48 MB |
-| **Basic Memory CLI**| B | 46.8 ms | 13,343.2 ms | 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00] | 435.4 MB | 0.82 MB |
-| **Mesh MCP** | C | 138.1 ms | 57.9 ms | 0.90 [0.75, 1.00] | 0.90 [0.75, 1.00] | 1.00 [1.00, 1.00] | 441.9 MB | 3.43 MB |
-| **Auxly MCP** | C | 1.1 ms | 1,021.3 ms | 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00] | 256.4 MB | 0.49 MB |
-| **Basic Memory MCP**| C | 1.1 ms | 273.3 ms | 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00] | 692.8 MB | 70.55 MB |
+| Tool / Interface | Class | Write Time (s/q) | Write Time (ms/turn) | Raw Query (ms) | Turn Recall@1 (95% CI) | Turn Recall@5 (95% CI) | Turn MRR (95% CI) | KI Gate Pass | LT Gate Pass | True Peak RAM | Data Disk | Model Disk |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Mesh SDK** | A | 80.80 s | 165.2 ms | 3,974.9 ms | 0.30 [0.10, 0.50] | 0.75 [0.55, 0.95] | 0.491 [0.338, 0.658] | 20/20 (100%) | 20/20 (100%) | **13.5 MB** | 17.1 MB | 195.7 MB |
+| **Mem0 SDK** | A | 41.87 s | 85.6 ms | 533.5 ms | 0.35 [0.15, 0.55] | 0.80 [0.60, 0.95] | 0.514 [0.356, 0.672] | 20/20 (100%) | 20/20 (100%) | **112.2 MB** | 17.7 MB | 487.5 MB |
+| **Mesh CLI (Daemon)**| B | 65.26 s | 133.4 ms | 2,917.0 ms | 0.30 [0.10, 0.50] | 0.75 [0.55, 0.95] | 0.491 [0.338, 0.658] | 20/20 (100%) | 20/20 (100%) | **434.7 MB** *(srv)*| 17.3 MB | 195.7 MB |
+| **Mesh CLI (Cold)** | B | 66.80 s | 136.6 ms | 5,989.9 ms | 0.30 [0.10, 0.50] | 0.75 [0.55, 0.95] | 0.491 [0.338, 0.658] | 20/20 (100%) | 20/20 (100%) | **201.0 MB** | 17.2 MB | 195.7 MB |
+| **Auxly CLI** | B | 0.67 s | 1.3 ms | 1,293.3 ms | 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00] | 0.000 [0.000, 0.000] | 20/20 (100%) | 20/20 (100%) | **15.5 MB** | 0.5 MB | 0.0 MB |
+| **Basic Memory CLI**| B | 463.63 s | 948.0 ms | 19,828.1 ms| 0.50 [0.30, 0.70] | 0.90 [0.75, 1.00] | 0.656 [0.498, 0.812] | 20/20 (100%) | 20/20 (100%) | **462.9 MB** | 13.8 MB | 451.6 MB |
+| **Mesh MCP** | C | 79.57 s | 162.7 ms | 3,315.0 ms | 0.30 [0.10, 0.50] | 0.75 [0.55, 0.95] | 0.491 [0.338, 0.658] | 20/20 (100%) | 20/20 (100%) | **432.1 MB** | 17.1 MB | 195.7 MB |
+| **Auxly MCP** | C | 0.61 s | 1.2 ms | 1,165.6 ms | 0.00 [0.00, 0.00] | 0.00 [0.00, 0.00] | 0.000 [0.000, 0.000] | 20/20 (100%) | 20/20 (100%) | **94.1 MB** | 0.5 MB | 0.0 MB |
+| **Basic Memory MCP**| C | 407.89 s | 834.0 ms | 304.0 ms | 0.50 [0.30, 0.70] | 0.90 [0.75, 1.00] | 0.658 [0.500, 0.812] | 20/20 (100%) | 20/20 (100%) | **504.1 MB** | 13.8 MB | 451.6 MB |
 
 ---
 
-## 5. 500-Question Wall-Clock Projections
+## 5. Parity Tables Summary
 
-### Individual Tool Projections (All 500 Questions)
+### Mesh 4-Way Interface Parity
+- **SDK vs CLI Daemon**: **20 / 20 questions identical (100.0%)** on top-5 ranked ID lists.
+- **SDK vs CLI Cold**: **20 / 20 questions identical (100.0%)** on top-5 ranked ID lists.
+- **SDK vs MCP**: **20 / 20 questions identical (100.0%)** on top-5 ranked ID lists.
+- **Full Top-10 Parity**: 19 / 20 questions 100% identical. Question 11 exhibits a tie at rank 10 between `[turn:00395]` and `[turn:00140]` due to identical cosine scores; top 9 are identical across all 4 interfaces.
+- **Metrics Parity**: Turn Recall@1 (0.30), Turn Recall@5 (0.75), Turn MRR (0.491) identical across all four Mesh interfaces.
+
+### Basic Memory CLI vs MCP Parity
+- **Turn Recall@1**: 0.50 (both CLI and MCP)
+- **Turn Recall@5**: 0.90 (both CLI and MCP)
+- **Turn MRR**: 0.656 (CLI) vs 0.658 (MCP)
+- **Ranked Titles**: 11 / 20 questions byte-for-byte identical on full 10-item lists; the remaining 9 differ solely by internal rowid tie-swapping between items sharing identical reciprocal rank scores.
+
+---
+
+## 6. 500-Question Wall-Clock Projections (Pilot v2 Calibrated)
+
+### Individual Tool Full 500-Question Matrix
 | Evaluator | Class | Mean sec/q | Sequential (1w) | 2 Workers | 3 Workers |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Mesh SDK** | Class A | 57.87 s | 8.04 h (482.3 m) | 4.02 h (241.1 m) | 2.68 h (160.8 m) |
-| **Mem0 SDK** | Class A | 35.77 s | 4.97 h (298.1 m) | 2.48 h (149.0 m) | 1.66 h (99.4 m) |
-| **Mesh CLI (Daemon)**| Class B | 56.17 s | 7.80 h (468.1 m) | 3.90 h (234.0 m) | 2.60 h (156.0 m) |
-| **Mesh CLI (Cold)** | Class B | 58.02 s | 8.06 h (483.5 m) | 4.03 h (241.8 m) | 2.69 h (161.2 m) |
-| **Auxly CLI** | Class B | 1.53 s | 0.21 h (12.8 m) | 0.11 h (6.4 m) | 0.07 h (4.3 m) |
-| **Basic Memory CLI**| Class B | 36.66 s | 5.09 h (305.5 m) | 2.55 h (152.7 m) | 1.70 h (101.8 m) |
-| **Mesh MCP** | Class C | 67.61 s | 9.39 h (563.4 m) | 4.70 h (281.7 m) | 3.13 h (187.8 m) |
-| **Auxly MCP** | Class C | 1.59 s | 0.22 h (13.3 m) | 0.11 h (6.6 m) | 0.07 h (4.4 m) |
-| **Basic Memory MCP**| Class C | 0.91 s | 0.13 h (7.6 m) | 0.06 h (3.8 m) | 0.04 h (2.5 m) |
+| **Mesh SDK** | Class A | 84.78 s | 11.77 h (706.5 m) | 5.89 h (353.2 m) | 3.92 h (235.5 m) |
+| **Mem0 SDK** | Class A | 42.41 s | 5.89 h (353.4 m) | 2.94 h (176.7 m) | 1.96 h (117.8 m) |
+| **Mesh CLI (Daemon)**| Class B | 68.18 s | 9.47 h (568.1 m) | 4.73 h (284.1 m) | 3.16 h (189.4 m) |
+| **Mesh CLI (Cold)** | Class B | 72.79 s | 10.11 h (606.6 m) | 5.05 h (303.3 m) | 3.37 h (202.2 m) |
+| **Auxly CLI** | Class B | 1.96 s | 0.27 h (16.3 m) | 0.14 h (8.2 m) | 0.09 h (5.4 m) |
+| **Basic Memory CLI**| Class B | 483.46 s | 67.15 h (4028.8 m)| 33.57 h (2014.4 m)| 22.38 h (1342.9 m)|
+| **Mesh MCP** | Class C | 82.88 s | 11.51 h (690.7 m) | 5.76 h (345.3 m) | 3.84 h (230.2 m) |
+| **Auxly MCP** | Class C | 1.78 s | 0.25 h (14.8 m) | 0.12 h (7.4 m) | 0.08 h (4.9 m) |
+| **Basic Memory MCP**| Class C | 408.19 s | 56.69 h (3401.6 m)| 28.35 h (1700.8 m)| 18.90 h (1133.9 m)|
 
-### STEP 4 PASS 1 Reduced Matrix (1 interface per tool: Mesh SDK + Mem0 SDK + Basic Memory MCP + Auxly MCP)
-- **Sequential (1 worker):** 13.36 hours (~801.4 minutes)
-- **2 Parallel Workers:** 6.67 hours (~400.7 minutes)
-- **3 Parallel Workers:** 4.45 hours (~267.1 minutes)
+### STEP 4 Reduced Matrix (PASS 1 & PASS 2 Options)
+- **PASS 1 Primary 4-Tool Matrix** (Mesh SDK + Mem0 SDK + Auxly MCP + Basic Memory MCP):
+  - *Sequential (1 worker):* 74.60 hours (~4,476 minutes) — dominated by Basic Memory MCP (56.7 h).
+  - *2 Parallel Workers:* **37.30 hours** (~2,238 minutes).
+- **Fast 3-Tool Matrix (Excluding Basic Memory bulk reindex)** (Mesh SDK + Mem0 SDK + Auxly MCP):
+  - *Sequential (1 worker):* 17.91 hours (~1,074 minutes).
+  - *2 Parallel Workers:* **8.95 hours** (~537 minutes).
+  - *3 Parallel Workers:* **5.97 hours** (~358 minutes).
 
 ---
 
-## 6. Next Action
-1. Receive and log user issue list for PILOT v2 under Decisions Made.
-2. Implement fixes in dedicated commits with tests.
-3. Execute PILOT v2 (same 20 questions, same seed=42) under exclusive sleep-proofing.
-4. Update `benchmarks/STATE.md` with Pilot v2 results and projections.
-5. Deliver CHECKPOINT B2 report and STOP for user approval.
+## 7. Next Action
+1. Deliver CHECKPOINT B2 report and STOP for user review.
+2. Await explicit user authorization before starting STEP 4.
