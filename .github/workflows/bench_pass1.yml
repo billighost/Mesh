@@ -1,0 +1,238 @@
+# Pass 1 Accuracy Benchmark — LongMemEval-S (Official 500-Question Run)
+#
+# Security: GitHub-hosted runners only; permissions: contents: read by default;
+# no pull_request trigger; every third-party action pinned to a full commit SHA;
+# no secrets or personal information emitted to logs.
+#
+# Justification for this new file: the brief (§1 Rule 4) explicitly allows
+# .github/workflows/bench_pass1.yml as one of two permitted new files.
+
+name: "Bench: Pass 1 Accuracy (LongMemEval-S)"
+
+on:
+  # Manual dispatch only — no automatic triggers on push or pull_request.
+  workflow_dispatch:
+    inputs:
+      shard_size:
+        description: "Questions per shard (20 = pilot validation, 500 = full run)"
+        required: false
+        default: "20"
+        type: choice
+        options:
+          - "20"
+          - "500"
+      tool_subset:
+        description: "Tool subset to run (all = full matrix)"
+        required: false
+        default: "mesh_sdk,mem0_sdk,auxly_mcp,bm_mcp"
+        type: string
+
+# Default: read-only; no write access to the repository or packages.
+permissions:
+  contents: read
+
+jobs:
+  bench-pass1:
+    name: "Pass 1 | ${{ inputs.shard_size || '20' }} questions | ubuntu-latest | py3.12"
+    runs-on: ubuntu-latest
+
+    env:
+      # Mesh config
+      MESH_NO_AUTO_DAEMON: "1"
+      MESH_AUTO_APPROVE: "0"
+      MESH_MAX_CONTENT_LENGTH: "131072"
+      MESH_REQUIRE_MODEL: "1"
+      MESH_AUTO_DOWNLOAD_MODEL: "1"
+      # Prevent accidental writes outside the temp dir
+      MESH_HOME: "${{ runner.temp }}/mesh_bench_home"
+      # No cloud LLM calls (AGENTS.md §1 Rule 4)
+      MESH_NO_MODEL_DOWNLOAD: "0"   # ONNX model download IS required here
+
+    steps:
+      # -----------------------------------------------------------------------
+      # 1. Checkout — pinned to full SHA (Rule 7)
+      # -----------------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          ref: ${{ github.ref }}
+
+      # -----------------------------------------------------------------------
+      # 2. Python setup — pinned to full SHA (Rule 7)
+      # -----------------------------------------------------------------------
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.12"
+
+      # -----------------------------------------------------------------------
+      # 3. pip / model cache
+      # -----------------------------------------------------------------------
+      - name: Cache pip and model downloads
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
+        with:
+          path: |
+            ~/.cache/pip
+            ~/.cache/huggingface
+            ~/.local/share/onnx_models
+          key: bench-pass1-py312-${{ hashFiles('pyproject.toml') }}
+          restore-keys: |
+            bench-pass1-py312-
+
+      # -----------------------------------------------------------------------
+      # 4. Install Mesh and all competitor dependencies
+      # -----------------------------------------------------------------------
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # Mesh Context Layer (from source)
+          pip install -e ".[test,secrets]"
+          # Mem0 competitor — infer=False, local Qdrant + FastEmbed
+          pip install "mem0ai==2.2.1" "qdrant-client>=1.9" "fastembed>=0.2"
+          # Basic Memory competitor
+          pip install "basic-memory==0.24.1" "fastmcp>=4.1"
+
+      # -----------------------------------------------------------------------
+      # 5. Install Auxly binary (Linux, pre-verified SHA-256)
+      # -----------------------------------------------------------------------
+      - name: Install Auxly CLI
+        run: |
+          mkdir -p benchmarks/bin
+          # Linux SHA-256 recorded in project brief and benchmarks/STATE.md
+          AUXLY_SHA="ec452fc983e862f78f4cf23d41d3e25396ebff974508aceb45e8224720759b04"
+          # Download from GitHub release — public binary, no auth required
+          AUXLY_VER="1.5.0"
+          curl -fsSL \
+            "https://github.com/auxlyhq/auxly/releases/download/v${AUXLY_VER}/auxly-linux-amd64" \
+            -o benchmarks/bin/auxly
+          ACTUAL_SHA=$(sha256sum benchmarks/bin/auxly | awk '{print $1}')
+          if [ "$ACTUAL_SHA" != "$AUXLY_SHA" ]; then
+            echo "ERROR: Auxly SHA-256 mismatch. Expected $AUXLY_SHA, got $ACTUAL_SHA" >&2
+            exit 1
+          fi
+          chmod +x benchmarks/bin/auxly
+          echo "Auxly binary verified: $ACTUAL_SHA"
+
+      # -----------------------------------------------------------------------
+      # 6. Download & verify LongMemEval-S dataset
+      # -----------------------------------------------------------------------
+      - name: Download and verify LongMemEval-S dataset
+        run: |
+          DATASET_DIR="benchmarks/data"
+          DATASET_FILE="$DATASET_DIR/longmemeval_s_cleaned.json"
+          EXPECTED_SHA="d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442"
+          EXPECTED_SIZE="277383467"
+          mkdir -p "$DATASET_DIR"
+          python - <<'PYEOF'
+          import sys, os, hashlib, urllib.request, json
+
+          url = "https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_s_cleaned.json"
+          out = "benchmarks/data/longmemeval_s_cleaned.json"
+          expected_sha = "d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442"
+          expected_size = 277383467
+
+          print(f"Downloading dataset from {url}", flush=True)
+          # Use a User-Agent to avoid 403 from HF
+          req = urllib.request.Request(url, headers={"User-Agent": "mesh-benchmark/1.0"})
+          with urllib.request.urlopen(req, timeout=300) as resp, open(out, "wb") as f:
+              h = hashlib.sha256()
+              downloaded = 0
+              while True:
+                  chunk = resp.read(1 << 20)
+                  if not chunk:
+                      break
+                  f.write(chunk)
+                  h.update(chunk)
+                  downloaded += len(chunk)
+
+          actual_sha = h.hexdigest()
+          actual_size = os.path.getsize(out)
+          print(f"Downloaded: {actual_size} bytes, SHA-256: {actual_sha}", flush=True)
+
+          if actual_size != expected_size:
+              sys.exit(f"ERROR: size mismatch: expected {expected_size}, got {actual_size}")
+          if actual_sha != expected_sha:
+              sys.exit(f"ERROR: SHA-256 mismatch: expected {expected_sha}, got {actual_sha}")
+          print("Dataset verified OK.", flush=True)
+          PYEOF
+
+      # -----------------------------------------------------------------------
+      # 7. Pre-flight checks (ruff, check_skill, check_docs)
+      # -----------------------------------------------------------------------
+      - name: Ruff lint
+        run: ruff check .
+
+      - name: Skill and rules check
+        run: python scripts/check_skill.py
+
+      - name: Documentation consistency check
+        run: python scripts/check_docs.py
+
+      # -----------------------------------------------------------------------
+      # 8. Run the benchmark harness
+      # -----------------------------------------------------------------------
+      - name: Run Pass 1 pilot shard
+        env:
+          BENCH_SHARD_SIZE: ${{ inputs.shard_size || '20' }}
+          BENCH_TOOL_SUBSET: ${{ inputs.tool_subset || 'mesh_sdk,mem0_sdk,auxly_mcp,bm_mcp' }}
+        run: |
+          python benchmarks/run_pilot.py \
+            --limit "$BENCH_SHARD_SIZE" \
+            --tools "$BENCH_TOOL_SUBSET" \
+            --dataset benchmarks/data/longmemeval_s_cleaned.json \
+            --out-dir benchmarks/results/ci 2>&1 | tee bench_pass1.log
+
+      # -----------------------------------------------------------------------
+      # 9. Validate gates against pilot baseline
+      # -----------------------------------------------------------------------
+      - name: Validate gates
+        run: |
+          python - <<'PYEOF'
+          import json, sys, pathlib, glob
+
+          result_files = sorted(glob.glob("benchmarks/results/ci/*.json"))
+          if not result_files:
+              sys.exit("ERROR: no result files found in benchmarks/results/ci/")
+
+          latest = result_files[-1]
+          print(f"Validating {latest}", flush=True)
+          j = json.loads(pathlib.Path(latest).read_text())
+
+          tool_results = j.get("tool_results", {})
+          failures = []
+          for tool_name, tool_data in tool_results.items():
+              gates = tool_data.get("gates", {})
+              ki = gates.get("known_item_pass", 0)
+              lt = gates.get("long_turn_pass", 0)
+              n  = tool_data.get("questions_evaluated", 0)
+              if n > 0 and (ki < n or lt < n):
+                  failures.append(f"{tool_name}: KI={ki}/{n}, LT={lt}/{n}")
+
+          if failures:
+              print("GATE FAILURES:", flush=True)
+              for f in failures:
+                  print(" ", f, flush=True)
+              sys.exit(1)
+          print(f"All gates passed across {len(tool_results)} tools.", flush=True)
+          PYEOF
+
+      # -----------------------------------------------------------------------
+      # 10. Upload artifacts
+      # -----------------------------------------------------------------------
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: bench-pass1-results-${{ github.run_id }}
+          path: |
+            benchmarks/results/ci/
+            bench_pass1.log
+          retention-days: 30
+
+      - name: Upload run log
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: bench-pass1-log-${{ github.run_id }}
+          path: bench_pass1.log
+          retention-days: 30
