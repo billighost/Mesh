@@ -4085,9 +4085,11 @@ class MeshStore:
                     hybrid_sim = sem_sim
             item["similarity"] = round(hybrid_sim, 4)
 
+        # Sort descending by score components; memory_id ascending breaks exact-score ties
+        # deterministically so that two calls with all-equal scores always return the same order.
+        # Negating the three floats avoids reverse=True (which would flip the id direction).
         scored_candidates.sort(
-            key=lambda x: (x["similarity"], x["lexical_score"], x["semantic_similarity"]),
-            reverse=True,
+            key=lambda x: (-x["similarity"], -x["lexical_score"], -x["semantic_similarity"], x["id"]),
         )
         return scored_candidates[:n]
 
