@@ -326,24 +326,94 @@ def percentile(data: list[float], p: float) -> float:
 
 
 def find_bm_bin() -> Path:
-    p = PROJECT_ROOT / "benchmarks" / ".venv-mem0" / "Scripts" / "basic-memory.exe"
-    if p.exists():
-        return p
-    return Path("C:/Users/bb201/desktop/mesh/benchmarks/.venv-mem0/Scripts/basic-memory.exe")
+    if "BM_BIN" in os.environ and os.environ["BM_BIN"]:
+        return Path(os.environ["BM_BIN"])
+    candidates = [
+        PROJECT_ROOT / "benchmarks" / ".venv-bm" / "bin" / "basic-memory",
+        PROJECT_ROOT / "benchmarks" / ".venv-mem0" / "bin" / "basic-memory",
+        PROJECT_ROOT / "benchmarks" / ".venv-mem0" / "Scripts" / "basic-memory.exe",
+    ]
+    for c in candidates:
+        if c.exists():
+            return c
+    which = shutil.which("basic-memory")
+    if which:
+        return Path(which)
+    return candidates[-1]
 
 
 def find_auxly_bin() -> Path:
-    p = PROJECT_ROOT / "benchmarks" / "bin" / "auxly.exe"
-    if p.exists():
-        return p
-    return Path("C:/Users/bb201/desktop/mesh/benchmarks/bin/auxly.exe")
+    if "AUXLY_BIN" in os.environ and os.environ["AUXLY_BIN"]:
+        return Path(os.environ["AUXLY_BIN"])
+    candidates = [
+        PROJECT_ROOT / "benchmarks" / "bin" / "auxly",
+        PROJECT_ROOT / "benchmarks" / "bin" / "auxly.exe",
+    ]
+    for c in candidates:
+        if c.exists():
+            return c
+    which = shutil.which("auxly")
+    if which:
+        return Path(which)
+    return candidates[-1]
 
 
 def find_mem0_py() -> str:
-    p = PROJECT_ROOT / "benchmarks" / ".venv-mem0" / "Scripts" / "python.exe"
-    if p.exists():
-        return str(p)
-    return str(Path("C:/Users/bb201/desktop/mesh/benchmarks/.venv-mem0/Scripts/python.exe"))
+    if "MEM0_PYTHON" in os.environ and os.environ["MEM0_PYTHON"]:
+        return os.environ["MEM0_PYTHON"]
+    candidates = [
+        PROJECT_ROOT / "benchmarks" / ".venv-mem0" / "bin" / "python",
+        PROJECT_ROOT / "benchmarks" / ".venv-mem0" / "bin" / "python3",
+        PROJECT_ROOT / "benchmarks" / ".venv-mem0" / "Scripts" / "python.exe",
+    ]
+    for c in candidates:
+        if c.exists():
+            return str(c)
+    which = shutil.which("python3")
+    if which:
+        return which
+    return sys.executable
+
+
+def check_free_disk_guard(min_gb: float = 3.0) -> None:
+    """Ensure at least min_gb free space is available in temp dir."""
+    target_dir = tempfile.gettempdir()
+    free_bytes = shutil.disk_usage(target_dir).free
+    free_gb = free_bytes / (1024 ** 3)
+    if free_gb < min_gb:
+        raise RuntimeError(
+            f"Disk space guard failed: only {free_gb:.2f} GB free in {target_dir} (< {min_gb} GB required)"
+        )
+
+
+def check_harness_cutoff(start_mono: float, cutoff_min: float = 300.0) -> bool:
+    """Return True if time elapsed since start_mono exceeds cutoff_min."""
+    elapsed_min = (time.monotonic() - start_mono) / 60.0
+    return elapsed_min >= cutoff_min
+
+
+def get_system_metadata() -> dict[str, Any]:
+    """Collect non-sensitive system and environment metadata."""
+    import platform
+    meta = {
+        "runner_image": os.environ.get("ImageVersion", "local"),
+        "os_platform": platform.platform(),
+        "python_version": sys.version.split()[0],
+        "git_commit": os.environ.get("GITHUB_SHA", "local"),
+        "git_tag": os.environ.get("GITHUB_REF_NAME", "benchmark-v1"),
+        "github_run_id": os.environ.get("GITHUB_RUN_ID", "local"),
+        "cpu_count": os.cpu_count() or 1,
+    }
+    if psutil:
+        meta["ram_total_mb"] = psutil.virtual_memory().total // (1024 * 1024)
+    return meta
+
+
+def append_raw_jsonl(path: Path, record: dict[str, Any]) -> None:
+    """Append a single JSONL record to the raw results file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record) + "\n")
 
 
 def prepare_question_haystack(q: dict[str, Any], q_idx: int) -> dict[str, Any]:
@@ -1105,6 +1175,7 @@ async def eval_auxly_mcp_question_async(q_data: dict[str, Any], q_idx: int) -> d
                         raw_out = await session.call_tool("auxly_memory_search", arguments={"query": q_data["question"]})
                     raw_text = "".join(str(c.text) for c in (raw_out.content or []))
                     raw_cands = parse_auxly_output(raw_text)
+                    raw_ids = [extract_turn_identifier(c[0], c[1]) or c[0] for c in raw_cands]
                     raw_scores = score_candidates(raw_cands, q_data["gold_turn_tags"], q_data["gold_session_tags"], q_data["tag_to_session"])
 
                     # Query Keyword
@@ -1126,6 +1197,7 @@ async def eval_auxly_mcp_question_async(q_data: dict[str, Any], q_idx: int) -> d
             "lt_tag_found": lt_tag_found,
             "raw_scores": raw_scores,
             "kw_scores": kw_scores,
+            "raw_ids": raw_ids,
             "disk": disk_info,
             "ram_mb": tracker.peak_mb,
             "harness_baseline_ram_mb": harness_baseline_mb,
@@ -1141,6 +1213,137 @@ async def eval_auxly_mcp_question_async(q_data: dict[str, Any], q_idx: int) -> d
 
 def eval_auxly_mcp_question(q_data: dict[str, Any], q_idx: int) -> dict[str, Any]:
     return asyncio.run(eval_auxly_mcp_question_async(q_data, q_idx))
+
+
+async def eval_auxly_mcp_ollama_question_async(q_data: dict[str, Any], q_idx: int) -> dict[str, Any]:
+    """Evaluate Auxly MCP + local Ollama embeddings (semantic recall) in persistent stdio session."""
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+
+    # Assert no cloud API keys in environment (Rule 4)
+    for k in ("OPENAI_API_KEY", "GEMINI_API_KEY", "ANTHROPIC_API_KEY"):
+        if k in os.environ:
+            raise RuntimeError(f"Prohibited cloud key {k} found in environment during Auxly Ollama run")
+
+    auxly_bin = str(find_auxly_bin())
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True, prefix=f"pilot_auxly_ollama_{q_idx}_") as temp_dir:
+        vault = Path(temp_dir) / "vault"
+        vault.mkdir(parents=True, exist_ok=True)
+        home = Path(temp_dir) / "home"
+        home.mkdir(parents=True, exist_ok=True)
+
+        env = os.environ.copy()
+        env["HOME"] = str(home)
+        env["USERPROFILE"] = str(home)
+
+        ingest_accounting = {
+            "haystack_turns": q_data.get("total_haystack_turns", len(q_data["items"]) - 2),
+            "total_submitted": len(q_data["items"]),
+            "ingested": 0,
+            "rejected": 0,
+            "rejection_reasons": [],
+            "failed": 0,
+            "failed_reasons": [],
+            "quarantined": 0,
+            "gold_turn_status": "all_ingested",
+        }
+
+        # 1. Ingest turns as individual markdown files
+        with DualTimer() as dt_ingest:
+            for idx, item in enumerate(q_data["items"]):
+                note_path = vault / f"turn_{idx:05d}.md"
+                note_path.write_text(item["content"], encoding="utf-8")
+                ingest_accounting["ingested"] += 1
+
+        # 2. Rebuild Auxly semantic index using local Ollama endpoint
+        with DualTimer() as dt_rebuild:
+            rebuild_cmd = [
+                auxly_bin,
+                "--path", str(vault),
+                "index", "rebuild",
+                "--endpoint", "http://localhost:11434/v1/embeddings",
+                "--embed-model", "all-minilm",
+            ]
+            p_rebuild = subprocess.run(rebuild_cmd, capture_output=True, text=True, env=env, timeout=300)
+            if p_rebuild.returncode != 0:
+                logger.error("Auxly Ollama index rebuild failed:\nSTDOUT:\n%s\nSTDERR:\n%s", p_rebuild.stdout, p_rebuild.stderr)
+                raise RuntimeError(f"Auxly Ollama index rebuild failed (code {p_rebuild.returncode}): {p_rebuild.stderr}")
+
+        total_write_sec = dt_ingest.mono_elapsed + dt_rebuild.mono_elapsed
+
+        params = StdioServerParameters(command=auxly_bin, args=["--path", str(vault), "mcp-server"], env=env)
+        harness_baseline_mb = get_harness_baseline_rss_mb()
+
+        with ProcessTreePeakTracker(include_parent=False) as tracker:
+            async with stdio_client(params) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+
+                    # 3. Known item test with paraphrased query (semantic recall check)
+                    # Paraphrased query has NO exact substring match with KNOWN_ITEM_CONTENT
+                    KNOWN_ITEM_PARAPHRASE = "azure stargazing facility detected unexplained radio signal on stellar sector nine"
+                    ki_out = await session.call_tool("auxly_memory_recall", arguments={"query": KNOWN_ITEM_PARAPHRASE})
+                    ki_text = "".join(str(c.text) for c in (ki_out.content or []))
+                    ki_cands = parse_auxly_output(ki_text)
+                    ki_rank = None
+                    for r, (fname, body) in enumerate(ki_cands, start=1):
+                        tid = extract_turn_identifier(fname, body)
+                        if tid == KNOWN_ITEM_TAG or KNOWN_ITEM_TAG in body or KNOWN_ITEM_ANSWER.lower() in body.lower():
+                            ki_rank = r
+                            break
+
+                    # 4. Long turn check
+                    lt_out = await session.call_tool("auxly_memory_recall", arguments={"query": LONG_TURN_QUERY})
+                    lt_text = "".join(str(c.text) for c in (lt_out.content or []))
+                    lt_cands = parse_auxly_output(lt_text)
+                    lt_tag_found = any(
+                        extract_turn_identifier(fname, body) == LONG_TURN_TAG or LONG_TURN_TAG in body
+                        for fname, body in lt_cands
+                    )
+
+                    # 5. Raw benchmark query via auxly_memory_recall
+                    with DualTimer() as dt_raw:
+                        raw_out = await session.call_tool("auxly_memory_recall", arguments={"query": q_data["question"]})
+                    raw_text = "".join(str(c.text) for c in (raw_out.content or []))
+                    raw_cands = parse_auxly_output(raw_text)
+                    raw_ids = [extract_turn_identifier(c[0], c[1]) or c[0] for c in raw_cands]
+                    raw_scores = score_candidates(raw_cands, q_data["gold_turn_tags"], q_data["gold_session_tags"], q_data["tag_to_session"])
+
+                    # 6. Keyword benchmark query via auxly_memory_recall
+                    with DualTimer() as dt_kw:
+                        kw_out = await session.call_tool("auxly_memory_recall", arguments={"query": q_data["question_kw"]})
+                    kw_text = "".join(str(c.text) for c in (kw_out.content or []))
+                    kw_cands = parse_auxly_output(kw_text)
+                    kw_scores = score_candidates(kw_cands, q_data["gold_turn_tags"], q_data["gold_session_tags"], q_data["tag_to_session"])
+
+            disk_info = checkpoint_and_analyze_disk(vault)
+            gc.collect()
+
+        return {
+            "write_seconds": total_write_sec,
+            "raw_ms": dt_raw.mono_elapsed * 1000,
+            "kw_ms": dt_kw.mono_elapsed * 1000,
+            "dt_flag": dt_raw.discrepancy_flag or dt_kw.discrepancy_flag,
+            "ki_rank": ki_rank,
+            "lt_tag_found": lt_tag_found,
+            "raw_scores": raw_scores,
+            "kw_scores": kw_scores,
+            "raw_ids": raw_ids,
+            "disk": disk_info,
+            "ram_mb": tracker.peak_mb,
+            "harness_baseline_ram_mb": harness_baseline_mb,
+            "ingest_accounting": ingest_accounting,
+            "top_candidates_raw": [c[1][:100] for c in raw_cands[:3]],
+            "raw_results_payload": [
+                {"id": extract_turn_identifier(c[0], c[1]) or c[0], "content": c[1][:200]}
+                for c in raw_cands[:5]
+            ],
+            "sample_raw_stdout": raw_text[:300],
+        }
+
+
+def eval_auxly_mcp_ollama_question(q_data: dict[str, Any], q_idx: int) -> dict[str, Any]:
+    return asyncio.run(eval_auxly_mcp_ollama_question_async(q_data, q_idx))
 
 
 async def eval_bm_mcp_question_async(q_data: dict[str, Any], q_idx: int) -> dict[str, Any]:
@@ -1258,6 +1461,7 @@ async def eval_bm_mcp_question_async(q_data: dict[str, Any], q_idx: int) -> dict
             disk_info = checkpoint_and_analyze_disk(base)
             gc.collect()
 
+        raw_ids = [extract_turn_identifier(c[0], c[1]) or c[0] for c in raw_cands]
         return {
             "write_seconds": write_sec,
             "raw_ms": dt_raw.mono_elapsed * 1000,
@@ -1268,6 +1472,7 @@ async def eval_bm_mcp_question_async(q_data: dict[str, Any], q_idx: int) -> dict
             "raw_scores": raw_scores,
             "kw_scores": kw_scores,
             "raw_titles": raw_titles,
+            "raw_ids": raw_ids,
             "disk": disk_info,
             "ram_mb": tracker.peak_mb,
             "harness_baseline_ram_mb": harness_baseline_mb,
@@ -1741,10 +1946,11 @@ def aggregate_tool_results(
             "sess_mrr": round(sum(s_mrr_kw) / n, 4),
         },
         "gates": {
+            "gate_status": ("passed" if ((n - ki_success) / n <= 0.05 and (n - lt_success) / n <= 0.05) else "could not be evaluated fairly") if n > 0 else "unknown",
             "known_item_pass_count": ki_success,
-            "known_item_pass_pct": round(ki_success / n * 100, 1),
+            "known_item_pass_pct": round(ki_success / n * 100, 1) if n > 0 else 0.0,
             "long_turn_pass_count": lt_success,
-            "long_turn_pass_pct": round(lt_success / n * 100, 1),
+            "long_turn_pass_pct": round(lt_success / n * 100, 1) if n > 0 else 0.0,
         },
         "disk": {
             "mean_data_mb": round(statistics.mean(data_mb_list), 2),
@@ -1778,8 +1984,44 @@ def compute_paired_differences(
     return mean_diff, ci
 
 
+def make_raw_record(
+    tool_name: str,
+    tool_class: str,
+    backend: str,
+    model: str,
+    r: dict[str, Any],
+    q_data: dict[str, Any],
+    q_idx: int,
+    shard_id: str,
+) -> dict[str, Any]:
+    return {
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "shard_id": shard_id,
+        "q_idx": q_idx,
+        "q_id": q_data.get("question_id", f"q_{q_idx}"),
+        "q_type": q_data.get("question_type", "unknown"),
+        "tool_name": tool_name,
+        "tool_class": tool_class,
+        "embedding_backend": backend,
+        "embedding_model": model,
+        "write_seconds": r.get("write_seconds", 0.0),
+        "raw_ms": r.get("raw_ms", 0.0),
+        "kw_ms": r.get("kw_ms", 0.0),
+        "ki_rank": r.get("ki_rank"),
+        "lt_tag_found": r.get("lt_tag_found"),
+        "gate_pass": (r.get("ki_rank") == 1 and bool(r.get("lt_tag_found"))),
+        "raw_scores": r.get("raw_scores", {}),
+        "kw_scores": r.get("kw_scores", {}),
+        "raw_ids": r.get("raw_ids", []),
+        "system_metadata": get_system_metadata(),
+    }
+
+
 def run_full_pilot(
     limit: Optional[int] = None,
+    start_idx: int = 0,
+    shard_id: Optional[str] = None,
+    cutoff_minutes: float = 300.0,
     skip_tools: Optional[list[str]] = None,
     only_tools: Optional[list[str]] = None,
     dataset_path: Optional[Path] = None,
@@ -1806,16 +2048,20 @@ def run_full_pilot(
     with open(_dataset_path, "r", encoding="utf-8") as f:
         pilot_raw = json.load(f)
 
-    if limit:
-        pilot_raw = pilot_raw[:limit]
+    harness_start_mono = time.monotonic()
+    if start_idx > 0 or limit is not None:
+        end_idx = (start_idx + limit) if limit else len(pilot_raw)
+        pilot_raw = pilot_raw[start_idx:end_idx]
 
-    logger.info("Preparing haystacks for %d questions with opaque tags at START...", len(pilot_raw))
-    prepared_questions = [prepare_question_haystack(q, idx) for idx, q in enumerate(pilot_raw)]
+    logger.info("Preparing haystacks for %d questions (start_idx=%d) with opaque tags at START...", len(pilot_raw), start_idx)
+    prepared_questions = [prepare_question_haystack(q, start_idx + idx) for idx, q in enumerate(pilot_raw)]
 
     total_turns_all = sum(q["total_haystack_turns"] for q in prepared_questions)
-    logger.info("Total turns across %d questions: %d (mean: %.1f turns/q)", len(prepared_questions), total_turns_all, total_turns_all / len(prepared_questions))
+    logger.info("Total turns across %d questions: %d (mean: %.1f turns/q)", len(prepared_questions), total_turns_all, (total_turns_all / len(prepared_questions)) if prepared_questions else 0.0)
 
-    out_file = _results_dir / "pilot_20_results.json"
+    filename_prefix = shard_id or "pilot_20"
+    out_file = _results_dir / f"{filename_prefix}_results.json"
+    jsonl_file = _results_dir / f"{filename_prefix}_raw.jsonl"
     tool_results: dict[str, Any] = {}
     if out_file.exists():
         try:
@@ -1854,14 +2100,17 @@ def run_full_pilot(
         payload = {
             "metadata": {
                 "timestamp": cur_end.isoformat(),
+                "shard_id": shard_id or "default",
+                "start_idx": start_idx,
                 "questions_evaluated": len(prepared_questions),
                 "total_turns": total_turns_all,
-                "mean_turns_per_q": round(total_turns_all / len(prepared_questions), 1),
-                "hardware": "AMD Ryzen 7 5700U (8 cores, 16 threads), 16 GB RAM",
-                "os": "Windows 11 Home 10.0.26100",
+                "mean_turns_per_q": round(total_turns_all / len(prepared_questions), 1) if prepared_questions else 0.0,
+                "hardware": "AMD Ryzen 7 5700U (8 cores, 16 threads), 16 GB RAM" if os.name == "nt" else "GitHub-hosted ubuntu-24.04 (4 vCPU, 16 GB RAM)",
+                "os": sys.platform,
                 "python_version": sys.version.split()[0],
                 "power_status_start": power_readiness,
                 "kernel_power_sleep_events": cur_kp,
+                "system_metadata": get_system_metadata(),
             },
             "tool_results": tool_results,
             "projections_500": projs,
@@ -1877,15 +2126,23 @@ def run_full_pilot(
             logger.info("=== Running Class A: Mesh SDK ===")
             res_mesh_sdk = []
             for idx, q_data in enumerate(prepared_questions):
-                r = eval_mesh_sdk_question(q_data, idx)
+                check_free_disk_guard(3.0)
+                if check_harness_cutoff(harness_start_mono, cutoff_minutes):
+                    logger.warning("Cutoff (%.1f min) reached. Stopping new questions for mesh_sdk.", cutoff_minutes)
+                    break
+                r = eval_mesh_sdk_question(q_data, start_idx + idx)
                 res_mesh_sdk.append(r)
+                append_raw_jsonl(jsonl_file, make_raw_record("Mesh SDK", "Class A", r.get("embedding_backend", "onnx-minilm-l6-v2"), "all-MiniLM-L6-v2", r, q_data, start_idx + idx, shard_id or "default"))
                 logger.info("  [Mesh SDK Q %d/%d] write=%.2fs raw_query=%.1fms (turn_h1=%.0f)", idx + 1, len(prepared_questions), r["write_seconds"], r["raw_ms"], r["raw_scores"]["turn_hit_at_1"])
             tool_results["mesh_sdk"] = aggregate_tool_results("Mesh SDK", "Class A", res_mesh_sdk, prepared_questions)
             save_current_state()
 
         if should_run("mem0_sdk"):
             logger.info("=== Running Class A: Mem0 SDK (Python 3.12 worker) ===")
+            check_free_disk_guard(3.0)
             res_mem0 = run_mem0_pilot_all(prepared_questions)
+            for idx, (r, q_data) in enumerate(zip(res_mem0, prepared_questions)):
+                append_raw_jsonl(jsonl_file, make_raw_record("Mem0 SDK", "Class A", "fastembed-minilm", "all-MiniLM-L6-v2", r, q_data, start_idx + idx, shard_id or "default"))
             tool_results["mem0_sdk"] = aggregate_tool_results("Mem0 SDK", "Class A", res_mem0, prepared_questions)
             save_current_state()
 
@@ -1896,8 +2153,13 @@ def run_full_pilot(
             logger.info("=== Running Class B: Mesh CLI (Daemon) ===")
             res_mesh_daemon = []
             for idx, q_data in enumerate(prepared_questions):
-                r = eval_mesh_cli_daemon_question(q_data, idx)
+                check_free_disk_guard(3.0)
+                if check_harness_cutoff(harness_start_mono, cutoff_minutes):
+                    logger.warning("Cutoff (%.1f min) reached. Stopping new questions for mesh_cli_daemon.", cutoff_minutes)
+                    break
+                r = eval_mesh_cli_daemon_question(q_data, start_idx + idx)
                 res_mesh_daemon.append(r)
+                append_raw_jsonl(jsonl_file, make_raw_record("Mesh CLI (Daemon)", "Class B", r.get("embedding_backend", "onnx-minilm-l6-v2"), "all-MiniLM-L6-v2", r, q_data, start_idx + idx, shard_id or "default"))
                 logger.info("  [Mesh Daemon Q %d/%d] write=%.2fs raw_query=%.1fms", idx + 1, len(prepared_questions), r["write_seconds"], r["raw_ms"])
             tool_results["mesh_cli_daemon"] = aggregate_tool_results("Mesh CLI (Daemon)", "Class B", res_mesh_daemon, prepared_questions)
             save_current_state()
@@ -1906,8 +2168,13 @@ def run_full_pilot(
             logger.info("=== Running Class B: Mesh CLI (Cold) ===")
             res_mesh_cold = []
             for idx, q_data in enumerate(prepared_questions):
-                r = eval_mesh_cli_cold_question(q_data, idx)
+                check_free_disk_guard(3.0)
+                if check_harness_cutoff(harness_start_mono, cutoff_minutes):
+                    logger.warning("Cutoff (%.1f min) reached. Stopping new questions for mesh_cli_cold.", cutoff_minutes)
+                    break
+                r = eval_mesh_cli_cold_question(q_data, start_idx + idx)
                 res_mesh_cold.append(r)
+                append_raw_jsonl(jsonl_file, make_raw_record("Mesh CLI (Cold)", "Class B", r.get("embedding_backend", "onnx-minilm-l6-v2"), "all-MiniLM-L6-v2", r, q_data, start_idx + idx, shard_id or "default"))
                 logger.info("  [Mesh Cold Q %d/%d] write=%.2fs raw_query=%.1fms", idx + 1, len(prepared_questions), r["write_seconds"], r["raw_ms"])
             tool_results["mesh_cli_cold"] = aggregate_tool_results("Mesh CLI (Cold)", "Class B", res_mesh_cold, prepared_questions)
             save_current_state()
@@ -1916,8 +2183,13 @@ def run_full_pilot(
             logger.info("=== Running Class B: Auxly CLI (1 file per turn) ===")
             res_auxly_cli = []
             for idx, q_data in enumerate(prepared_questions):
-                r = eval_auxly_cli_question(q_data, idx)
+                check_free_disk_guard(3.0)
+                if check_harness_cutoff(harness_start_mono, cutoff_minutes):
+                    logger.warning("Cutoff (%.1f min) reached. Stopping new questions for auxly_cli.", cutoff_minutes)
+                    break
+                r = eval_auxly_cli_question(q_data, start_idx + idx)
                 res_auxly_cli.append(r)
+                append_raw_jsonl(jsonl_file, make_raw_record("Auxly CLI", "Class B", "none", "none", r, q_data, start_idx + idx, shard_id or "default"))
                 logger.info("  [Auxly CLI Q %d/%d] write=%.2fs raw_query=%.1fms", idx + 1, len(prepared_questions), r["write_seconds"], r["raw_ms"])
             tool_results["auxly_cli"] = aggregate_tool_results("Auxly CLI", "Class B", res_auxly_cli, prepared_questions)
             save_current_state()
@@ -1926,8 +2198,13 @@ def run_full_pilot(
             logger.info("=== Running Class B: Basic Memory CLI ===")
             res_bm_cli = []
             for idx, q_data in enumerate(prepared_questions):
-                r = eval_bm_cli_question(q_data, idx)
+                check_free_disk_guard(3.0)
+                if check_harness_cutoff(harness_start_mono, cutoff_minutes):
+                    logger.warning("Cutoff (%.1f min) reached. Stopping new questions for bm_cli.", cutoff_minutes)
+                    break
+                r = eval_bm_cli_question(q_data, start_idx + idx)
                 res_bm_cli.append(r)
+                append_raw_jsonl(jsonl_file, make_raw_record("Basic Memory CLI", "Class B", "fastembed-minilm", "all-MiniLM-L6-v2", r, q_data, start_idx + idx, shard_id or "default"))
                 logger.info("  [BM CLI Q %d/%d] write=%.2fs raw_query=%.1fms", idx + 1, len(prepared_questions), r["write_seconds"], r["raw_ms"])
             tool_results["bm_cli"] = aggregate_tool_results("Basic Memory CLI", "Class B", res_bm_cli, prepared_questions)
             save_current_state()
@@ -1939,28 +2216,58 @@ def run_full_pilot(
             logger.info("=== Running Class C: Mesh MCP ===")
             res_mesh_mcp = []
             for idx, q_data in enumerate(prepared_questions):
-                r = eval_mesh_mcp_question(q_data, idx)
+                check_free_disk_guard(3.0)
+                if check_harness_cutoff(harness_start_mono, cutoff_minutes):
+                    logger.warning("Cutoff (%.1f min) reached. Stopping new questions for mesh_mcp.", cutoff_minutes)
+                    break
+                r = eval_mesh_mcp_question(q_data, start_idx + idx)
                 res_mesh_mcp.append(r)
+                append_raw_jsonl(jsonl_file, make_raw_record("Mesh MCP", "Class C", r.get("embedding_backend", "onnx-minilm-l6-v2"), "all-MiniLM-L6-v2", r, q_data, start_idx + idx, shard_id or "default"))
                 logger.info("  [Mesh MCP Q %d/%d] write=%.2fs raw_query=%.1fms", idx + 1, len(prepared_questions), r["write_seconds"], r["raw_ms"])
             tool_results["mesh_mcp"] = aggregate_tool_results("Mesh MCP", "Class C", res_mesh_mcp, prepared_questions)
             save_current_state()
 
         if should_run("auxly_mcp"):
-            logger.info("=== Running Class C: Auxly MCP (1 file per turn) ===")
+            logger.info("=== Running Class C: Auxly MCP (1 file per turn, substring search) ===")
             res_auxly_mcp = []
             for idx, q_data in enumerate(prepared_questions):
-                r = eval_auxly_mcp_question(q_data, idx)
+                check_free_disk_guard(3.0)
+                if check_harness_cutoff(harness_start_mono, cutoff_minutes):
+                    logger.warning("Cutoff (%.1f min) reached. Stopping new questions for auxly_mcp.", cutoff_minutes)
+                    break
+                r = eval_auxly_mcp_question(q_data, start_idx + idx)
                 res_auxly_mcp.append(r)
+                append_raw_jsonl(jsonl_file, make_raw_record("Auxly MCP", "Class C", "none", "none", r, q_data, start_idx + idx, shard_id or "default"))
                 logger.info("  [Auxly MCP Q %d/%d] write=%.2fs raw_query=%.1fms", idx + 1, len(prepared_questions), r["write_seconds"], r["raw_ms"])
             tool_results["auxly_mcp"] = aggregate_tool_results("Auxly MCP", "Class C", res_auxly_mcp, prepared_questions)
+            save_current_state()
+
+        if should_run("auxly_mcp_ollama"):
+            logger.info("=== Running Class C: Auxly MCP + Local Ollama Embeddings (all-minilm) ===")
+            res_auxly_ollama = []
+            for idx, q_data in enumerate(prepared_questions):
+                check_free_disk_guard(3.0)
+                if check_harness_cutoff(harness_start_mono, cutoff_minutes):
+                    logger.warning("Cutoff (%.1f min) reached. Stopping new questions for auxly_mcp_ollama.", cutoff_minutes)
+                    break
+                r = eval_auxly_mcp_ollama_question(q_data, start_idx + idx)
+                res_auxly_ollama.append(r)
+                append_raw_jsonl(jsonl_file, make_raw_record("Auxly MCP (Ollama all-minilm)", "Class C", "ollama-all-minilm", "all-minilm", r, q_data, start_idx + idx, shard_id or "default"))
+                logger.info("  [Auxly Ollama Q %d/%d] write=%.2fs raw_query=%.1fms (turn_h1=%.0f)", idx + 1, len(prepared_questions), r["write_seconds"], r["raw_ms"], r["raw_scores"]["turn_hit_at_1"])
+            tool_results["auxly_mcp_ollama"] = aggregate_tool_results("Auxly MCP (Ollama all-minilm)", "Class C", res_auxly_ollama, prepared_questions)
             save_current_state()
 
         if should_run("bm_mcp"):
             logger.info("=== Running Class C: Basic Memory MCP ===")
             res_bm_mcp = []
             for idx, q_data in enumerate(prepared_questions):
-                r = eval_bm_mcp_question(q_data, idx)
+                check_free_disk_guard(3.0)
+                if check_harness_cutoff(harness_start_mono, cutoff_minutes):
+                    logger.warning("Cutoff (%.1f min) reached. Stopping new questions for bm_mcp.", cutoff_minutes)
+                    break
+                r = eval_bm_mcp_question(q_data, start_idx + idx)
                 res_bm_mcp.append(r)
+                append_raw_jsonl(jsonl_file, make_raw_record("Basic Memory MCP", "Class C", "fastembed-minilm", "all-MiniLM-L6-v2", r, q_data, start_idx + idx, shard_id or "default"))
                 logger.info("  [BM MCP Q %d/%d] write=%.2fs raw_query=%.1fms", idx + 1, len(prepared_questions), r["write_seconds"], r["raw_ms"])
             tool_results["bm_mcp"] = aggregate_tool_results("Basic Memory MCP", "Class C", res_bm_mcp, prepared_questions)
             save_current_state()
@@ -2116,7 +2423,7 @@ def run_full_pilot(
         "projections_500": projections,
     }
 
-    out_file = _results_dir / "pilot_20_results.json"
+    out_file = _results_dir / f"{filename_prefix}_results.json"
     with open(out_file, "w", encoding="utf-8") as f:
         json.dump(output_payload, f, indent=2)
     logger.info("Pilot results saved to %s", out_file)
@@ -2225,6 +2532,9 @@ def main():
     parser = argparse.ArgumentParser(description="Official LongMemEval-S Pilot Runner")
     parser.add_argument("--limit", type=int, default=None, help="Limit number of questions (e.g. 20 for the pilot shard)")
     parser.add_argument("--questions", type=int, default=None, help="Alias for --limit (CI convenience)")
+    parser.add_argument("--start-idx", type=int, default=0, help="Starting question index for sharding")
+    parser.add_argument("--shard-id", default=None, help="Identifier for current shard (used for output naming)")
+    parser.add_argument("--cutoff-minutes", type=float, default=300.0, help="Stop starting new questions after N minutes")
     parser.add_argument("--skip", nargs="*", default=[], help="Tools to skip (e.g. mem0_sdk bm_cli)")
     parser.add_argument("--tools", default=None, help="Comma-separated or space-separated tool names to run exclusively")
     parser.add_argument("--dataset", default=None, help="Path to LongMemEval-S JSON dataset (overrides PILOT_DATASET_PATH)")
@@ -2257,6 +2567,9 @@ def main():
 
     _ = run_full_pilot(
         limit=limit,
+        start_idx=args.start_idx,
+        shard_id=args.shard_id,
+        cutoff_minutes=args.cutoff_minutes,
         skip_tools=args.skip,
         only_tools=only_tools,
         dataset_path=dataset_path,

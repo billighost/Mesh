@@ -395,6 +395,7 @@ def eval_one_question(mem0_cls: Any, q_data: dict[str, Any], q_idx: int) -> dict
             "lt_tag_found": lt_tag_found,
             "raw_scores": raw_scores,
             "kw_scores": kw_scores,
+            "raw_ids": [c[0] for c in raw_cands],
             "disk": disk_info,
             "ram_mb": tool_peak_ram,
             "harness_baseline_ram_mb": harness_baseline_mb,
