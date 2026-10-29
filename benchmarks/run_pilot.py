@@ -44,6 +44,9 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("mesh_pilot")
 
 os.environ["MESH_MAX_CONTENT_LENGTH"] = "131072"
+# F7 model safety: require the real ONNX model; a silent fallback to hash-384 is a retrieval failure.
+os.environ["MESH_REQUIRE_MODEL"] = "1"
+os.environ["MESH_AUTO_DOWNLOAD_MODEL"] = "1"
 
 PILOT_DATASET_PATH = PROJECT_ROOT / "benchmarks" / "data" / "longmemeval_pilot_20.json"
 RESULTS_DIR = PROJECT_ROOT / "benchmarks" / "results"
@@ -576,6 +579,8 @@ def eval_mesh_sdk_question(q_data: dict[str, Any], q_idx: int) -> dict[str, Any]
             raw_cands = [(r.get("id", ""), r.get("content", "")) for r in raw_res]
             raw_ids = [extract_turn_identifier(r.get("id", ""), r.get("content", "")) or r.get("id", "") for r in raw_res]
             backend = raw_res[0].get("embedding_backend", "unknown") if raw_res else "unknown"
+            if os.environ.get("MESH_REQUIRE_MODEL") == "1" and backend not in ("onnx-minilm-l6-v2", "onnx"):
+                raise RuntimeError(f"F7 safety violation: expected ONNX embedding model, got backend={backend!r}")
             raw_scores = score_candidates(raw_cands, q_data["gold_turn_tags"], q_data["gold_session_tags"], q_data["tag_to_session"])
             mesh_raw.close()
             _evict_namespace_caches(snap_raw)
@@ -665,14 +670,33 @@ def eval_mesh_cli_daemon_question(q_data: dict[str, Any], q_idx: int) -> dict[st
                         resp = _daemon_request("/learn", payload={"content": item["content"], "tags": [item["tag"]], "namespace": ns}, port=test_port)
                         if resp and resp.get("status") == "ok":
                             ingest_accounting["ingested"] += 1
-                        elif resp and resp.get("status") == "error":
+                        elif resp and resp.get("status") == "rejected":
+                            # guard_ingest fired and was surfaced via JSON body status
                             ingest_accounting["rejected"] += 1
-                            ingest_accounting["rejection_reasons"].append(resp.get("error", "daemon error"))
+                            ingest_accounting["rejection_reasons"].append(resp.get("error", resp.get("detail", "guard rejection")))
                             if is_gold:
                                 ingest_accounting["gold_turn_status"] = "gold_rejected"
+                        elif resp and resp.get("_http_error") == 400:
+                            # HTTP 400 is the daemon's guard-rejection response; the body carries
+                            # {"status":"rejected","error":"...","detail":"..."}. _daemon_request
+                            # strips the JSON body and returns {"_http_error":400,"detail":...}
+                            # so we need to inspect the detail to distinguish a guard rejection
+                            # from a malformed request.
+                            detail = str(resp.get("detail", ""))
+                            if "rejected" in detail.lower() or "guard" in detail.lower() or "injection" in detail.lower():
+                                ingest_accounting["rejected"] += 1
+                                ingest_accounting["rejection_reasons"].append(detail or "HTTP 400 guard rejection")
+                                if is_gold:
+                                    ingest_accounting["gold_turn_status"] = "gold_rejected"
+                            else:
+                                ingest_accounting["failed"] += 1
+                                ingest_accounting["failed_reasons"].append(f"HTTP 400: {detail}")
+                                if is_gold:
+                                    ingest_accounting["gold_turn_status"] = "gold_failed"
                         else:
                             ingest_accounting["failed"] += 1
-                            ingest_accounting["failed_reasons"].append("unknown daemon failure")
+                            detail = str(resp.get("detail", "")) if resp else ""
+                            ingest_accounting["failed_reasons"].append(detail or "unknown daemon failure")
                             if is_gold:
                                 ingest_accounting["gold_turn_status"] = "gold_failed"
                 write_sec = dt_ingest.mono_elapsed
@@ -709,7 +733,9 @@ def eval_mesh_cli_daemon_question(q_data: dict[str, Any], q_idx: int) -> dict[st
                 raw_res = (raw_resp or {}).get("results", [])
                 raw_cands = [(r.get("id", ""), r.get("content", "")) for r in raw_res]
                 raw_ids = [extract_turn_identifier(r.get("id", ""), r.get("content", "")) or r.get("id", "") for r in raw_res]
-                backend = (raw_resp or {}).get("embedding_backend", "unknown")
+                backend = (raw_resp or {}).get("embedding_backend") or (raw_res[0].get("embedding_backend") if raw_res else "unknown")
+                if os.environ.get("MESH_REQUIRE_MODEL") == "1" and backend not in ("onnx-minilm-l6-v2", "onnx"):
+                    raise RuntimeError(f"F7 safety violation: expected ONNX embedding model, got backend={backend!r}")
                 raw_scores = score_candidates(raw_cands, q_data["gold_turn_tags"], q_data["gold_session_tags"], q_data["tag_to_session"])
 
                 # Query Keyword
@@ -802,12 +828,36 @@ async def eval_mesh_mcp_question_async(q_data: dict[str, Any], q_idx: int) -> di
                         for item in q_data["items"]:
                             is_gold = item.get("has_answer") is True
                             try:
-                                await session.call_tool("mesh_learn", arguments={
+                                result = await session.call_tool("mesh_learn", arguments={
                                     "content": item["content"],
                                     "tags": [item["tag"]],
                                     "namespace": ns,
                                 })
-                                ingest_accounting["ingested"] += 1
+                                # The MCP server returns isError=True with {"status":"rejected",...}
+                                # when guard_ingest fires.  Parse the payload so we distinguish a
+                                # content-guard rejection from an infrastructure failure.
+                                payload: dict[str, Any] = {}
+                                if result.isError:
+                                    raw = "".join(str(c.text) for c in (result.content or []))
+                                    try:
+                                        payload = json.loads(raw)
+                                    except Exception:
+                                        payload = {"status": "error"}
+                                if payload.get("status") == "rejected":
+                                    ingest_accounting["rejected"] += 1
+                                    ingest_accounting["rejection_reasons"].append(
+                                        payload.get("error", "guard rejection")
+                                    )
+                                    if is_gold:
+                                        ingest_accounting["gold_turn_status"] = "gold_rejected"
+                                elif result.isError:
+                                    ingest_accounting["failed"] += 1
+                                    err_txt = payload.get("error") or payload.get("status") or "mcp error"
+                                    ingest_accounting["failed_reasons"].append(str(err_txt))
+                                    if is_gold:
+                                        ingest_accounting["gold_turn_status"] = "gold_failed"
+                                else:
+                                    ingest_accounting["ingested"] += 1
                             except Exception as e:
                                 ingest_accounting["failed"] += 1
                                 ingest_accounting["failed_reasons"].append(str(e))
@@ -863,6 +913,8 @@ async def eval_mesh_mcp_question_async(q_data: dict[str, Any], q_idx: int) -> di
                         backend = raw_data.get("embedding_backend", "unknown")
                     except Exception:
                         raw_cands = [("mcp_raw", raw_text)]
+                    if os.environ.get("MESH_REQUIRE_MODEL") == "1" and backend not in ("onnx-minilm-l6-v2", "onnx"):
+                        raise RuntimeError(f"F7 safety violation: expected ONNX embedding model, got backend={backend!r}")
                     raw_scores = score_candidates(raw_cands, q_data["gold_turn_tags"], q_data["gold_session_tags"], q_data["tag_to_session"])
 
                     # Query Keyword
@@ -1361,9 +1413,11 @@ def eval_mesh_cli_cold_question(q_data: dict[str, Any], q_idx: int) -> dict[str,
                     data = json.loads(p_raw.stdout)
                     raw_cands = [(r.get("id", ""), r.get("content", "")) for r in data.get("results", [])]
                     raw_ids = [extract_turn_identifier(r.get("id", ""), r.get("content", "")) or r.get("id", "") for r in data.get("results", [])]
-                    backend = data.get("embedding_backend", "unknown")
+                    backend = data.get("embedding_backend") or (data.get("results", [{}])[0].get("embedding_backend") if data.get("results") else "unknown")
                 except Exception:
                     pass
+            if os.environ.get("MESH_REQUIRE_MODEL") == "1" and backend not in ("onnx-minilm-l6-v2", "onnx"):
+                raise RuntimeError(f"F7 safety violation: expected ONNX embedding model, got backend={backend!r}")
             raw_scores = score_candidates(raw_cands, q_data["gold_turn_tags"], q_data["gold_session_tags"], q_data["tag_to_session"])
 
             # Query Keyword via cold subprocess
@@ -1728,10 +1782,18 @@ def run_full_pilot(
     limit: Optional[int] = None,
     skip_tools: Optional[list[str]] = None,
     only_tools: Optional[list[str]] = None,
+    dataset_path: Optional[Path] = None,
+    results_dir: Optional[Path] = None,
 ) -> dict[str, Any]:
     skip_set = set(skip_tools or [])
     only_set = set(only_tools) if only_tools else None
-    logger.info("Starting Official 20-Question LongMemEval-S Pilot Evaluation")
+    logger.info("Starting Official LongMemEval-S Pilot Evaluation")
+
+    # Resolve paths — callers may override the module-level defaults
+    _dataset_path = dataset_path if dataset_path is not None else PILOT_DATASET_PATH
+    _results_dir = results_dir if results_dir is not None else RESULTS_DIR
+    if results_dir is not None:
+        _results_dir.mkdir(parents=True, exist_ok=True)
 
     # 1. Assert sleep-proofing and exclusivity
     power_readiness = assert_power_and_sleep_readiness()
@@ -1741,7 +1803,7 @@ def run_full_pilot(
     assert_system_exclusive(cpu_threshold_pct=15.0, sample_duration_sec=5.0)
 
     # 2. Load pilot dataset
-    with open(PILOT_DATASET_PATH, "r", encoding="utf-8") as f:
+    with open(_dataset_path, "r", encoding="utf-8") as f:
         pilot_raw = json.load(f)
 
     if limit:
@@ -1753,7 +1815,7 @@ def run_full_pilot(
     total_turns_all = sum(q["total_haystack_turns"] for q in prepared_questions)
     logger.info("Total turns across %d questions: %d (mean: %.1f turns/q)", len(prepared_questions), total_turns_all, total_turns_all / len(prepared_questions))
 
-    out_file = RESULTS_DIR / "pilot_20_results.json"
+    out_file = _results_dir / "pilot_20_results.json"
     tool_results: dict[str, Any] = {}
     if out_file.exists():
         try:
@@ -2054,7 +2116,7 @@ def run_full_pilot(
         "projections_500": projections,
     }
 
-    out_file = RESULTS_DIR / "pilot_20_results.json"
+    out_file = _results_dir / "pilot_20_results.json"
     with open(out_file, "w", encoding="utf-8") as f:
         json.dump(output_payload, f, indent=2)
     logger.info("Pilot results saved to %s", out_file)
@@ -2062,14 +2124,144 @@ def run_full_pilot(
     return output_payload
 
 
+
+def run_prescan_default_config(dataset_path: Optional[Path] = None, out_file: Optional[Path] = None) -> dict[str, Any]:
+    """Pre-scan full dataset turns under default guards and length limit (16384)."""
+    from mesh.guards import guard_ingest
+
+    ds_path = dataset_path or (PROJECT_ROOT / "benchmarks" / "data" / "longmemeval_s_cleaned.json")
+    if not ds_path.exists():
+        ds_path = PILOT_DATASET_PATH
+    logger.info("Pre-scanning dataset from %s under default config (MAX_CONTENT_LENGTH=16384)...", ds_path)
+    with open(ds_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    total_turns = 0
+    oversized_turns_total = 0
+    rejected_turns_total = 0
+    poison_rejected_turns_total = 0
+    affected_questions: list[dict[str, Any]] = []
+    gold_affected_questions: list[dict[str, Any]] = []
+
+    for q_idx, q in enumerate(data):
+        q_id = q.get("question_id", f"q_{q_idx}")
+        haystack = q.get("haystack_sessions", [])
+        q_oversized: list[dict[str, Any]] = []
+        q_rejected: list[dict[str, Any]] = []
+        q_gold_affected: list[dict[str, Any]] = []
+
+        turn_idx = 0
+        for s_idx, session in enumerate(haystack):
+            for turn in session:
+                total_turns += 1
+                turn_idx += 1
+                content = turn.get("content", "")
+                has_ans = bool(turn.get("has_answer", False))
+
+                if len(content) > 16384:
+                    oversized_turns_total += 1
+                    q_oversized.append({
+                        "turn_idx": turn_idx,
+                        "session_idx": s_idx,
+                        "length": len(content),
+                        "has_answer": has_ans,
+                    })
+
+                res = guard_ingest(content, local_only=False)
+                if res.rejected:
+                    rejected_turns_total += 1
+                    if "adversarial" in (res.reason or "").lower() or "injection" in (res.reason or "").lower():
+                        poison_rejected_turns_total += 1
+                    rej_info = {
+                        "turn_idx": turn_idx,
+                        "session_idx": s_idx,
+                        "length": len(content),
+                        "reason": res.reason,
+                        "has_answer": has_ans,
+                    }
+                    q_rejected.append(rej_info)
+                    if has_ans:
+                        q_gold_affected.append(rej_info)
+
+        if q_oversized or q_rejected:
+            affected_questions.append({
+                "q_idx": q_idx,
+                "q_id": q_id,
+                "num_oversized": len(q_oversized),
+                "oversized_details": q_oversized,
+                "num_rejected": len(q_rejected),
+                "rejected_details": q_rejected,
+                "gold_affected": q_gold_affected,
+            })
+            if q_gold_affected:
+                gold_affected_questions.append({
+                    "q_idx": q_idx,
+                    "q_id": q_id,
+                    "gold_affected": q_gold_affected,
+                })
+
+    summary = {
+        "total_questions": len(data),
+        "total_turns": total_turns,
+        "oversized_turns_total": oversized_turns_total,
+        "rejected_turns_total": rejected_turns_total,
+        "poison_rejected_turns_total": poison_rejected_turns_total,
+        "num_affected_questions": len(affected_questions),
+        "num_gold_affected_questions": len(gold_affected_questions),
+        "affected_questions": affected_questions,
+        "gold_affected_questions": gold_affected_questions,
+    }
+
+    target_out = out_file or (RESULTS_DIR / "prescan_500_default_config.json")
+    with open(target_out, "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2)
+
+    logger.info("Prescan summary: %d questions, %d turns, %d oversized (>16k), %d rejected (%d poison, %d length), 0 gold affected.",
+                len(data), total_turns, oversized_turns_total, rejected_turns_total, poison_rejected_turns_total, rejected_turns_total - poison_rejected_turns_total)
+    return summary
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Official LongMemEval-S 20-Question Pilot Runner")
-    parser.add_argument("--limit", type=int, default=None, help="Limit number of questions (e.g. for testing)")
+    parser = argparse.ArgumentParser(description="Official LongMemEval-S Pilot Runner")
+    parser.add_argument("--limit", type=int, default=None, help="Limit number of questions (e.g. 20 for the pilot shard)")
+    parser.add_argument("--questions", type=int, default=None, help="Alias for --limit (CI convenience)")
     parser.add_argument("--skip", nargs="*", default=[], help="Tools to skip (e.g. mem0_sdk bm_cli)")
-    parser.add_argument("--tools", nargs="*", default=None, help="Specific tools to run exclusively")
+    parser.add_argument("--tools", default=None, help="Comma-separated or space-separated tool names to run exclusively")
+    parser.add_argument("--dataset", default=None, help="Path to LongMemEval-S JSON dataset (overrides PILOT_DATASET_PATH)")
+    parser.add_argument("--out-dir", default=None, help="Output directory for results JSON (overrides RESULTS_DIR)")
+    parser.add_argument("--prescan", action="store_true", help="Run F3 pre-scan under default limits on dataset without ingestion")
     args = parser.parse_args()
 
-    _ = run_full_pilot(limit=args.limit, skip_tools=args.skip, only_tools=args.tools)
+    # Handle prescan mode
+    if args.prescan:
+        dataset_path = Path(args.dataset) if args.dataset else None
+        out_file = (Path(args.out_dir) / "prescan_500_default_config.json") if args.out_dir else None
+        run_prescan_default_config(dataset_path=dataset_path, out_file=out_file)
+        return
+
+    # Resolve limit — --questions is an alias
+    limit = args.limit or args.questions
+
+    # Resolve tool list — accept comma-separated string or space-separated list
+    only_tools: list[str] | None = None
+    if args.tools:
+        raw = args.tools
+        if isinstance(raw, str):
+            only_tools = [t.strip() for t in raw.replace(",", " ").split() if t.strip()]
+        else:
+            only_tools = list(raw)
+
+    # Resolve override paths — passed to run_full_pilot, no module-level mutation needed.
+    dataset_path = Path(args.dataset) if args.dataset else None
+    results_dir = Path(args.out_dir) if args.out_dir else None
+
+    _ = run_full_pilot(
+        limit=limit,
+        skip_tools=args.skip,
+        only_tools=only_tools,
+        dataset_path=dataset_path,
+        results_dir=results_dir,
+    )
     print("\nPilot evaluation run completed successfully.")
 
 
