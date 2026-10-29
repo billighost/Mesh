@@ -646,82 +646,84 @@ def eval_mesh_cli_daemon_question(q_data: dict[str, Any], q_idx: int) -> dict[st
         daemon_startup_sec = round(time.perf_counter() - t0_daemon, 3)
 
         with ProcessTreePeakTracker(include_parent=False) as tracker:
-            ingest_accounting = {
-                "haystack_turns": q_data.get("total_haystack_turns", len(q_data["items"]) - 2),
-                "total_submitted": len(q_data["items"]),
-                "ingested": 0,
-                "rejected": 0,
-                "rejection_reasons": [],
-                "failed": 0,
-                "failed_reasons": [],
-                "quarantined": 0,
-                "gold_turn_status": "all_ingested",
-            }
+            try:
+                ingest_accounting = {
+                    "haystack_turns": q_data.get("total_haystack_turns", len(q_data["items"]) - 2),
+                    "total_submitted": len(q_data["items"]),
+                    "ingested": 0,
+                    "rejected": 0,
+                    "rejection_reasons": [],
+                    "failed": 0,
+                    "failed_reasons": [],
+                    "quarantined": 0,
+                    "gold_turn_status": "all_ingested",
+                }
 
-            with DualTimer() as dt_ingest:
-                for item in q_data["items"]:
-                    is_gold = item.get("has_answer") is True
-                    resp = _daemon_request("/learn", payload={"content": item["content"], "tags": [item["tag"]], "namespace": ns}, port=test_port)
-                    if resp and resp.get("status") == "ok":
-                        ingest_accounting["ingested"] += 1
-                    elif resp and resp.get("status") == "error":
-                        ingest_accounting["rejected"] += 1
-                        ingest_accounting["rejection_reasons"].append(resp.get("error", "daemon error"))
-                        if is_gold:
-                            ingest_accounting["gold_turn_status"] = "gold_rejected"
-                    else:
-                        ingest_accounting["failed"] += 1
-                        ingest_accounting["failed_reasons"].append("unknown daemon failure")
-                        if is_gold:
-                            ingest_accounting["gold_turn_status"] = "gold_failed"
-            write_sec = dt_ingest.mono_elapsed
+                with DualTimer() as dt_ingest:
+                    for item in q_data["items"]:
+                        is_gold = item.get("has_answer") is True
+                        resp = _daemon_request("/learn", payload={"content": item["content"], "tags": [item["tag"]], "namespace": ns}, port=test_port)
+                        if resp and resp.get("status") == "ok":
+                            ingest_accounting["ingested"] += 1
+                        elif resp and resp.get("status") == "error":
+                            ingest_accounting["rejected"] += 1
+                            ingest_accounting["rejection_reasons"].append(resp.get("error", "daemon error"))
+                            if is_gold:
+                                ingest_accounting["gold_turn_status"] = "gold_rejected"
+                        else:
+                            ingest_accounting["failed"] += 1
+                            ingest_accounting["failed_reasons"].append("unknown daemon failure")
+                            if is_gold:
+                                ingest_accounting["gold_turn_status"] = "gold_failed"
+                write_sec = dt_ingest.mono_elapsed
 
-            # Snapshot store
-            snap_ki = f"{ns}_ki"
-            snap_lt = f"{ns}_lt"
-            snap_raw = f"{ns}_raw"
-            snap_kw = f"{ns}_kw"
-            snapshot_mesh_db(base, ns, snap_ki)
-            snapshot_mesh_db(base, ns, snap_lt)
-            snapshot_mesh_db(base, ns, snap_raw)
-            snapshot_mesh_db(base, ns, snap_kw)
+                # Snapshot store
+                snap_ki = f"{ns}_ki"
+                snap_lt = f"{ns}_lt"
+                snap_raw = f"{ns}_raw"
+                snap_kw = f"{ns}_kw"
+                snapshot_mesh_db(base, ns, snap_ki)
+                snapshot_mesh_db(base, ns, snap_lt)
+                snapshot_mesh_db(base, ns, snap_raw)
+                snapshot_mesh_db(base, ns, snap_kw)
 
-            # First query after ready
-            t0_first = time.perf_counter()
-            ki_resp = _daemon_request("/recall", payload={"query": KNOWN_ITEM_QUERY, "n": 5, "namespace": snap_ki}, port=test_port)
-            first_query_after_ready_ms = round((time.perf_counter() - t0_first) * 1000.0, 2)
-            ki_res = (ki_resp or {}).get("results", [])
-            ki_rank = None
-            for r, cand in enumerate(ki_res, start=1):
-                if KNOWN_ITEM_TAG in cand.get("content", ""):
-                    ki_rank = r
-                    break
+                # First query after ready
+                t0_first = time.perf_counter()
+                ki_resp = _daemon_request("/recall", payload={"query": KNOWN_ITEM_QUERY, "n": 5, "namespace": snap_ki}, port=test_port)
+                first_query_after_ready_ms = round((time.perf_counter() - t0_first) * 1000.0, 2)
+                ki_res = (ki_resp or {}).get("results", [])
+                ki_rank = None
+                for r, cand in enumerate(ki_res, start=1):
+                    if KNOWN_ITEM_TAG in cand.get("content", ""):
+                        ki_rank = r
+                        break
 
-            # Long turn check
-            lt_resp = _daemon_request("/recall", payload={"query": LONG_TURN_QUERY, "n": 5, "namespace": snap_lt}, port=test_port)
-            lt_res = (lt_resp or {}).get("results", [])
-            lt_tag_found = any(LONG_TURN_TAG in cand.get("content", "") for cand in lt_res)
+                # Long turn check
+                lt_resp = _daemon_request("/recall", payload={"query": LONG_TURN_QUERY, "n": 5, "namespace": snap_lt}, port=test_port)
+                lt_res = (lt_resp or {}).get("results", [])
+                lt_tag_found = any(LONG_TURN_TAG in cand.get("content", "") for cand in lt_res)
 
-            # Query Raw
-            with DualTimer() as dt_raw:
-                raw_resp = _daemon_request("/recall", payload={"query": q_data["question"], "n": 10, "namespace": snap_raw}, port=test_port)
-            raw_res = (raw_resp or {}).get("results", [])
-            raw_cands = [(r.get("id", ""), r.get("content", "")) for r in raw_res]
-            raw_ids = [extract_turn_identifier(r.get("id", ""), r.get("content", "")) or r.get("id", "") for r in raw_res]
-            backend = (raw_resp or {}).get("embedding_backend", "unknown")
-            raw_scores = score_candidates(raw_cands, q_data["gold_turn_tags"], q_data["gold_session_tags"], q_data["tag_to_session"])
+                # Query Raw
+                with DualTimer() as dt_raw:
+                    raw_resp = _daemon_request("/recall", payload={"query": q_data["question"], "n": 10, "namespace": snap_raw}, port=test_port)
+                raw_res = (raw_resp or {}).get("results", [])
+                raw_cands = [(r.get("id", ""), r.get("content", "")) for r in raw_res]
+                raw_ids = [extract_turn_identifier(r.get("id", ""), r.get("content", "")) or r.get("id", "") for r in raw_res]
+                backend = (raw_resp or {}).get("embedding_backend", "unknown")
+                raw_scores = score_candidates(raw_cands, q_data["gold_turn_tags"], q_data["gold_session_tags"], q_data["tag_to_session"])
 
-            # Query Keyword
-            with DualTimer() as dt_kw:
-                kw_resp = _daemon_request("/recall", payload={"query": q_data["question_kw"], "n": 10, "namespace": snap_kw}, port=test_port)
-            kw_res = (kw_resp or {}).get("results", [])
-            kw_cands = [(r.get("id", ""), r.get("content", "")) for r in kw_res]
-            kw_scores = score_candidates(kw_cands, q_data["gold_turn_tags"], q_data["gold_session_tags"], q_data["tag_to_session"])
+                # Query Keyword
+                with DualTimer() as dt_kw:
+                    kw_resp = _daemon_request("/recall", payload={"query": q_data["question_kw"], "n": 10, "namespace": snap_kw}, port=test_port)
+                kw_res = (kw_resp or {}).get("results", [])
+                kw_cands = [(r.get("id", ""), r.get("content", "")) for r in kw_res]
+                kw_scores = score_candidates(kw_cands, q_data["gold_turn_tags"], q_data["gold_session_tags"], q_data["tag_to_session"])
 
-            stop_daemon(port=test_port)
-            time.sleep(0.3)
-            disk_info = checkpoint_and_analyze_disk(base)
-            gc.collect()
+                disk_info = checkpoint_and_analyze_disk(base)
+                gc.collect()
+            finally:
+                stop_daemon(port=test_port)
+                time.sleep(0.3)
 
         return {
             "write_seconds": write_sec,
