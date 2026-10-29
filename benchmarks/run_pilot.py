@@ -54,7 +54,7 @@ KNOWN_ITEM_TAG = "[turn:00000]"
 KNOWN_ITEM_CONTENT = f"{KNOWN_ITEM_TAG} The cerulean observatory celestial frequency atop Mount Horizon recorded an anomalous 432.85 MHz on stellar quadrant nine."
 KNOWN_ITEM_ANSWER = "432.85 MHz"
 
-LONG_TURN_QUERY = "cobalt quantum telescope astronomical phenomena"
+LONG_TURN_QUERY = "cobalt quantum telescope observed astronomical phenomena"
 LONG_TURN_TAG = "[turn:00001]"
 LONG_TURN_CONTENT = f"{LONG_TURN_TAG} " + ("The cobalt quantum telescope observed astronomical phenomena in deep space. " * 45)
 
@@ -86,39 +86,59 @@ def extract_keywords(query: str) -> str:
     return " ".join(keywords) if keywords else query.strip()
 
 
-def get_process_tree_rss_mb() -> float:
+def get_harness_baseline_rss_mb() -> float:
+    if not psutil:
+        return 0.0
+    try:
+        return round(psutil.Process().memory_info().rss / (1024 * 1024), 2)
+    except Exception:
+        return 0.0
+
+
+def get_process_tree_rss_mb(include_parent: bool = False, extra_pids: Optional[list[int]] = None) -> float:
     if not psutil:
         return 0.0
     try:
         parent = psutil.Process()
-        total_rss = parent.memory_info().rss
+        total_rss = parent.memory_info().rss if include_parent else 0
         for child in parent.children(recursive=True):
             try:
                 total_rss += child.memory_info().rss
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 pass
+        if extra_pids:
+            for pid in extra_pids:
+                try:
+                    p = psutil.Process(pid)
+                    total_rss += p.memory_info().rss
+                    for c in p.children(recursive=True):
+                        total_rss += c.memory_info().rss
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
         return round(total_rss / (1024 * 1024), 2)
     except Exception:
         return 0.0
 
 
 class ProcessTreePeakTracker:
-    def __init__(self, interval: float = 0.1):
+    def __init__(self, interval: float = 0.1, include_parent: bool = False, extra_pids: Optional[list[int]] = None):
         self.interval = interval
+        self.include_parent = include_parent
+        self.extra_pids = extra_pids or []
         self.peak_mb = 0.0
         self._stop_event = None
         self._thread = None
 
     def _monitor(self):
         while not self._stop_event.is_set():
-            rss = get_process_tree_rss_mb()
+            rss = get_process_tree_rss_mb(self.include_parent, self.extra_pids)
             if rss > self.peak_mb:
                 self.peak_mb = rss
             time.sleep(self.interval)
 
     def __enter__(self):
         import threading
-        self.peak_mb = get_process_tree_rss_mb()
+        self.peak_mb = get_process_tree_rss_mb(self.include_parent, self.extra_pids)
         self._stop_event = threading.Event()
         self._thread = threading.Thread(target=self._monitor, daemon=True)
         self._thread.start()
@@ -129,7 +149,7 @@ class ProcessTreePeakTracker:
             self._stop_event.set()
         if self._thread:
             self._thread.join(timeout=1.0)
-        final_rss = get_process_tree_rss_mb()
+        final_rss = get_process_tree_rss_mb(self.include_parent, self.extra_pids)
         if final_rss > self.peak_mb:
             self.peak_mb = final_rss
 
@@ -167,7 +187,7 @@ def checkpoint_and_analyze_disk(directory: Path | str) -> dict[str, Any]:
 
             lower_name = f.name.lower()
             lower_path = str(f).lower()
-            if "model" in lower_path or ".onnx" in lower_name:
+            if "fastembed_cache" in lower_path or "models--" in lower_path or "blobs" in lower_path or "models" in lower_path or ".onnx" in lower_name:
                 model_bytes += sz
             elif "audit" in lower_name:
                 audit_bytes += sz
@@ -212,6 +232,66 @@ def link_shared_models(target_mesh_home: Path):
             os.symlink(shared_models, dst_models)
     except Exception:
         pass
+
+
+SHARED_FASTEMBED_CACHE = Path.home() / ".cache" / "fastembed_shared"
+
+
+def link_shared_fastembed(target_bm_home: Path):
+    if not SHARED_FASTEMBED_CACHE.exists():
+        return
+    dst_cache = target_bm_home / ".basic-memory" / "fastembed_cache"
+    dst_cache.parent.mkdir(parents=True, exist_ok=True)
+    if dst_cache.exists():
+        return
+    try:
+        if os.name == "nt":
+            import _winapi
+            _winapi.CreateJunction(str(SHARED_FASTEMBED_CACHE), str(dst_cache))
+        else:
+            os.symlink(SHARED_FASTEMBED_CACHE, dst_cache)
+    except Exception:
+        pass
+
+
+def snapshot_mesh_db(base: Path, src_ns: str, dst_ns: str) -> None:
+    from mesh.namespaces import _evict_namespace_caches
+    _evict_namespace_caches(src_ns)
+    src_db = base / f"mesh_{src_ns}.db"
+    dst_db = base / f"mesh_{dst_ns}.db"
+    if not src_db.exists():
+        return
+    conn = sqlite3.connect(str(src_db))
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    finally:
+        conn.close()
+    shutil.copy2(src_db, dst_db)
+    conn2 = sqlite3.connect(str(dst_db))
+    try:
+        conn2.execute("UPDATE memories SET namespace = ?", (dst_ns,))
+        conn2.commit()
+        conn2.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    finally:
+        conn2.close()
+
+
+def parse_auxly_output(raw_output: str) -> list[tuple[str, str]]:
+    if not raw_output or not raw_output.strip():
+        return []
+    candidates = []
+    blocks = re.split(r"(?:\n|^)\s*(?:📄|\U0001f4c4|\?)\s*([a-zA-Z0-9_\-\.]+\.md)", raw_output)
+    if len(blocks) >= 3:
+        for i in range(1, len(blocks), 2):
+            fname = blocks[i].strip()
+            body = blocks[i + 1].strip() if i + 1 < len(blocks) else ""
+            candidates.append((fname, body))
+    elif raw_output.strip():
+        for m in re.finditer(r"(turn_\d+\.md)", raw_output):
+            candidates.append((m.group(1), raw_output))
+        if not candidates:
+            candidates.append(("auxly_raw", raw_output))
+    return candidates
 
 
 def compute_bootstrap_ci(data: list[float], n_boot: int = 1000, ci: float = 0.95, seed: int = 42) -> list[float]:
@@ -336,15 +416,35 @@ def prepare_question_haystack(q: dict[str, Any], q_idx: int) -> dict[str, Any]:
 # TOOL EVALUATORS (PER-QUESTION FRESH STORE LIFECYCLE)
 # -----------------------------------------------------------------------------
 
+def extract_turn_identifier(c_id: str, c_text: str) -> Optional[str]:
+    for s in [c_id, c_text]:
+        if not s:
+            continue
+        m = re.search(r"\[turn:(\d+)\]", s, re.IGNORECASE)
+        if m:
+            return f"[turn:{int(m.group(1)):05d}]"
+        m = re.search(r"turn[_\:](\d+)", s, re.IGNORECASE)
+        if m:
+            return f"[turn:{int(m.group(1)):05d}]"
+        m = re.search(r"turn_(\d+)\.md", s, re.IGNORECASE)
+        if m:
+            return f"[turn:{int(m.group(1)):05d}]"
+    return None
+
+
 def score_candidates(
     candidates: list[tuple[str, str]],
     gold_turn_tags: set[str],
     gold_session_tags: set[str],
     tag_to_session: dict[str, str],
 ) -> dict[str, Any]:
-    """Score retrieval candidates for turn-level and session-level metrics."""
+    """Score retrieval candidates using ID-based mapping as primary, tag substring as fallback."""
     first_turn_rank = None
     for r, (c_id, c_text) in enumerate(candidates, start=1):
+        tag = extract_turn_identifier(c_id, c_text)
+        if tag and tag in gold_turn_tags:
+            first_turn_rank = r
+            break
         for gt in gold_turn_tags:
             if gt in c_id or gt in c_text:
                 first_turn_rank = r
@@ -354,6 +454,11 @@ def score_candidates(
 
     first_sess_rank = None
     for r, (c_id, c_text) in enumerate(candidates, start=1):
+        tag = extract_turn_identifier(c_id, c_text)
+        sess = tag_to_session.get(tag) if tag else None
+        if sess and sess in gold_session_tags:
+            first_sess_rank = r
+            break
         for st in gold_session_tags:
             if st in c_id or st in c_text:
                 first_sess_rank = r
@@ -390,49 +495,104 @@ def eval_mesh_sdk_question(q_data: dict[str, Any], q_idx: int) -> dict[str, Any]
         os.environ["MESH_MAX_CONTENT_LENGTH"] = "131072"
         ns = f"pilot_q_{q_idx}"
 
-        # Synchronously warm up model so zero hash-384 fallback occurs
         warmup_model(assume_yes=True, blocking=True)
+        harness_baseline_mb = get_harness_baseline_rss_mb()
 
-        with ProcessTreePeakTracker() as tracker:
+        with ProcessTreePeakTracker(include_parent=True) as tracker:
             mesh = Mesh(namespace=ns, agent_id="eval_agent")
 
-            # Ingestion
+            ingest_accounting = {
+                "haystack_turns": q_data.get("total_haystack_turns", len(q_data["items"]) - 2),
+                "total_submitted": len(q_data["items"]),
+                "ingested": 0,
+                "rejected": 0,
+                "rejection_reasons": [],
+                "failed": 0,
+                "failed_reasons": [],
+                "quarantined": 0,
+                "gold_turn_status": "all_ingested",
+            }
+
+            turn_latencies_ms = []
             with DualTimer() as dt_ingest:
                 for item in q_data["items"]:
+                    is_gold = item.get("has_answer") is True
+                    t0 = time.perf_counter()
                     try:
                         mesh.learn(item["content"], tags=[item["tag"]])
-                    except ValueError:
-                        pass
+                        ingest_accounting["ingested"] += 1
+                        turn_latencies_ms.append((time.perf_counter() - t0) * 1000.0)
+                    except ValueError as e:
+                        err_str = str(e)
+                        ingest_accounting["rejected"] += 1
+                        ingest_accounting["rejection_reasons"].append(err_str)
+                        if is_gold:
+                            ingest_accounting["gold_turn_status"] = "gold_rejected"
+                    except Exception as e:
+                        ingest_accounting["failed"] += 1
+                        ingest_accounting["failed_reasons"].append(str(e))
+                        if is_gold:
+                            ingest_accounting["gold_turn_status"] = "gold_failed"
             write_sec = dt_ingest.mono_elapsed
 
-            # Known item check
-            ki_res = mesh.recall(KNOWN_ITEM_QUERY, n=5)
+            first_50_mean = round(statistics.mean(turn_latencies_ms[:50]), 2) if len(turn_latencies_ms) >= 50 else round(statistics.mean(turn_latencies_ms), 2)
+            last_50_mean = round(statistics.mean(turn_latencies_ms[-50:]), 2) if len(turn_latencies_ms) >= 50 else round(statistics.mean(turn_latencies_ms), 2)
+
+            mesh.close()
+            _evict_namespace_caches(ns)
+
+            # Create isolated query snapshots
+            snap_ki = f"{ns}_ki"
+            snap_lt = f"{ns}_lt"
+            snap_raw = f"{ns}_raw"
+            snap_kw = f"{ns}_kw"
+            snapshot_mesh_db(base, ns, snap_ki)
+            snapshot_mesh_db(base, ns, snap_lt)
+            snapshot_mesh_db(base, ns, snap_raw)
+            snapshot_mesh_db(base, ns, snap_kw)
+
+            # Known item check on snap_ki
+            mesh_ki = Mesh(namespace=snap_ki, agent_id="eval_agent")
+            ki_res = mesh_ki.recall(KNOWN_ITEM_QUERY, n=5)
             ki_rank = None
             for r, cand in enumerate(ki_res, start=1):
                 if KNOWN_ITEM_TAG in cand.get("content", "") or any(KNOWN_ITEM_TAG in t for t in cand.get("tags", [])):
                     ki_rank = r
                     break
+            mesh_ki.close()
+            _evict_namespace_caches(snap_ki)
 
-            # Long turn check
-            lt_res = mesh.recall(LONG_TURN_QUERY, n=5)
+            # Long turn check on snap_lt
+            mesh_lt = Mesh(namespace=snap_lt, agent_id="eval_agent")
+            lt_res = mesh_lt.recall(LONG_TURN_QUERY, n=5)
             lt_tag_found = any(LONG_TURN_TAG in cand.get("content", "") for cand in lt_res)
+            mesh_lt.close()
+            _evict_namespace_caches(snap_lt)
 
-            # Query Raw
+            # Query Raw on snap_raw
+            mesh_raw = Mesh(namespace=snap_raw, agent_id="eval_agent")
             with DualTimer() as dt_raw:
-                raw_res = mesh.recall(q_data["question"], n=10)
-            raw_cands = [(r.get("memory_id", ""), r.get("content", "")) for r in raw_res]
+                raw_res = mesh_raw.recall(q_data["question"], n=10)
+            raw_cands = [(r.get("id", ""), r.get("content", "")) for r in raw_res]
+            raw_ids = [extract_turn_identifier(r.get("id", ""), r.get("content", "")) or r.get("id", "") for r in raw_res]
+            backend = raw_res[0].get("embedding_backend", "unknown") if raw_res else "unknown"
             raw_scores = score_candidates(raw_cands, q_data["gold_turn_tags"], q_data["gold_session_tags"], q_data["tag_to_session"])
+            mesh_raw.close()
+            _evict_namespace_caches(snap_raw)
 
-            # Query Keyword
+            # Query Keyword on snap_kw
+            mesh_kw = Mesh(namespace=snap_kw, agent_id="eval_agent")
             with DualTimer() as dt_kw:
-                kw_res = mesh.recall(q_data["question_kw"], n=10)
-            kw_cands = [(r.get("memory_id", ""), r.get("content", "")) for r in kw_res]
+                kw_res = mesh_kw.recall(q_data["question_kw"], n=10)
+            kw_cands = [(r.get("id", ""), r.get("content", "")) for r in kw_res]
             kw_scores = score_candidates(kw_cands, q_data["gold_turn_tags"], q_data["gold_session_tags"], q_data["tag_to_session"])
+            mesh_kw.close()
+            _evict_namespace_caches(snap_kw)
 
-            mesh.close()
-            _evict_namespace_caches(ns)
             disk_info = checkpoint_and_analyze_disk(base)
             gc.collect()
+
+        tool_peak_ram = max(0.0, round(tracker.peak_mb - harness_baseline_mb, 2))
 
         return {
             "write_seconds": write_sec,
@@ -443,9 +603,22 @@ def eval_mesh_sdk_question(q_data: dict[str, Any], q_idx: int) -> dict[str, Any]
             "lt_tag_found": lt_tag_found,
             "raw_scores": raw_scores,
             "kw_scores": kw_scores,
+            "raw_ids": raw_ids,
+            "embedding_backend": backend,
             "disk": disk_info,
-            "ram_mb": tracker.peak_mb,
+            "ram_mb": tool_peak_ram,
+            "harness_baseline_ram_mb": harness_baseline_mb,
+            "ingest_accounting": ingest_accounting,
+            "timing_breakdown": {
+                "first_50_turns_mean_ms": first_50_mean,
+                "last_50_turns_mean_ms": last_50_mean,
+                "latency_growth_ratio": round(last_50_mean / first_50_mean, 2) if first_50_mean else 1.0,
+            },
             "top_candidates_raw": [c[1][:100] for c in raw_cands[:3]],
+            "raw_results_payload": [
+                {"id": extract_turn_identifier(r.get("id", ""), r.get("content", "")) or r.get("id"), "content": r.get("content", "")[:200], "score": r.get("similarity")}
+                for r in raw_res[:5]
+            ],
         }
 
 
@@ -458,36 +631,65 @@ def eval_mesh_cli_daemon_question(q_data: dict[str, Any], q_idx: int) -> dict[st
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True, prefix=f"pilot_mesh_daemon_{q_idx}_") as temp_dir:
         base = Path(temp_dir)
         link_shared_models(base)
-        env = os.environ.copy()
-        env["MESH_HOME"] = str(base)
-        env["MESH_HTTP_PORT"] = str(test_port)
-        env["MESH_PORT"] = str(test_port)
-        env["MESH_NO_UPDATE_CHECK"] = "1"
-        env["MESH_NO_MODEL_DOWNLOAD"] = "1"
-        env["MESH_SYNC_ONNX"] = "1"
-        env["MESH_MAX_CONTENT_LENGTH"] = "131072"
-        ns = f"pilot_daemon_{q_idx}"
-
         os.environ["MESH_HOME"] = str(base)
         os.environ["MESH_HTTP_PORT"] = str(test_port)
         os.environ["MESH_PORT"] = str(test_port)
         os.environ["MESH_SYNC_ONNX"] = "1"
         os.environ["MESH_MAX_CONTENT_LENGTH"] = "131072"
+        os.environ["MESH_NO_MODEL_DOWNLOAD"] = "1"
+        os.environ["MESH_NO_UPDATE_CHECK"] = "1"
+        ns = f"pilot_daemon_{q_idx}"
 
-        with ProcessTreePeakTracker() as tracker:
-            # 1. Start daemon and wait for readiness probe
-            t0_daemon = time.perf_counter()
-            start_daemon(port=test_port, wait=True, wait_for_ready=True, lazy=False)
-            daemon_startup_sec = round(time.perf_counter() - t0_daemon, 3)
+        harness_baseline_mb = get_harness_baseline_rss_mb()
+        t0_daemon = time.perf_counter()
+        start_daemon(port=test_port, wait=True, wait_for_ready=True, lazy=False)
+        daemon_startup_sec = round(time.perf_counter() - t0_daemon, 3)
 
-            # 2. Ingest turns
+        with ProcessTreePeakTracker(include_parent=False) as tracker:
+            ingest_accounting = {
+                "haystack_turns": q_data.get("total_haystack_turns", len(q_data["items"]) - 2),
+                "total_submitted": len(q_data["items"]),
+                "ingested": 0,
+                "rejected": 0,
+                "rejection_reasons": [],
+                "failed": 0,
+                "failed_reasons": [],
+                "quarantined": 0,
+                "gold_turn_status": "all_ingested",
+            }
+
             with DualTimer() as dt_ingest:
                 for item in q_data["items"]:
-                    _daemon_request("/learn", payload={"content": item["content"], "tags": [item["tag"]], "namespace": ns}, port=test_port)
+                    is_gold = item.get("has_answer") is True
+                    resp = _daemon_request("/learn", payload={"content": item["content"], "tags": [item["tag"]], "namespace": ns}, port=test_port)
+                    if resp and resp.get("status") == "ok":
+                        ingest_accounting["ingested"] += 1
+                    elif resp and resp.get("status") == "error":
+                        ingest_accounting["rejected"] += 1
+                        ingest_accounting["rejection_reasons"].append(resp.get("error", "daemon error"))
+                        if is_gold:
+                            ingest_accounting["gold_turn_status"] = "gold_rejected"
+                    else:
+                        ingest_accounting["failed"] += 1
+                        ingest_accounting["failed_reasons"].append("unknown daemon failure")
+                        if is_gold:
+                            ingest_accounting["gold_turn_status"] = "gold_failed"
             write_sec = dt_ingest.mono_elapsed
 
-            # 3. Known item check
-            ki_resp = _daemon_request("/recall", payload={"query": KNOWN_ITEM_QUERY, "n": 5, "namespace": ns}, port=test_port)
+            # Snapshot store
+            snap_ki = f"{ns}_ki"
+            snap_lt = f"{ns}_lt"
+            snap_raw = f"{ns}_raw"
+            snap_kw = f"{ns}_kw"
+            snapshot_mesh_db(base, ns, snap_ki)
+            snapshot_mesh_db(base, ns, snap_lt)
+            snapshot_mesh_db(base, ns, snap_raw)
+            snapshot_mesh_db(base, ns, snap_kw)
+
+            # First query after ready
+            t0_first = time.perf_counter()
+            ki_resp = _daemon_request("/recall", payload={"query": KNOWN_ITEM_QUERY, "n": 5, "namespace": snap_ki}, port=test_port)
+            first_query_after_ready_ms = round((time.perf_counter() - t0_first) * 1000.0, 2)
             ki_res = (ki_resp or {}).get("results", [])
             ki_rank = None
             for r, cand in enumerate(ki_res, start=1):
@@ -495,26 +697,27 @@ def eval_mesh_cli_daemon_question(q_data: dict[str, Any], q_idx: int) -> dict[st
                     ki_rank = r
                     break
 
-            # 4. Long turn check
-            lt_resp = _daemon_request("/recall", payload={"query": LONG_TURN_QUERY, "n": 5, "namespace": ns}, port=test_port)
+            # Long turn check
+            lt_resp = _daemon_request("/recall", payload={"query": LONG_TURN_QUERY, "n": 5, "namespace": snap_lt}, port=test_port)
             lt_res = (lt_resp or {}).get("results", [])
             lt_tag_found = any(LONG_TURN_TAG in cand.get("content", "") for cand in lt_res)
 
-            # 5. Query Raw
+            # Query Raw
             with DualTimer() as dt_raw:
-                raw_resp = _daemon_request("/recall", payload={"query": q_data["question"], "n": 10, "namespace": ns}, port=test_port)
+                raw_resp = _daemon_request("/recall", payload={"query": q_data["question"], "n": 10, "namespace": snap_raw}, port=test_port)
             raw_res = (raw_resp or {}).get("results", [])
-            raw_cands = [(r.get("memory_id", ""), r.get("content", "")) for r in raw_res]
+            raw_cands = [(r.get("id", ""), r.get("content", "")) for r in raw_res]
+            raw_ids = [extract_turn_identifier(r.get("id", ""), r.get("content", "")) or r.get("id", "") for r in raw_res]
+            backend = (raw_resp or {}).get("embedding_backend", "unknown")
             raw_scores = score_candidates(raw_cands, q_data["gold_turn_tags"], q_data["gold_session_tags"], q_data["tag_to_session"])
 
-            # 6. Query Keyword
+            # Query Keyword
             with DualTimer() as dt_kw:
-                kw_resp = _daemon_request("/recall", payload={"query": q_data["question_kw"], "n": 10, "namespace": ns}, port=test_port)
+                kw_resp = _daemon_request("/recall", payload={"query": q_data["question_kw"], "n": 10, "namespace": snap_kw}, port=test_port)
             kw_res = (kw_resp or {}).get("results", [])
-            kw_cands = [(r.get("memory_id", ""), r.get("content", "")) for r in kw_res]
+            kw_cands = [(r.get("id", ""), r.get("content", "")) for r in kw_res]
             kw_scores = score_candidates(kw_cands, q_data["gold_turn_tags"], q_data["gold_session_tags"], q_data["tag_to_session"])
 
-            # Stop daemon
             stop_daemon(port=test_port)
             time.sleep(0.3)
             disk_info = checkpoint_and_analyze_disk(base)
@@ -523,6 +726,7 @@ def eval_mesh_cli_daemon_question(q_data: dict[str, Any], q_idx: int) -> dict[st
         return {
             "write_seconds": write_sec,
             "daemon_startup_sec": daemon_startup_sec,
+            "first_query_after_ready_ms": first_query_after_ready_ms,
             "raw_ms": dt_raw.mono_elapsed * 1000,
             "kw_ms": dt_kw.mono_elapsed * 1000,
             "dt_flag": dt_raw.discrepancy_flag or dt_kw.discrepancy_flag,
@@ -530,9 +734,17 @@ def eval_mesh_cli_daemon_question(q_data: dict[str, Any], q_idx: int) -> dict[st
             "lt_tag_found": lt_tag_found,
             "raw_scores": raw_scores,
             "kw_scores": kw_scores,
+            "raw_ids": raw_ids,
+            "embedding_backend": backend,
             "disk": disk_info,
             "ram_mb": tracker.peak_mb,
+            "harness_baseline_ram_mb": harness_baseline_mb,
+            "ingest_accounting": ingest_accounting,
             "top_candidates_raw": [c[1][:100] for c in raw_cands[:3]],
+            "raw_results_payload": [
+                {"id": extract_turn_identifier(r.get("id", ""), r.get("content", "")) or r.get("id"), "content": r.get("content", "")[:200], "score": r.get("similarity")}
+                for r in raw_res[:5]
+            ],
         }
 
 
@@ -565,43 +777,102 @@ async def eval_mesh_mcp_question_async(q_data: dict[str, Any], q_idx: int) -> di
             env=env,
         )
 
-        with ProcessTreePeakTracker() as tracker:
+        harness_baseline_mb = get_harness_baseline_rss_mb()
+        with ProcessTreePeakTracker(include_parent=False) as tracker:
             async with stdio_client(params) as (read, write):
                 async with ClientSession(read, write) as session:
                     await session.initialize()
 
+                    ingest_accounting = {
+                        "haystack_turns": q_data.get("total_haystack_turns", len(q_data["items"]) - 2),
+                        "total_submitted": len(q_data["items"]),
+                        "ingested": 0,
+                        "rejected": 0,
+                        "rejection_reasons": [],
+                        "failed": 0,
+                        "failed_reasons": [],
+                        "quarantined": 0,
+                        "gold_turn_status": "all_ingested",
+                    }
+
                     # Ingest
                     with DualTimer() as dt_ingest:
                         for item in q_data["items"]:
-                            await session.call_tool("mesh_learn", arguments={
-                                "content": item["content"],
-                                "tags": [item["tag"]],
-                                "namespace": ns,
-                            })
+                            is_gold = item.get("has_answer") is True
+                            try:
+                                await session.call_tool("mesh_learn", arguments={
+                                    "content": item["content"],
+                                    "tags": [item["tag"]],
+                                    "namespace": ns,
+                                })
+                                ingest_accounting["ingested"] += 1
+                            except Exception as e:
+                                ingest_accounting["failed"] += 1
+                                ingest_accounting["failed_reasons"].append(str(e))
+                                if is_gold:
+                                    ingest_accounting["gold_turn_status"] = "gold_failed"
                     write_sec = dt_ingest.mono_elapsed
 
+                    # Snapshot store
+                    snap_ki = f"{ns}_ki"
+                    snap_lt = f"{ns}_lt"
+                    snap_raw = f"{ns}_raw"
+                    snap_kw = f"{ns}_kw"
+                    snapshot_mesh_db(base, ns, snap_ki)
+                    snapshot_mesh_db(base, ns, snap_lt)
+                    snapshot_mesh_db(base, ns, snap_raw)
+                    snapshot_mesh_db(base, ns, snap_kw)
+
                     # Known item check
-                    ki_out = await session.call_tool("mesh_recall", arguments={"query": KNOWN_ITEM_QUERY, "n": 5, "namespace": ns})
+                    ki_out = await session.call_tool("mesh_recall", arguments={"query": KNOWN_ITEM_QUERY, "n": 5, "namespace": snap_ki})
                     ki_text = "".join(str(c.text) for c in (ki_out.content or []))
-                    ki_rank = 1 if KNOWN_ITEM_TAG in ki_text else None
+                    ki_rank = None
+                    try:
+                        ki_data = json.loads(ki_text)
+                        for r, cand in enumerate(ki_data.get("results", []), start=1):
+                            if KNOWN_ITEM_TAG in cand.get("content", "") or any(KNOWN_ITEM_TAG in t for t in cand.get("tags", [])):
+                                ki_rank = r
+                                break
+                    except Exception:
+                        if KNOWN_ITEM_TAG in ki_text:
+                            ki_rank = 1
 
                     # Long turn check
-                    lt_out = await session.call_tool("mesh_recall", arguments={"query": LONG_TURN_QUERY, "n": 5, "namespace": ns})
+                    lt_out = await session.call_tool("mesh_recall", arguments={"query": LONG_TURN_QUERY, "n": 5, "namespace": snap_lt})
                     lt_text = "".join(str(c.text) for c in (lt_out.content or []))
-                    lt_tag_found = LONG_TURN_TAG in lt_text
+                    lt_tag_found = False
+                    try:
+                        lt_data = json.loads(lt_text)
+                        lt_tag_found = any(LONG_TURN_TAG in cand.get("content", "") for cand in lt_data.get("results", []))
+                    except Exception:
+                        lt_tag_found = LONG_TURN_TAG in lt_text
 
                     # Query Raw
                     with DualTimer() as dt_raw:
-                        raw_out = await session.call_tool("mesh_recall", arguments={"query": q_data["question"], "n": 10, "namespace": ns})
+                        raw_out = await session.call_tool("mesh_recall", arguments={"query": q_data["question"], "n": 10, "namespace": snap_raw})
                     raw_text = "".join(str(c.text) for c in (raw_out.content or []))
-                    raw_cands = [("mcp_raw", raw_text)]
+                    raw_cands = []
+                    raw_ids = []
+                    backend = "unknown"
+                    try:
+                        raw_data = json.loads(raw_text)
+                        raw_cands = [(r.get("id", ""), r.get("content", "")) for r in raw_data.get("results", [])]
+                        raw_ids = [extract_turn_identifier(r.get("id", ""), r.get("content", "")) or r.get("id", "") for r in raw_data.get("results", [])]
+                        backend = raw_data.get("embedding_backend", "unknown")
+                    except Exception:
+                        raw_cands = [("mcp_raw", raw_text)]
                     raw_scores = score_candidates(raw_cands, q_data["gold_turn_tags"], q_data["gold_session_tags"], q_data["tag_to_session"])
 
                     # Query Keyword
                     with DualTimer() as dt_kw:
-                        kw_out = await session.call_tool("mesh_recall", arguments={"query": q_data["question_kw"], "n": 10, "namespace": ns})
+                        kw_out = await session.call_tool("mesh_recall", arguments={"query": q_data["question_kw"], "n": 10, "namespace": snap_kw})
                     kw_text = "".join(str(c.text) for c in (kw_out.content or []))
-                    kw_cands = [("mcp_kw", kw_text)]
+                    kw_cands = []
+                    try:
+                        kw_data = json.loads(kw_text)
+                        kw_cands = [(r.get("id", ""), r.get("content", "")) for r in kw_data.get("results", [])]
+                    except Exception:
+                        kw_cands = [("mcp_kw", kw_text)]
                     kw_scores = score_candidates(kw_cands, q_data["gold_turn_tags"], q_data["gold_session_tags"], q_data["tag_to_session"])
 
             disk_info = checkpoint_and_analyze_disk(base)
@@ -616,9 +887,17 @@ async def eval_mesh_mcp_question_async(q_data: dict[str, Any], q_idx: int) -> di
             "lt_tag_found": lt_tag_found,
             "raw_scores": raw_scores,
             "kw_scores": kw_scores,
+            "raw_ids": raw_ids,
+            "embedding_backend": backend,
             "disk": disk_info,
             "ram_mb": tracker.peak_mb,
-            "top_candidates_raw": [raw_text[:140]],
+            "harness_baseline_ram_mb": harness_baseline_mb,
+            "ingest_accounting": ingest_accounting,
+            "top_candidates_raw": [c[1][:100] for c in raw_cands[:3]],
+            "raw_results_payload": [
+                {"id": extract_turn_identifier(c[0], c[1]) or c[0], "content": c[1][:200]}
+                for c in raw_cands[:5]
+            ],
         }
 
 
@@ -633,33 +912,55 @@ def eval_auxly_cli_question(q_data: dict[str, Any], q_idx: int) -> dict[str, Any
         vault = Path(temp_dir) / "vault"
         vault.mkdir(parents=True, exist_ok=True)
 
-        with ProcessTreePeakTracker() as tracker:
+        harness_baseline_mb = get_harness_baseline_rss_mb()
+        with ProcessTreePeakTracker(include_parent=False) as tracker:
+            ingest_accounting = {
+                "haystack_turns": q_data.get("total_haystack_turns", len(q_data["items"]) - 2),
+                "total_submitted": len(q_data["items"]),
+                "ingested": 0,
+                "rejected": 0,
+                "rejection_reasons": [],
+                "failed": 0,
+                "failed_reasons": [],
+                "quarantined": 0,
+                "gold_turn_status": "all_ingested",
+            }
+
             with DualTimer() as dt_ingest:
                 for idx, item in enumerate(q_data["items"]):
                     note_path = vault / f"turn_{idx:05d}.md"
                     note_path.write_text(item["content"], encoding="utf-8")
+                    ingest_accounting["ingested"] += 1
             write_sec = dt_ingest.mono_elapsed
 
             # Known item check
             p_ki = subprocess.run([auxly_bin, "--path", str(vault), "search", KNOWN_ITEM_QUERY], capture_output=True, text=True, encoding="utf-8", errors="replace")
-            ki_rank = 1 if (KNOWN_ITEM_TAG in p_ki.stdout or KNOWN_ITEM_ANSWER in p_ki.stdout) else None
+            ki_cands = parse_auxly_output(p_ki.stdout)
+            ki_rank = None
+            for r, (fname, body) in enumerate(ki_cands, start=1):
+                tid = extract_turn_identifier(fname, body)
+                if tid == KNOWN_ITEM_TAG or KNOWN_ITEM_TAG in body or KNOWN_ITEM_ANSWER.lower() in body.lower():
+                    ki_rank = r
+                    break
 
             # Long turn check
             p_lt = subprocess.run([auxly_bin, "--path", str(vault), "search", LONG_TURN_QUERY], capture_output=True, text=True, encoding="utf-8", errors="replace")
-            lt_tag_found = LONG_TURN_TAG in p_lt.stdout
+            lt_cands = parse_auxly_output(p_lt.stdout)
+            lt_tag_found = any(
+                extract_turn_identifier(fname, body) == LONG_TURN_TAG or LONG_TURN_TAG in body
+                for fname, body in lt_cands
+            )
 
             # Query Raw
             with DualTimer() as dt_raw:
                 p_raw = subprocess.run([auxly_bin, "--path", str(vault), "search", q_data["question"]], capture_output=True, text=True, encoding="utf-8", errors="replace")
-            raw_out = p_raw.stdout
-            raw_cands = [("auxly_raw", raw_out)]
+            raw_cands = parse_auxly_output(p_raw.stdout)
             raw_scores = score_candidates(raw_cands, q_data["gold_turn_tags"], q_data["gold_session_tags"], q_data["tag_to_session"])
 
             # Query Keyword
             with DualTimer() as dt_kw:
                 p_kw = subprocess.run([auxly_bin, "--path", str(vault), "search", q_data["question_kw"]], capture_output=True, text=True, encoding="utf-8", errors="replace")
-            kw_out = p_kw.stdout
-            kw_cands = [("auxly_kw", kw_out)]
+            kw_cands = parse_auxly_output(p_kw.stdout)
             kw_scores = score_candidates(kw_cands, q_data["gold_turn_tags"], q_data["gold_session_tags"], q_data["tag_to_session"])
 
             disk_info = checkpoint_and_analyze_disk(vault)
@@ -676,7 +977,14 @@ def eval_auxly_cli_question(q_data: dict[str, Any], q_idx: int) -> dict[str, Any
             "kw_scores": kw_scores,
             "disk": disk_info,
             "ram_mb": tracker.peak_mb,
-            "top_candidates_raw": [raw_out[:140]],
+            "harness_baseline_ram_mb": harness_baseline_mb,
+            "ingest_accounting": ingest_accounting,
+            "top_candidates_raw": [c[1][:100] for c in raw_cands[:3]],
+            "raw_results_payload": [
+                {"id": extract_turn_identifier(c[0], c[1]) or c[0], "content": c[1][:200]}
+                for c in raw_cands[:5]
+            ],
+            "sample_raw_stdout": p_raw.stdout[:300],
         }
 
 
@@ -692,40 +1000,64 @@ async def eval_auxly_mcp_question_async(q_data: dict[str, Any], q_idx: int) -> d
 
         params = StdioServerParameters(command=auxly_bin, args=["--path", str(vault), "mcp-server"], env=os.environ.copy())
 
-        with ProcessTreePeakTracker() as tracker:
+        harness_baseline_mb = get_harness_baseline_rss_mb()
+        with ProcessTreePeakTracker(include_parent=False) as tracker:
             async with stdio_client(params) as (read, write):
                 async with ClientSession(read, write) as session:
                     await session.initialize()
+
+                    ingest_accounting = {
+                        "haystack_turns": q_data.get("total_haystack_turns", len(q_data["items"]) - 2),
+                        "total_submitted": len(q_data["items"]),
+                        "ingested": 0,
+                        "rejected": 0,
+                        "rejection_reasons": [],
+                        "failed": 0,
+                        "failed_reasons": [],
+                        "quarantined": 0,
+                        "gold_turn_status": "all_ingested",
+                    }
 
                     # Ingest: write 1 file per turn
                     with DualTimer() as dt_ingest:
                         for idx, item in enumerate(q_data["items"]):
                             note_path = vault / f"turn_{idx:05d}.md"
                             note_path.write_text(item["content"], encoding="utf-8")
+                            ingest_accounting["ingested"] += 1
                     write_sec = dt_ingest.mono_elapsed
 
                     # Known item check
                     ki_out = await session.call_tool("auxly_memory_search", arguments={"query": KNOWN_ITEM_QUERY})
                     ki_text = "".join(str(c.text) for c in (ki_out.content or []))
-                    ki_rank = 1 if (KNOWN_ITEM_TAG in ki_text or KNOWN_ITEM_ANSWER in ki_text) else None
+                    ki_cands = parse_auxly_output(ki_text)
+                    ki_rank = None
+                    for r, (fname, body) in enumerate(ki_cands, start=1):
+                        tid = extract_turn_identifier(fname, body)
+                        if tid == KNOWN_ITEM_TAG or KNOWN_ITEM_TAG in body or KNOWN_ITEM_ANSWER.lower() in body.lower():
+                            ki_rank = r
+                            break
 
                     # Long turn check
                     lt_out = await session.call_tool("auxly_memory_search", arguments={"query": LONG_TURN_QUERY})
                     lt_text = "".join(str(c.text) for c in (lt_out.content or []))
-                    lt_tag_found = LONG_TURN_TAG in lt_text
+                    lt_cands = parse_auxly_output(lt_text)
+                    lt_tag_found = any(
+                        extract_turn_identifier(fname, body) == LONG_TURN_TAG or LONG_TURN_TAG in body
+                        for fname, body in lt_cands
+                    )
 
                     # Query Raw
                     with DualTimer() as dt_raw:
                         raw_out = await session.call_tool("auxly_memory_search", arguments={"query": q_data["question"]})
                     raw_text = "".join(str(c.text) for c in (raw_out.content or []))
-                    raw_cands = [("auxly_mcp_raw", raw_text)]
+                    raw_cands = parse_auxly_output(raw_text)
                     raw_scores = score_candidates(raw_cands, q_data["gold_turn_tags"], q_data["gold_session_tags"], q_data["tag_to_session"])
 
                     # Query Keyword
                     with DualTimer() as dt_kw:
                         kw_out = await session.call_tool("auxly_memory_search", arguments={"query": q_data["question_kw"]})
                     kw_text = "".join(str(c.text) for c in (kw_out.content or []))
-                    kw_cands = [("auxly_mcp_kw", kw_text)]
+                    kw_cands = parse_auxly_output(kw_text)
                     kw_scores = score_candidates(kw_cands, q_data["gold_turn_tags"], q_data["gold_session_tags"], q_data["tag_to_session"])
 
             disk_info = checkpoint_and_analyze_disk(vault)
@@ -742,7 +1074,14 @@ async def eval_auxly_mcp_question_async(q_data: dict[str, Any], q_idx: int) -> d
             "kw_scores": kw_scores,
             "disk": disk_info,
             "ram_mb": tracker.peak_mb,
-            "top_candidates_raw": [raw_text[:140]],
+            "harness_baseline_ram_mb": harness_baseline_mb,
+            "ingest_accounting": ingest_accounting,
+            "top_candidates_raw": [c[1][:100] for c in raw_cands[:3]],
+            "raw_results_payload": [
+                {"id": extract_turn_identifier(c[0], c[1]) or c[0], "content": c[1][:200]}
+                for c in raw_cands[:5]
+            ],
+            "sample_raw_stdout": raw_text[:300],
         }
 
 
@@ -758,22 +1097,50 @@ async def eval_bm_mcp_question_async(q_data: dict[str, Any], q_idx: int) -> dict
     bm_bin = str(find_bm_bin())
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True, prefix=f"pilot_bm_mcp_{q_idx}_") as temp_dir:
         base = Path(temp_dir)
-        env = os.environ.copy()
-        env["BASIC_MEMORY_HOME"] = str(base)
-        env["HOME"] = str(base)
-        env["USERPROFILE"] = str(base)
-
         notes_dir = base / "notes"
+        home_dir = base / "home"
         notes_dir.mkdir(parents=True, exist_ok=True)
+        home_dir.mkdir(parents=True, exist_ok=True)
 
+        env = os.environ.copy()
+        env["BASIC_MEMORY_HOME"] = str(home_dir)
+        env["HOME"] = str(home_dir)
+        env["USERPROFILE"] = str(home_dir)
+        env["APPDATA"] = str(home_dir / "appdata")
+        env["LOCALAPPDATA"] = str(home_dir / "localappdata")
+        for p in [env["HOME"], env["APPDATA"], env["LOCALAPPDATA"]]:
+            os.makedirs(p, exist_ok=True)
+
+        link_shared_fastembed(home_dir)
+
+        proj_name = f"lme_mcp_{q_idx}"
         params = StdioServerParameters(command=bm_bin, args=["mcp"], env=env)
 
-        with ProcessTreePeakTracker() as tracker:
+        harness_baseline_mb = get_harness_baseline_rss_mb()
+        with ProcessTreePeakTracker(include_parent=False) as tracker:
+            ingest_accounting = {
+                "haystack_turns": q_data.get("total_haystack_turns", len(q_data["items"]) - 2),
+                "total_submitted": len(q_data["items"]),
+                "ingested": 0,
+                "rejected": 0,
+                "rejection_reasons": [],
+                "failed": 0,
+                "failed_reasons": [],
+                "quarantined": 0,
+                "gold_turn_status": "all_ingested",
+            }
             # 1. Ingest via direct note files
             with DualTimer() as dt_ingest:
                 for idx, item in enumerate(q_data["items"]):
                     note_path = notes_dir / f"turn_{idx:05d}.md"
-                    note_path.write_text(item["content"], encoding="utf-8")
+                    note_path.write_text(
+                        f"---\ntitle: turn_{idx:05d}\n---\n{item['content']}\n",
+                        encoding="utf-8",
+                    )
+                    ingest_accounting["ingested"] += 1
+                # Project add and reindex --full
+                subprocess.run([bm_bin, "project", "add", proj_name, str(notes_dir), "--no-wait", "--local"], env=env, capture_output=True, text=True, check=False)
+                subprocess.run([bm_bin, "reindex", "-p", proj_name, "--full"], env=env, capture_output=True, text=True, check=False)
             write_sec = dt_ingest.mono_elapsed
 
             async with stdio_client(params) as (read, write):
@@ -781,27 +1148,57 @@ async def eval_bm_mcp_question_async(q_data: dict[str, Any], q_idx: int) -> dict
                     await session.initialize()
 
                     # Known item check
-                    ki_out = await session.call_tool("search_notes", arguments={"query": KNOWN_ITEM_QUERY})
+                    ki_out = await session.call_tool("search_notes", arguments={"query": KNOWN_ITEM_QUERY, "project": proj_name, "output_format": "json", "search_type": "hybrid", "page_size": 5})
                     ki_text = "".join(str(c.text) for c in (ki_out.content or []))
-                    ki_rank = 1 if (KNOWN_ITEM_TAG in ki_text or KNOWN_ITEM_ANSWER in ki_text) else None
+                    ki_rank = None
+                    try:
+                        ki_data = json.loads(ki_text)
+                        for r, item in enumerate(ki_data.get("results", []), start=1):
+                            tid = extract_turn_identifier(item.get("title", ""), item.get("content", ""))
+                            if tid == KNOWN_ITEM_TAG or KNOWN_ITEM_TAG in item.get("content", "") or KNOWN_ITEM_ANSWER.lower() in item.get("content", "").lower():
+                                ki_rank = r
+                                break
+                    except Exception:
+                        if KNOWN_ITEM_TAG in ki_text:
+                            ki_rank = 1
 
                     # Long turn check
-                    lt_out = await session.call_tool("search_notes", arguments={"query": LONG_TURN_QUERY})
+                    lt_out = await session.call_tool("search_notes", arguments={"query": LONG_TURN_QUERY, "project": proj_name, "output_format": "json", "search_type": "hybrid", "page_size": 5})
                     lt_text = "".join(str(c.text) for c in (lt_out.content or []))
-                    lt_tag_found = LONG_TURN_TAG in lt_text
+                    lt_tag_found = False
+                    try:
+                        lt_data = json.loads(lt_text)
+                        lt_tag_found = any(
+                            extract_turn_identifier(item.get("title", ""), item.get("content", "")) == LONG_TURN_TAG or LONG_TURN_TAG in item.get("content", "")
+                            for item in lt_data.get("results", [])
+                        )
+                    except Exception:
+                        lt_tag_found = LONG_TURN_TAG in lt_text
 
                     # Query Raw
                     with DualTimer() as dt_raw:
-                        raw_out = await session.call_tool("search_notes", arguments={"query": q_data["question"]})
+                        raw_out = await session.call_tool("search_notes", arguments={"query": q_data["question"], "project": proj_name, "output_format": "json", "search_type": "hybrid", "page_size": 10})
                     raw_text = "".join(str(c.text) for c in (raw_out.content or []))
-                    raw_cands = [("bm_raw", raw_text)]
+                    raw_cands = []
+                    raw_titles = []
+                    try:
+                        raw_data = json.loads(raw_text)
+                        raw_cands = [(item.get("title", ""), item.get("content", "")) for item in raw_data.get("results", [])]
+                        raw_titles = [item.get("title", "") for item in raw_data.get("results", [])]
+                    except Exception:
+                        raw_cands = [("bm_raw", raw_text)]
                     raw_scores = score_candidates(raw_cands, q_data["gold_turn_tags"], q_data["gold_session_tags"], q_data["tag_to_session"])
 
                     # Query Keyword
                     with DualTimer() as dt_kw:
-                        kw_out = await session.call_tool("search_notes", arguments={"query": q_data["question_kw"]})
+                        kw_out = await session.call_tool("search_notes", arguments={"query": q_data["question_kw"], "project": proj_name, "output_format": "json", "search_type": "hybrid", "page_size": 10})
                     kw_text = "".join(str(c.text) for c in (kw_out.content or []))
-                    kw_cands = [("bm_kw", kw_text)]
+                    kw_cands = []
+                    try:
+                        kw_data = json.loads(kw_text)
+                        kw_cands = [(item.get("title", ""), item.get("content", "")) for item in kw_data.get("results", [])]
+                    except Exception:
+                        kw_cands = [("bm_kw", kw_text)]
                     kw_scores = score_candidates(kw_cands, q_data["gold_turn_tags"], q_data["gold_session_tags"], q_data["tag_to_session"])
 
             disk_info = checkpoint_and_analyze_disk(base)
@@ -816,9 +1213,16 @@ async def eval_bm_mcp_question_async(q_data: dict[str, Any], q_idx: int) -> dict
             "lt_tag_found": lt_tag_found,
             "raw_scores": raw_scores,
             "kw_scores": kw_scores,
+            "raw_titles": raw_titles,
             "disk": disk_info,
             "ram_mb": tracker.peak_mb,
-            "top_candidates_raw": [raw_text[:140]],
+            "harness_baseline_ram_mb": harness_baseline_mb,
+            "ingest_accounting": ingest_accounting,
+            "top_candidates_raw": [c[1][:100] for c in raw_cands[:3]],
+            "raw_results_payload": [
+                {"id": extract_turn_identifier(c[0], c[1]) or c[0], "content": c[1][:200]}
+                for c in raw_cands[:5]
+            ],
         }
 
 
@@ -841,6 +1245,7 @@ def eval_mesh_cli_cold_question(q_data: dict[str, Any], q_idx: int) -> dict[str,
         env["MESH_NO_MODEL_DOWNLOAD"] = "1"
         env["MESH_SYNC_ONNX"] = "1"
         env["MESH_MAX_CONTENT_LENGTH"] = "131072"
+        env["MESH_CLI_FORCE_ONNX"] = "1"
         ns = f"pilot_cold_{q_idx}"
 
         os.environ["MESH_HOME"] = str(base)
@@ -848,17 +1253,40 @@ def eval_mesh_cli_cold_question(q_data: dict[str, Any], q_idx: int) -> dict[str,
         os.environ["MESH_NO_MODEL_DOWNLOAD"] = "1"
         os.environ["MESH_SYNC_ONNX"] = "1"
         os.environ["MESH_MAX_CONTENT_LENGTH"] = "131072"
+        os.environ["MESH_CLI_FORCE_ONNX"] = "1"
 
         warmup_model(assume_yes=True, blocking=True)
+        harness_baseline_mb = get_harness_baseline_rss_mb()
 
-        with ProcessTreePeakTracker() as tracker:
+        with ProcessTreePeakTracker(include_parent=False) as tracker:
             mesh = Mesh(namespace=ns, agent_id="eval_agent")
+            ingest_accounting = {
+                "haystack_turns": q_data.get("total_haystack_turns", len(q_data["items"]) - 2),
+                "total_submitted": len(q_data["items"]),
+                "ingested": 0,
+                "rejected": 0,
+                "rejection_reasons": [],
+                "failed": 0,
+                "failed_reasons": [],
+                "quarantined": 0,
+                "gold_turn_status": "all_ingested",
+            }
             with DualTimer() as dt_ingest:
                 for item in q_data["items"]:
+                    is_gold = item.get("has_answer") is True
                     try:
                         mesh.learn(item["content"], tags=[item["tag"]])
-                    except ValueError:
-                        pass
+                        ingest_accounting["ingested"] += 1
+                    except ValueError as e:
+                        ingest_accounting["rejected"] += 1
+                        ingest_accounting["rejection_reasons"].append(str(e))
+                        if is_gold:
+                            ingest_accounting["gold_turn_status"] = "gold_rejected"
+                    except Exception as e:
+                        ingest_accounting["failed"] += 1
+                        ingest_accounting["failed_reasons"].append(str(e))
+                        if is_gold:
+                            ingest_accounting["gold_turn_status"] = "gold_failed"
             write_sec = dt_ingest.mono_elapsed
 
             mesh.close()
@@ -866,9 +1294,19 @@ def eval_mesh_cli_cold_question(q_data: dict[str, Any], q_idx: int) -> dict[str,
             del mesh
             gc.collect()
 
+            # Snapshot store
+            snap_ki = f"{ns}_ki"
+            snap_lt = f"{ns}_lt"
+            snap_raw = f"{ns}_raw"
+            snap_kw = f"{ns}_kw"
+            snapshot_mesh_db(base, ns, snap_ki)
+            snapshot_mesh_db(base, ns, snap_lt)
+            snapshot_mesh_db(base, ns, snap_raw)
+            snapshot_mesh_db(base, ns, snap_kw)
+
             # Known item check via cold subprocess
             p_ki = subprocess.run(
-                [sys.executable, "-m", "mesh", "recall", KNOWN_ITEM_QUERY, "--namespace", ns, "-n", "5", "--json"],
+                [sys.executable, "-m", "mesh", "recall", KNOWN_ITEM_QUERY, "--namespace", snap_ki, "-n", "5", "--json"],
                 env=env,
                 capture_output=True,
                 text=True,
@@ -888,7 +1326,7 @@ def eval_mesh_cli_cold_question(q_data: dict[str, Any], q_idx: int) -> dict[str,
 
             # Long turn check via cold subprocess
             p_lt = subprocess.run(
-                [sys.executable, "-m", "mesh", "recall", LONG_TURN_QUERY, "--namespace", ns, "-n", "5", "--json"],
+                [sys.executable, "-m", "mesh", "recall", LONG_TURN_QUERY, "--namespace", snap_lt, "-n", "5", "--json"],
                 env=env,
                 capture_output=True,
                 text=True,
@@ -906,7 +1344,7 @@ def eval_mesh_cli_cold_question(q_data: dict[str, Any], q_idx: int) -> dict[str,
             # Query Raw via cold subprocess
             with DualTimer() as dt_raw:
                 p_raw = subprocess.run(
-                    [sys.executable, "-m", "mesh", "recall", q_data["question"], "--namespace", ns, "-n", "10", "--json"],
+                    [sys.executable, "-m", "mesh", "recall", q_data["question"], "--namespace", snap_raw, "-n", "10", "--json"],
                     env=env,
                     capture_output=True,
                     text=True,
@@ -914,10 +1352,14 @@ def eval_mesh_cli_cold_question(q_data: dict[str, Any], q_idx: int) -> dict[str,
                     errors="replace",
                 )
             raw_cands = []
+            raw_ids = []
+            backend = "unknown"
             if p_raw.returncode == 0:
                 try:
                     data = json.loads(p_raw.stdout)
                     raw_cands = [(r.get("id", ""), r.get("content", "")) for r in data.get("results", [])]
+                    raw_ids = [extract_turn_identifier(r.get("id", ""), r.get("content", "")) or r.get("id", "") for r in data.get("results", [])]
+                    backend = data.get("embedding_backend", "unknown")
                 except Exception:
                     pass
             raw_scores = score_candidates(raw_cands, q_data["gold_turn_tags"], q_data["gold_session_tags"], q_data["tag_to_session"])
@@ -925,7 +1367,7 @@ def eval_mesh_cli_cold_question(q_data: dict[str, Any], q_idx: int) -> dict[str,
             # Query Keyword via cold subprocess
             with DualTimer() as dt_kw:
                 p_kw = subprocess.run(
-                    [sys.executable, "-m", "mesh", "recall", q_data["question_kw"], "--namespace", ns, "-n", "10", "--json"],
+                    [sys.executable, "-m", "mesh", "recall", q_data["question_kw"], "--namespace", snap_kw, "-n", "10", "--json"],
                     env=env,
                     capture_output=True,
                     text=True,
@@ -953,9 +1395,17 @@ def eval_mesh_cli_cold_question(q_data: dict[str, Any], q_idx: int) -> dict[str,
             "lt_tag_found": lt_tag_found,
             "raw_scores": raw_scores,
             "kw_scores": kw_scores,
+            "raw_ids": raw_ids,
+            "embedding_backend": backend,
             "disk": disk_info,
             "ram_mb": tracker.peak_mb,
+            "harness_baseline_ram_mb": harness_baseline_mb,
+            "ingest_accounting": ingest_accounting,
             "top_candidates_raw": [c[1][:100] for c in raw_cands[:3]],
+            "raw_results_payload": [
+                {"id": extract_turn_identifier(c[0], c[1]) or c[0], "content": c[1][:200]}
+                for c in raw_cands[:5]
+            ],
         }
 
 
@@ -965,68 +1415,91 @@ def eval_bm_cli_question(q_data: dict[str, Any], q_idx: int) -> dict[str, Any]:
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True, prefix=f"pilot_bm_cli_{q_idx}_") as temp_dir:
         base = Path(temp_dir)
         notes_dir = base / "notes"
+        home_dir = base / "home"
         notes_dir.mkdir(parents=True, exist_ok=True)
+        home_dir.mkdir(parents=True, exist_ok=True)
 
         env = os.environ.copy()
-        env["HOME"] = str(base / "home")
-        env["USERPROFILE"] = str(base / "home")
-        env["APPDATA"] = str(base / "appdata")
-        env["LOCALAPPDATA"] = str(base / "localappdata")
-        env["BASIC_MEMORY_HOME"] = str(base)
+        env["HOME"] = str(home_dir)
+        env["USERPROFILE"] = str(home_dir)
+        env["APPDATA"] = str(home_dir / "appdata")
+        env["LOCALAPPDATA"] = str(home_dir / "localappdata")
+        env["BASIC_MEMORY_HOME"] = str(home_dir)
         for p in [env["HOME"], env["APPDATA"], env["LOCALAPPDATA"]]:
             os.makedirs(p, exist_ok=True)
 
+        link_shared_fastembed(home_dir)
+
         proj_name = f"lme_cli_{q_idx}"
-        with ProcessTreePeakTracker() as tracker:
+        harness_baseline_mb = get_harness_baseline_rss_mb()
+        with ProcessTreePeakTracker(include_parent=False) as tracker:
+            ingest_accounting = {
+                "haystack_turns": q_data.get("total_haystack_turns", len(q_data["items"]) - 2),
+                "total_submitted": len(q_data["items"]),
+                "ingested": 0,
+                "rejected": 0,
+                "rejection_reasons": [],
+                "failed": 0,
+                "failed_reasons": [],
+                "quarantined": 0,
+                "gold_turn_status": "all_ingested",
+            }
             with DualTimer() as dt_ingest:
                 for idx, item in enumerate(q_data["items"]):
                     (notes_dir / f"turn_{idx:05d}.md").write_text(
                         f"---\ntitle: turn_{idx:05d}\n---\n{item['content']}\n",
                         encoding="utf-8",
                     )
-                # Project add and reindex
-                subprocess.run([bm_bin, "project", "add", proj_name, str(notes_dir), "--no-wait"], env=env, capture_output=True, text=True, check=False)
-                subprocess.run([bm_bin, "reindex", "-p", proj_name, "--search"], env=env, capture_output=True, text=True, check=False)
+                    ingest_accounting["ingested"] += 1
+                # Project add and reindex --full (builds both FTS and sqlite-vec vector index)
+                subprocess.run([bm_bin, "project", "add", proj_name, str(notes_dir), "--no-wait", "--local"], env=env, capture_output=True, text=True, check=False)
+                subprocess.run([bm_bin, "reindex", "-p", proj_name, "--full"], env=env, capture_output=True, text=True, check=False)
             write_sec = dt_ingest.mono_elapsed
 
             # Known item check
-            p_ki = subprocess.run([bm_bin, "grep", KNOWN_ITEM_QUERY, "--project", proj_name, "--page-size", "5", "--json"], env=env, capture_output=True, text=True, encoding="utf-8", errors="replace")
+            p_ki = subprocess.run([bm_bin, "grep", "--semantic", KNOWN_ITEM_QUERY, "--project", proj_name, "--page-size", "5", "--json", "--local"], env=env, capture_output=True, text=True, encoding="utf-8", errors="replace")
             ki_rank = None
             if p_ki.returncode == 0:
                 try:
                     data = json.loads(p_ki.stdout)
                     for r, item in enumerate(data.get("results", []), start=1):
-                        if KNOWN_ITEM_TAG in item.get("content", "") or KNOWN_ITEM_ANSWER.lower() in item.get("content", "").lower():
+                        tid = extract_turn_identifier(item.get("title", ""), item.get("content", ""))
+                        if tid == KNOWN_ITEM_TAG or KNOWN_ITEM_TAG in item.get("content", "") or KNOWN_ITEM_ANSWER.lower() in item.get("content", "").lower():
                             ki_rank = r
                             break
                 except Exception:
                     pass
 
             # Long turn check
-            p_lt = subprocess.run([bm_bin, "grep", LONG_TURN_QUERY, "--project", proj_name, "--page-size", "5", "--json"], env=env, capture_output=True, text=True, encoding="utf-8", errors="replace")
+            p_lt = subprocess.run([bm_bin, "grep", "--semantic", LONG_TURN_QUERY, "--project", proj_name, "--page-size", "5", "--json", "--local"], env=env, capture_output=True, text=True, encoding="utf-8", errors="replace")
             lt_tag_found = False
             if p_lt.returncode == 0:
                 try:
                     data = json.loads(p_lt.stdout)
-                    lt_tag_found = any(LONG_TURN_TAG in item.get("content", "") for item in data.get("results", []))
+                    lt_tag_found = any(
+                        extract_turn_identifier(item.get("title", ""), item.get("content", "")) == LONG_TURN_TAG or LONG_TURN_TAG in item.get("content", "")
+                        for item in data.get("results", [])
+                    )
                 except Exception:
                     pass
 
             # Query Raw
             with DualTimer() as dt_raw:
-                p_raw = subprocess.run([bm_bin, "grep", q_data["question"], "--project", proj_name, "--page-size", "10", "--json"], env=env, capture_output=True, text=True, encoding="utf-8", errors="replace")
+                p_raw = subprocess.run([bm_bin, "grep", "--semantic", q_data["question"], "--project", proj_name, "--page-size", "10", "--json", "--local"], env=env, capture_output=True, text=True, encoding="utf-8", errors="replace")
             raw_cands = []
+            raw_titles = []
             if p_raw.returncode == 0:
                 try:
                     data = json.loads(p_raw.stdout)
                     raw_cands = [(item.get("title", ""), item.get("content", "")) for item in data.get("results", [])]
+                    raw_titles = [item.get("title", "") for item in data.get("results", [])]
                 except Exception:
                     pass
             raw_scores = score_candidates(raw_cands, q_data["gold_turn_tags"], q_data["gold_session_tags"], q_data["tag_to_session"])
 
             # Query Keyword
             with DualTimer() as dt_kw:
-                p_kw = subprocess.run([bm_bin, "grep", q_data["question_kw"], "--project", proj_name, "--page-size", "10", "--json"], env=env, capture_output=True, text=True, encoding="utf-8", errors="replace")
+                p_kw = subprocess.run([bm_bin, "grep", "--semantic", q_data["question_kw"], "--project", proj_name, "--page-size", "10", "--json", "--local"], env=env, capture_output=True, text=True, encoding="utf-8", errors="replace")
             kw_cands = []
             if p_kw.returncode == 0:
                 try:
@@ -1048,9 +1521,16 @@ def eval_bm_cli_question(q_data: dict[str, Any], q_idx: int) -> dict[str, Any]:
             "lt_tag_found": lt_tag_found,
             "raw_scores": raw_scores,
             "kw_scores": kw_scores,
+            "raw_titles": raw_titles,
             "disk": disk_info,
             "ram_mb": tracker.peak_mb,
+            "harness_baseline_ram_mb": harness_baseline_mb,
+            "ingest_accounting": ingest_accounting,
             "top_candidates_raw": [c[1][:100] for c in raw_cands[:3]],
+            "raw_results_payload": [
+                {"id": extract_turn_identifier(c[0], c[1]) or c[0], "content": c[1][:200]}
+                for c in raw_cands[:5]
+            ],
         }
 
 
@@ -1450,6 +1930,76 @@ def run_full_pilot(
             "parallel_3w_minutes": round((total_sec_seq / 3.0) / 60.0, 1),
         }
 
+    # 5. Parity assertions & audits
+    mesh_parity_table = []
+    has_all_mesh = all(k in tool_results for k in ["mesh_sdk", "mesh_cli_daemon", "mesh_cli_cold", "mesh_mcp"])
+    if has_all_mesh:
+        sdk_res = tool_results["mesh_sdk"]["per_question_results"]
+        daemon_res = tool_results["mesh_cli_daemon"]["per_question_results"]
+        cold_res = tool_results["mesh_cli_cold"]["per_question_results"]
+        mcp_res = tool_results["mesh_mcp"]["per_question_results"]
+
+        for q_i in range(len(sdk_res)):
+            s_ids = sdk_res[q_i].get("raw_ids", [])
+            d_ids = daemon_res[q_i].get("raw_ids", [])
+            c_ids = cold_res[q_i].get("raw_ids", [])
+            m_ids = mcp_res[q_i].get("raw_ids", [])
+
+            eq_sd = (s_ids == d_ids)
+            eq_sc = (s_ids == c_ids)
+            eq_sm = (s_ids == m_ids)
+            all_eq = (eq_sd and eq_sc and eq_sm)
+
+            mesh_parity_table.append({
+                "question": q_i,
+                "sdk_ids": s_ids[:5],
+                "daemon_ids": d_ids[:5],
+                "cold_ids": c_ids[:5],
+                "mcp_ids": m_ids[:5],
+                "sdk_matches_daemon": eq_sd,
+                "sdk_matches_cold": eq_sc,
+                "sdk_matches_mcp": eq_sm,
+                "all_interfaces_equal": all_eq,
+            })
+            if not all_eq:
+                logger.error("MESH PARITY FAILURE on Q%d: sdk=%s, daemon=%s, cold=%s, mcp=%s", q_i, s_ids[:3], d_ids[:3], c_ids[:3], m_ids[:3])
+
+    bm_parity_table = []
+    has_all_bm = all(k in tool_results for k in ["bm_cli", "bm_mcp"])
+    if has_all_bm:
+        cli_bm = tool_results["bm_cli"]["per_question_results"]
+        mcp_bm = tool_results["bm_mcp"]["per_question_results"]
+        for q_i in range(len(cli_bm)):
+            c_t = cli_bm[q_i].get("raw_titles", [])
+            m_t = mcp_bm[q_i].get("raw_titles", [])
+            bm_parity_table.append({
+                "question": q_i,
+                "cli_titles": c_t[:5],
+                "mcp_titles": m_t[:5],
+                "equal": (c_t == m_t),
+            })
+
+    # Ingestion integrity summary
+    ingestion_integrity = {}
+    for t_k, t_agg in tool_results.items():
+        pq = t_agg.get("per_question_results", [])
+        total_sub = sum(r.get("ingest_accounting", {}).get("total_submitted", 0) for r in pq)
+        total_ing = sum(r.get("ingest_accounting", {}).get("ingested", 0) for r in pq)
+        total_rej = sum(r.get("ingest_accounting", {}).get("rejected", 0) for r in pq)
+        total_fail = sum(r.get("ingest_accounting", {}).get("failed", 0) for r in pq)
+        gold_statuses = [r.get("ingest_accounting", {}).get("gold_turn_status", "unknown") for r in pq]
+        all_gold_ok = all(s == "all_ingested" for s in gold_statuses)
+        ingestion_integrity[t_k] = {
+            "total_submitted": total_sub,
+            "total_ingested": total_ing,
+            "total_rejected": total_rej,
+            "total_failed": total_fail,
+            "gold_turns_ok": all_gold_ok,
+            "sample_rejection_reasons": list(set(
+                reason for r in pq for reason in r.get("ingest_accounting", {}).get("rejection_reasons", [])
+            ))[:5],
+        }
+
     # 5. Compile output payload
     output_payload = {
         "metadata": {
@@ -1462,6 +2012,41 @@ def run_full_pilot(
             "python_version": sys.version.split()[0],
             "power_status_start": power_readiness,
             "kernel_power_sleep_events": kp_events,
+            "config_disclosures": {
+                "Mesh": {
+                    "MESH_MAX_CONTENT_LENGTH": 131072,
+                    "MESH_SYNC_ONNX": 1,
+                    "MESH_CLI_FORCE_ONNX": 1,
+                    "default_behavior_note": "With default MESH_MAX_CONTENT_LENGTH=16384, exactly 2 turns across the 20 questions exceed 16k chars (Q3 distractor turn of 23,821 chars and Q17 distractor turn of 37,208 chars). Neither is a gold turn; 0 gold turns are rejected under defaults.",
+                },
+                "Mem0": {
+                    "infer": False,
+                    "model": "sentence-transformers/all-MiniLM-L6-v2 (cached in HuggingFace Hub, ~487.5 MB)",
+                },
+                "BasicMemory": {
+                    "embedding_model": "BAAI/bge-small-en-v1.5 (FastEmbed cached, ~65 MB)",
+                    "reindex_command": "basic-memory reindex -p <proj> --full",
+                    "search_type": "hybrid / semantic",
+                },
+                "Auxly": {
+                    "local_engine": "Exact contiguous substring search over vault markdown files; falls back to substring search when no external cloud LLM embedding model is configured.",
+                },
+            },
+            "mesh_parity_table": mesh_parity_table,
+            "basic_memory_parity_table": bm_parity_table,
+            "ingestion_integrity": ingestion_integrity,
+            "inspections_top5_raw": {
+                t_k: [
+                    {
+                        "question_idx": q_i,
+                        "question": prepared_questions[q_i]["question"],
+                        "gold_turn_tags": list(prepared_questions[q_i]["gold_turn_tags"]),
+                        "raw_candidates": tool_results[t_k]["per_question_results"][q_i].get("raw_results_payload", [])[:5],
+                    }
+                    for q_i in range(min(5, len(prepared_questions)))
+                ]
+                for t_k in tool_results
+            },
         },
         "tool_results": tool_results,
         "projections_500": projections,

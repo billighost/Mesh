@@ -153,6 +153,13 @@ def checkpoint_and_analyze_disk(directory: Path | str) -> dict[str, Any]:
         except Exception:
             pass
 
+    hf_cache = Path.home() / ".cache" / "huggingface" / "hub" / "models--sentence-transformers--all-MiniLM-L6-v2"
+    if hf_cache.exists():
+        try:
+            model_bytes += sum(f.stat().st_size for f in hf_cache.rglob("*") if f.is_file())
+        except Exception:
+            pass
+
     total_bytes = data_bytes + model_bytes + wal_bytes + audit_bytes + vault_bytes + log_bytes
     return {
         "data_mb": round((data_bytes + wal_bytes + vault_bytes) / (1024 * 1024), 2),
@@ -164,6 +171,22 @@ def checkpoint_and_analyze_disk(directory: Path | str) -> dict[str, Any]:
     }
 
 
+def extract_turn_identifier(c_id: str, c_text: str) -> Optional[str]:
+    for s in [c_id, c_text]:
+        if not s:
+            continue
+        m = re.search(r"\[turn:(\d+)\]", s, re.IGNORECASE)
+        if m:
+            return f"[turn:{int(m.group(1)):05d}]"
+        m = re.search(r"turn[_\:](\d+)", s, re.IGNORECASE)
+        if m:
+            return f"[turn:{int(m.group(1)):05d}]"
+        m = re.search(r"turn_(\d+)\.md", s, re.IGNORECASE)
+        if m:
+            return f"[turn:{int(m.group(1)):05d}]"
+    return None
+
+
 def score_candidates(
     candidates: list[tuple[str, str]],
     gold_turn_tags: set[str],
@@ -172,6 +195,10 @@ def score_candidates(
 ) -> dict[str, Any]:
     first_turn_rank = None
     for r, (c_id, c_text) in enumerate(candidates, start=1):
+        tag = extract_turn_identifier(c_id, c_text)
+        if tag and tag in gold_turn_tags:
+            first_turn_rank = r
+            break
         for gt in gold_turn_tags:
             if gt in c_id or gt in c_text:
                 first_turn_rank = r
@@ -181,6 +208,11 @@ def score_candidates(
 
     first_sess_rank = None
     for r, (c_id, c_text) in enumerate(candidates, start=1):
+        tag = extract_turn_identifier(c_id, c_text)
+        sess = tag_to_session.get(tag) if tag else None
+        if sess and sess in gold_session_tags:
+            first_sess_rank = r
+            break
         for st in gold_session_tags:
             if st in c_id or st in c_text:
                 first_sess_rank = r
@@ -225,39 +257,94 @@ def eval_one_question(mem0_cls: Any, q_data: dict[str, Any], q_idx: int) -> dict
             },
         }
 
+        harness_baseline_mb = get_process_tree_rss_mb()
         with ProcessTreePeakTracker() as tracker:
             mem = mem0_cls.from_config(config)
+
+            ingest_accounting = {
+                "haystack_turns": q_data.get("total_haystack_turns", len(q_data["items"]) - 2),
+                "total_submitted": len(q_data["items"]),
+                "ingested": 0,
+                "rejected": 0,
+                "rejection_reasons": [],
+                "failed": 0,
+                "failed_reasons": [],
+                "quarantined": 0,
+                "gold_turn_status": "all_ingested",
+            }
 
             # Ingest turns
             with DualTimer() as dt_ingest:
                 for item in q_data["items"]:
+                    is_gold = item.get("has_answer") is True
                     try:
                         mem.add(item["content"], user_id=f"user_{q_idx}", metadata={"turn_id": item["tag"]}, infer=False)
-                    except Exception:
-                        pass
+                        ingest_accounting["ingested"] += 1
+                    except Exception as e:
+                        ingest_accounting["failed"] += 1
+                        ingest_accounting["failed_reasons"].append(str(e))
+                        if is_gold:
+                            ingest_accounting["gold_turn_status"] = "gold_failed"
             write_sec = dt_ingest.mono_elapsed
 
-            # Known item check
-            ki_res = mem.search(KNOWN_ITEM_QUERY, filters={"user_id": f"user_{q_idx}"}, limit=5)
+            # Snapshot store for isolated queries
+            def make_mem(sub_dir: str):
+                cfg = dict(config)
+                cfg["vector_store"] = {"provider": "qdrant", "config": {"path": sub_dir, "embedding_model_dims": 384}}
+                return mem0_cls.from_config(cfg)
+
+            try:
+                if hasattr(mem, "vector_store") and hasattr(mem.vector_store, "client"):
+                    mem.vector_store.client.close()
+            except Exception:
+                pass
+            del mem
+            gc.collect()
+
+            snap_ki = os.path.join(temp_dir, "qdrant_ki")
+            snap_lt = os.path.join(temp_dir, "qdrant_lt")
+            snap_raw = os.path.join(temp_dir, "qdrant_raw")
+            snap_kw = os.path.join(temp_dir, "qdrant_kw")
+            ign = shutil.ignore_patterns("*.lock", ".lock")
+            shutil.copytree(qdrant_path, snap_ki, ignore=ign)
+            shutil.copytree(qdrant_path, snap_lt, ignore=ign)
+            shutil.copytree(qdrant_path, snap_raw, ignore=ign)
+            shutil.copytree(qdrant_path, snap_kw, ignore=ign)
+
+            # Known item check on snapshot
+            mem_ki = make_mem(snap_ki)
+            ki_res = mem_ki.search(KNOWN_ITEM_QUERY, filters={"user_id": f"user_{q_idx}"}, limit=5)
             ki_rank = None
             for r, cand in enumerate(ki_res.get("results", []), start=1):
                 tid = cand.get("metadata", {}).get("turn_id", "")
                 mem_txt = cand.get("memory", "")
-                if KNOWN_ITEM_TAG in tid or KNOWN_ITEM_TAG in mem_txt or KNOWN_ITEM_ANSWER.lower() in mem_txt.lower():
+                tag = extract_turn_identifier(tid, mem_txt)
+                if tag == KNOWN_ITEM_TAG or KNOWN_ITEM_ANSWER.lower() in mem_txt.lower():
                     ki_rank = r
                     break
+            try:
+                mem_ki.vector_store.client.close()
+            except Exception:
+                pass
+            del mem_ki
 
-            # Long turn check
-            lt_res = mem.search(LONG_TURN_QUERY, filters={"user_id": f"user_{q_idx}"}, limit=5)
+            # Long turn check on snapshot
+            mem_lt = make_mem(snap_lt)
+            lt_res = mem_lt.search(LONG_TURN_QUERY, filters={"user_id": f"user_{q_idx}"}, limit=5)
             lt_tag_found = any(
-                LONG_TURN_TAG in cand.get("metadata", {}).get("turn_id", "")
-                or LONG_TURN_TAG in cand.get("memory", "")
-                for cand in lt_res.get("results", [])
+                extract_turn_identifier(c.get("metadata", {}).get("turn_id", ""), c.get("memory", "")) == LONG_TURN_TAG
+                for c in lt_res.get("results", [])
             )
+            try:
+                mem_lt.vector_store.client.close()
+            except Exception:
+                pass
+            del mem_lt
 
-            # Query Raw
+            # Query Raw on snapshot
+            mem_raw = make_mem(snap_raw)
             with DualTimer() as dt_raw:
-                raw_res = mem.search(q_data["question"], filters={"user_id": f"user_{q_idx}"}, limit=10)
+                raw_res = mem_raw.search(q_data["question"], filters={"user_id": f"user_{q_idx}"}, limit=10)
             raw_cands = [
                 (c.get("metadata", {}).get("turn_id", ""), c.get("memory", ""))
                 for c in raw_res.get("results", [])
@@ -268,10 +355,16 @@ def eval_one_question(mem0_cls: Any, q_data: dict[str, Any], q_idx: int) -> dict
                 set(q_data["gold_session_tags"]),
                 q_data["tag_to_session"],
             )
+            try:
+                mem_raw.vector_store.client.close()
+            except Exception:
+                pass
+            del mem_raw
 
-            # Query Keyword
+            # Query Keyword on snapshot
+            mem_kw = make_mem(snap_kw)
             with DualTimer() as dt_kw:
-                kw_res = mem.search(q_data["question_kw"], filters={"user_id": f"user_{q_idx}"}, limit=10)
+                kw_res = mem_kw.search(q_data["question_kw"], filters={"user_id": f"user_{q_idx}"}, limit=10)
             kw_cands = [
                 (c.get("metadata", {}).get("turn_id", ""), c.get("memory", ""))
                 for c in kw_res.get("results", [])
@@ -282,10 +375,16 @@ def eval_one_question(mem0_cls: Any, q_data: dict[str, Any], q_idx: int) -> dict
                 set(q_data["gold_session_tags"]),
                 q_data["tag_to_session"],
             )
+            try:
+                mem_kw.vector_store.client.close()
+            except Exception:
+                pass
+            del mem_kw
 
             disk_info = checkpoint_and_analyze_disk(temp_dir)
-            del mem
             gc.collect()
+
+        tool_peak_ram = max(0.0, round(tracker.peak_mb - harness_baseline_mb, 2))
 
         return {
             "write_seconds": write_sec,
@@ -297,8 +396,14 @@ def eval_one_question(mem0_cls: Any, q_data: dict[str, Any], q_idx: int) -> dict
             "raw_scores": raw_scores,
             "kw_scores": kw_scores,
             "disk": disk_info,
-            "ram_mb": tracker.peak_mb,
+            "ram_mb": tool_peak_ram,
+            "harness_baseline_ram_mb": harness_baseline_mb,
+            "ingest_accounting": ingest_accounting,
             "top_candidates_raw": [c[1][:100] for c in raw_cands[:3]],
+            "raw_results_payload": [
+                {"id": c.get("metadata", {}).get("turn_id", ""), "memory": c.get("memory", "")[:200], "score": c.get("score")}
+                for c in raw_res.get("results", [])[:5]
+            ],
         }
 
 
