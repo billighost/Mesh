@@ -169,7 +169,7 @@ jobs:
           AUXLY_SHA="ec452fc983e862f78f4cf23d41d3e25396ebff974508aceb45e8224720759b04"
           AUXLY_VER="1.5.0"
           curl -fsSL \
-            "https://github.com/auxlyhq/auxly/releases/download/v${AUXLY_VER}/auxly-linux-amd64" \
+            "https://github.com/Tzamun-Arabia-IT-Co/auxly-memory-cli/releases/download/v${AUXLY_VER}/auxly-linux-amd64" \
             -o benchmarks/bin/auxly
           ACTUAL_SHA=$(sha256sum benchmarks/bin/auxly | awk '{print $1}')
           if [ "$ACTUAL_SHA" != "$AUXLY_SHA" ]; then
@@ -266,7 +266,7 @@ jobs:
         env:
           MEM0_PYTHON: "/tmp/venv_mem0/bin/python"
           BM_BIN: "/tmp/venv_bm/bin/basic-memory"
-          AUXLY_BIN: "benchmarks/bin/auxly"
+          AUXLY_BIN: "${{ github.workspace }}/benchmarks/bin/auxly"
         run: |
           echo "=== Disk Space Before Benchmark Run ==="
           df -h
