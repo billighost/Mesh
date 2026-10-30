@@ -1,11 +1,11 @@
 # Benchmarks State & Tracking
 
-**Document Version:** 1.13.0  
-**Current Step:** CHECKPOINT P1-A (SECOND REPORT) COMPLETE — Sample Shards Executed on GitHub Actions (Run 41044523924)  
+**Document Version:** 1.14.0  
+**Current Step:** PASS 1 FULL ACCURACY MATRIX (15 SHARDS) LAUNCHED ON GITHUB ACTIONS  
 **Target Commit / Base:** `feat/ci-evidence`  
 **Frozen Benchmark Tag:** `benchmark-v1`  
-**Run ID:** `41044523924` (Branch: `origin/bench-results/41044523924`)  
-**Timestamp:** 2026-10-30T19:15:00+01:00  
+**Run ID:** Pending launch (Branch: `bench/pass1-full`)  
+**Timestamp:** 2026-10-30T19:45:00+01:00  
 
 ---
 
@@ -146,6 +146,30 @@ Using conservative runner timings (based on the slower runner virtualization loa
 
 ---
 
-## 4. Next Action
-1. Present Checkpoint P1-A (Second Report) containing free-tier public repo confirmation, workflow line-mapping, F3 pre-scan explanation, access-counter observation, Auxly Ollama integration evidence, runner determinism evidence (Run 41044523924), and calibrated 15-shard matrix sizing.
-2. **STOP** and await the user's explicit confirmation before launching the full 500-question matrix.
+## 4. Full 15-Shard Matrix Deployment Configuration
+
+Following user approval ("go ahead"), the complete 15-shard Pass 1 accuracy matrix has been configured in `.github/workflows/bench_pass1.yml` and supported in `benchmarks/run_pilot.py`:
+1. `mesh-sdk-1`: Q 0..249 (250 q), tools: `mesh_sdk` (~102 min)
+2. `mesh-sdk-2`: Q 250..499 (250 q), tools: `mesh_sdk` (~102 min)
+3. `mem0-sdk-1`: Q 0..249 (250 q), tools: `mem0_sdk` (~63 min)
+4. `mem0-sdk-2`: Q 250..499 (250 q), tools: `mem0_sdk` (~63 min)
+5. `auxly-mcp-sub`: Q 0..499 (500 q), tools: `auxly_mcp` (< 1 min)
+6. `auxly-ollama-1`: Q 0..249 (250 q), tools: `auxly_mcp_ollama` (`all-minilm` on `localhost:11434`) (~161 min)
+7. `auxly-ollama-2`: Q 250..499 (250 q), tools: `auxly_mcp_ollama` (`all-minilm` on `localhost:11434`) (~161 min)
+8. `bm-mcp-1`: Q 0..83 (84 q), tools: `bm_mcp` (~231 min)
+9. `bm-mcp-2`: Q 84..167 (84 q), tools: `bm_mcp` (~231 min)
+10. `bm-mcp-3`: Q 168..251 (84 q), tools: `bm_mcp` (~231 min)
+11. `bm-mcp-4`: Q 252..335 (84 q), tools: `bm_mcp` (~231 min)
+12. `bm-mcp-5`: Q 336..419 (84 q), tools: `bm_mcp` (~231 min)
+13. `bm-mcp-6`: Q 420..499 (80 q), tools: `bm_mcp` (~220 min)
+14. `mesh-default-99`: 99 affected questions, tools: `mesh_sdk` (`--affected-only --default-config`) (~40 min)
+15. `mesh-hash-100`: Q 0..99 (100 q), tools: `mesh_sdk` (`--force-hash`) (~20 min)
+
+Concurrency: 15 concurrent jobs <= 20 GitHub Free tier runner limit (Single wave, zero queuing).
+
+## 5. Next Action
+1. Push branch `bench/pass1-full` to origin to trigger the workflow.
+2. Monitor all 15 shard jobs and the automatic merge job to completion.
+3. Download merged artifacts from branch `bench-results/<run-id>`, verify record completeness (2,699 expected records), and compute paired bootstrap 95% confidence intervals across all tools and variants.
+4. Update `benchmarks/STATE.md` with final metrics and evidence tables.
+5. Present the comprehensive Checkpoint C1 report and STOP per protocol.

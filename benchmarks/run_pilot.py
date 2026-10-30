@@ -486,6 +486,7 @@ def prepare_question_haystack(q: dict[str, Any], q_idx: int) -> dict[str, Any]:
         "gold_answer_sessions": gold_answer_session_ids,
         "tag_to_session": tag_to_session,
         "total_haystack_turns": len(items) - 2,
+        "_dataset_idx": q.get("_dataset_idx", q_idx),
     }
 
 # -----------------------------------------------------------------------------
@@ -556,7 +557,12 @@ def score_candidates(
     }
 
 
-def eval_mesh_sdk_question(q_data: dict[str, Any], q_idx: int) -> dict[str, Any]:
+def eval_mesh_sdk_question(
+    q_data: dict[str, Any],
+    q_idx: int,
+    max_content_length: Optional[int] = None,
+    force_hash: bool = False,
+) -> dict[str, Any]:
     """Evaluate Mesh SDK in-process on a single fresh store."""
     from mesh.memory import Mesh, warmup_model
     from mesh.namespaces import _evict_namespace_caches
@@ -568,10 +574,16 @@ def eval_mesh_sdk_question(q_data: dict[str, Any], q_idx: int) -> dict[str, Any]
         os.environ["MESH_NO_AUTO_DAEMON"] = "1"
         os.environ["MESH_NO_MODEL_DOWNLOAD"] = "1"
         os.environ["MESH_SYNC_ONNX"] = "1"
-        os.environ["MESH_MAX_CONTENT_LENGTH"] = "131072"
+        os.environ["MESH_MAX_CONTENT_LENGTH"] = str(max_content_length) if max_content_length is not None else "131072"
         ns = f"pilot_q_{q_idx}"
 
-        warmup_model(assume_yes=True, blocking=True)
+        if force_hash:
+            os.environ["MESH_FORCE_HASH_EMBED"] = "1"
+            os.environ["MESH_REQUIRE_MODEL"] = "0"
+        else:
+            os.environ["MESH_FORCE_HASH_EMBED"] = "0"
+            os.environ["MESH_REQUIRE_MODEL"] = "1"
+            warmup_model(assume_yes=True, blocking=True)
         harness_baseline_mb = get_harness_baseline_rss_mb()
 
         with ProcessTreePeakTracker(include_parent=True) as tracker:
@@ -652,8 +664,12 @@ def eval_mesh_sdk_question(q_data: dict[str, Any], q_idx: int) -> dict[str, Any]
             raw_cands = [(r.get("id", ""), r.get("content", "")) for r in raw_res]
             raw_ids = [extract_turn_identifier(r.get("id", ""), r.get("content", "")) or r.get("id", "") for r in raw_res]
             backend = raw_res[0].get("embedding_backend", "unknown") if raw_res else "unknown"
-            if os.environ.get("MESH_REQUIRE_MODEL") == "1" and backend not in ("onnx-minilm-l6-v2", "onnx"):
-                raise RuntimeError(f"F7 safety violation: expected ONNX embedding model, got backend={backend!r}")
+            if force_hash:
+                if backend != "hash-384":
+                    raise RuntimeError(f"Expected hash-384 embedding backend, got backend={backend!r}")
+            else:
+                if os.environ.get("MESH_REQUIRE_MODEL") == "1" and backend not in ("onnx-minilm-l6-v2", "onnx"):
+                    raise RuntimeError(f"F7 safety violation: expected ONNX embedding model, got backend={backend!r}")
             raw_scores = score_candidates(raw_cands, q_data["gold_turn_tags"], q_data["gold_session_tags"], q_data["tag_to_session"])
             mesh_raw.close()
             _evict_namespace_caches(snap_raw)
@@ -671,6 +687,10 @@ def eval_mesh_sdk_question(q_data: dict[str, Any], q_idx: int) -> dict[str, Any]
             gc.collect()
 
         tool_peak_ram = max(0.0, round(tracker.peak_mb - harness_baseline_mb, 2))
+
+        if force_hash:
+            os.environ.pop("MESH_FORCE_HASH_EMBED", None)
+            os.environ["MESH_REQUIRE_MODEL"] = "1"
 
         return {
             "write_seconds": write_sec,
@@ -2029,6 +2049,9 @@ def run_full_pilot(
     only_tools: Optional[list[str]] = None,
     dataset_path: Optional[Path] = None,
     results_dir: Optional[Path] = None,
+    default_config: bool = False,
+    force_hash: bool = False,
+    affected_only: bool = False,
 ) -> dict[str, Any]:
     skip_set = set(skip_tools or [])
     only_set = set(only_tools) if only_tools else None
@@ -2052,12 +2075,33 @@ def run_full_pilot(
         pilot_raw = json.load(f)
 
     harness_start_mono = time.monotonic()
+    if affected_only:
+        from mesh.guards import guard_ingest
+        filtered_raw = []
+        for orig_idx, q in enumerate(pilot_raw):
+            haystack = q.get("haystack_sessions", [])
+            is_affected = False
+            for session in haystack:
+                for turn in session:
+                    content = turn.get("content", "")
+                    if len(content) > 16384 or guard_ingest(content, local_only=False).rejected:
+                        is_affected = True
+                        break
+                if is_affected:
+                    break
+            if is_affected:
+                q_copy = dict(q)
+                q_copy["_dataset_idx"] = orig_idx
+                filtered_raw.append(q_copy)
+        logger.info("Filtered dataset from %d to %d affected questions under default guards.", len(pilot_raw), len(filtered_raw))
+        pilot_raw = filtered_raw
+
     if start_idx > 0 or limit is not None:
         end_idx = (start_idx + limit) if limit else len(pilot_raw)
         pilot_raw = pilot_raw[start_idx:end_idx]
 
     logger.info("Preparing haystacks for %d questions (start_idx=%d) with opaque tags at START...", len(pilot_raw), start_idx)
-    prepared_questions = [prepare_question_haystack(q, start_idx + idx) for idx, q in enumerate(pilot_raw)]
+    prepared_questions = [prepare_question_haystack(q, q.get("_dataset_idx", start_idx + idx)) for idx, q in enumerate(pilot_raw)]
 
     total_turns_all = sum(q["total_haystack_turns"] for q in prepared_questions)
     logger.info("Total turns across %d questions: %d (mean: %.1f turns/q)", len(prepared_questions), total_turns_all, (total_turns_all / len(prepared_questions)) if prepared_questions else 0.0)
@@ -2126,18 +2170,29 @@ def run_full_pilot(
         # CLASS A: SDK / IN-PROCESS
         # -------------------------------------------------------------
         if should_run("mesh_sdk"):
-            logger.info("=== Running Class A: Mesh SDK ===")
+            tool_label = "Mesh SDK (Default Config)" if default_config else ("Mesh SDK (Hash-384)" if force_hash else "Mesh SDK")
+            tool_key = "mesh_sdk_default" if default_config else ("mesh_sdk_hash" if force_hash else "mesh_sdk")
+            backend_label = "hash-384" if force_hash else "onnx-minilm-l6-v2"
+            model_label = "hash-384" if force_hash else "all-MiniLM-L6-v2"
+
+            logger.info("=== Running Class A: %s ===", tool_label)
             res_mesh_sdk = []
             for idx, q_data in enumerate(prepared_questions):
                 check_free_disk_guard(3.0)
                 if check_harness_cutoff(harness_start_mono, cutoff_minutes):
-                    logger.warning("Cutoff (%.1f min) reached. Stopping new questions for mesh_sdk.", cutoff_minutes)
+                    logger.warning("Cutoff (%.1f min) reached. Stopping new questions for %s.", cutoff_minutes, tool_label)
                     break
-                r = eval_mesh_sdk_question(q_data, start_idx + idx)
+                actual_q_idx = q_data.get("_dataset_idx", start_idx + idx)
+                r = eval_mesh_sdk_question(
+                    q_data,
+                    actual_q_idx,
+                    max_content_length=16384 if default_config else 131072,
+                    force_hash=force_hash,
+                )
                 res_mesh_sdk.append(r)
-                append_raw_jsonl(jsonl_file, make_raw_record("Mesh SDK", "Class A", r.get("embedding_backend", "onnx-minilm-l6-v2"), "all-MiniLM-L6-v2", r, q_data, start_idx + idx, shard_id or "default"))
-                logger.info("  [Mesh SDK Q %d/%d] write=%.2fs raw_query=%.1fms (turn_h1=%.0f)", idx + 1, len(prepared_questions), r["write_seconds"], r["raw_ms"], r["raw_scores"]["turn_hit_at_1"])
-            tool_results["mesh_sdk"] = aggregate_tool_results("Mesh SDK", "Class A", res_mesh_sdk, prepared_questions)
+                append_raw_jsonl(jsonl_file, make_raw_record(tool_label, "Class A", r.get("embedding_backend", backend_label), model_label, r, q_data, actual_q_idx, shard_id or "default"))
+                logger.info("  [%s Q %d/%d (orig=%d)] write=%.2fs raw_query=%.1fms (turn_h1=%.0f)", tool_label, idx + 1, len(prepared_questions), actual_q_idx, r["write_seconds"], r["raw_ms"], r["raw_scores"]["turn_hit_at_1"])
+            tool_results[tool_key] = aggregate_tool_results(tool_label, "Class A", res_mesh_sdk, prepared_questions)
             save_current_state()
 
         if should_run("mem0_sdk"):
@@ -2145,7 +2200,8 @@ def run_full_pilot(
             check_free_disk_guard(3.0)
             res_mem0 = run_mem0_pilot_all(prepared_questions)
             for idx, (r, q_data) in enumerate(zip(res_mem0, prepared_questions)):
-                append_raw_jsonl(jsonl_file, make_raw_record("Mem0 SDK", "Class A", "fastembed-minilm", "all-MiniLM-L6-v2", r, q_data, start_idx + idx, shard_id or "default"))
+                actual_q_idx = q_data.get("_dataset_idx", start_idx + idx)
+                append_raw_jsonl(jsonl_file, make_raw_record("Mem0 SDK", "Class A", "fastembed-minilm", "all-MiniLM-L6-v2", r, q_data, actual_q_idx, shard_id or "default"))
             tool_results["mem0_sdk"] = aggregate_tool_results("Mem0 SDK", "Class A", res_mem0, prepared_questions)
             save_current_state()
 
@@ -2238,10 +2294,11 @@ def run_full_pilot(
                 if check_harness_cutoff(harness_start_mono, cutoff_minutes):
                     logger.warning("Cutoff (%.1f min) reached. Stopping new questions for auxly_mcp.", cutoff_minutes)
                     break
-                r = eval_auxly_mcp_question(q_data, start_idx + idx)
+                actual_q_idx = q_data.get("_dataset_idx", start_idx + idx)
+                r = eval_auxly_mcp_question(q_data, actual_q_idx)
                 res_auxly_mcp.append(r)
-                append_raw_jsonl(jsonl_file, make_raw_record("Auxly MCP", "Class C", "none", "none", r, q_data, start_idx + idx, shard_id or "default"))
-                logger.info("  [Auxly MCP Q %d/%d] write=%.2fs raw_query=%.1fms", idx + 1, len(prepared_questions), r["write_seconds"], r["raw_ms"])
+                append_raw_jsonl(jsonl_file, make_raw_record("Auxly MCP", "Class C", "none", "none", r, q_data, actual_q_idx, shard_id or "default"))
+                logger.info("  [Auxly MCP Q %d/%d (orig=%d)] write=%.2fs raw_query=%.1fms", idx + 1, len(prepared_questions), actual_q_idx, r["write_seconds"], r["raw_ms"])
             tool_results["auxly_mcp"] = aggregate_tool_results("Auxly MCP", "Class C", res_auxly_mcp, prepared_questions)
             save_current_state()
 
@@ -2253,10 +2310,11 @@ def run_full_pilot(
                 if check_harness_cutoff(harness_start_mono, cutoff_minutes):
                     logger.warning("Cutoff (%.1f min) reached. Stopping new questions for auxly_mcp_ollama.", cutoff_minutes)
                     break
-                r = eval_auxly_mcp_ollama_question(q_data, start_idx + idx)
+                actual_q_idx = q_data.get("_dataset_idx", start_idx + idx)
+                r = eval_auxly_mcp_ollama_question(q_data, actual_q_idx)
                 res_auxly_ollama.append(r)
-                append_raw_jsonl(jsonl_file, make_raw_record("Auxly MCP (Ollama all-minilm)", "Class C", "ollama-all-minilm", "all-minilm", r, q_data, start_idx + idx, shard_id or "default"))
-                logger.info("  [Auxly Ollama Q %d/%d] write=%.2fs raw_query=%.1fms (turn_h1=%.0f)", idx + 1, len(prepared_questions), r["write_seconds"], r["raw_ms"], r["raw_scores"]["turn_hit_at_1"])
+                append_raw_jsonl(jsonl_file, make_raw_record("Auxly MCP (Ollama all-minilm)", "Class C", "ollama-all-minilm", "all-minilm", r, q_data, actual_q_idx, shard_id or "default"))
+                logger.info("  [Auxly Ollama Q %d/%d (orig=%d)] write=%.2fs raw_query=%.1fms (turn_h1=%.0f)", idx + 1, len(prepared_questions), actual_q_idx, r["write_seconds"], r["raw_ms"], r["raw_scores"]["turn_hit_at_1"])
             tool_results["auxly_mcp_ollama"] = aggregate_tool_results("Auxly MCP (Ollama all-minilm)", "Class C", res_auxly_ollama, prepared_questions)
             save_current_state()
 
@@ -2268,10 +2326,11 @@ def run_full_pilot(
                 if check_harness_cutoff(harness_start_mono, cutoff_minutes):
                     logger.warning("Cutoff (%.1f min) reached. Stopping new questions for bm_mcp.", cutoff_minutes)
                     break
-                r = eval_bm_mcp_question(q_data, start_idx + idx)
+                actual_q_idx = q_data.get("_dataset_idx", start_idx + idx)
+                r = eval_bm_mcp_question(q_data, actual_q_idx)
                 res_bm_mcp.append(r)
-                append_raw_jsonl(jsonl_file, make_raw_record("Basic Memory MCP", "Class C", "fastembed-minilm", "all-MiniLM-L6-v2", r, q_data, start_idx + idx, shard_id or "default"))
-                logger.info("  [BM MCP Q %d/%d] write=%.2fs raw_query=%.1fms", idx + 1, len(prepared_questions), r["write_seconds"], r["raw_ms"])
+                append_raw_jsonl(jsonl_file, make_raw_record("Basic Memory MCP", "Class C", "fastembed-minilm", "all-MiniLM-L6-v2", r, q_data, actual_q_idx, shard_id or "default"))
+                logger.info("  [BM MCP Q %d/%d (orig=%d)] write=%.2fs raw_query=%.1fms", idx + 1, len(prepared_questions), actual_q_idx, r["write_seconds"], r["raw_ms"])
             tool_results["bm_mcp"] = aggregate_tool_results("Basic Memory MCP", "Class C", res_bm_mcp, prepared_questions)
             save_current_state()
 
@@ -2543,6 +2602,9 @@ def main():
     parser.add_argument("--dataset", default=None, help="Path to LongMemEval-S JSON dataset (overrides PILOT_DATASET_PATH)")
     parser.add_argument("--out-dir", default=None, help="Output directory for results JSON (overrides RESULTS_DIR)")
     parser.add_argument("--prescan", action="store_true", help="Run F3 pre-scan under default limits on dataset without ingestion")
+    parser.add_argument("--default-config", action="store_true", help="Run Mesh SDK with default config (MAX_CONTENT_LENGTH=16384)")
+    parser.add_argument("--force-hash", action="store_true", help="Run Mesh SDK with hash-384 feature hashing fallback")
+    parser.add_argument("--affected-only", action="store_true", help="Filter dataset to the 99 questions with turns affected by default guards")
     args = parser.parse_args()
 
     # Handle prescan mode
@@ -2577,6 +2639,9 @@ def main():
         only_tools=only_tools,
         dataset_path=dataset_path,
         results_dir=results_dir,
+        default_config=args.default_config,
+        force_hash=args.force_hash,
+        affected_only=args.affected_only,
     )
     print("\nPilot evaluation run completed successfully.")
 

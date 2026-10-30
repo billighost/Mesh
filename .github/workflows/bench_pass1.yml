@@ -43,23 +43,118 @@ jobs:
       fail-fast: false
       max-parallel: 20
       matrix:
-        shard_id: ["sample-10", "pilot-rep-1", "pilot-rep-2"]
         include:
-          - shard_id: "sample-10"
+          # --- 1. Mesh SDK (500 questions in 2 shards of 250) ---
+          - shard_id: "mesh-sdk-1"
             start_idx: 0
-            questions: 10
-            tools: "mesh_sdk mem0_sdk bm_mcp auxly_mcp auxly_mcp_ollama"
+            questions: 250
+            tools: "mesh_sdk"
+            needs_ollama: false
+            extra_args: ""
+
+          - shard_id: "mesh-sdk-2"
+            start_idx: 250
+            questions: 250
+            tools: "mesh_sdk"
+            needs_ollama: false
+            extra_args: ""
+
+          # --- 2. Mem0 SDK (500 questions in 2 shards of 250) ---
+          - shard_id: "mem0-sdk-1"
+            start_idx: 0
+            questions: 250
+            tools: "mem0_sdk"
+            needs_ollama: false
+            extra_args: ""
+
+          - shard_id: "mem0-sdk-2"
+            start_idx: 250
+            questions: 250
+            tools: "mem0_sdk"
+            needs_ollama: false
+            extra_args: ""
+
+          # --- 3. Auxly MCP Substring (500 questions in 1 shard) ---
+          - shard_id: "auxly-mcp-sub"
+            start_idx: 0
+            questions: 500
+            tools: "auxly_mcp"
+            needs_ollama: false
+            extra_args: ""
+
+          # --- 4. Auxly MCP + Local Ollama Embeddings (500 questions in 2 shards of 250) ---
+          - shard_id: "auxly-ollama-1"
+            start_idx: 0
+            questions: 250
+            tools: "auxly_mcp_ollama"
             needs_ollama: true
-          - shard_id: "pilot-rep-1"
+            extra_args: ""
+
+          - shard_id: "auxly-ollama-2"
+            start_idx: 250
+            questions: 250
+            tools: "auxly_mcp_ollama"
+            needs_ollama: true
+            extra_args: ""
+
+          # --- 5. Basic Memory MCP (500 questions in 6 shards) ---
+          - shard_id: "bm-mcp-1"
             start_idx: 0
-            questions: 20
-            tools: "mesh_sdk mem0_sdk bm_mcp auxly_mcp"
+            questions: 84
+            tools: "bm_mcp"
             needs_ollama: false
-          - shard_id: "pilot-rep-2"
+            extra_args: ""
+
+          - shard_id: "bm-mcp-2"
+            start_idx: 84
+            questions: 84
+            tools: "bm_mcp"
+            needs_ollama: false
+            extra_args: ""
+
+          - shard_id: "bm-mcp-3"
+            start_idx: 168
+            questions: 84
+            tools: "bm_mcp"
+            needs_ollama: false
+            extra_args: ""
+
+          - shard_id: "bm-mcp-4"
+            start_idx: 252
+            questions: 84
+            tools: "bm_mcp"
+            needs_ollama: false
+            extra_args: ""
+
+          - shard_id: "bm-mcp-5"
+            start_idx: 336
+            questions: 84
+            tools: "bm_mcp"
+            needs_ollama: false
+            extra_args: ""
+
+          - shard_id: "bm-mcp-6"
+            start_idx: 420
+            questions: 80
+            tools: "bm_mcp"
+            needs_ollama: false
+            extra_args: ""
+
+          # --- 6. Mesh Default Config (99 affected questions) ---
+          - shard_id: "mesh-default-99"
             start_idx: 0
-            questions: 20
-            tools: "mesh_sdk mem0_sdk bm_mcp auxly_mcp"
+            questions: 99
+            tools: "mesh_sdk"
             needs_ollama: false
+            extra_args: "--affected-only --default-config"
+
+          # --- 7. Mesh Hash-384 Fallback (first 100 questions) ---
+          - shard_id: "mesh-hash-100"
+            start_idx: 0
+            questions: 100
+            tools: "mesh_sdk"
+            needs_ollama: false
+            extra_args: "--force-hash"
 
     env:
       # Thread limits: limit math/BLAS libraries to 4 threads matching runner vCPUs
@@ -301,6 +396,7 @@ jobs:
             --start-idx "${{ matrix.start_idx }}" \
             --limit "${{ matrix.questions }}" \
             --tools "${{ matrix.tools }}" \
+            ${{ matrix.extra_args }} \
             --cutoff-minutes 300 \
             --dataset benchmarks/data/longmemeval_s_cleaned.json \
             --out-dir benchmarks/results/ci 2>&1 | tee "benchmarks/results/ci/${{ matrix.shard_id }}.log"
