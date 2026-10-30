@@ -1,10 +1,11 @@
 # Benchmarks State & Tracking
 
-**Document Version:** 1.12.0  
-**Current Step:** CHECKPOINT P1-A (SECOND REPORT) — Sample Shard Workflow Fix & Execution on bench/pass1-sample  
+**Document Version:** 1.13.0  
+**Current Step:** CHECKPOINT P1-A (SECOND REPORT) COMPLETE — Sample Shards Executed on GitHub Actions (Run 41044523924)  
 **Target Commit / Base:** `feat/ci-evidence`  
 **Frozen Benchmark Tag:** `benchmark-v1`  
-**Timestamp:** 2026-10-30T11:55:00+01:00  
+**Run ID:** `41044523924` (Branch: `origin/bench-results/41044523924`)  
+**Timestamp:** 2026-10-30T19:15:00+01:00  
 
 ---
 
@@ -104,27 +105,47 @@ Every requirement specified in the brief and directives is implemented and mappe
 
 ---
 
-## 3. Sample-Shard Test Plan (Branch: bench/pass1-sample)
+## 3. Sample-Shard Execution & Verification (Run 41044523924)
 
-The sample-shard test executes 3 parallel jobs across the GitHub-hosted runners:
-1. **`sample-10` Shard**:
-   - 10 Questions (0..9)
-   - 5 Tools: Mesh SDK, Mem0 SDK, Basic Memory MCP, Auxly MCP (substring), Auxly MCP (Ollama all-minilm)
-   - Measures seconds per question across all tools to calibrate shard sizes for the 500-question matrix.
-2. **`pilot-rep-1` Shard (Runner Job 1)**:
-   - 20 Pilot Questions (0..19)
-   - 4 Pilot Tools: Mesh SDK, Mem0 SDK, Basic Memory MCP, Auxly MCP
-   - Validates top-5 and top-10 ranked ID lists against Laptop Pilot v2 baseline.
-3. **`pilot-rep-2` Shard (Runner Job 2)**:
-   - 20 Pilot Questions (0..19)
-   - 4 Pilot Tools: Mesh SDK, Mem0 SDK, Basic Memory MCP, Auxly MCP
-   - Confirms runner-to-runner determinism and gate reliability.
+The sample-shard test was executed across 3 GitHub-hosted runners (`ubuntu-24.04`) in run [`41044523924`](https://github.com/billighost/Mesh/actions/runs/41044523924), followed by the automatic merge and publishing job:
+- **`sample-10` Shard** (Job `124025235942`): 10 questions across 5 tools (Mesh SDK, Mem0 SDK, BM MCP, Auxly MCP substring, Auxly MCP + Ollama `all-minilm`). Completed in **36.95 minutes** (benchmark step: 2,217s).
+- **`pilot-rep-1` Shard** (Job `124025235768`): 20 questions across 4 tools (Mesh SDK, Mem0 SDK, BM MCP, Auxly MCP). Completed in **73.68 minutes** (benchmark step: 4,421s).
+- **`pilot-rep-2` Shard** (Job `124025235913`): 20 questions across 4 tools (independent replication). Completed in **38.5 minutes** (benchmark step: 2,311s).
+- **`merge-results` Job** (Job `124055669870`): Merged 210 individual raw question records into `results/merged_raw.jsonl`, created `pass1_results_41044523924.tar.gz`, and published all per-shard logs and results to branch `origin/bench-results/41044523924`. Completed in **10.0s**.
+
+### 1. Runner-to-Runner Determinism & Gate Verification
+Across all 20 pilot questions evaluated independently on Runner Job 1 vs Runner Job 2:
+- **Gate Pass Rate:** **100.0% Known-Item Pass** and **100.0% Long-Turn Pass** across all tools.
+- **Top-5 ID Exact Match:** **20/20 (100.0%)** for Mesh SDK, Mem0 SDK, Basic Memory MCP, and Auxly MCP.
+- **Top-10 ID Exact Match:** **20/20 (100.0%)** for Mesh SDK, Mem0 SDK, Basic Memory MCP, and Auxly MCP.
+- **Accuracy Metric Parity:** Turn Recall@1, Recall@5, MRR, Session Recall@1, and Session Recall@5 matched identically between Runner 1 and Runner 2 to 4 decimal places.
+
+### 2. Auxly MCP with Local Ollama Embeddings (Semantic Recall)
+In the `sample-10` shard, Auxly was evaluated with local Ollama (`localhost:11434`, `all-minilm` embedding model, 0 cloud keys):
+- **Known-Item Gate:** 100% pass on paraphrased query with 0 word overlap (`"azure stargazing facility detected unexplained radio signal on stellar sector nine"`).
+- **Turn Recall@1:** **0.20** (vs 0.00 for substring-only Auxly).
+- **Turn Recall@5:** **0.40** (vs 0.00 for substring-only Auxly).
+- **Session Recall@5:** **0.90** (vs 0.00 for substring-only Auxly).
+- **Execution Time:** 38.53 s/question (38.46s write/index rebuild + 0.075s query).
+
+### 3. Measured Runner Timings & Calibrated Full-Matrix Shard Sizing
+Using conservative runner timings (based on the slower runner virtualization load) to ensure every shard completes within the ~280-minute target (under the 300-minute cutoff):
+
+| Tool / Variant | Questions | Measured Time | Projected 500q Total | Calibrated Shards | Questions / Shard | Est. Runtime / Shard |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Mesh SDK** | 500 | 24.5 s/q | 204.2 min (~3.4 h) | **2 shards** | 250 q/shard | ~102.1 min |
+| **Mem0 SDK** | 500 | 15.0 s/q | 125.0 min (~2.1 h) | **2 shards** | 250 q/shard | ~62.5 min |
+| **Auxly MCP (Substring)** | 500 | 0.04 s/q | 0.3 min (< 1 min) | **1 shard** | 500 q/shard | < 1 min |
+| **Auxly MCP (Ollama)** | 500 | 38.5 s/q | 321.1 min (~5.35 h) | **2 shards** | 250 q/shard | ~160.5 min |
+| **Basic Memory MCP** | 500 | 165.0 s/q | 1,375.0 min (~22.9 h) | **6 shards** | ~84 q/shard | ~231.0 min |
+| **Mesh Default Config** | 99 | 24.5 s/q | 40.4 min | **1 shard** | 99 q/shard | ~40.4 min |
+| **Mesh Hash-384** | 100 | 12.0 s/q | 20.0 min | **1 shard** | 100 q/shard | ~20.0 min |
+| **TOTAL** | — | — | — | **15 shards** | — | **Max ~231.0 min** |
+
+- **Runner Concurrency & Waves:** GitHub Actions Free tier allows up to **20 concurrent jobs**. Because the calibrated matrix comprises **15 shards**, all shards will execute concurrently in **a single wave (1 wave, 0 queuing)**, completing the entire 500-question Pass 1 benchmark within ~4 hours.
 
 ---
 
 ## 4. Next Action
-1. Push commit with workflow schema fixes to `bench/pass1-sample` branch.
-2. Monitor GitHub Actions sample-shard execution across the 3 matrix jobs (`sample-10`, `pilot-rep-1`, `pilot-rep-2`) and the `merge-results` job.
-3. Compare top-5 and top-10 ranked ID lists for the 20 pilot questions: Laptop Pilot v2 vs Runner Job 1 vs Runner Job 2.
-4. Calibrate runner shard sizing from measured execution times (sec/q) targeting ~280 minutes per shard.
-5. Deliver Checkpoint P1-A (second report) and STOP (do not launch the full 500-question matrix without explicit user go-ahead).
+1. Present Checkpoint P1-A (Second Report) containing free-tier public repo confirmation, workflow line-mapping, F3 pre-scan explanation, access-counter observation, Auxly Ollama integration evidence, runner determinism evidence (Run 41044523924), and calibrated 15-shard matrix sizing.
+2. **STOP** and await the user's explicit confirmation before launching the full 500-question matrix.
