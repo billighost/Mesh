@@ -1,10 +1,10 @@
 # Benchmarks State & Tracking
 
-**Document Version:** 1.11.0  
+**Document Version:** 1.12.0  
 **Current Step:** CHECKPOINT P1-A (SECOND REPORT) — Sample Shard Workflow Fix & Execution on bench/pass1-sample  
 **Target Commit / Base:** `feat/ci-evidence`  
 **Frozen Benchmark Tag:** `benchmark-v1`  
-**Timestamp:** 2026-10-30T01:25:00+01:00  
+**Timestamp:** 2026-10-30T11:55:00+01:00  
 
 ---
 
@@ -60,6 +60,20 @@ Following review of the initial Checkpoint P1-A report, all directives from the 
   - Stored: `"The cerulean observatory celestial frequency atop Mount Horizon recorded an anomalous 432.85 MHz on stellar quadrant nine."`
   - Paraphrased Query: `"azure stargazing facility detected unexplained radio signal on stellar sector nine"`
   - Substring search yields 0 matches; semantic embedding recall correctly retrieves `[turn:00000]` at Rank 1.
+
+### 5. Runner Model Provisioning & Harness Hardening (Run 40980139606 Post-Mortem)
+- **Failure Analysis:** In run `40980139606`, runner jobs completed in ~2 minutes without producing results. Post-mortem root cause analysis revealed:
+  1. `link_shared_models()` expected `~/.mesh/models` to exist on the runner host. On fresh GitHub-hosted runners, this directory was empty, causing `warmup_model()` to raise a missing ONNX model error under `MESH_REQUIRE_MODEL=1` and `MESH_NO_MODEL_DOWNLOAD=1`.
+  2. With zero turns ingested, `eval_mesh_sdk_question()` evaluated `statistics.mean(turn_latencies_ms)` on an empty list, raising `StatisticsError`.
+  3. The CI runner command piped output through `tee` without `set -eo pipefail`, masking the Python failure exit code, while `Audit shard gates` silently exited with code 0 on missing results.
+- **Hardening Fixes Implemented:**
+  1. Workflow step added to pre-download and verify the official ONNX embedding model into `~/.mesh/models` during environment provisioning.
+  2. Mem0 `fastembed` model pre-warmed during environment creation to eliminate runtime network overhead.
+  3. Added `~/.mesh/models` to runner dependency cache.
+  4. Added `set -eo pipefail` to the benchmark runner step so any unhandled Python exception immediately fails the job.
+  5. Hardened `Audit shard gates` to print the shard log tail and exit with error code 1 if `*_results.json` is missing.
+  6. Updated merge job to copy all downloaded shard artifacts directly into `results/` so all shard logs and JSON files are published to the `bench-results/<run-id>` branch.
+  7. Guarded all latency list aggregations in `benchmarks/run_pilot.py` against empty lists.
 
 ---
 

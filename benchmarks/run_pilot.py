@@ -219,7 +219,10 @@ def checkpoint_and_analyze_disk(directory: Path | str) -> dict[str, Any]:
 
 
 def link_shared_models(target_mesh_home: Path):
-    shared_models = Path.home() / ".mesh" / "models"
+    if "MESH_SHARED_MODELS" in os.environ and os.environ["MESH_SHARED_MODELS"]:
+        shared_models = Path(os.environ["MESH_SHARED_MODELS"])
+    else:
+        shared_models = Path.home() / ".mesh" / "models"
     if not shared_models.exists():
         return
 
@@ -608,8 +611,8 @@ def eval_mesh_sdk_question(q_data: dict[str, Any], q_idx: int) -> dict[str, Any]
                             ingest_accounting["gold_turn_status"] = "gold_failed"
             write_sec = dt_ingest.mono_elapsed
 
-            first_50_mean = round(statistics.mean(turn_latencies_ms[:50]), 2) if len(turn_latencies_ms) >= 50 else round(statistics.mean(turn_latencies_ms), 2)
-            last_50_mean = round(statistics.mean(turn_latencies_ms[-50:]), 2) if len(turn_latencies_ms) >= 50 else round(statistics.mean(turn_latencies_ms), 2)
+            first_50_mean = round(statistics.mean(turn_latencies_ms[:50]), 2) if len(turn_latencies_ms) >= 50 else (round(statistics.mean(turn_latencies_ms), 2) if turn_latencies_ms else 0.0)
+            last_50_mean = round(statistics.mean(turn_latencies_ms[-50:]), 2) if len(turn_latencies_ms) >= 50 else (round(statistics.mean(turn_latencies_ms), 2) if turn_latencies_ms else 0.0)
 
             mesh.close()
             _evict_namespace_caches(ns)

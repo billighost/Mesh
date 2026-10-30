@@ -135,6 +135,7 @@ jobs:
             ~/.cache/huggingface
             ~/.local/share/onnx_models
             ~/.cache/fastembed
+            ~/.mesh/models
           key: bench-cache-py312-d6f21ea9-${{ hashFiles('pyproject.toml') }}
           restore-keys: |
             bench-cache-py312-d6f21ea9-
@@ -160,8 +161,30 @@ jobs:
           /tmp/venv_bm/bin/pip install --upgrade pip
           /tmp/venv_bm/bin/pip install "basic-memory==0.24.1" "fastmcp>=4.1" psutil
 
+          # Pre-warm fastembed model for Mem0
+          /tmp/venv_mem0/bin/python -c "from fastembed import TextEmbedding; TextEmbedding('sentence-transformers/all-MiniLM-L6-v2')"
+
       # -----------------------------------------------------------------------
-      # 7. Install Auxly CLI Linux binary (verified SHA-256)
+      # 7. Pre-download verified ONNX embedding model for Mesh into ~/.mesh/models
+      # -----------------------------------------------------------------------
+      - name: Pre-download verified ONNX embedding model for Mesh
+        run: |
+          mkdir -p ~/.mesh
+          python -c "
+          import os
+          from pathlib import Path
+          from mesh.memory import ensure_model_downloaded
+          os.environ['MESH_HOME'] = str(Path.home() / '.mesh')
+          os.environ['MESH_AUTO_DOWNLOAD_MODEL'] = '1'
+          os.environ['MESH_NO_MODEL_DOWNLOAD'] = '0'
+          pair = ensure_model_downloaded(blocking=True, timeout=120.0, assume_yes=True)
+          if not pair:
+              raise SystemExit('ERROR: ONNX model download failed!')
+          print('Verified ONNX model pair installed:', pair)
+          "
+
+      # -----------------------------------------------------------------------
+      # 8. Install Auxly CLI Linux binary (verified SHA-256)
       # -----------------------------------------------------------------------
       - name: Install Auxly CLI Linux binary
         run: |
@@ -268,6 +291,7 @@ jobs:
           BM_BIN: "/tmp/venv_bm/bin/basic-memory"
           AUXLY_BIN: "${{ github.workspace }}/benchmarks/bin/auxly"
         run: |
+          set -eo pipefail
           mkdir -p benchmarks/results/ci
           echo "=== Disk Space Before Benchmark Run ==="
           df -h
@@ -296,8 +320,14 @@ jobs:
 
           json_files = sorted(glob.glob("benchmarks/results/ci/${{ matrix.shard_id }}_results.json"))
           if not json_files:
-              print("No shard results JSON found.")
-              sys.exit(0)
+              print("ERROR: No shard results JSON found! Benchmark shard failed to complete.")
+              log_path = Path("benchmarks/results/ci/${{ matrix.shard_id }}.log")
+              if log_path.exists():
+                  print("=== Shard Log Tail ===")
+                  lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+                  for l in lines[-100:]:
+                      print(l)
+              sys.exit(1)
 
           with open(json_files[0], "r", encoding="utf-8") as f:
               data = json.load(f)
@@ -394,6 +424,7 @@ jobs:
           git checkout --orphan "$TARGET_BRANCH"
           git rm -rf . || true
           mkdir -p results
+          cp -r downloaded_artifacts/* results/ || true
           cp -r benchmarks/results/merged/* results/ || true
           git add results/
           git commit -m "ci(benchmarks): publish Pass 1 results for run ${{ github.run_id }}"
