@@ -148,7 +148,7 @@ jobs:
 
           # Main environment: Mesh Context Layer (from source) and harness dependencies
           pip install -e ".[test,secrets]"
-          pip install mcp psutil onnxruntime
+          pip install mcp psutil onnxruntime ruff
 
           # Dedicated environment for Mem0
           python -m venv /tmp/venv_mem0
@@ -268,6 +268,7 @@ jobs:
           BM_BIN: "/tmp/venv_bm/bin/basic-memory"
           AUXLY_BIN: "${{ github.workspace }}/benchmarks/bin/auxly"
         run: |
+          mkdir -p benchmarks/results/ci
           echo "=== Disk Space Before Benchmark Run ==="
           df -h
 
