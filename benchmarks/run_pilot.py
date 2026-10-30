@@ -2494,6 +2494,127 @@ def run_full_pilot(
 
 
 
+def analyze_merged_jsonl(jsonl_path: Path) -> dict[str, Any]:
+    """Parse raw.jsonl and compute aggregate metrics, CIs, and paired comparisons."""
+    records_by_tool: dict[str, dict[int, dict[str, Any]]] = {}
+    with open(jsonl_path, "r", encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            rec = json.loads(line)
+            tool = rec["tool_name"]
+            q_idx = rec["q_idx"]
+            if tool not in records_by_tool:
+                records_by_tool[tool] = {}
+            records_by_tool[tool][q_idx] = rec
+
+    summary: dict[str, Any] = {}
+    for tool, q_map in sorted(records_by_tool.items()):
+        recs = [q_map[k] for k in sorted(q_map.keys())]
+        n = len(recs)
+        t_h1 = [float(r.get("raw_scores", {}).get("turn_hit_at_1", 0)) for r in recs]
+        t_h5 = [float(r.get("raw_scores", {}).get("turn_hit_at_5", 0)) for r in recs]
+        t_mrr = [float(r.get("raw_scores", {}).get("turn_mrr", 0.0)) for r in recs]
+        s_h1 = [float(r.get("raw_scores", {}).get("sess_hit_at_1", 0)) for r in recs]
+        s_h5 = [float(r.get("raw_scores", {}).get("sess_hit_at_5", 0)) for r in recs]
+
+        ki_pass = sum(1 for r in recs if r.get("ki_rank") == 1)
+        lt_pass = sum(1 for r in recs if r.get("lt_tag_found"))
+        gate_pass = sum(1 for r in recs if r.get("gate_pass"))
+
+        write_secs = [float(r.get("write_seconds", 0.0)) for r in recs]
+        raw_ms = [float(r.get("raw_ms", 0.0)) for r in recs]
+        kw_ms = [float(r.get("kw_ms", 0.0)) for r in recs]
+
+        summary[tool] = {
+            "n": n,
+            "turn_recall_at_1": round(sum(t_h1) / n, 4) if n else 0.0,
+            "turn_recall_at_1_ci": compute_bootstrap_ci(t_h1),
+            "turn_recall_at_5": round(sum(t_h5) / n, 4) if n else 0.0,
+            "turn_recall_at_5_ci": compute_bootstrap_ci(t_h5),
+            "turn_mrr": round(sum(t_mrr) / n, 4) if n else 0.0,
+            "turn_mrr_ci": compute_bootstrap_ci(t_mrr),
+            "sess_recall_at_1": round(sum(s_h1) / n, 4) if n else 0.0,
+            "sess_recall_at_1_ci": compute_bootstrap_ci(s_h1),
+            "sess_recall_at_5": round(sum(s_h5) / n, 4) if n else 0.0,
+            "sess_recall_at_5_ci": compute_bootstrap_ci(s_h5),
+            "gates": {
+                "known_item_pass_pct": round(ki_pass / n * 100, 1) if n else 0.0,
+                "long_turn_pass_pct": round(lt_pass / n * 100, 1) if n else 0.0,
+                "both_gates_pass_pct": round(gate_pass / n * 100, 1) if n else 0.0,
+            },
+            "latency": {
+                "mean_write_sec": round(statistics.mean(write_secs), 3) if write_secs else 0.0,
+                "raw_query_p50_ms": round(percentile(raw_ms, 50), 2) if raw_ms else 0.0,
+                "raw_query_p95_ms": round(percentile(raw_ms, 95), 2) if raw_ms else 0.0,
+                "raw_query_mean_ms": round(statistics.mean(raw_ms), 2) if raw_ms else 0.0,
+                "kw_query_p50_ms": round(percentile(kw_ms, 50), 2) if kw_ms else 0.0,
+                "kw_query_p95_ms": round(percentile(kw_ms, 95), 2) if kw_ms else 0.0,
+                "kw_query_mean_ms": round(statistics.mean(kw_ms), 2) if kw_ms else 0.0,
+            },
+        }
+
+    paired: dict[str, Any] = {}
+    mesh_map = records_by_tool.get("Mesh SDK", {})
+    for competitor, comp_map in sorted(records_by_tool.items()):
+        if competitor == "Mesh SDK":
+            continue
+        common_keys = sorted(set(mesh_map.keys()) & set(comp_map.keys()))
+        if not common_keys:
+            continue
+        m_recs = [mesh_map[k] for k in common_keys]
+        c_recs = [comp_map[k] for k in common_keys]
+        n_pair = len(common_keys)
+
+        metrics = [
+            ("turn_recall_at_1", lambda r: float(r.get("raw_scores", {}).get("turn_hit_at_1", 0))),
+            ("turn_recall_at_5", lambda r: float(r.get("raw_scores", {}).get("turn_hit_at_5", 0))),
+            ("turn_mrr", lambda r: float(r.get("raw_scores", {}).get("turn_mrr", 0.0))),
+            ("sess_recall_at_1", lambda r: float(r.get("raw_scores", {}).get("sess_hit_at_1", 0))),
+            ("sess_recall_at_5", lambda r: float(r.get("raw_scores", {}).get("sess_hit_at_5", 0))),
+        ]
+
+        pair_summary: dict[str, Any] = {"n_paired": n_pair}
+        for metric_name, getter in metrics:
+            diffs = [getter(m) - getter(c) for m, c in zip(m_recs, c_recs)]
+            mean_diff = round(sum(diffs) / n_pair, 4) if n_pair else 0.0
+            ci = compute_bootstrap_ci(diffs)
+            is_sig = (ci[0] > 0) or (ci[1] < 0)
+            pair_summary[metric_name] = {
+                "diff": mean_diff,
+                "ci_95": ci,
+                "significant": is_sig,
+                "favor": "Mesh" if ci[0] > 0 else ("Competitor" if ci[1] < 0 else "Parity / Inconclusive"),
+            }
+        paired[f"Mesh SDK vs {competitor}"] = pair_summary
+
+    print("=" * 80)
+    print("PASS 1 BENCHMARK ACCURACY & RETRIEVAL SUMMARY")
+    print("=" * 80)
+    print(f"Total Tools Evaluated: {len(summary)}")
+    for t_name, s in summary.items():
+        print(f"\nTool: {t_name} (N={s['n']} questions)")
+        print(f"  Turn Recall@1: {s['turn_recall_at_1']:.4f} (95% CI: [{s['turn_recall_at_1_ci'][0]:.4f}, {s['turn_recall_at_1_ci'][1]:.4f}])")
+        print(f"  Turn Recall@5: {s['turn_recall_at_5']:.4f} (95% CI: [{s['turn_recall_at_5_ci'][0]:.4f}, {s['turn_recall_at_5_ci'][1]:.4f}])")
+        print(f"  Turn MRR:      {s['turn_mrr']:.4f} (95% CI: [{s['turn_mrr_ci'][0]:.4f}, {s['turn_mrr_ci'][1]:.4f}])")
+        print(f"  Sess Recall@1: {s['sess_recall_at_1']:.4f} (95% CI: [{s['sess_recall_at_1_ci'][0]:.4f}, {s['sess_recall_at_1_ci'][1]:.4f}])")
+        print(f"  Sess Recall@5: {s['sess_recall_at_5']:.4f} (95% CI: [{s['sess_recall_at_5_ci'][0]:.4f}, {s['sess_recall_at_5_ci'][1]:.4f}])")
+        print(f"  Gates:         KI={s['gates']['known_item_pass_pct']}% | LT={s['gates']['long_turn_pass_pct']}% | Pass={s['gates']['both_gates_pass_pct']}%")
+        print(f"  Latency:       Write={s['latency']['mean_write_sec']:.2f}s/q | Query p50={s['latency']['raw_query_p50_ms']}ms | p95={s['latency']['raw_query_p95_ms']}ms")
+
+    print("\n" + "=" * 80)
+    print("PAIRED BOOTSTRAP 95% CONFIDENCE INTERVALS (Mesh SDK vs Competitors)")
+    print("=" * 80)
+    for pair_name, p in paired.items():
+        print(f"\nComparison: {pair_name} (N={p['n_paired']} paired questions)")
+        for m_name in ["turn_recall_at_1", "turn_recall_at_5", "turn_mrr", "sess_recall_at_1", "sess_recall_at_5"]:
+            d = p[m_name]
+            sig_str = f"SIGNIFICANT ({d['favor']})" if d['significant'] else "No significant difference"
+            print(f"  {m_name:18s}: diff={d['diff']:+.4f} | 95% CI=[{d['ci_95'][0]:+.4f}, {d['ci_95'][1]:+.4f}] -> {sig_str}")
+
+    return {"tools": summary, "paired": paired}
+
+
 def run_prescan_default_config(dataset_path: Optional[Path] = None, out_file: Optional[Path] = None) -> dict[str, Any]:
     """Pre-scan full dataset turns under default guards and length limit (16384)."""
     from mesh.guards import guard_ingest
@@ -2605,7 +2726,13 @@ def main():
     parser.add_argument("--default-config", action="store_true", help="Run Mesh SDK with default config (MAX_CONTENT_LENGTH=16384)")
     parser.add_argument("--force-hash", action="store_true", help="Run Mesh SDK with hash-384 feature hashing fallback")
     parser.add_argument("--affected-only", action="store_true", help="Filter dataset to the 99 questions with turns affected by default guards")
+    parser.add_argument("--analyze", default=None, help="Path to raw.jsonl file to compute aggregate accuracy and paired bootstrap CIs")
     args = parser.parse_args()
+
+    # Handle analyze mode
+    if args.analyze:
+        analyze_merged_jsonl(Path(args.analyze))
+        return
 
     # Handle prescan mode
     if args.prescan:
