@@ -1,0 +1,1891 @@
+{
+  "total_questions": 500,
+  "total_turns": 246750,
+  "oversized_turns_total": 12,
+  "rejected_turns_total": 115,
+  "poison_rejected_turns_total": 33,
+  "num_affected_questions": 99,
+  "num_gold_affected_questions": 0,
+  "affected_questions": [
+    {
+      "q_idx": 0,
+      "q_id": "e47becba",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 2,
+      "rejected_details": [
+        {
+          "turn_idx": 179,
+          "session_idx": 18,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        },
+        {
+          "turn_idx": 482,
+          "session_idx": 47,
+          "length": 1663,
+          "reason": "Prompt injection or adversarial instruction pattern detected in memory content.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 4,
+      "q_id": "1e043500",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 185,
+          "session_idx": 18,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 8,
+      "q_id": "58ef2f1c",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 35,
+          "session_idx": 3,
+          "length": 1485,
+          "reason": "Prompt injection or adversarial instruction pattern detected in memory content.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 16,
+      "q_id": "66f24dbb",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 470,
+          "session_idx": 46,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 24,
+      "q_id": "21436231",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 124,
+          "session_idx": 11,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 26,
+      "q_id": "0862e8bf",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 161,
+          "session_idx": 17,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 27,
+      "q_id": "853b0a1d",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 80,
+          "session_idx": 8,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 28,
+      "q_id": "a06e4cfe",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 2,
+      "rejected_details": [
+        {
+          "turn_idx": 158,
+          "session_idx": 16,
+          "length": 1504,
+          "reason": "Prompt injection or adversarial instruction pattern detected in memory content.",
+          "has_answer": false
+        },
+        {
+          "turn_idx": 373,
+          "session_idx": 35,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 30,
+      "q_id": "b86304ba",
+      "num_oversized": 1,
+      "oversized_details": [
+        {
+          "turn_idx": 241,
+          "session_idx": 22,
+          "length": 31122,
+          "has_answer": false
+        }
+      ],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 241,
+          "session_idx": 22,
+          "length": 31122,
+          "reason": "content length (31122 chars) exceeds maximum allowed length (16384 chars).",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 35,
+      "q_id": "60d45044",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 472,
+          "session_idx": 43,
+          "length": 1502,
+          "reason": "Prompt injection or adversarial instruction pattern detected in memory content.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 36,
+      "q_id": "3f1e9474",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 62,
+          "session_idx": 6,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 40,
+      "q_id": "15745da0",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 42,
+          "session_idx": 5,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 50,
+      "q_id": "76d63226",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 204,
+          "session_idx": 21,
+          "length": 1898,
+          "reason": "Prompt injection or adversarial instruction pattern detected in memory content.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 51,
+      "q_id": "86f00804",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 335,
+          "session_idx": 28,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 53,
+      "q_id": "311778f1",
+      "num_oversized": 1,
+      "oversized_details": [
+        {
+          "turn_idx": 164,
+          "session_idx": 19,
+          "length": 41855,
+          "has_answer": false
+        }
+      ],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 164,
+          "session_idx": 19,
+          "length": 41855,
+          "reason": "content length (41855 chars) exceeds maximum allowed length (16384 chars).",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 56,
+      "q_id": "29f2956b",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 265,
+          "session_idx": 25,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 59,
+      "q_id": "f4f1d8a4",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 531,
+          "session_idx": 45,
+          "length": 176,
+          "reason": "Prompt injection or adversarial instruction pattern detected in memory content.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 67,
+      "q_id": "19b5f2b3_abs",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 156,
+          "session_idx": 15,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 70,
+      "q_id": "0a995998",
+      "num_oversized": 1,
+      "oversized_details": [
+        {
+          "turn_idx": 469,
+          "session_idx": 41,
+          "length": 19257,
+          "has_answer": false
+        }
+      ],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 469,
+          "session_idx": 41,
+          "length": 19257,
+          "reason": "content length (19257 chars) exceeds maximum allowed length (16384 chars).",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 73,
+      "q_id": "b5ef892d",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 1,
+          "session_idx": 0,
+          "length": 1504,
+          "reason": "Prompt injection or adversarial instruction pattern detected in memory content.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 77,
+      "q_id": "aae3761f",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 353,
+          "session_idx": 34,
+          "length": 1584,
+          "reason": "Prompt injection or adversarial instruction pattern detected in memory content.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 79,
+      "q_id": "dd2973ad",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 156,
+          "session_idx": 12,
+          "length": 0,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 84,
+      "q_id": "36b9f61e",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 42,
+          "session_idx": 3,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 86,
+      "q_id": "gpt4_2f8be40d",
+      "num_oversized": 1,
+      "oversized_details": [
+        {
+          "turn_idx": 409,
+          "session_idx": 39,
+          "length": 16781,
+          "has_answer": false
+        }
+      ],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 409,
+          "session_idx": 39,
+          "length": 16781,
+          "reason": "content length (16781 chars) exceeds maximum allowed length (16384 chars).",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 87,
+      "q_id": "2e6d26dc",
+      "num_oversized": 1,
+      "oversized_details": [
+        {
+          "turn_idx": 464,
+          "session_idx": 49,
+          "length": 41855,
+          "has_answer": false
+        }
+      ],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 464,
+          "session_idx": 49,
+          "length": 41855,
+          "reason": "content length (41855 chars) exceeds maximum allowed length (16384 chars).",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 91,
+      "q_id": "d23cf73b",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 461,
+          "session_idx": 46,
+          "length": 4264,
+          "reason": "Prompt injection or adversarial instruction pattern detected in memory content.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 92,
+      "q_id": "gpt4_7fce9456",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 6,
+      "rejected_details": [
+        {
+          "turn_idx": 62,
+          "session_idx": 5,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        },
+        {
+          "turn_idx": 213,
+          "session_idx": 19,
+          "length": 87,
+          "reason": "Prompt injection or adversarial instruction pattern detected in memory content.",
+          "has_answer": false
+        },
+        {
+          "turn_idx": 455,
+          "session_idx": 40,
+          "length": 0,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        },
+        {
+          "turn_idx": 456,
+          "session_idx": 40,
+          "length": 0,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        },
+        {
+          "turn_idx": 459,
+          "session_idx": 40,
+          "length": 0,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        },
+        {
+          "turn_idx": 460,
+          "session_idx": 40,
+          "length": 0,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 94,
+      "q_id": "7024f17c",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 96,
+          "session_idx": 8,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 101,
+      "q_id": "b3c15d39",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 2,
+      "rejected_details": [
+        {
+          "turn_idx": 403,
+          "session_idx": 40,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        },
+        {
+          "turn_idx": 405,
+          "session_idx": 40,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 123,
+      "q_id": "gpt4_372c3eed",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 16,
+          "session_idx": 2,
+          "length": 967,
+          "reason": "Prompt injection or adversarial instruction pattern detected in memory content.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 129,
+      "q_id": "60bf93ed_abs",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 477,
+          "session_idx": 45,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 132,
+      "q_id": "8a2466db",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 492,
+          "session_idx": 47,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 138,
+      "q_id": "195a1a1b",
+      "num_oversized": 1,
+      "oversized_details": [
+        {
+          "turn_idx": 376,
+          "session_idx": 34,
+          "length": 23821,
+          "has_answer": false
+        }
+      ],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 376,
+          "session_idx": 34,
+          "length": 23821,
+          "reason": "content length (23821 chars) exceeds maximum allowed length (16384 chars).",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 142,
+      "q_id": "06f04340",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 320,
+          "session_idx": 35,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 159,
+      "q_id": "07b6f563",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 325,
+          "session_idx": 31,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 169,
+      "q_id": "1f2b8d4f",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 257,
+          "session_idx": 24,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 184,
+      "q_id": "5025383b",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 174,
+          "session_idx": 19,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 185,
+      "q_id": "a1cc6108",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 357,
+          "session_idx": 33,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 186,
+      "q_id": "9ee3ecd6",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 2,
+      "rejected_details": [
+        {
+          "turn_idx": 1,
+          "session_idx": 0,
+          "length": 534,
+          "reason": "Prompt injection or adversarial instruction pattern detected in memory content.",
+          "has_answer": false
+        },
+        {
+          "turn_idx": 447,
+          "session_idx": 47,
+          "length": 867,
+          "reason": "Prompt injection or adversarial instruction pattern detected in memory content.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 187,
+      "q_id": "3fdac837",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 301,
+          "session_idx": 29,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 195,
+      "q_id": "92a0aa75",
+      "num_oversized": 1,
+      "oversized_details": [
+        {
+          "turn_idx": 16,
+          "session_idx": 2,
+          "length": 17147,
+          "has_answer": false
+        }
+      ],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 16,
+          "session_idx": 2,
+          "length": 17147,
+          "reason": "content length (17147 chars) exceeds maximum allowed length (16384 chars).",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 196,
+      "q_id": "3fe836c9",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 364,
+          "session_idx": 35,
+          "length": 542,
+          "reason": "Prompt injection or adversarial instruction pattern detected in memory content.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 197,
+      "q_id": "1c549ce4",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 158,
+          "session_idx": 15,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 198,
+      "q_id": "6c49646a",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 325,
+          "session_idx": 32,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 207,
+      "q_id": "73d42213",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 2,
+      "rejected_details": [
+        {
+          "turn_idx": 430,
+          "session_idx": 40,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        },
+        {
+          "turn_idx": 432,
+          "session_idx": 40,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 212,
+      "q_id": "157a136e",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 154,
+          "session_idx": 14,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 216,
+      "q_id": "a08a253f",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 140,
+          "session_idx": 12,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 219,
+      "q_id": "8cf4d046",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 2,
+      "rejected_details": [
+        {
+          "turn_idx": 19,
+          "session_idx": 2,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        },
+        {
+          "turn_idx": 187,
+          "session_idx": 16,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 224,
+      "q_id": "e56a43b9",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 13,
+          "session_idx": 1,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 236,
+      "q_id": "b46e15ed",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 155,
+          "session_idx": 14,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 242,
+      "q_id": "9a707b81",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 2,
+      "rejected_details": [
+        {
+          "turn_idx": 355,
+          "session_idx": 35,
+          "length": 354,
+          "reason": "Prompt injection or adversarial instruction pattern detected in memory content.",
+          "has_answer": false
+        },
+        {
+          "turn_idx": 357,
+          "session_idx": 35,
+          "length": 400,
+          "reason": "Prompt injection or adversarial instruction pattern detected in memory content.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 243,
+      "q_id": "gpt4_1d4ab0c9",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 173,
+          "session_idx": 19,
+          "length": 475,
+          "reason": "Prompt injection or adversarial instruction pattern detected in memory content.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 248,
+      "q_id": "gpt4_6dc9b45b",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 459,
+          "session_idx": 33,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 256,
+      "q_id": "gpt4_1e4a8aeb",
+      "num_oversized": 1,
+      "oversized_details": [
+        {
+          "turn_idx": 434,
+          "session_idx": 43,
+          "length": 37208,
+          "has_answer": false
+        }
+      ],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 434,
+          "session_idx": 43,
+          "length": 37208,
+          "reason": "content length (37208 chars) exceeds maximum allowed length (16384 chars).",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 268,
+      "q_id": "8077ef71",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 9,
+          "session_idx": 1,
+          "length": 1504,
+          "reason": "Prompt injection or adversarial instruction pattern detected in memory content.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 270,
+      "q_id": "gpt4_8e165409",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 13,
+          "session_idx": 1,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 282,
+      "q_id": "gpt4_68e94287",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 101,
+          "session_idx": 11,
+          "length": 1964,
+          "reason": "Prompt injection or adversarial instruction pattern detected in memory content.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 283,
+      "q_id": "gpt4_e414231e",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 142,
+          "session_idx": 13,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 290,
+      "q_id": "gpt4_d6585ce9",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 233,
+          "session_idx": 22,
+          "length": 0,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 292,
+      "q_id": "gpt4_f420262d",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 46,
+          "session_idx": 5,
+          "length": 1504,
+          "reason": "Prompt injection or adversarial instruction pattern detected in memory content.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 295,
+      "q_id": "gpt4_4929293b",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 262,
+          "session_idx": 28,
+          "length": 380,
+          "reason": "Prompt injection or adversarial instruction pattern detected in memory content.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 309,
+      "q_id": "gpt4_2312f94c",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 383,
+          "session_idx": 36,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 313,
+      "q_id": "gpt4_385a5000",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 74,
+          "session_idx": 6,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 316,
+      "q_id": "gpt4_5dcc0aab",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 157,
+          "session_idx": 14,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 318,
+      "q_id": "f0853d11",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 83,
+          "session_idx": 8,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 323,
+      "q_id": "gpt4_2d58bcd6",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 17,
+          "session_idx": 0,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 325,
+      "q_id": "982b5123",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 2,
+      "rejected_details": [
+        {
+          "turn_idx": 452,
+          "session_idx": 44,
+          "length": 354,
+          "reason": "Prompt injection or adversarial instruction pattern detected in memory content.",
+          "has_answer": false
+        },
+        {
+          "turn_idx": 454,
+          "session_idx": 44,
+          "length": 400,
+          "reason": "Prompt injection or adversarial instruction pattern detected in memory content.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 327,
+      "q_id": "gpt4_4edbafa2",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 299,
+          "session_idx": 26,
+          "length": 0,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 330,
+      "q_id": "e4e14d04",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 121,
+          "session_idx": 12,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 337,
+      "q_id": "gpt4_8c8961ae",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 293,
+          "session_idx": 29,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 341,
+      "q_id": "993da5e2",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 375,
+          "session_idx": 38,
+          "length": 319,
+          "reason": "Prompt injection or adversarial instruction pattern detected in memory content.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 351,
+      "q_id": "gpt4_78cf46a3",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 4,
+          "session_idx": 0,
+          "length": 31,
+          "reason": "Prompt injection or adversarial instruction pattern detected in memory content.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 352,
+      "q_id": "gpt4_0a05b494",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 488,
+          "session_idx": 43,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 356,
+      "q_id": "gpt4_5438fa52",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 91,
+          "session_idx": 9,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 359,
+      "q_id": "8c18457d",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 2,
+          "session_idx": 0,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 365,
+      "q_id": "gpt4_fe651585_abs",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 102,
+          "session_idx": 9,
+          "length": 0,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 366,
+      "q_id": "6a1eabeb",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 390,
+          "session_idx": 38,
+          "length": 87,
+          "reason": "Prompt injection or adversarial instruction pattern detected in memory content.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 369,
+      "q_id": "852ce960",
+      "num_oversized": 1,
+      "oversized_details": [
+        {
+          "turn_idx": 95,
+          "session_idx": 8,
+          "length": 76560,
+          "has_answer": false
+        }
+      ],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 95,
+          "session_idx": 8,
+          "length": 76560,
+          "reason": "content length (76560 chars) exceeds maximum allowed length (16384 chars).",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 379,
+      "q_id": "031748ae",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 464,
+          "session_idx": 43,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 380,
+      "q_id": "4d6b87c8",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 239,
+          "session_idx": 23,
+          "length": 978,
+          "reason": "Prompt injection or adversarial instruction pattern detected in memory content.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 391,
+      "q_id": "618f13b2",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 454,
+          "session_idx": 42,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 396,
+      "q_id": "2133c1b5",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 61,
+          "session_idx": 3,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 398,
+      "q_id": "db467c8c",
+      "num_oversized": 1,
+      "oversized_details": [
+        {
+          "turn_idx": 283,
+          "session_idx": 29,
+          "length": 17147,
+          "has_answer": false
+        }
+      ],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 283,
+          "session_idx": 29,
+          "length": 17147,
+          "reason": "content length (17147 chars) exceeds maximum allowed length (16384 chars).",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 404,
+      "q_id": "b01defab",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 10,
+          "session_idx": 0,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 407,
+      "q_id": "4b24c848",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 507,
+          "session_idx": 50,
+          "length": 978,
+          "reason": "Prompt injection or adversarial instruction pattern detected in memory content.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 409,
+      "q_id": "603deb26",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 205,
+          "session_idx": 19,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 412,
+      "q_id": "eace081b",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 372,
+          "session_idx": 36,
+          "length": 1961,
+          "reason": "Prompt injection or adversarial instruction pattern detected in memory content.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 413,
+      "q_id": "affe2881",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 4,
+      "rejected_details": [
+        {
+          "turn_idx": 88,
+          "session_idx": 7,
+          "length": 0,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        },
+        {
+          "turn_idx": 90,
+          "session_idx": 7,
+          "length": 0,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        },
+        {
+          "turn_idx": 92,
+          "session_idx": 7,
+          "length": 0,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        },
+        {
+          "turn_idx": 302,
+          "session_idx": 27,
+          "length": 576,
+          "reason": "Prompt injection or adversarial instruction pattern detected in memory content.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 416,
+      "q_id": "0ddfec37",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 213,
+          "session_idx": 19,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 426,
+      "q_id": "3ba21379",
+      "num_oversized": 1,
+      "oversized_details": [
+        {
+          "turn_idx": 55,
+          "session_idx": 6,
+          "length": 23789,
+          "has_answer": false
+        }
+      ],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 55,
+          "session_idx": 6,
+          "length": 23789,
+          "reason": "content length (23789 chars) exceeds maximum allowed length (16384 chars).",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 430,
+      "q_id": "ba61f0b9",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 293,
+          "session_idx": 28,
+          "length": 1964,
+          "reason": "Prompt injection or adversarial instruction pattern detected in memory content.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 440,
+      "q_id": "0ddfec37_abs",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 242,
+          "session_idx": 24,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 441,
+      "q_id": "f685340e_abs",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 178,
+          "session_idx": 16,
+          "length": 1629,
+          "reason": "Prompt injection or adversarial instruction pattern detected in memory content.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 449,
+      "q_id": "6ae235be",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 317,
+          "session_idx": 33,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 457,
+      "q_id": "dc439ea3",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 244,
+          "session_idx": 24,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 471,
+      "q_id": "1568498a",
+      "num_oversized": 1,
+      "oversized_details": [
+        {
+          "turn_idx": 205,
+          "session_idx": 17,
+          "length": 17139,
+          "has_answer": false
+        }
+      ],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 205,
+          "session_idx": 17,
+          "length": 17139,
+          "reason": "content length (17139 chars) exceeds maximum allowed length (16384 chars).",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 474,
+      "q_id": "d596882b",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 354,
+          "session_idx": 32,
+          "length": 1,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 481,
+      "q_id": "7a8d0b71",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 333,
+          "session_idx": 30,
+          "length": 576,
+          "reason": "Prompt injection or adversarial instruction pattern detected in memory content.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    },
+    {
+      "q_idx": 485,
+      "q_id": "41275add",
+      "num_oversized": 0,
+      "oversized_details": [],
+      "num_rejected": 1,
+      "rejected_details": [
+        {
+          "turn_idx": 199,
+          "session_idx": 19,
+          "length": 0,
+          "reason": "Memory content cannot be empty or solely control characters.",
+          "has_answer": false
+        }
+      ],
+      "gold_affected": []
+    }
+  ],
+  "gold_affected_questions": []
+}

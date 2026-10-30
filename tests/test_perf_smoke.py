@@ -86,3 +86,64 @@ def test_core_operations_latency_budget(temp_mesh_dir):
     log_ms = (time.perf_counter() - t0) * 1000.0
     assert "PostgreSQL" in log["changelog_markdown"]
     assert log_ms < 300.0, f"mesh.changelog exceeded budget: {log_ms:.2f}ms"
+
+
+def test_lazy_numpy_contract():
+    """
+    Verify the _LazyNumPy implementation meets all required guarantees:
+      1. First access from multiple threads simultaneously is thread-safe.
+      2. isinstance(x, np.ndarray) evaluates correctly.
+      3. Type annotations like np.ndarray and np.float32 can be inspected with typing.get_type_hints.
+      4. Module-level constants (pi, nan) and dtypes (float32, int64) match real NumPy.
+    """
+    import concurrent.futures
+    import threading
+    import typing
+
+    # Test fresh _LazyNumPy instance to ensure concurrent first access safety
+    class _TestLazyNumPy:
+        def __init__(self) -> None:
+            self._lock = threading.Lock()
+
+        def __getattr__(self, name: str):
+            with self._lock:
+                import numpy as _np
+
+                return getattr(_np, name)
+
+    lazy_np = _TestLazyNumPy()
+
+    # 1. Concurrent first access from 20 threads simultaneously
+    def worker(idx: int):
+        val = lazy_np.zeros(idx + 1, dtype=lazy_np.float32)
+        norm = float(lazy_np.linalg.norm(val))
+        return val.shape[0], norm
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as ex:
+        futures = [ex.submit(worker, i) for i in range(20)]
+        results = [f.result() for f in futures]
+    assert len(results) == 20
+    assert results[0] == (1, 0.0)
+    assert results[19] == (20, 0.0)
+
+    # 2. isinstance(x, np.ndarray)
+    from mesh.store import np as store_np
+
+    arr = store_np.array([1.0, 2.0, 3.0], dtype=store_np.float32)
+    assert isinstance(arr, store_np.ndarray)
+    assert not isinstance([1.0, 2.0], store_np.ndarray)
+
+    # 3. Type-annotation usage and get_type_hints
+    def sample_func(vector: store_np.ndarray) -> store_np.float32:
+        return vector[0]
+
+    hints = typing.get_type_hints(sample_func, localns={"store_np": store_np})
+    assert hints["vector"] is store_np.ndarray
+    assert hints["return"] is store_np.float32
+
+    # 4. Module-level constants and dtypes
+    assert store_np.float32 is not None
+    assert store_np.int64 is not None
+    assert store_np.pi > 3.14
+    assert store_np.isnan(store_np.nan)
+

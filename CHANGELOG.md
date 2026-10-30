@@ -1,23 +1,31 @@
 # Changelog
 
-All notable changes to `mesh-context-layer` are documented in this file.
+All notable changes to Mesh Context Layer are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (pre-1.0: minor versions may include behavior changes).
 
 ## [0.8.3] - 2026-10-25 (Beta)
 
-Performance acceleration and reliability release introducing native C acceleration core, high-speed C CLI client, background stage-2 ONNX re-embedding, filesystem path memoization, and namespace pooling fixes.
+Performance acceleration and reliability release introducing pure-Python prescan filters, background stage-2 ONNX re-embedding, filesystem path memoization, and namespace pooling fixes.
 
 ### Added
-- **Native C Acceleration Core (`c_core/mesh_core.c` & `mesh/c_bridge.py`)**: High-performance C core with SIMD (AVX2/FMA) vector dot-product computation, fast ASCII security prescan filter, hash embedding generation, and vectorized TTL decay calculations. Includes pure-Python/NumPy automatic fallbacks when the native library is absent or disabled (`MESH_DISABLE_NATIVE=1`).
-- **High-Speed Native C CLI Client (`c_cli/mesh_fast.c` & `mesh/native_cli.py`)**: Ultra-low-latency C CLI wrapper interfacing with daemon/HTTP surfaces via zero-overhead socket transport.
 - **Background Stage-2 ONNX Re-Embedding (`mesh/memory.py`)**: Asynchronous worker to re-embed memory rows from fast-path hash embeddings to high-precision ONNX neural representations in the background (`MESH_BG_ONNX=1`), keeping foreground operations fast.
 - **Filesystem Path Memoization & Trust Caching (`mesh/audit.py`, `mesh/crypto.py`)**: High-efficiency lstat memoization (`MESH_FS_MEMO_MS`) and path validation trust cache (`MESH_PATH_RECHECK_SECONDS`) to eliminate redundant disk I/O during security audit checks.
 - **Initialization Lock Retries (`mesh/store.py`)**: Resilient acquisition retry loop (`MESH_INIT_LOCK_RETRY_SECONDS`) for database schema initialization and migrations under multi-process contention.
-- **Multi-Surface Benchmarking Suite (`benchmark_all_surfaces.py`)**: End-to-end benchmark suite verifying throughput and latency across CLI, C CLI, SDK, MCP, and HTTP interfaces.
+- **Multi-Surface Benchmarking Suite (`benchmark_all_surfaces.py`)**: End-to-end benchmark suite verifying throughput and latency across CLI, SDK, MCP, and HTTP interfaces.
+- **CSV & Markdown Export with Formula Injection Protection (`mesh/io.py`, `mesh/cli.py`)**: Added one-way export support for Markdown summaries and spreadsheet CSV formats (`mesh export --format {json,markdown,csv}`). CSV export protects against spreadsheet formula injection (CWE-1236) by neutralizing cells beginning with `=`, `+`, `-`, `@`, `\t`, or `\r`. Omitted bulky embeddings from text/spreadsheet formats by default.
+
+### Removed
+- **Native C Core & Native CLI (`c_core/`, `c_cli/`, `mesh/c_bridge.py`, `mesh/native_cli.py`)**: Removed native C acceleration binaries and runtime C compilation in favor of audited pure-Python and NumPy BLAS vector math (which outperforms native AVX2 loops on real workloads). Standardized distribution as pure `py3-none-any.whl`.
+- **Environment Variables**: Removed `MESH_DISABLE_NATIVE` and `MESH_C_CORE_PATH`.
 
 ### Fixed
+- **Codex & Agent Installer Configuration Formats (`mesh/installer.py`)**: Fixed OpenAI Codex CLI adapter to write and update `config.toml` (`~/.codex/config.toml` or `.codex/config.toml`) using standard `[mcp_servers.<name>]` TOML tables parsed and verified via `tomllib`, resolving an issue where `.codex/mcp.json` was written. Updated Gemini CLI adapter to target `settings.json`, OpenCode adapter to target `~/.config/opencode/opencode.json` (XDG) and project `./opencode.json` with standard `"mcp"` server table, and Windsurf adapter to restrict project-scope MCP to `None` in alignment with official vendor documentation.
+- **OpenCode Global Configuration Path (`mesh/installer.py`)**: Verified and confirmed OpenCode user-scope configuration path resolves to `~/.config/opencode/opencode.json` (or `%USERPROFILE%\.config\opencode\opencode.json` on Windows) conforming to the official XDG configuration specification.
 - **Namespace Listing & Stats Query Optimization (`mesh/namespaces.py`)**: Resolved namespace query bottlenecks by connecting via `MeshStore` pooling and utilizing warm in-memory cache rows instead of redundant disk opens. Added CLI mesh cache eviction on namespace deletion.
+
+### Changed
+- **Windsurf Project-Scope Behavior Change (`mesh/installer.py`)**: Dropped project-scoped MCP configuration for Windsurf. Official Windsurf documentation (`https://docs.codeium.com/windsurf/mcp`) states verbatim: *"The configuration file for Model Context Protocol (MCP) servers in Windsurf (mcp_config.json) is located in your user home directory under the Codeium configuration folder... Windsurf only reads MCP server configuration from this global file; there is no workspace- or project-level mcp_config.json support in Windsurf."* Project scope continues to support rules (`.windsurfrules`) and skills (`.windsurf/skills`).
 
 ## [0.8.2] - 2026-10-22 (Beta)
 

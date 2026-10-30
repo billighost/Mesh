@@ -1084,32 +1084,6 @@ def run_all_benchmarks(iters: int = 25) -> dict[str, Any]:
         iterations=iters,
     )
 
-    _native_exe = Path(__file__).resolve().parent / "c_cli" / ("mesh_fast.exe" if os.name == "nt" else "mesh_fast")
-    if _native_exe.exists():
-        _nat_env = dict(os.environ)
-        _nat_env["MESH_NO_DAEMON_PROXY"] = "0"
-        rec.measure(
-            "cli_native",
-            "mesh_fast --version (native, no Python)",
-            lambda i: subprocess.run(
-                [str(_native_exe), "--version"], env=_nat_env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False
-            ),
-            iterations=10,
-            warmup=2,
-        )
-        rec.measure(
-            "cli_native",
-            "mesh_fast ask 'Redis port' --json (verified daemon forwarding)",
-            lambda i: subprocess.run(
-                [str(_native_exe), "ask", "Redis port", "--namespace", "bench_sdk", "--json"],
-                env=_nat_env,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
-            ),
-            iterations=10,
-            warmup=2,
-        )
     if server is not None:
         server.should_exit = True
     if server_thread is not None:

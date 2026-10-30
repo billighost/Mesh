@@ -320,7 +320,7 @@ class _SecurityASGIMiddleware:
                 )
                 return
 
-        if scope.get("method") == "OPTIONS" or path in ("/health", "/identity") or has_auth_override:
+        if scope.get("method") == "OPTIONS" or path in ("/health", "/identity", "/ready") or has_auth_override:
             await self.app(scope, receive, send)
             return
 
@@ -632,11 +632,29 @@ class TaskCompleteRequest(BaseModel):
 # --- Endpoints (Synchronous `def` so FastAPI runs them in a worker threadpool) ---
 
 
+_DAEMON_READY_EVENT = threading.Event()
+
+
 @app.get("/health")
 def health() -> dict[str, Any]:
-    """Unauthenticated health check returning only status and version (no PID or engine details)[cite: 2]."""
+    """Unauthenticated health check returning only status and version (no PID or engine details)."""
     return {
         "status": "ok",
+        "version": VERSION,
+    }
+
+
+@app.get("/ready")
+def ready() -> dict[str, Any]:
+    """
+    Readiness probe.
+    Returns 200 when the daemon has preloaded models and is ready to answer queries,
+    or 503 Service Unavailable while warming up.
+    """
+    if not _DAEMON_READY_EVENT.is_set():
+        raise HTTPException(status_code=503, detail="Daemon is warming up embedding models")
+    return {
+        "status": "ready",
         "version": VERSION,
     }
 
@@ -1650,6 +1668,14 @@ def start(
 
     allow_auto_download = bool(args.yes or os.environ.get("MESH_ALLOW_DAEMON_DOWNLOAD") == "1")
     if not args.no_warmup:
+        def _warmup_worker(assume_yes: bool) -> None:
+            try:
+                warmup_model(assume_yes=assume_yes)
+            except Exception as exc:
+                logger.warning("Daemon model warmup warning: %s", exc)
+            finally:
+                _DAEMON_READY_EVENT.set()
+
         if _has_local_onnx_pair() is None:
             from .memory import _get_onnx_model_dir
 
@@ -1658,16 +1684,20 @@ def start(
                 assume_yes=allow_auto_download,
             ):
                 threading.Thread(
-                    target=warmup_model,
+                    target=_warmup_worker,
                     kwargs={"assume_yes": True},
                     daemon=True,
                 ).start()
+            else:
+                _DAEMON_READY_EVENT.set()
         else:
             threading.Thread(
-                target=warmup_model,
+                target=_warmup_worker,
                 kwargs={"assume_yes": False},
                 daemon=True,
             ).start()
+    else:
+        _DAEMON_READY_EVENT.set()
 
     from . import ui
 

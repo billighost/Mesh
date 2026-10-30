@@ -1,0 +1,431 @@
+# Pass 1 Accuracy Benchmark — LongMemEval-S (GitHub Actions Runner Orchestration)
+#
+# Rules enforced (AGENTS.md and Pass 1 Brief):
+# 1. Standard GitHub-hosted runners only (ubuntu-24.04, 4 vCPU, 16 GB RAM); never self-hosted.
+# 2. Least privilege: top-level permissions: contents: read; merge-job-only contents: write.
+# 3. Action pins: every action pinned to an immutable full commit SHA verified via git ls-remote.
+# 4. No secrets or environment variables emitted to logs.
+# 5. Local-only embedders: Ollama on localhost:11434; zero cloud LLM/embedder calls.
+# 6. Concurrency controls: max-parallel 20, concurrency group per workflow & ref.
+# 7. Code freeze check: asserts git diff benchmark-v1 -- mesh/ is empty before execution.
+
+name: "Bench: Pass 1 Accuracy (LongMemEval-S)"
+
+on:
+  push:
+    branches:
+      - "bench/**"
+  workflow_dispatch:
+    inputs:
+      matrix_type:
+        description: "Execution matrix type: 'sample' (10-q sample + 2x20-q pilot replication) or 'custom'"
+        required: false
+        default: "sample"
+        type: choice
+        options:
+          - "sample"
+          - "custom"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  bench-pass1:
+    name: "Shard: ${{ matrix.shard_id }}"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 345
+
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        shard_id: ["sample-10", "pilot-rep-1", "pilot-rep-2"]
+        include:
+          - shard_id: "sample-10"
+            start_idx: 0
+            questions: 10
+            tools: "mesh_sdk mem0_sdk bm_mcp auxly_mcp auxly_mcp_ollama"
+            needs_ollama: true
+          - shard_id: "pilot-rep-1"
+            start_idx: 0
+            questions: 20
+            tools: "mesh_sdk mem0_sdk bm_mcp auxly_mcp"
+            needs_ollama: false
+          - shard_id: "pilot-rep-2"
+            start_idx: 0
+            questions: 20
+            tools: "mesh_sdk mem0_sdk bm_mcp auxly_mcp"
+            needs_ollama: false
+
+    env:
+      # Thread limits: limit math/BLAS libraries to 4 threads matching runner vCPUs
+      OMP_NUM_THREADS: "4"
+      MKL_NUM_THREADS: "4"
+      OPENBLAS_NUM_THREADS: "4"
+      VECLIB_MAXIMUM_THREADS: "4"
+      NUMEXPR_NUM_THREADS: "4"
+
+      # Mesh runtime configuration
+      MESH_NO_AUTO_DAEMON: "1"
+      MESH_AUTO_APPROVE: "0"
+      MESH_MAX_CONTENT_LENGTH: "131072"
+      MESH_REQUIRE_MODEL: "1"
+      MESH_AUTO_DOWNLOAD_MODEL: "1"
+      MESH_NO_MODEL_DOWNLOAD: "0"
+      MESH_HOME: "/tmp/mesh_bench_home"
+
+    steps:
+      # -----------------------------------------------------------------------
+      # 1. Checkout repository — pinned to full SHA (Rule 7)
+      # -----------------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.2.2
+        with:
+          fetch-depth: 0
+
+      # -----------------------------------------------------------------------
+      # 2. Verify code freeze against tag benchmark-v1
+      # -----------------------------------------------------------------------
+      - name: Verify code freeze (mesh/ package must match benchmark-v1)
+        run: |
+          git fetch origin tag benchmark-v1 --no-tags
+          DIFF_OUT=$(git diff benchmark-v1 -- mesh/)
+          if [ -n "$DIFF_OUT" ]; then
+            echo "ERROR: Code freeze violated! The mesh/ package differs from benchmark-v1:"
+            echo "$DIFF_OUT"
+            exit 1
+          fi
+          echo "Code freeze verified OK: mesh/ package is identical to benchmark-v1."
+
+      # -----------------------------------------------------------------------
+      # 3. Log runner environment & system diagnostics (df -h, lscpu, memory)
+      # -----------------------------------------------------------------------
+      - name: Runner system diagnostics
+        run: |
+          echo "=== Host Diagnostics ==="
+          uname -a
+          cat /etc/os-release
+          echo "=== CPU Info ==="
+          lscpu
+          echo "=== Memory Info ==="
+          free -m
+          echo "=== Disk Info Before Setup ==="
+          df -h
+
+      # -----------------------------------------------------------------------
+      # 4. Set up Python 3.12 — pinned to full SHA (Rule 7)
+      # -----------------------------------------------------------------------
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.4.0
+        with:
+          python-version: "3.12"
+
+      # -----------------------------------------------------------------------
+      # 5. Caching for pip, models, and dataset
+      # -----------------------------------------------------------------------
+      - name: Cache pip packages and embeddings models
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.2.0
+        with:
+          path: |
+            ~/.cache/pip
+            ~/.cache/huggingface
+            ~/.local/share/onnx_models
+            ~/.cache/fastembed
+            ~/.mesh/models
+          key: bench-cache-py312-d6f21ea9-${{ hashFiles('pyproject.toml') }}
+          restore-keys: |
+            bench-cache-py312-d6f21ea9-
+
+      # -----------------------------------------------------------------------
+      # 6. Install isolated environments (Mesh, Mem0, Basic Memory)
+      # -----------------------------------------------------------------------
+      - name: Install dependencies in isolated environments
+        run: |
+          python -m pip install --upgrade pip
+
+          # Main environment: Mesh Context Layer (from source) and harness dependencies
+          pip install -e ".[test,secrets]"
+          pip install mcp psutil onnxruntime ruff
+
+          # Dedicated environment for Mem0
+          python -m venv /tmp/venv_mem0
+          /tmp/venv_mem0/bin/pip install --upgrade pip
+          /tmp/venv_mem0/bin/pip install "mem0ai==2.2.1" "qdrant-client>=1.9" "fastembed>=0.2" psutil
+
+          # Dedicated environment for Basic Memory
+          python -m venv /tmp/venv_bm
+          /tmp/venv_bm/bin/pip install --upgrade pip
+          /tmp/venv_bm/bin/pip install "basic-memory==0.24.1" "fastmcp>=4.1" psutil
+
+          # Pre-warm fastembed model for Mem0
+          /tmp/venv_mem0/bin/python -c "from fastembed import TextEmbedding; TextEmbedding('sentence-transformers/all-MiniLM-L6-v2')"
+
+      # -----------------------------------------------------------------------
+      # 7. Pre-download verified ONNX embedding model for Mesh into ~/.mesh/models
+      # -----------------------------------------------------------------------
+      - name: Pre-download verified ONNX embedding model for Mesh
+        run: |
+          mkdir -p ~/.mesh
+          python -c "
+          import os
+          from pathlib import Path
+          from mesh.memory import ensure_model_downloaded
+          os.environ['MESH_HOME'] = str(Path.home() / '.mesh')
+          os.environ['MESH_AUTO_DOWNLOAD_MODEL'] = '1'
+          os.environ['MESH_NO_MODEL_DOWNLOAD'] = '0'
+          pair = ensure_model_downloaded(blocking=True, timeout=120.0, assume_yes=True)
+          if not pair:
+              raise SystemExit('ERROR: ONNX model download failed!')
+          print('Verified ONNX model pair installed:', pair)
+          "
+
+      # -----------------------------------------------------------------------
+      # 8. Install Auxly CLI Linux binary (verified SHA-256)
+      # -----------------------------------------------------------------------
+      - name: Install Auxly CLI Linux binary
+        run: |
+          mkdir -p benchmarks/bin
+          AUXLY_SHA="ec452fc983e862f78f4cf23d41d3e25396ebff974508aceb45e8224720759b04"
+          AUXLY_VER="1.5.0"
+          curl -fsSL \
+            "https://github.com/Tzamun-Arabia-IT-Co/auxly-memory-cli/releases/download/v${AUXLY_VER}/auxly-linux-amd64" \
+            -o benchmarks/bin/auxly
+          ACTUAL_SHA=$(sha256sum benchmarks/bin/auxly | awk '{print $1}')
+          if [ "$ACTUAL_SHA" != "$AUXLY_SHA" ]; then
+            echo "ERROR: Auxly SHA-256 mismatch. Expected $AUXLY_SHA, got $ACTUAL_SHA" >&2
+            exit 1
+          fi
+          chmod +x benchmarks/bin/auxly
+          echo "Auxly binary verified: $ACTUAL_SHA"
+
+      # -----------------------------------------------------------------------
+      # 8. Install and start local Ollama daemon (for Auxly local embeddings)
+      # -----------------------------------------------------------------------
+      - name: Install and start local Ollama daemon
+        if: ${{ matrix.needs_ollama == true }}
+        run: |
+          echo "Downloading Ollama Linux amd64 v0.40.13..."
+          curl -sLO https://github.com/ollama/ollama/releases/download/v0.40.13/ollama-linux-amd64.tar.zst
+          echo "c9490e0f520be21271d969e6703f012268b1d39f8b70dd58854e5bfef7a75bb6  ollama-linux-amd64.tar.zst" | sha256sum -c -
+          sudo tar --zstd -xf ollama-linux-amd64.tar.zst -C /usr/local
+          
+          echo "Starting Ollama daemon in background on localhost:11434..."
+          ollama serve > /tmp/ollama.log 2>&1 &
+          
+          # Wait for Ollama service to respond
+          for i in {1..30}; do
+            if curl -s http://localhost:11434/api/tags > /dev/null; then
+              echo "Ollama service ready on attempt $i"
+              break
+            fi
+            sleep 1
+          done
+          
+          echo "Pulling all-minilm embedding model..."
+          ollama pull all-minilm
+          echo "Active Ollama models:"
+          ollama list
+          
+          # Verify semantic embedding endpoint works locally
+          curl -s http://localhost:11434/v1/embeddings \
+            -H "Content-Type: application/json" \
+            -d '{"model": "all-minilm", "input": "test local embedding"}' | head -c 120
+          echo ""
+
+      # -----------------------------------------------------------------------
+      # 9. Download & verify LongMemEval-S cleaned dataset
+      # -----------------------------------------------------------------------
+      - name: Download & verify LongMemEval-S dataset
+        run: |
+          DATASET_DIR="benchmarks/data"
+          DATASET_FILE="$DATASET_DIR/longmemeval_s_cleaned.json"
+          EXPECTED_SHA="d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442"
+          EXPECTED_SIZE="277383467"
+          mkdir -p "$DATASET_DIR"
+
+          if [ -f "$DATASET_FILE" ]; then
+            ACTUAL_SHA=$(sha256sum "$DATASET_FILE" | awk '{print $1}')
+            if [ "$ACTUAL_SHA" = "$EXPECTED_SHA" ]; then
+              echo "Dataset cached and SHA-256 verified."
+              exit 0
+            fi
+          fi
+
+          echo "Downloading LongMemEval-S from Hugging Face..."
+          curl -fsSL \
+            "https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_s_cleaned.json" \
+            -o "$DATASET_FILE"
+
+          ACTUAL_SHA=$(sha256sum "$DATASET_FILE" | awk '{print $1}')
+          ACTUAL_SIZE=$(stat -c%s "$DATASET_FILE")
+
+          if [ "$ACTUAL_SIZE" -ne "$EXPECTED_SIZE" ]; then
+            echo "ERROR: Size mismatch. Expected $EXPECTED_SIZE, got $ACTUAL_SIZE" >&2
+            exit 1
+          fi
+          if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
+            echo "ERROR: SHA-256 mismatch. Expected $EXPECTED_SHA, got $ACTUAL_SHA" >&2
+            exit 1
+          fi
+          echo "Dataset successfully downloaded and verified (SHA-256: $ACTUAL_SHA)."
+
+      # -----------------------------------------------------------------------
+      # 10. Pre-flight hygiene checks
+      # -----------------------------------------------------------------------
+      - name: Pre-flight hygiene checks
+        run: |
+          ruff check .
+          python scripts/check_skill.py
+          python scripts/check_docs.py
+
+      # -----------------------------------------------------------------------
+      # 11. Run benchmark shard
+      # -----------------------------------------------------------------------
+      - name: Run benchmark shard
+        env:
+          MEM0_PYTHON: "/tmp/venv_mem0/bin/python"
+          BM_BIN: "/tmp/venv_bm/bin/basic-memory"
+          AUXLY_BIN: "${{ github.workspace }}/benchmarks/bin/auxly"
+        run: |
+          set -eo pipefail
+          mkdir -p benchmarks/results/ci
+          echo "=== Disk Space Before Benchmark Run ==="
+          df -h
+
+          python benchmarks/run_pilot.py \
+            --shard-id "${{ matrix.shard_id }}" \
+            --start-idx "${{ matrix.start_idx }}" \
+            --limit "${{ matrix.questions }}" \
+            --tools "${{ matrix.tools }}" \
+            --cutoff-minutes 300 \
+            --dataset benchmarks/data/longmemeval_s_cleaned.json \
+            --out-dir benchmarks/results/ci 2>&1 | tee "benchmarks/results/ci/${{ matrix.shard_id }}.log"
+
+          echo "=== Disk Space After Benchmark Run ==="
+          df -h
+
+      # -----------------------------------------------------------------------
+      # 12. Audit gates per tool (record pass/fail, flag if > 5% failures)
+      # -----------------------------------------------------------------------
+      - name: Audit shard gates
+        if: always()
+        run: |
+          python - <<'PYEOF'
+          import json, glob, sys
+          from pathlib import Path
+
+          json_files = sorted(glob.glob("benchmarks/results/ci/${{ matrix.shard_id }}_results.json"))
+          if not json_files:
+              print("ERROR: No shard results JSON found! Benchmark shard failed to complete.")
+              log_path = Path("benchmarks/results/ci/${{ matrix.shard_id }}.log")
+              if log_path.exists():
+                  print("=== Shard Log Tail ===")
+                  lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+                  for l in lines[-100:]:
+                      print(l)
+              sys.exit(1)
+
+          with open(json_files[0], "r", encoding="utf-8") as f:
+              data = json.load(f)
+
+          print(f"=== Shard Gate Evaluation Summary: ${{ matrix.shard_id }} ===")
+          tool_results = data.get("tool_results", {})
+          for tool_key, res in tool_results.items():
+              n = len(res.get("per_question_results", []))
+              gates = res.get("gates", {})
+              ki_pass = gates.get("known_item_pass_count", 0)
+              lt_pass = gates.get("long_turn_pass_count", 0)
+              ki_pct = gates.get("known_item_pass_pct", 0.0)
+              lt_pct = gates.get("long_turn_pass_pct", 0.0)
+              status = gates.get("gate_status", "unknown")
+              print(f"Tool: {tool_key:20s} | N={n:2d} | KI Pass: {ki_pass}/{n} ({ki_pct}%) | LT Pass: {lt_pass}/{n} ({lt_pct}%) | Gate Status: {status}")
+          PYEOF
+
+      # -----------------------------------------------------------------------
+      # 13. Upload shard artifacts
+      # -----------------------------------------------------------------------
+      - name: Upload shard artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.1
+        with:
+          name: shard-${{ matrix.shard_id }}
+          path: |
+            benchmarks/results/ci/${{ matrix.shard_id }}_raw.jsonl
+            benchmarks/results/ci/${{ matrix.shard_id }}_results.json
+            benchmarks/results/ci/${{ matrix.shard_id }}.log
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # MERGE JOB: Merge shard raw.jsonl, create tables, push to bench-results branch
+  # ---------------------------------------------------------------------------
+  merge-results:
+    name: "Merge & Publish Benchmark Results"
+    needs: [bench-pass1]
+    if: always()
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.2.2
+        with:
+          fetch-depth: 1
+
+      - name: Download all shard artifacts
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16  # v4.1.8
+        with:
+          path: downloaded_artifacts
+
+      - name: Merge shard results and generate reports
+        env:
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: |
+          python - <<'PYEOF'
+          import json, glob, tarfile, os
+          from pathlib import Path
+
+          run_id = os.environ.get("GITHUB_RUN_ID", "local")
+          art_dir = Path("downloaded_artifacts")
+          merged_dir = Path("benchmarks/results/merged")
+          merged_dir.mkdir(parents=True, exist_ok=True)
+
+          # Find and merge all raw.jsonl files
+          jsonl_files = sorted(art_dir.glob("**/*_raw.jsonl"))
+          merged_jsonl = merged_dir / "merged_raw.jsonl"
+          total_records = 0
+
+          with open(merged_jsonl, "w", encoding="utf-8") as out_f:
+              for jf in jsonl_files:
+                  print(f"Merging {jf}...")
+                  with open(jf, "r", encoding="utf-8") as in_f:
+                      for line in in_f:
+                          if line.strip():
+                              out_f.write(line.strip() + "\n")
+                              total_records += 1
+
+          print(f"Merged {total_records} records into {merged_jsonl}")
+
+          # Compress merged results
+          archive_path = merged_dir / f"pass1_results_{run_id}.tar.gz"
+          with tarfile.open(archive_path, "w:gz") as tar:
+              tar.add(merged_jsonl, arcname="merged_raw.jsonl")
+          print(f"Compressed archive created: {archive_path} ({archive_path.stat().st_size} bytes)")
+          PYEOF
+
+      - name: Push results to bench-results branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          TARGET_BRANCH="bench-results/${{ github.run_id }}"
+          git checkout --orphan "$TARGET_BRANCH"
+          git rm -rf . || true
+          mkdir -p results
+          cp -r downloaded_artifacts/* results/ || true
+          cp -r benchmarks/results/merged/* results/ || true
+          git add results/
+          git commit -m "ci(benchmarks): publish Pass 1 results for run ${{ github.run_id }}"
+          git push origin "$TARGET_BRANCH"

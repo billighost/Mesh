@@ -11,6 +11,7 @@ build/
 venv/
 env/
 *.log
+!benchmarks/results/*.log
 .pytest_cache/
 .coverage
 htmlcov/
@@ -57,3 +58,19 @@ desktop.ini
 # Scratch / local work
 .work/
 .claude/
+.mesh/
+
+# Compiled extensions / binaries
+*.so
+*.dylib
+*.dll
+*.pyd
+*.old
+*.exe
+benchmarks/bin/
+
+# Benchmark work and datasets (never commit raw datasets or worker directories)
+benchmarks/work/
+benchmarks/data/longmemeval_s*.json
+benchmarks/data/longmemeval_pilot*.json
+scratch/

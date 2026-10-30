@@ -36,7 +36,7 @@ export default function MemorySection() {
           route="MEMORY THAT BEHAVES"
           id="memory-title"
           title="Remember more. Trust it more."
-          lede="A shared memory is only useful if it stays clean. Mesh reinforces what repeats, flags what conflicts, ages what goes stale, and keeps private facts private."
+          lede="Shared memory is only useful if it stays honest. Mesh reinforces what repeats, flags what conflicts, ages what goes stale, keeps private facts private, and stores secret pointers instead of values — so the shared memory never becomes a liability."
         />
 
         <div className="memory__panel">

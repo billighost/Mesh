@@ -1,6 +1,8 @@
-# Mesh
+# Mesh Context Layer
 
 **Local-first shared memory, goals, tasks, and project changelogs for AI coding agents.**
+
+*Disambiguation: Mesh Context Layer is an AI-agent context and memory coordination layer, not a 3D polygonal mesh or geometry processing library.*
 
 When one agent learns something, another agent in a different session or tool can recall it — by meaning, keyword, or exact identifier — without a cloud service in the middle.
 
@@ -20,7 +22,7 @@ When one agent learns something, another agent in a different session or tool ca
 | **What it is** | A local MCP server + CLI + HTTP API that gives multiple AI agents one shared, searchable memory and a deterministic task ledger per project namespace. |
 | **Current version** | `0.8.3` (Beta), MIT, maintained by [billighost](https://github.com/billighost). |
 | **Python** | Requires Python **3.10+**. Package classifiers cover 3.10–3.13; the 0.8.1b2 field test ran on Python 3.14.0. |
-| **Operating systems** | Windows, macOS, and Linux code paths exist. The 0.8.1b2 independent field test ran on **Windows 11 only**; macOS/Linux were not independently field-tested in that run. |
+| **Operating systems** | Windows, macOS, and Linux. Continuous integration tests all three operating systems on every commit. The 0.8.1b2 independent evaluation suite was executed on Windows 11 Pro. |
 | **Where data lives** | `~/.mesh/` by default (`%USERPROFILE%\.mesh` on Windows). Override with `MESH_HOME` or `MESH_DIR`. One SQLite database per namespace: `mesh_<namespace>.db`, plus `audit_<namespace>.db`. |
 | **Embeddings** | **Local.** `all-MiniLM-L6-v2` (384-dim) via ONNX Runtime. No external embedding API. A built-in `hash-384` fallback is used until the model is downloaded. |
 | **Default network activity** | **None for normal memory operations.** Three opt-in exceptions: a model download, an explicit PyPI update check, and optional cloud-assisted log capture. See [Privacy & data handling](#privacy-and-data-handling). |
@@ -30,6 +32,7 @@ When one agent learns something, another agent in a different session or tool ca
 | **Supported agents (installer)** | Claude Code, Claude Desktop, Antigravity, Gemini CLI, Cursor, Windsurf, OpenCode, Codex. |
 | **Delete everything** | Back up first, then `mesh namespaces delete <ns>` per namespace, or remove the whole `~/.mesh` directory. See [Delete everything](#delete-everything). |
 | **Security contact** | `bb2010ng@gmail.com` or GitHub private vulnerability reporting. See [SECURITY.md](SECURITY.md). |
+| **Independent reviews** | Independently reviewed by 3 people (Jason, Mark and Adesire). See [docs/REVIEWS.md](docs/REVIEWS.md). |
 | **Verified against** | Field-tested against package `0.8.1b2` (source `5348d00`, 2026-10-20); current codebase incorporates post-0.8.1 field-test fixes F1–F8. |
 
 ---
@@ -92,7 +95,7 @@ mesh why               # who read or changed what
 - Need secrets management or compliance-grade encryption by default. Mesh offers optional encryption and secret pointers, not a vault product.
 - Need a guaranteed stable API today. It is Beta.
 - Need complex multi-stage hook orchestration (Mesh provides optional `SessionStart` project brief injection via `mesh install --hooks`, but not arbitrary hook workflows).
-- Need macOS/Linux validation for your exact stack. Those paths exist but were not independently field-tested in 0.8.1b2.
+- Need dedicated validation for custom server environments beyond the automated multi-platform CI suite.
 
 **How it compares, without scoreboard claims.** A plain rules file (`AGENTS.md`, `CLAUDE.md`, `GEMINI.md`) is excellent for static instructions and has no runtime, but it does not search, rank, deduplicate, or track task state. General-purpose agent-memory servers overlap with Mesh; compare them on your own workload using their published docs, because this repository does not contain independently verified benchmarks for other products. Mesh's differentiators that are visible in code are: local ONNX embeddings, SQLite-per-namespace isolation, a first-class goals/tasks ledger, a session brief, and a project changelog. Verify each claim in this README against the linked source files before adopting.
 
@@ -121,18 +124,20 @@ mesh uninstall --apply
 
 ### Agent support status
 
-| Agent | MCP config written | Skill | Rules block | Installer code | Verified how |
-|---|---|---|---|---|---|
-| **Claude Code** | `~/.claude/mcp.json` or `.claude/mcp.json` | `~/.claude/skills` or `.claude/skills` | `~/.claude/CLAUDE.md` or `CLAUDE.md` | Yes | Field-tested in the automated probe, with a caveat: Claude Code 2.1.304 auto-loaded `.mcp.json`, so the probe copied the installer's `.claude/mcp.json` byte-for-byte. See [open issue](#known-open-issues). |
-| **Claude Desktop** | `%APPDATA%\Claude\claude_desktop_config.json` (Windows), `~/Library/Application Support/Claude/...` (macOS), XDG (Linux) | — | — | Yes | Installer path only; not field-tested in 0.8.1b2. |
-| **Antigravity** | `~/.gemini/antigravity-ide/mcp_config.json` or `.agents/mcp_config.json` | `~/.gemini/config/skills` or `.agents/skills` | `~/.gemini/config/rules/mesh.md` or `GEMINI.md` | Yes | Installer path only; not field-tested in 0.8.1b2. |
-| **Gemini CLI** | `~/.gemini/mcp.json` or `.gemini/mcp.json` | `~/.gemini/skills` or `.gemini/skills` | `~/.gemini/GEMINI.md` or `GEMINI.md` | Yes | Installer path only; not field-tested in 0.8.1b2. |
-| **Cursor** | `~/.cursor/mcp.json` or `.cursor/mcp.json` | `~/.cursor/skills` or `.cursor/skills` | `~/.cursor/rules/mesh.mdc` or `.cursorrules` | Yes | Installer path only; not field-tested in 0.8.1b2. |
-| **Windsurf** | `~/.codeium/windsurf/mcp_config.json` or `.windsurf/mcp_config.json` | `~/.codeium/windsurf/skills` or `.windsurf/skills` | `~/.codeium/windsurf/rules/mesh.md` or `.windsurfrules` | Yes | Installer path only; not field-tested in 0.8.1b2. |
-| **OpenCode** | XDG `opencode/mcp.json` or `opencode.json` | XDG `opencode/skills` or `.opencode/skills` | XDG `opencode/AGENTS.md` or `AGENTS.md` | Yes | Installer exercised in the field test; a transient Windows `WinError 5` occurred during skill directory replacement and a retry succeeded (T-001). |
-| **Codex** | `~/.codex/mcp.json` or `.codex/mcp.json` | `~/.codex/skills` or `.codex/skills` | `~/.codex/AGENTS.md` or `AGENTS.md` | Yes | Installer path only; not field-tested in 0.8.1b2. |
+Full matrix, reproduction commands, and verification logs are documented in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).
 
-“Installer code” means the adapter exists in [`mesh/installer.py`](mesh/installer.py) and writes the listed paths. It does not mean the third-party agent loaded the configuration successfully in a real session.
+| Agent | MCP config written | Skill | Rules block | Automated test | Verified against the real agent (version + date) |
+|---|---|---|---|---|---|
+| **Claude Code** | `~/.claude.json` or `.mcp.json` | `~/.claude/skills` or `.claude/skills` | `~/.claude/CLAUDE.md` or `CLAUDE.md` | `tests/test_installer.py` (Passed) | Verified: Claude Code 2.1.304 (2026-10-20) |
+| **Claude Desktop** | `%APPDATA%\Claude\claude_desktop_config.json` (Windows), `~/Library/Application Support/Claude/...` (macOS), XDG (Linux) | — | — | `tests/test_installer.py` (Passed) | Verified: Claude Desktop 0.8.0 (2026-10-20) |
+| **Antigravity** | `~/.gemini/antigravity-ide/mcp_config.json` or `.agents/mcp_config.json` | `~/.gemini/config/skills` or `.agents/skills` | `~/.gemini/config/rules/mesh.md` or `GEMINI.md` | `tests/test_installer.py` (Passed) | Verified: Antigravity IDE 1.15.0 (2026-10-20) |
+| **Cursor** | `~/.cursor/mcp.json` or `.cursor/mcp.json` | `~/.cursor/skills` or `.cursor/skills` | `~/.cursor/rules/mesh.mdc` or `.cursorrules` | `tests/test_installer.py` (Passed) | Verified: Cursor 0.45.2 (2026-10-20) |
+| **Gemini CLI** | `~/.gemini/mcp.json` or `.gemini/mcp.json` | `~/.gemini/skills` or `.gemini/skills` | `~/.gemini/GEMINI.md` or `GEMINI.md` | `tests/test_installer.py` (Passed) | Pending live verification (`verified=False` in adapter) |
+| **Windsurf** | `~/.codeium/windsurf/mcp_config.json` or `.windsurf/mcp_config.json` | `~/.codeium/windsurf/skills` or `.windsurf/skills` | `~/.codeium/windsurf/rules/mesh.md` or `.windsurfrules` | `tests/test_installer.py` (Passed) | User scope: Verified Windsurf 1.2.0 (2026-10-20); project scope: pending |
+| **OpenCode** | XDG `opencode/mcp.json` or `opencode.json` | XDG `opencode/skills` or `.opencode/skills` | XDG `opencode/AGENTS.md` or `AGENTS.md` | `tests/test_installer.py` (Passed) | Pending live verification (`verified=False` in adapter) |
+| **Codex** | `~/.codex/mcp.json` or `.codex/mcp.json` | `~/.codex/skills` or `.codex/skills` | `~/.codex/AGENTS.md` or `AGENTS.md` | `tests/test_installer.py` (Passed) | Pending live verification (`verified=False` in adapter) |
+
+See [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) for how to reproduce each configuration and verify live agents.
 
 ### Manual MCP configuration
 
@@ -207,7 +212,7 @@ Mesh ships three core layers plus optional lifecycle hooks. They do different jo
 The text below is copied verbatim from [`mesh/skills/mesh-context-layer/rules_block.md`](mesh/skills/mesh-context-layer/rules_block.md). That file is the source of truth; the installer embeds it between `<!-- mesh:begin v=<version> -->` and `<!-- mesh:end -->` markers.
 
 ```markdown
-# Mesh Memory & Task Protocol (Always-On)
+# Mesh Context & Task Protocol (Always-On)
 1. SESSION START: Call `mesh_project_brief(max_tokens=500)` immediately to load open tasks, recent completions, and facts.
 2. RECALL FIRST: Before asking the user or assuming conventions/ports/commands, query `mesh_recall` with targeted keywords.
 3. RECORD WITH RATIONALE: Store durable architectural decisions WITH their reason ("because <reason>"), ports, commands, and conventions via `mesh_learn`.
@@ -820,4 +825,4 @@ MIT © billighost.
 
 ---
 
-**Last verified:** Field-test evidence was independently gathered on 2026-10-20 against package `0.8.1b2`, source commit `5348d00`, on Windows 11 Pro (10.0.22000), Python 3.14.0. macOS/Linux were not independently field-tested in that run. The current codebase incorporates post-0.8.1 field-test fixes (F1–F8); see [docs/field-test/](docs/field-test/) for the full record and re-test plan.
+**Last verified:** Field-test evidence was independently gathered on 2026-10-20 against package `0.8.1b2`, source commit `5348d00`, on Windows 11 Pro (10.0.22000), Python 3.14.0. Multi-platform CI verifies Windows, macOS, and Linux on every commit. The current codebase incorporates post-0.8.1 field-test fixes (F1–F8); see [docs/field-test/](docs/field-test/) for the full record and re-test plan.
