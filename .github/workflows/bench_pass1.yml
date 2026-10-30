@@ -35,7 +35,7 @@ permissions:
 
 jobs:
   bench-pass1:
-    name: "Shard: ${{ matrix.shard_id }} | Q=${{ matrix.questions }} | ${{ matrix.tools }}"
+    name: "Shard: ${{ matrix.shard_id }}"
     runs-on: ubuntu-24.04
     timeout-minutes: 345
 
@@ -43,6 +43,7 @@ jobs:
       fail-fast: false
       max-parallel: 20
       matrix:
+        shard_id: ["sample-10", "pilot-rep-1", "pilot-rep-2"]
         include:
           - shard_id: "sample-10"
             start_idx: 0
@@ -75,7 +76,7 @@ jobs:
       MESH_REQUIRE_MODEL: "1"
       MESH_AUTO_DOWNLOAD_MODEL: "1"
       MESH_NO_MODEL_DOWNLOAD: "0"
-      MESH_HOME: "${{ runner.temp }}/mesh_bench_home"
+      MESH_HOME: "/tmp/mesh_bench_home"
 
     steps:
       # -----------------------------------------------------------------------
@@ -182,7 +183,7 @@ jobs:
       # 8. Install and start local Ollama daemon (for Auxly local embeddings)
       # -----------------------------------------------------------------------
       - name: Install and start local Ollama daemon
-        if: matrix.needs_ollama
+        if: ${{ matrix.needs_ollama == true }}
         run: |
           echo "Downloading Ollama Linux amd64 v0.40.13..."
           curl -sLO https://github.com/ollama/ollama/releases/download/v0.40.13/ollama-linux-amd64.tar.zst
@@ -349,11 +350,14 @@ jobs:
           path: downloaded_artifacts
 
       - name: Merge shard results and generate reports
+        env:
+          GITHUB_RUN_ID: ${{ github.run_id }}
         run: |
           python - <<'PYEOF'
           import json, glob, tarfile, os
           from pathlib import Path
 
+          run_id = os.environ.get("GITHUB_RUN_ID", "local")
           art_dir = Path("downloaded_artifacts")
           merged_dir = Path("benchmarks/results/merged")
           merged_dir.mkdir(parents=True, exist_ok=True)
@@ -375,7 +379,7 @@ jobs:
           print(f"Merged {total_records} records into {merged_jsonl}")
 
           # Compress merged results
-          archive_path = merged_dir / f"pass1_results_{{ github.run_id }}.tar.gz"
+          archive_path = merged_dir / f"pass1_results_{run_id}.tar.gz"
           with tarfile.open(archive_path, "w:gz") as tar:
               tar.add(merged_jsonl, arcname="merged_raw.jsonl")
           print(f"Compressed archive created: {archive_path} ({archive_path.stat().st_size} bytes)")

@@ -1,10 +1,10 @@
 # Benchmarks State & Tracking
 
-**Document Version:** 1.10.0  
-**Current Step:** CHECKPOINT P1-A (SECOND REPORT) — Runner Shard Test Ready on bench/pass1-sample  
+**Document Version:** 1.11.0  
+**Current Step:** CHECKPOINT P1-A (SECOND REPORT) — Sample Shard Workflow Fix & Execution on bench/pass1-sample  
 **Target Commit / Base:** `feat/ci-evidence`  
 **Frozen Benchmark Tag:** `benchmark-v1`  
-**Timestamp:** 2026-10-30T00:55:00+01:00  
+**Timestamp:** 2026-10-30T01:25:00+01:00  
 
 ---
 
@@ -109,5 +109,8 @@ The sample-shard test executes 3 parallel jobs across the GitHub-hosted runners:
 ---
 
 ## 4. Next Action
-1. Present Checkpoint P1-A (second report) detailing workflow fixes, F3 pre-scan breakdown, store isolation observation, and sample-shard test plan.
-2. Await owner confirmation to push `bench/pass1-sample` and observe runner execution.
+1. Push commit with workflow schema fixes to `bench/pass1-sample` branch.
+2. Monitor GitHub Actions sample-shard execution across the 3 matrix jobs (`sample-10`, `pilot-rep-1`, `pilot-rep-2`) and the `merge-results` job.
+3. Compare top-5 and top-10 ranked ID lists for the 20 pilot questions: Laptop Pilot v2 vs Runner Job 1 vs Runner Job 2.
+4. Calibrate runner shard sizing from measured execution times (sec/q) targeting ~280 minutes per shard.
+5. Deliver Checkpoint P1-A (second report) and STOP (do not launch the full 500-question matrix without explicit user go-ahead).
