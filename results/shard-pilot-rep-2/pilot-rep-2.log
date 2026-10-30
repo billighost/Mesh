@@ -1,0 +1,594 @@
+2026-10-30 18:12:11,504 [INFO] Starting Official LongMemEval-S Pilot Evaluation
+2026-10-30 18:12:11,504 [INFO] Power and sleep readiness asserted: {'power_status': {'platform': 'linux', 'on_ac': True, 'battery_pct': 100}, 'active_scheme': 'N/A', 'timeouts': {'ac_sleep_seconds': 0, 'ac_hibernate_seconds': 0}, 'checked_at': '2026-10-30T18:12:11.504664+00:00'}
+2026-10-30 18:12:20,536 [INFO] Preparing haystacks for 20 questions (start_idx=0) with opaque tags at START...
+2026-10-30 18:12:20,549 [INFO] Total turns across 20 questions: 10135 (mean: 506.8 turns/q)
+2026-10-30 18:12:20,549 [INFO] === Running Class A: Mesh SDK ===
+[0;93m2026-10-30 18:12:20.715118252 [W:onnxruntime:Default, device_discovery.cc:95 GetPciBusId] Skipping pci_bus_id for PCI path at "/sys/devices/LNXSYSTM:00/LNXSYBUS:00/ACPI0004:00/MSFT1000:00/5620e0c7-8062-4dce-aeb7-520c7ef76171" because filename "5620e0c7-8062-4dce-aeb7-520c7ef76171" did not match expected pattern of [0-9a-f]+:[0-9a-f]+:[0-9a-f]+[.][0-9a-f]+[m
+2026-10-30 18:12:49,197 [INFO]   [Mesh SDK Q 1/20] write=23.46s raw_query=1144.1ms (turn_h1=1)
+2026-10-30 18:13:17,237 [INFO]   [Mesh SDK Q 2/20] write=23.20s raw_query=1133.2ms (turn_h1=1)
+2026-10-30 18:13:46,363 [INFO]   [Mesh SDK Q 3/20] write=24.08s raw_query=1178.4ms (turn_h1=1)
+2026-10-30 18:14:14,863 [INFO]   [Mesh SDK Q 4/20] write=23.40s raw_query=1216.1ms (turn_h1=0)
+2026-10-30 18:14:43,821 [INFO]   [Mesh SDK Q 5/20] write=23.92s raw_query=1179.8ms (turn_h1=1)
+2026-10-30 18:15:12,434 [INFO]   [Mesh SDK Q 6/20] write=23.76s raw_query=1166.4ms (turn_h1=0)
+2026-10-30 18:15:41,000 [INFO]   [Mesh SDK Q 7/20] write=23.63s raw_query=1185.0ms (turn_h1=0)
+2026-10-30 18:16:09,750 [INFO]   [Mesh SDK Q 8/20] write=23.66s raw_query=1187.4ms (turn_h1=0)
+2026-10-30 18:16:38,006 [INFO]   [Mesh SDK Q 9/20] write=23.28s raw_query=1162.7ms (turn_h1=0)
+2026-10-30 18:17:06,474 [INFO]   [Mesh SDK Q 10/20] write=23.53s raw_query=1178.6ms (turn_h1=1)
+2026-10-30 18:17:35,510 [INFO]   [Mesh SDK Q 11/20] write=23.96s raw_query=1168.8ms (turn_h1=0)
+2026-10-30 18:18:04,398 [INFO]   [Mesh SDK Q 12/20] write=23.87s raw_query=1170.5ms (turn_h1=0)
+2026-10-30 18:18:33,090 [INFO]   [Mesh SDK Q 13/20] write=23.71s raw_query=1155.7ms (turn_h1=0)
+2026-10-30 18:19:00,879 [INFO]   [Mesh SDK Q 14/20] write=22.83s raw_query=1177.9ms (turn_h1=0)
+2026-10-30 18:19:29,685 [INFO]   [Mesh SDK Q 15/20] write=23.75s raw_query=1186.6ms (turn_h1=1)
+2026-10-30 18:19:58,238 [INFO]   [Mesh SDK Q 16/20] write=23.51s raw_query=1170.8ms (turn_h1=0)
+2026-10-30 18:20:26,447 [INFO]   [Mesh SDK Q 17/20] write=23.28s raw_query=1149.2ms (turn_h1=0)
+2026-10-30 18:20:54,375 [INFO]   [Mesh SDK Q 18/20] write=23.02s raw_query=1147.0ms (turn_h1=0)
+2026-10-30 18:21:22,592 [INFO]   [Mesh SDK Q 19/20] write=23.32s raw_query=1154.3ms (turn_h1=1)
+2026-10-30 18:21:50,623 [INFO]   [Mesh SDK Q 20/20] write=23.16s raw_query=1153.9ms (turn_h1=1)
+2026-10-30 18:21:50,682 [INFO] === Running Class A: Mem0 SDK (Python 3.12 worker) ===
+2026-10-30 18:27:24,472 [INFO] === Running Class C: Auxly MCP (1 file per turn, substring search) ===
+2026-10-30 18:27:25,216 [INFO]   [Auxly MCP Q 1/20] write=0.05s raw_query=21.4ms
+2026-10-30 18:27:25,590 [INFO]   [Auxly MCP Q 2/20] write=0.04s raw_query=19.0ms
+2026-10-30 18:27:25,980 [INFO]   [Auxly MCP Q 3/20] write=0.04s raw_query=20.6ms
+2026-10-30 18:27:26,316 [INFO]   [Auxly MCP Q 4/20] write=0.05s raw_query=27.2ms
+2026-10-30 18:27:26,703 [INFO]   [Auxly MCP Q 5/20] write=0.04s raw_query=20.6ms
+2026-10-30 18:27:27,068 [INFO]   [Auxly MCP Q 6/20] write=0.03s raw_query=19.3ms
+2026-10-30 18:27:27,451 [INFO]   [Auxly MCP Q 7/20] write=0.04s raw_query=20.1ms
+2026-10-30 18:27:27,832 [INFO]   [Auxly MCP Q 8/20] write=0.04s raw_query=20.2ms
+2026-10-30 18:27:28,218 [INFO]   [Auxly MCP Q 9/20] write=0.04s raw_query=19.8ms
+2026-10-30 18:27:28,604 [INFO]   [Auxly MCP Q 10/20] write=0.04s raw_query=19.7ms
+2026-10-30 18:27:28,983 [INFO]   [Auxly MCP Q 11/20] write=0.04s raw_query=20.0ms
+2026-10-30 18:27:29,346 [INFO]   [Auxly MCP Q 12/20] write=0.04s raw_query=19.1ms
+2026-10-30 18:27:29,720 [INFO]   [Auxly MCP Q 13/20] write=0.04s raw_query=19.5ms
+2026-10-30 18:27:30,084 [INFO]   [Auxly MCP Q 14/20] write=0.04s raw_query=18.2ms
+2026-10-30 18:27:30,454 [INFO]   [Auxly MCP Q 15/20] write=0.04s raw_query=19.3ms
+2026-10-30 18:27:30,826 [INFO]   [Auxly MCP Q 16/20] write=0.04s raw_query=19.1ms
+2026-10-30 18:27:31,198 [INFO]   [Auxly MCP Q 17/20] write=0.04s raw_query=19.1ms
+2026-10-30 18:27:31,552 [INFO]   [Auxly MCP Q 18/20] write=0.03s raw_query=18.9ms
+2026-10-30 18:27:31,917 [INFO]   [Auxly MCP Q 19/20] write=0.04s raw_query=18.7ms
+2026-10-30 18:27:32,282 [INFO]   [Auxly MCP Q 20/20] write=0.04s raw_query=19.7ms
+2026-10-30 18:27:32,345 [INFO] === Running Class C: Basic Memory MCP ===
+
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│                                                                              │
+│                                                                              │
+│                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │
+│                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                FastMCP 4.1.3                                 │
+│                            https://gofastmcp.com                             │
+│                                                                              │
+│                  🖥  Server:      Basic Memory, 4.1.3                         │
+│                  🚀 Deploy free: https://horizon.prefect.io                  │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────╮
+│                          🎉 Update available: 4.1.4                          │
+│                      Run: pip install --upgrade fastmcp                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+
+[10/30/26 18:30:24] INFO     Starting MCP server 'Basic Memory' transport.py:241
+                             with transport 'stdio'                             
+[0;93m2026-10-30 18:30:26.408971887 [W:onnxruntime:Default, device_discovery.cc:95 GetPciBusId] Skipping pci_bus_id for PCI path at "/sys/devices/LNXSYSTM:00/LNXSYBUS:00/ACPI0004:00/MSFT1000:00/5620e0c7-8062-4dce-aeb7-520c7ef76171" because filename "5620e0c7-8062-4dce-aeb7-520c7ef76171" did not match expected pattern of [0-9a-f]+:[0-9a-f]+:[0-9a-f]+[.][0-9a-f]+[m
+2026-10-30 18:30:28,929 [INFO]   [BM MCP Q 1/20] write=166.82s raw_query=158.4ms
+
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│                                                                              │
+│                                                                              │
+│                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │
+│                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                FastMCP 4.1.3                                 │
+│                            https://gofastmcp.com                             │
+│                                                                              │
+│                  🖥  Server:      Basic Memory, 4.1.3                         │
+│                  🚀 Deploy free: https://horizon.prefect.io                  │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────╮
+│                          🎉 Update available: 4.1.4                          │
+│                      Run: pip install --upgrade fastmcp                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+
+[10/30/26 18:33:11] INFO     Starting MCP server 'Basic Memory' transport.py:241
+                             with transport 'stdio'                             
+[0;93m2026-10-30 18:33:13.456674474 [W:onnxruntime:Default, device_discovery.cc:95 GetPciBusId] Skipping pci_bus_id for PCI path at "/sys/devices/LNXSYSTM:00/LNXSYBUS:00/ACPI0004:00/MSFT1000:00/5620e0c7-8062-4dce-aeb7-520c7ef76171" because filename "5620e0c7-8062-4dce-aeb7-520c7ef76171" did not match expected pattern of [0-9a-f]+:[0-9a-f]+:[0-9a-f]+[.][0-9a-f]+[m
+2026-10-30 18:33:16,318 [INFO]   [BM MCP Q 2/20] write=157.03s raw_query=153.3ms
+
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│                                                                              │
+│                                                                              │
+│                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │
+│                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                FastMCP 4.1.3                                 │
+│                            https://gofastmcp.com                             │
+│                                                                              │
+│                  🖥  Server:      Basic Memory, 4.1.3                         │
+│                  🚀 Deploy free: https://horizon.prefect.io                  │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────╮
+│                          🎉 Update available: 4.1.4                          │
+│                      Run: pip install --upgrade fastmcp                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+
+[10/30/26 18:36:10] INFO     Starting MCP server 'Basic Memory' transport.py:241
+                             with transport 'stdio'                             
+[0;93m2026-10-30 18:36:12.772347815 [W:onnxruntime:Default, device_discovery.cc:95 GetPciBusId] Skipping pci_bus_id for PCI path at "/sys/devices/LNXSYSTM:00/LNXSYBUS:00/ACPI0004:00/MSFT1000:00/5620e0c7-8062-4dce-aeb7-520c7ef76171" because filename "5620e0c7-8062-4dce-aeb7-520c7ef76171" did not match expected pattern of [0-9a-f]+:[0-9a-f]+:[0-9a-f]+[.][0-9a-f]+[m
+2026-10-30 18:36:15,856 [INFO]   [BM MCP Q 3/20] write=168.83s raw_query=147.9ms
+
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│                                                                              │
+│                                                                              │
+│                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │
+│                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                FastMCP 4.1.3                                 │
+│                            https://gofastmcp.com                             │
+│                                                                              │
+│                  🖥  Server:      Basic Memory, 4.1.3                         │
+│                  🚀 Deploy free: https://horizon.prefect.io                  │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────╮
+│                          🎉 Update available: 4.1.4                          │
+│                      Run: pip install --upgrade fastmcp                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+
+[10/30/26 18:39:30] INFO     Starting MCP server 'Basic Memory' transport.py:241
+                             with transport 'stdio'                             
+[0;93m2026-10-30 18:39:32.890577862 [W:onnxruntime:Default, device_discovery.cc:95 GetPciBusId] Skipping pci_bus_id for PCI path at "/sys/devices/LNXSYSTM:00/LNXSYBUS:00/ACPI0004:00/MSFT1000:00/5620e0c7-8062-4dce-aeb7-520c7ef76171" because filename "5620e0c7-8062-4dce-aeb7-520c7ef76171" did not match expected pattern of [0-9a-f]+:[0-9a-f]+:[0-9a-f]+[.][0-9a-f]+[m
+2026-10-30 18:39:36,021 [INFO]   [BM MCP Q 4/20] write=189.19s raw_query=176.6ms
+
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│                                                                              │
+│                                                                              │
+│                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │
+│                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                FastMCP 4.1.3                                 │
+│                            https://gofastmcp.com                             │
+│                                                                              │
+│                  🖥  Server:      Basic Memory, 4.1.3                         │
+│                  🚀 Deploy free: https://horizon.prefect.io                  │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────╮
+│                          🎉 Update available: 4.1.4                          │
+│                      Run: pip install --upgrade fastmcp                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+
+[10/30/26 18:42:31] INFO     Starting MCP server 'Basic Memory' transport.py:241
+                             with transport 'stdio'                             
+[0;93m2026-10-30 18:42:33.482852046 [W:onnxruntime:Default, device_discovery.cc:95 GetPciBusId] Skipping pci_bus_id for PCI path at "/sys/devices/LNXSYSTM:00/LNXSYBUS:00/ACPI0004:00/MSFT1000:00/5620e0c7-8062-4dce-aeb7-520c7ef76171" because filename "5620e0c7-8062-4dce-aeb7-520c7ef76171" did not match expected pattern of [0-9a-f]+:[0-9a-f]+:[0-9a-f]+[.][0-9a-f]+[m
+2026-10-30 18:42:36,469 [INFO]   [BM MCP Q 5/20] write=169.72s raw_query=160.3ms
+
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│                                                                              │
+│                                                                              │
+│                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │
+│                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                FastMCP 4.1.3                                 │
+│                            https://gofastmcp.com                             │
+│                                                                              │
+│                  🖥  Server:      Basic Memory, 4.1.3                         │
+│                  🚀 Deploy free: https://horizon.prefect.io                  │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────╮
+│                          🎉 Update available: 4.1.4                          │
+│                      Run: pip install --upgrade fastmcp                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+
+[10/30/26 18:45:23] INFO     Starting MCP server 'Basic Memory' transport.py:241
+                             with transport 'stdio'                             
+[0;93m2026-10-30 18:45:25.593647515 [W:onnxruntime:Default, device_discovery.cc:95 GetPciBusId] Skipping pci_bus_id for PCI path at "/sys/devices/LNXSYSTM:00/LNXSYBUS:00/ACPI0004:00/MSFT1000:00/5620e0c7-8062-4dce-aeb7-520c7ef76171" because filename "5620e0c7-8062-4dce-aeb7-520c7ef76171" did not match expected pattern of [0-9a-f]+:[0-9a-f]+:[0-9a-f]+[.][0-9a-f]+[m
+2026-10-30 18:45:28,466 [INFO]   [BM MCP Q 6/20] write=161.53s raw_query=160.9ms
+
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│                                                                              │
+│                                                                              │
+│                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │
+│                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                FastMCP 4.1.3                                 │
+│                            https://gofastmcp.com                             │
+│                                                                              │
+│                  🖥  Server:      Basic Memory, 4.1.3                         │
+│                  🚀 Deploy free: https://horizon.prefect.io                  │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────╮
+│                          🎉 Update available: 4.1.4                          │
+│                      Run: pip install --upgrade fastmcp                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+
+[10/30/26 18:48:20] INFO     Starting MCP server 'Basic Memory' transport.py:241
+                             with transport 'stdio'                             
+[0;93m2026-10-30 18:48:22.216674972 [W:onnxruntime:Default, device_discovery.cc:95 GetPciBusId] Skipping pci_bus_id for PCI path at "/sys/devices/LNXSYSTM:00/LNXSYBUS:00/ACPI0004:00/MSFT1000:00/5620e0c7-8062-4dce-aeb7-520c7ef76171" because filename "5620e0c7-8062-4dce-aeb7-520c7ef76171" did not match expected pattern of [0-9a-f]+:[0-9a-f]+:[0-9a-f]+[.][0-9a-f]+[m
+2026-10-30 18:48:25,047 [INFO]   [BM MCP Q 7/20] write=166.02s raw_query=145.0ms
+
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│                                                                              │
+│                                                                              │
+│                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │
+│                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                FastMCP 4.1.3                                 │
+│                            https://gofastmcp.com                             │
+│                                                                              │
+│                  🖥  Server:      Basic Memory, 4.1.3                         │
+│                  🚀 Deploy free: https://horizon.prefect.io                  │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────╮
+│                          🎉 Update available: 4.1.4                          │
+│                      Run: pip install --upgrade fastmcp                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+
+[10/30/26 18:51:16] INFO     Starting MCP server 'Basic Memory' transport.py:241
+                             with transport 'stdio'                             
+[0;93m2026-10-30 18:51:18.669232680 [W:onnxruntime:Default, device_discovery.cc:95 GetPciBusId] Skipping pci_bus_id for PCI path at "/sys/devices/LNXSYSTM:00/LNXSYBUS:00/ACPI0004:00/MSFT1000:00/5620e0c7-8062-4dce-aeb7-520c7ef76171" because filename "5620e0c7-8062-4dce-aeb7-520c7ef76171" did not match expected pattern of [0-9a-f]+:[0-9a-f]+:[0-9a-f]+[.][0-9a-f]+[m
+2026-10-30 18:51:21,575 [INFO]   [BM MCP Q 8/20] write=165.98s raw_query=165.7ms
+
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│                                                                              │
+│                                                                              │
+│                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │
+│                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                FastMCP 4.1.3                                 │
+│                            https://gofastmcp.com                             │
+│                                                                              │
+│                  🖥  Server:      Basic Memory, 4.1.3                         │
+│                  🚀 Deploy free: https://horizon.prefect.io                  │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────╮
+│                          🎉 Update available: 4.1.4                          │
+│                      Run: pip install --upgrade fastmcp                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+
+[10/30/26 18:54:13] INFO     Starting MCP server 'Basic Memory' transport.py:241
+                             with transport 'stdio'                             
+[0;93m2026-10-30 18:54:16.062912122 [W:onnxruntime:Default, device_discovery.cc:95 GetPciBusId] Skipping pci_bus_id for PCI path at "/sys/devices/LNXSYSTM:00/LNXSYBUS:00/ACPI0004:00/MSFT1000:00/5620e0c7-8062-4dce-aeb7-520c7ef76171" because filename "5620e0c7-8062-4dce-aeb7-520c7ef76171" did not match expected pattern of [0-9a-f]+:[0-9a-f]+:[0-9a-f]+[.][0-9a-f]+[m
+2026-10-30 18:54:19,041 [INFO]   [BM MCP Q 9/20] write=166.75s raw_query=167.8ms
+
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│                                                                              │
+│                                                                              │
+│                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │
+│                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                FastMCP 4.1.3                                 │
+│                            https://gofastmcp.com                             │
+│                                                                              │
+│                  🖥  Server:      Basic Memory, 4.1.3                         │
+│                  🚀 Deploy free: https://horizon.prefect.io                  │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────╮
+│                          🎉 Update available: 4.1.4                          │
+│                      Run: pip install --upgrade fastmcp                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+
+[10/30/26 18:57:07] INFO     Starting MCP server 'Basic Memory' transport.py:241
+                             with transport 'stdio'                             
+[0;93m2026-10-30 18:57:10.014226426 [W:onnxruntime:Default, device_discovery.cc:95 GetPciBusId] Skipping pci_bus_id for PCI path at "/sys/devices/LNXSYSTM:00/LNXSYBUS:00/ACPI0004:00/MSFT1000:00/5620e0c7-8062-4dce-aeb7-520c7ef76171" because filename "5620e0c7-8062-4dce-aeb7-520c7ef76171" did not match expected pattern of [0-9a-f]+:[0-9a-f]+:[0-9a-f]+[.][0-9a-f]+[m
+2026-10-30 18:57:12,939 [INFO]   [BM MCP Q 10/20] write=163.14s raw_query=164.8ms
+
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│                                                                              │
+│                                                                              │
+│                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │
+│                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                FastMCP 4.1.3                                 │
+│                            https://gofastmcp.com                             │
+│                                                                              │
+│                  🖥  Server:      Basic Memory, 4.1.3                         │
+│                  🚀 Deploy free: https://horizon.prefect.io                  │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────╮
+│                          🎉 Update available: 4.1.4                          │
+│                      Run: pip install --upgrade fastmcp                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+
+[10/30/26 19:00:04] INFO     Starting MCP server 'Basic Memory' transport.py:241
+                             with transport 'stdio'                             
+[0;93m2026-10-30 19:00:06.272875535 [W:onnxruntime:Default, device_discovery.cc:95 GetPciBusId] Skipping pci_bus_id for PCI path at "/sys/devices/LNXSYSTM:00/LNXSYBUS:00/ACPI0004:00/MSFT1000:00/5620e0c7-8062-4dce-aeb7-520c7ef76171" because filename "5620e0c7-8062-4dce-aeb7-520c7ef76171" did not match expected pattern of [0-9a-f]+:[0-9a-f]+:[0-9a-f]+[.][0-9a-f]+[m
+2026-10-30 19:00:09,150 [INFO]   [BM MCP Q 11/20] write=165.39s raw_query=161.0ms
+
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│                                                                              │
+│                                                                              │
+│                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │
+│                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                FastMCP 4.1.3                                 │
+│                            https://gofastmcp.com                             │
+│                                                                              │
+│                  🖥  Server:      Basic Memory, 4.1.3                         │
+│                  🚀 Deploy free: https://horizon.prefect.io                  │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────╮
+│                          🎉 Update available: 4.1.4                          │
+│                      Run: pip install --upgrade fastmcp                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+
+[10/30/26 19:02:54] INFO     Starting MCP server 'Basic Memory' transport.py:241
+                             with transport 'stdio'                             
+[0;93m2026-10-30 19:02:56.951075213 [W:onnxruntime:Default, device_discovery.cc:95 GetPciBusId] Skipping pci_bus_id for PCI path at "/sys/devices/LNXSYSTM:00/LNXSYBUS:00/ACPI0004:00/MSFT1000:00/5620e0c7-8062-4dce-aeb7-520c7ef76171" because filename "5620e0c7-8062-4dce-aeb7-520c7ef76171" did not match expected pattern of [0-9a-f]+:[0-9a-f]+:[0-9a-f]+[.][0-9a-f]+[m
+2026-10-30 19:02:59,710 [INFO]   [BM MCP Q 12/20] write=160.15s raw_query=152.4ms
+
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│                                                                              │
+│                                                                              │
+│                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │
+│                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                FastMCP 4.1.3                                 │
+│                            https://gofastmcp.com                             │
+│                                                                              │
+│                  🖥  Server:      Basic Memory, 4.1.3                         │
+│                  🚀 Deploy free: https://horizon.prefect.io                  │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────╮
+│                          🎉 Update available: 4.1.4                          │
+│                      Run: pip install --upgrade fastmcp                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+
+[10/30/26 19:05:48] INFO     Starting MCP server 'Basic Memory' transport.py:241
+                             with transport 'stdio'                             
+[0;93m2026-10-30 19:05:50.932448420 [W:onnxruntime:Default, device_discovery.cc:95 GetPciBusId] Skipping pci_bus_id for PCI path at "/sys/devices/LNXSYSTM:00/LNXSYBUS:00/ACPI0004:00/MSFT1000:00/5620e0c7-8062-4dce-aeb7-520c7ef76171" because filename "5620e0c7-8062-4dce-aeb7-520c7ef76171" did not match expected pattern of [0-9a-f]+:[0-9a-f]+:[0-9a-f]+[.][0-9a-f]+[m
+2026-10-30 19:05:53,711 [INFO]   [BM MCP Q 13/20] write=163.55s raw_query=151.6ms
+
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│                                                                              │
+│                                                                              │
+│                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │
+│                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                FastMCP 4.1.3                                 │
+│                            https://gofastmcp.com                             │
+│                                                                              │
+│                  🖥  Server:      Basic Memory, 4.1.3                         │
+│                  🚀 Deploy free: https://horizon.prefect.io                  │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────╮
+│                          🎉 Update available: 4.1.4                          │
+│                      Run: pip install --upgrade fastmcp                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+
+[10/30/26 19:08:36] INFO     Starting MCP server 'Basic Memory' transport.py:241
+                             with transport 'stdio'                             
+[0;93m2026-10-30 19:08:38.487777109 [W:onnxruntime:Default, device_discovery.cc:95 GetPciBusId] Skipping pci_bus_id for PCI path at "/sys/devices/LNXSYSTM:00/LNXSYBUS:00/ACPI0004:00/MSFT1000:00/5620e0c7-8062-4dce-aeb7-520c7ef76171" because filename "5620e0c7-8062-4dce-aeb7-520c7ef76171" did not match expected pattern of [0-9a-f]+:[0-9a-f]+:[0-9a-f]+[.][0-9a-f]+[m
+2026-10-30 19:08:41,148 [INFO]   [BM MCP Q 14/20] write=157.00s raw_query=160.5ms
+
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│                                                                              │
+│                                                                              │
+│                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │
+│                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                FastMCP 4.1.3                                 │
+│                            https://gofastmcp.com                             │
+│                                                                              │
+│                  🖥  Server:      Basic Memory, 4.1.3                         │
+│                  🚀 Deploy free: https://horizon.prefect.io                  │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────╮
+│                          🎉 Update available: 4.1.4                          │
+│                      Run: pip install --upgrade fastmcp                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+
+[10/30/26 19:11:27] INFO     Starting MCP server 'Basic Memory' transport.py:241
+                             with transport 'stdio'                             
+[0;93m2026-10-30 19:11:29.846073116 [W:onnxruntime:Default, device_discovery.cc:95 GetPciBusId] Skipping pci_bus_id for PCI path at "/sys/devices/LNXSYSTM:00/LNXSYBUS:00/ACPI0004:00/MSFT1000:00/5620e0c7-8062-4dce-aeb7-520c7ef76171" because filename "5620e0c7-8062-4dce-aeb7-520c7ef76171" did not match expected pattern of [0-9a-f]+:[0-9a-f]+:[0-9a-f]+[.][0-9a-f]+[m
+2026-10-30 19:11:32,662 [INFO]   [BM MCP Q 15/20] write=160.79s raw_query=160.3ms
+
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│                                                                              │
+│                                                                              │
+│                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │
+│                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                FastMCP 4.1.3                                 │
+│                            https://gofastmcp.com                             │
+│                                                                              │
+│                  🖥  Server:      Basic Memory, 4.1.3                         │
+│                  🚀 Deploy free: https://horizon.prefect.io                  │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────╮
+│                          🎉 Update available: 4.1.4                          │
+│                      Run: pip install --upgrade fastmcp                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+
+[10/30/26 19:14:25] INFO     Starting MCP server 'Basic Memory' transport.py:241
+                             with transport 'stdio'                             
+[0;93m2026-10-30 19:14:27.912320578 [W:onnxruntime:Default, device_discovery.cc:95 GetPciBusId] Skipping pci_bus_id for PCI path at "/sys/devices/LNXSYSTM:00/LNXSYBUS:00/ACPI0004:00/MSFT1000:00/5620e0c7-8062-4dce-aeb7-520c7ef76171" because filename "5620e0c7-8062-4dce-aeb7-520c7ef76171" did not match expected pattern of [0-9a-f]+:[0-9a-f]+:[0-9a-f]+[.][0-9a-f]+[m
+2026-10-30 19:14:30,872 [INFO]   [BM MCP Q 16/20] write=167.28s raw_query=187.0ms
+
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│                                                                              │
+│                                                                              │
+│                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │
+│                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                FastMCP 4.1.3                                 │
+│                            https://gofastmcp.com                             │
+│                                                                              │
+│                  🖥  Server:      Basic Memory, 4.1.3                         │
+│                  🚀 Deploy free: https://horizon.prefect.io                  │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────╮
+│                          🎉 Update available: 4.1.4                          │
+│                      Run: pip install --upgrade fastmcp                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+
+[10/30/26 19:17:26] INFO     Starting MCP server 'Basic Memory' transport.py:241
+                             with transport 'stdio'                             
+[0;93m2026-10-30 19:17:29.167662050 [W:onnxruntime:Default, device_discovery.cc:95 GetPciBusId] Skipping pci_bus_id for PCI path at "/sys/devices/LNXSYSTM:00/LNXSYBUS:00/ACPI0004:00/MSFT1000:00/5620e0c7-8062-4dce-aeb7-520c7ef76171" because filename "5620e0c7-8062-4dce-aeb7-520c7ef76171" did not match expected pattern of [0-9a-f]+:[0-9a-f]+:[0-9a-f]+[.][0-9a-f]+[m
+2026-10-30 19:17:32,016 [INFO]   [BM MCP Q 17/20] write=170.37s raw_query=157.8ms
+
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│                                                                              │
+│                                                                              │
+│                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │
+│                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                FastMCP 4.1.3                                 │
+│                            https://gofastmcp.com                             │
+│                                                                              │
+│                  🖥  Server:      Basic Memory, 4.1.3                         │
+│                  🚀 Deploy free: https://horizon.prefect.io                  │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────╮
+│                          🎉 Update available: 4.1.4                          │
+│                      Run: pip install --upgrade fastmcp                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+
+[10/30/26 19:20:19] INFO     Starting MCP server 'Basic Memory' transport.py:241
+                             with transport 'stdio'                             
+[0;93m2026-10-30 19:20:21.577951638 [W:onnxruntime:Default, device_discovery.cc:95 GetPciBusId] Skipping pci_bus_id for PCI path at "/sys/devices/LNXSYSTM:00/LNXSYBUS:00/ACPI0004:00/MSFT1000:00/5620e0c7-8062-4dce-aeb7-520c7ef76171" because filename "5620e0c7-8062-4dce-aeb7-520c7ef76171" did not match expected pattern of [0-9a-f]+:[0-9a-f]+:[0-9a-f]+[.][0-9a-f]+[m
+2026-10-30 19:20:24,466 [INFO]   [BM MCP Q 18/20] write=161.65s raw_query=158.2ms
+
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│                                                                              │
+│                                                                              │
+│                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │
+│                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                FastMCP 4.1.3                                 │
+│                            https://gofastmcp.com                             │
+│                                                                              │
+│                  🖥  Server:      Basic Memory, 4.1.3                         │
+│                  🚀 Deploy free: https://horizon.prefect.io                  │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────╮
+│                          🎉 Update available: 4.1.4                          │
+│                      Run: pip install --upgrade fastmcp                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+
+[10/30/26 19:23:10] INFO     Starting MCP server 'Basic Memory' transport.py:241
+                             with transport 'stdio'                             
+[0;93m2026-10-30 19:23:13.320244880 [W:onnxruntime:Default, device_discovery.cc:95 GetPciBusId] Skipping pci_bus_id for PCI path at "/sys/devices/LNXSYSTM:00/LNXSYBUS:00/ACPI0004:00/MSFT1000:00/5620e0c7-8062-4dce-aeb7-520c7ef76171" because filename "5620e0c7-8062-4dce-aeb7-520c7ef76171" did not match expected pattern of [0-9a-f]+:[0-9a-f]+:[0-9a-f]+[.][0-9a-f]+[m
+2026-10-30 19:23:16,060 [INFO]   [BM MCP Q 19/20] write=160.79s raw_query=134.3ms
+
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│                                                                              │
+│                                                                              │
+│                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │
+│                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                FastMCP 4.1.3                                 │
+│                            https://gofastmcp.com                             │
+│                                                                              │
+│                  🖥  Server:      Basic Memory, 4.1.3                         │
+│                  🚀 Deploy free: https://horizon.prefect.io                  │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────╮
+│                          🎉 Update available: 4.1.4                          │
+│                      Run: pip install --upgrade fastmcp                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+
+[10/30/26 19:26:06] INFO     Starting MCP server 'Basic Memory' transport.py:241
+                             with transport 'stdio'                             
+[0;93m2026-10-30 19:26:09.061563561 [W:onnxruntime:Default, device_discovery.cc:95 GetPciBusId] Skipping pci_bus_id for PCI path at "/sys/devices/LNXSYSTM:00/LNXSYBUS:00/ACPI0004:00/MSFT1000:00/5620e0c7-8062-4dce-aeb7-520c7ef76171" because filename "5620e0c7-8062-4dce-aeb7-520c7ef76171" did not match expected pattern of [0-9a-f]+:[0-9a-f]+:[0-9a-f]+[.][0-9a-f]+[m
+2026-10-30 19:26:11,907 [INFO]   [BM MCP Q 20/20] write=165.08s raw_query=157.2ms
+2026-10-30 19:26:11,985 [INFO] All selected tools completed. Results saved to benchmarks/results/ci/pilot-rep-2_results.json
+2026-10-30 19:26:11,985 [INFO] Post-run Kernel-Power sleep/resume audit: 0 events found in run window
+2026-10-30 19:26:11,998 [INFO] Pilot results saved to benchmarks/results/ci/pilot-rep-2_results.json
+
+Pilot evaluation run completed successfully.
