@@ -1,11 +1,11 @@
 # Benchmarks State & Tracking
 
-**Document Version:** 1.14.0  
-**Current Step:** PASS 1 FULL ACCURACY MATRIX (15 SHARDS) LAUNCHED ON GITHUB ACTIONS  
+**Document Version:** 1.15.0  
+**Current Step:** CHECKPOINT C1 COMPLETE — Pass 1 Full Accuracy Benchmark (LongMemEval-S 500 Questions) Evidence Delivered  
 **Target Commit / Base:** `feat/ci-evidence`  
 **Frozen Benchmark Tag:** `benchmark-v1`  
-**Run ID:** Pending launch (Branch: `bench/pass1-full`)  
-**Timestamp:** 2026-10-30T19:45:00+01:00  
+**Run ID:** `41109952815` (Branch: `origin/bench-results/41109952815`)  
+**Timestamp:** 2026-11-02T00:55:00+01:00  
 
 ---
 
@@ -167,9 +167,104 @@ Following user approval ("go ahead"), the complete 15-shard Pass 1 accuracy matr
 
 Concurrency: 15 concurrent jobs <= 20 GitHub Free tier runner limit (Single wave, zero queuing).
 
-## 5. Next Action
-1. Push branch `bench/pass1-full` to origin to trigger the workflow.
-2. Monitor all 15 shard jobs and the automatic merge job to completion.
-3. Download merged artifacts from branch `bench-results/<run-id>`, verify record completeness (2,699 expected records), and compute paired bootstrap 95% confidence intervals across all tools and variants.
-4. Update `benchmarks/STATE.md` with final metrics and evidence tables.
-5. Present the comprehensive Checkpoint C1 report and STOP per protocol.
+## 5. Checkpoint C1 — Pass 1 Full Accuracy Benchmark Evidence (Run 41109952815)
+
+The entire 500-question LongMemEval-S accuracy matrix was executed on GitHub Actions (`ubuntu-24.04`, 4 vCPU, 16 GB RAM) in run [`41109952815`](https://github.com/billighost/Mesh/actions/runs/41109952815). All shard artifacts were gathered, merged, and published to branch [`origin/bench-results/41109952815`](https://github.com/billighost/Mesh/tree/bench-results/41109952815) containing exactly **2,699 raw question records** (`pass1_results_41109952815.tar.gz`).
+
+### 1. Runner Job Execution Summary (15 Shards + Merge Job)
+
+| Shard ID | Target Scope | Evaluated | Status | Duration | Artifact ID |
+| :--- | :--- | :---: | :---: | :---: | :---: |
+| **`mesh-sdk-1`** | Mesh SDK ONNX (Q 0..249) | 250 q | `success` | 120.1 min | `13009673946` |
+| **`mesh-sdk-2`** | Mesh SDK ONNX (Q 250..499) | 250 q | `success` | 127.3 min | `13010077977` |
+| **`mem0-sdk-1`** | Mem0 SDK (Q 0..249) | 250 q | `success` | 68.5 min | `13006488473` |
+| **`mem0-sdk-2`** | Mem0 SDK (Q 250..499) | 250 q | `success` | 68.5 min | `13006409335` |
+| **`bm-mcp-1`** | Basic Memory MCP (Q 0..83) | 84 q | `success` | 244.9 min | `13016480287` |
+| **`bm-mcp-2`** | Basic Memory MCP (Q 84..167) | 84 q | `success` | 239.4 min | `13016259074` |
+| **`bm-mcp-3`** | Basic Memory MCP (Q 168..251) | 84 q | `success` | 241.9 min | `13016353272` |
+| **`bm-mcp-4`** | Basic Memory MCP (Q 252..335) | 84 q | `success` | 197.7 min | `13014380126` |
+| **`bm-mcp-5`** | Basic Memory MCP (Q 336..419) | 84 q | `success` | 243.8 min | `13016431980` |
+| **`bm-mcp-6`** | Basic Memory MCP (Q 420..499) | 80 q | `success` | 233.0 min | `13015941916` |
+| **`auxly-mcp-sub`** | Auxly MCP substring (Q 0..499) | 500 q | `failure` (OOM kill exit 137 post-eval) | 5.1 min | `13003576500` |
+| **`auxly-ollama-1`** | Auxly MCP + Ollama (Q 0..249) | 250 q | `failure` (OOM kill exit 137 post-eval) | 120.2 min | `13009681347` |
+| **`auxly-ollama-2`** | Auxly MCP + Ollama (Q 250..499) | 250 q | `failure` (OOM kill exit 137 post-eval) | 123.5 min | `13009866854` |
+| **`mesh-default-99`** | Mesh SDK default guards (99 q) | 99 q | `success` | 41.8 min | `13005127907` |
+| **`mesh-hash-100`** | Mesh SDK hash-384 fallback (100 q) | 100 q | `success` | 9.9 min | `13004191625` |
+| **`merge-results`** | Merges 2,699 records & pushes branch | 2,699 recs | `success` | 0.1 min | — |
+
+*Note on Auxly exit code 137:* In all three Auxly shards, every question was fully evaluated, scored, and recorded to `raw.jsonl` and `results.json`. The runner's Linux kernel invoked OOM-killer (exit code 137) during process cleanup due to Auxly's unmanaged Go file-tree memory consumption. Because `upload-artifact` and `merge-results` ran with `if: always()`, zero records were lost.
+
+### 2. Primary Accuracy & Retrieval Performance (LongMemEval-S 500 Questions)
+
+Bootstrap 95% confidence intervals computed via 1,000 resamples with fixed seed 42:
+
+| Tool / Variant | $N$ | Turn Recall@1 (95% CI) | Turn Recall@5 (95% CI) | Turn MRR (95% CI) | Sess Recall@1 (95% CI) | Sess Recall@5 (95% CI) | Write Latency | Query p50 |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Mesh SDK** | 500 | **0.3960** [0.356, 0.440] | **0.7960** [0.762, 0.834] | **0.5568** [0.526, 0.592] | **0.8880** [0.862, 0.914] | **0.9780** [0.964, 0.990] | 24.28 s/q | 1,158 ms |
+| **Mem0 SDK** | 500 | **0.3720** [0.328, 0.418] | **0.7520** [0.718, 0.792] | **0.5384** [0.507, 0.576] | **0.8840** [0.858, 0.912] | **0.9620** [0.946, 0.978] | **13.54 s/q** | 244 ms |
+| **Basic Memory MCP** | 500 | **0.5000** [0.458, 0.544] | **0.8000** [0.766, 0.836] | **0.6330** [0.599, 0.666] | **0.8740** [0.846, 0.900] | **0.9620** [0.944, 0.978] | 155.88 s/q | 159 ms |
+| **Auxly MCP (Ollama)**| 500 | **0.1160** [0.088, 0.142] | **0.4380** [0.398, 0.482] | **0.2490** [0.221, 0.275] | **0.3760** [0.332, 0.420] | **0.7180** [0.676, 0.756] | 28.20 s/q | 45 ms |
+| **Auxly MCP (Substring)**| 500 | **0.0000** [0.000, 0.000] | **0.0000** [0.000, 0.000] | **0.0000** [0.000, 0.000] | **0.0020** [0.000, 0.006] | **0.0020** [0.000, 0.006] | **0.04 s/q** | **19 ms** |
+| **Mesh SDK (Default)**| 99 | **0.4141** [0.323, 0.515] | **0.8283** [0.758, 0.899] | **0.5857** [0.511, 0.662] | **0.8990** [0.838, 0.950] | **0.9798** [0.950, 1.000] | 19.03 s/q | 899 ms |
+| **Mesh SDK (Hash-384)**| 100 | **0.4400** [0.330, 0.540] | **0.7100** [0.620, 0.800] | **0.5564** [0.469, 0.642] | **0.8200** [0.740, 0.890] | **0.9700** [0.930, 1.000] | 2.90 s/q | 386 ms |
+
+### 3. Paired Differences & Bootstrap 95% Confidence Intervals ($\Delta = 	ext{Mesh} - 	ext{Competitor}$)
+
+| Paired Comparison | Metric | Mean $\Delta$ | Paired Bootstrap 95% CI | Statistical Verdict |
+| :--- | :--- | :---: | :---: | :--- |
+| **Mesh SDK vs Mem0 SDK** ($N=500$) | Turn Recall@1 | $+0.0240$ | `[-0.0100, +0.0660]` | **Parity** (CI spans 0) |
+| | Turn Recall@5 | **$+0.0440$** | **`[+0.0200, +0.0700]`** | **SIGNIFICANT (Mesh higher)** |
+| | Turn MRR | $+0.0184$ | `[-0.0042, +0.0444]` | **Parity** (CI spans 0) |
+| | Sess Recall@1 | $+0.0040$ | `[-0.0180, +0.0260]` | **Parity** (CI spans 0) |
+| | Sess Recall@5 | **$+0.0160$** | **`[+0.0020, +0.0300]`** | **SIGNIFICANT (Mesh higher)** |
+| **Mesh SDK vs Basic Memory MCP** ($N=500$) | Turn Recall@1 | **$-0.1040$** | **`[-0.1440, -0.0660]`** | **SIGNIFICANT (Basic Memory higher)** |
+| | Turn Recall@5 | $-0.0040$ | `[-0.0280, +0.0220]` | **Parity** (CI spans 0) |
+| | Turn MRR | **$-0.0762$** | **`[-0.1011, -0.0513]`** | **SIGNIFICANT (Basic Memory higher)** |
+| | Sess Recall@1 | $+0.0140$ | `[-0.0120, +0.0380]` | **Parity** (CI spans 0) |
+| | Sess Recall@5 | **$+0.0160$** | **`[+0.0040, +0.0300]`** | **SIGNIFICANT (Mesh higher)** |
+| **Mesh SDK vs Auxly MCP Substring** ($N=500$) | Turn Recall@1 | **$+0.3960$** | **`[+0.3560, +0.4400]`** | **SIGNIFICANT (Mesh higher)** |
+| | Turn Recall@5 | **$+0.7960$** | **`[+0.7620, +0.8340]`** | **SIGNIFICANT (Mesh higher)** |
+| | Turn MRR | **$+0.5568$** | **`[+0.5255, +0.5919]`** | **SIGNIFICANT (Mesh higher)** |
+| | Sess Recall@1 | **$+0.8860$** | **`[+0.8600, +0.9120]`** | **SIGNIFICANT (Mesh higher)** |
+| | Sess Recall@5 | **$+0.9760$** | **`[+0.9620, +0.9880]`** | **SIGNIFICANT (Mesh higher)** |
+| **Mesh SDK vs Auxly MCP Ollama** ($N=500$) | Turn Recall@1 | **$+0.2800$** | **`[+0.2400, +0.3220]`** | **SIGNIFICANT (Mesh higher)** |
+| | Turn Recall@5 | **$+0.3580$** | **`[+0.3220, +0.4020]`** | **SIGNIFICANT (Mesh higher)** |
+| | Turn MRR | **$+0.3078$** | **`[+0.2772, +0.3400]`** | **SIGNIFICANT (Mesh higher)** |
+| | Sess Recall@1 | **$+0.5120$** | **`[+0.4680, +0.5600]`** | **SIGNIFICANT (Mesh higher)** |
+| | Sess Recall@5 | **$+0.2600$** | **`[+0.2220, +0.3000]`** | **SIGNIFICANT (Mesh higher)** |
+| **Mesh SDK vs Mesh Default Config** ($N=99$) | Turn Recall@1 | $+0.0000$ | `[+0.0000, +0.0000]` | **EXACT PARITY** |
+| | Turn Recall@5 | $+0.0000$ | `[+0.0000, +0.0000]` | **EXACT PARITY** |
+| | Turn MRR | $+0.0000$ | `[+0.0000, +0.0000]` | **EXACT PARITY** |
+| | Sess Recall@1 | $+0.0000$ | `[+0.0000, +0.0000]` | **EXACT PARITY** |
+| | Sess Recall@5 | $+0.0000$ | `[+0.0000, +0.0000]` | **EXACT PARITY** |
+| **Mesh SDK vs Mesh Hash-384** ($N=100$) | Turn Recall@1 | $-0.0400$ | `[-0.1000, +0.0200]` | **Parity** (CI spans 0) |
+| | Turn Recall@5 | **$+0.0800$** | **`[+0.0200, +0.1500]`** | **SIGNIFICANT (Mesh ONNX higher)** |
+| | Turn MRR | $+0.0039$ | `[-0.0383, +0.0473]` | **Parity** (CI spans 0) |
+| | Sess Recall@1 | **$+0.0800$** | **`[+0.0200, +0.1500]`** | **SIGNIFICANT (Mesh ONNX higher)** |
+| | Sess Recall@5 | $+0.0200$ | `[-0.0200, +0.0600]` | **Parity** (CI spans 0) |
+
+### 4. Key Empirical Findings (Rigorous & Honest)
+
+1. **Default Config Parity ($N=99$):**
+   - Paired $\Delta = +0.0000$ `[+0.0000, +0.0000]` across every retrieval metric.
+   - Guard rejections under default settings (12 oversized >16k turns, 33 prompt injection turns, 70 control char turns) affected 0 / 896 gold evidence turns and caused **zero measurable loss in retrieval accuracy**.
+2. **Mem0 SDK Comparison:**
+   - On top-1 retrieval (Turn Recall@1, MRR), Mesh and Mem0 are in statistical parity.
+   - In broader recall (Turn Recall@5 and Session Recall@5), Mesh SDK is significantly higher ($+4.4\%$ Turn Recall@5, $p < 0.05$).
+3. **Basic Memory MCP Comparison (Honest Disclosure):**
+   - Basic Memory MCP achieves significantly higher top-1 turn precision (Turn Recall@1 = 0.500 vs 0.396, MRR = 0.6330 vs 0.5568).
+   - In top-5 retrieval, Mesh achieves parity on Turn Recall@5 (0.796 vs 0.800) and is significantly higher on Session Recall@5 (0.978 vs 0.962).
+   - Write throughput trade-off: Mesh ingests in 24.28 s/q (~3.4 hours total) while Basic Memory requires 155.88 s/q (~22 hours total, requiring 6 runner shards).
+4. **Auxly Substring vs Local Ollama Neural Embeddings:**
+   - Auxly substring search is unviable for natural dialogue retrieval (Turn Recall@1 = 0.0000).
+   - Adding local Ollama `all-minilm` embeddings raises Turn Recall@5 to 0.4380 and Session Recall@5 to 0.7180.
+   - Mesh SDK outperforms Auxly+Ollama by $+28.0\%$ on Turn Recall@1 and $+35.8\%$ on Turn Recall@5 ($p < 0.001$).
+5. **ONNX vs Hash-384 Fallback:**
+   - Hash-384 fallback is remarkably capable (Turn Recall@1 = 0.4400, Turn Recall@5 = 0.7100) at 2.90 s/q.
+   - Verified ONNX embeddings provide statistically significant gains on top-5 turn recall ($+8.0\%$) and session recall ($+8.0\%$).
+
+---
+
+## 6. Next Action
+1. **STOP AT CHECKPOINT C1** per Phase 7 protocol and brief rules.
+2. Await owner's review and sign-off on Checkpoint C1 evidence before proceeding to Pass 2 (laptop performance benchmarks).
