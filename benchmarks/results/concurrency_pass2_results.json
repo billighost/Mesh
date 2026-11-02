@@ -1,0 +1,59 @@
+{
+  "stress_5000": {
+    "target_memories": 5000,
+    "stored_memories": 5000,
+    "workers": 5,
+    "elapsed_seconds": 43.13,
+    "throughput_wps": 115.9,
+    "integrity_check": "ok",
+    "dedup_verified": true,
+    "retrieval_verified": true,
+    "status": "PASSED"
+  },
+  "multiagent": {
+    "2_agents": {
+      "agents": 2,
+      "writes_per_agent": 20,
+      "reads_per_agent": 20,
+      "total_writes": 40,
+      "total_reads": 40,
+      "wall_time_sec": 3.22,
+      "write_throughput_wps": 6.5,
+      "read_throughput_rps": 12.4,
+      "final_count": 41,
+      "expected_count": 41,
+      "status": "PASSED"
+    },
+    "5_agents": {
+      "agents": 5,
+      "writes_per_agent": 20,
+      "reads_per_agent": 20,
+      "total_writes": 100,
+      "total_reads": 100,
+      "wall_time_sec": 7.65,
+      "write_throughput_wps": 3.3,
+      "read_throughput_rps": 13.1,
+      "final_count": 101,
+      "expected_count": 101,
+      "status": "PASSED"
+    },
+    "10_agents": {
+      "agents": 10,
+      "writes_per_agent": 20,
+      "reads_per_agent": 20,
+      "total_writes": 200,
+      "total_reads": 200,
+      "wall_time_sec": 17.17,
+      "write_throughput_wps": 2.7,
+      "read_throughput_rps": 11.6,
+      "final_count": 201,
+      "expected_count": 201,
+      "status": "PASSED"
+    }
+  },
+  "lock_profiling": {
+    "uncontended_hold_ms": 2.62,
+    "lock_mechanism": "msvcrt.locking (Windows)",
+    "root_cause_analysis": "Under Windows msvcrt.locking, the advisory lock is exclusive across OS processes. Because namespace_write_lock wraps the entire learn() pipeline (deduplication query + SQLite WAL transaction + audit transaction), competing worker processes encounter a locked file and enter non-blocking retry loops with exponential backoff sleep (5-50ms). This backoff latency dominates multi-process wall clock time (~5 writes/s across 4 OS processes), whereas in-process multi-threading (106.3 writes/s) shares the cached ONNX model and in-memory data structures with zero OS file locking overhead."
+  }
+}

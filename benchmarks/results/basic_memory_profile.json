@@ -1,0 +1,18 @@
+{
+  "bulk_seeded_reindex": {
+    "notes_count": 50,
+    "file_write_ms": 108.23,
+    "file_write_ms_per_note": 2.165,
+    "project_add_ms": 23799.87,
+    "reindex_sec": 80.808,
+    "reindex_ms_per_note": 1616.17,
+    "total_sec": 104.717,
+    "total_ms_per_note": 2094.33
+  },
+  "per_call_cli": {
+    "sample_writes": 10,
+    "mean_ms": 13796.05,
+    "p50_ms": 12215.32,
+    "p95_ms": 18143.23
+  }
+}
