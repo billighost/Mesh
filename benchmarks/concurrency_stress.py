@@ -225,4 +225,14 @@ def run_concurrency_stress() -> Dict[str, Any]:
 
 
 if __name__ == "__main__":
-    run_concurrency_stress()
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--output", type=str, default="")
+    args = parser.parse_args()
+    res = run_concurrency_stress()
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as f:
+            json.dump(res, f, indent=2)
+    if args.json:
+        print(json.dumps(res, indent=2))
