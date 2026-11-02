@@ -416,6 +416,70 @@ def check_no_fernet_references(errors: list[str]) -> None:
                 )
 
 
+def check_performance_tables_traceability(errors: list[str]) -> None:
+    """
+    Verify that every performance table in docs/PERFORMANCE.md cites a valid raw source
+    file and key, and that any pilot v2 citations include the mandatory disclosure.
+    """
+    perf_file = REPO_ROOT / "docs" / "PERFORMANCE.md"
+    if not perf_file.exists():
+        return
+    text = perf_file.read_text(encoding="utf-8")
+    lines = text.splitlines()
+
+    in_table = False
+    table_start_line = -1
+    table_end_line = -1
+    tables = []
+
+    for idx, line in enumerate(lines):
+        is_table_row = bool(re.match(r"^\s*\|.*\|\s*$", line))
+        if is_table_row:
+            if not in_table:
+                in_table = True
+                table_start_line = idx
+            table_end_line = idx
+        else:
+            if in_table:
+                tables.append((table_start_line, table_end_line))
+                in_table = False
+    if in_table:
+        tables.append((table_start_line, table_end_line))
+
+    for start, end in tables:
+        context_lines = lines[max(0, start - 6) : min(len(lines), end + 7)]
+        context_text = "\n".join(context_lines)
+
+        # Allow descriptive/architectural mapping tables
+        if "Architectural Enabler" in lines[start] or "Architectural Takeaway" in context_text:
+            continue
+
+        source_match = re.search(
+            r"(?:Source|\*Source\*|\*\*Source\*\*):\s*`?([a-zA-Z0-9_\-\./\\]+\.json[l]?)`?",
+            context_text,
+            re.IGNORECASE,
+        )
+        if not source_match:
+            errors.append(
+                f"[docs/PERFORMANCE.md:{start+1}] Table lacks mandatory raw source citation (`Source: <raw_file.json> (keys: ...)`)."
+            )
+            continue
+
+        raw_rel = source_match.group(1).replace("\\", "/")
+        raw_path = REPO_ROOT / raw_rel
+        if not raw_path.exists():
+            errors.append(
+                f"[docs/PERFORMANCE.md:{start+1}] Cited raw source file '{raw_rel}' does not exist on disk."
+            )
+
+        if "pilot_20_results.json" in raw_rel or "pilot" in raw_rel.lower():
+            if "pilot v2, 20 questions, single run, not exclusive repeats" not in context_text.lower():
+                errors.append(
+                    f"[docs/PERFORMANCE.md:{start+1}] Table citing pilot data must include mandatory disclosure: "
+                    "'pilot v2, 20 questions, single run, not exclusive repeats'."
+                )
+
+
 def check_no_review_placeholders_in_published_files(errors: list[str] | None = None) -> list[str]:
     """
     Verify that external review placeholders ([REPORT_LINK], [DATE], etc.)
@@ -467,6 +531,7 @@ def main() -> int:
     check_public_manifest(errors)
     check_no_fernet_references(errors)
     check_no_review_placeholders_in_published_files(errors)
+    check_performance_tables_traceability(errors)
 
     if errors:
         print(f"\n[FAIL] Documentation verification found {len(errors)} error(s):")

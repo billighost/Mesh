@@ -1,0 +1,2684 @@
+{
+  "metadata": {
+    "date": "2026-11-02",
+    "environment": "Windows 11 Home, AMD Ryzen 7 5700U, 16GB DDR4",
+    "bare_python_baseline_mb": 14.96,
+    "python_import_mesh_mb": 16.14,
+    "sampling_interval_ms": 100
+  },
+  "tools": {
+    "Mesh SDK (Class A)": {
+      "tool": "Mesh SDK (Class A)",
+      "repeats": 3,
+      "peak_mb_median": 156.29,
+      "peak_mb_mean": 156.26,
+      "peak_mb_min": 156.03,
+      "peak_mb_max": 156.45,
+      "runs": [
+        {
+          "repeat": 1,
+          "peak_tree_mb": 156.29,
+          "observed_processes": [
+            {
+              "pid": 15436,
+              "name": "python.exe",
+              "cmdline": [
+                "C:\\Python314\\python.exe",
+                "-c",
+                "\nimport os, time\nos.environ['MESH_HOME'] = r'C:\\Users\\bb201\\AppData\\Local\\Temp\\tmp9ak6bqz5'\nfrom mesh.memory import Mesh\nm = Mesh(namespace='b2_bench', agent_id='tester')\nm.learn('The telescope observed forty-two pulsars in nebula quadrant three.', memory_type='fact')\nfor _ in range(10):\n    m.recall('pulsars in nebula', n=5)\n    time.sleep(0.1)\n"
+              ],
+              "peak_mb": 156.2890625
+            },
+            {
+              "pid": 12660,
+              "name": "icacls.exe",
+              "cmdline": [
+                "icacls",
+                "C:\\Users\\bb201\\AppData\\Local\\Temp\\tmp9ak6bqz5\\models\\all-MiniLM-L6-v2-onnx",
+                "/inheritance:r"
+              ],
+              "peak_mb": 2.125
+            },
+            {
+              "pid": 20360,
+              "name": "conhost.exe",
+              "cmdline": [
+                "\\??\\C:\\WINDOWS\\system32\\conhost.exe",
+                "0x4"
+              ],
+              "peak_mb": 6.21875
+            }
+          ],
+          "sample_count": 33,
+          "samples_tail": [
+            {
+              "timestamp": 1793604281.352,
+              "total_tree_mb": 156.29,
+              "processes": [
+                {
+                  "pid": 15436,
+                  "rss_mb": 156.29
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604281.463,
+              "total_tree_mb": 156.29,
+              "processes": [
+                {
+                  "pid": 15436,
+                  "rss_mb": 156.29
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604281.574,
+              "total_tree_mb": 156.29,
+              "processes": [
+                {
+                  "pid": 15436,
+                  "rss_mb": 156.29
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604281.684,
+              "total_tree_mb": 156.29,
+              "processes": [
+                {
+                  "pid": 15436,
+                  "rss_mb": 156.29
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604281.794,
+              "total_tree_mb": 17.07,
+              "processes": [
+                {
+                  "pid": 15436,
+                  "rss_mb": 17.07
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "repeat": 2,
+          "peak_tree_mb": 156.03,
+          "observed_processes": [
+            {
+              "pid": 19428,
+              "name": "python.exe",
+              "cmdline": [
+                "C:\\Python314\\python.exe",
+                "-c",
+                "\nimport os, time\nos.environ['MESH_HOME'] = r'C:\\Users\\bb201\\AppData\\Local\\Temp\\tmpvr3f9q3b'\nfrom mesh.memory import Mesh\nm = Mesh(namespace='b2_bench', agent_id='tester')\nm.learn('The telescope observed forty-two pulsars in nebula quadrant three.', memory_type='fact')\nfor _ in range(10):\n    m.recall('pulsars in nebula', n=5)\n    time.sleep(0.1)\n"
+              ],
+              "peak_mb": 156.02734375
+            },
+            {
+              "pid": 4976,
+              "name": "icacls.exe",
+              "cmdline": [
+                "icacls",
+                "C:\\Users\\bb201\\AppData\\Local\\Temp\\tmpvr3f9q3b",
+                "/inheritance:r"
+              ],
+              "peak_mb": 2.12109375
+            },
+            {
+              "pid": 15232,
+              "name": "icacls.exe",
+              "cmdline": [
+                "icacls",
+                "C:\\Users\\bb201\\AppData\\Local\\Temp\\tmpvr3f9q3b\\models\\all-MiniLM-L6-v2-onnx",
+                "/inheritance:r"
+              ],
+              "peak_mb": 4.15234375
+            },
+            {
+              "pid": 15828,
+              "name": "conhost.exe",
+              "cmdline": [
+                "\\??\\C:\\WINDOWS\\system32\\conhost.exe",
+                "0x4"
+              ],
+              "peak_mb": 10.3671875
+            }
+          ],
+          "sample_count": 42,
+          "samples_tail": [
+            {
+              "timestamp": 1793604287.139,
+              "total_tree_mb": 156.02,
+              "processes": [
+                {
+                  "pid": 19428,
+                  "rss_mb": 156.02
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604287.253,
+              "total_tree_mb": 156.02,
+              "processes": [
+                {
+                  "pid": 19428,
+                  "rss_mb": 156.02
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604287.368,
+              "total_tree_mb": 156.03,
+              "processes": [
+                {
+                  "pid": 19428,
+                  "rss_mb": 156.03
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604287.484,
+              "total_tree_mb": 156.03,
+              "processes": [
+                {
+                  "pid": 19428,
+                  "rss_mb": 156.03
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604287.6,
+              "total_tree_mb": 156.03,
+              "processes": [
+                {
+                  "pid": 19428,
+                  "rss_mb": 156.03
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "repeat": 3,
+          "peak_tree_mb": 156.45,
+          "observed_processes": [
+            {
+              "pid": 15648,
+              "name": "python.exe",
+              "cmdline": [
+                "C:\\Python314\\python.exe",
+                "-c",
+                "\nimport os, time\nos.environ['MESH_HOME'] = r'C:\\Users\\bb201\\AppData\\Local\\Temp\\tmpyhlt7msz'\nfrom mesh.memory import Mesh\nm = Mesh(namespace='b2_bench', agent_id='tester')\nm.learn('The telescope observed forty-two pulsars in nebula quadrant three.', memory_type='fact')\nfor _ in range(10):\n    m.recall('pulsars in nebula', n=5)\n    time.sleep(0.1)\n"
+              ],
+              "peak_mb": 156.44921875
+            },
+            {
+              "pid": 15736,
+              "name": "icacls.exe",
+              "cmdline": [
+                "icacls",
+                "C:\\Users\\bb201\\AppData\\Local\\Temp\\tmpyhlt7msz\\models\\all-MiniLM-L6-v2-onnx",
+                "/inheritance:r"
+              ],
+              "peak_mb": 2.125
+            },
+            {
+              "pid": 8844,
+              "name": "conhost.exe",
+              "cmdline": [
+                "\\??\\C:\\WINDOWS\\system32\\conhost.exe",
+                "0x4"
+              ],
+              "peak_mb": 2.09765625
+            }
+          ],
+          "sample_count": 38,
+          "samples_tail": [
+            {
+              "timestamp": 1793604291.895,
+              "total_tree_mb": 156.44,
+              "processes": [
+                {
+                  "pid": 15648,
+                  "rss_mb": 156.44
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604292.002,
+              "total_tree_mb": 156.44,
+              "processes": [
+                {
+                  "pid": 15648,
+                  "rss_mb": 156.44
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604292.115,
+              "total_tree_mb": 156.45,
+              "processes": [
+                {
+                  "pid": 15648,
+                  "rss_mb": 156.45
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604292.223,
+              "total_tree_mb": 156.45,
+              "processes": [
+                {
+                  "pid": 15648,
+                  "rss_mb": 156.45
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604292.333,
+              "total_tree_mb": 156.39,
+              "processes": [
+                {
+                  "pid": 15648,
+                  "rss_mb": 156.39
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "Mem0 SDK (Class A)": {
+      "tool": "Mem0 SDK (Class A)",
+      "repeats": 3,
+      "peak_mb_median": 279.7,
+      "peak_mb_mean": 279.55,
+      "peak_mb_min": 279.08,
+      "peak_mb_max": 279.86,
+      "runs": [
+        {
+          "repeat": 1,
+          "peak_tree_mb": 279.08,
+          "observed_processes": [
+            {
+              "pid": 17484,
+              "name": "python.exe",
+              "cmdline": [
+                "C:\\Users\\bb201\\Desktop\\Mesh\\benchmarks\\.venv-mem0\\Scripts\\python.exe",
+                "-c",
+                "\nimport os, time\nfrom mem0 import Memory\ncfg = {\n    'version': 'v1.1',\n    'vector_store': {'provider': 'qdrant', 'config': {'path': r'C:\\Users\\bb201\\AppData\\Local\\Temp\\tmpzc1a155h/qdrant', 'embedding_model_dims': 384}},\n    'llm': {'provider': 'openai', 'config': {'api_key': 'fake', 'model': 'gpt-4o-mini'}},\n    'embedder': {'provider': 'fastembed', 'config': {'model': 'sentence-transformers/all-MiniLM-L6-v2'}}\n}\nm = Memory.from_config(cfg)\nm.add('The telescope observed forty-two pulsars in nebula quadrant three.', user_id='u1', infer=False)\nfor _ in range(10):\n    m.search('pulsars in nebula', user_id='u1')\n    time.sleep(0.1)\n"
+              ],
+              "peak_mb": 3.2421875
+            },
+            {
+              "pid": 11836,
+              "name": "python.exe",
+              "cmdline": [
+                "C:\\Users\\bb201\\Desktop\\Mesh\\benchmarks\\.venv-mem0\\Scripts\\python.exe",
+                "-c",
+                "\nimport os, time\nfrom mem0 import Memory\ncfg = {\n    'version': 'v1.1',\n    'vector_store': {'provider': 'qdrant', 'config': {'path': r'C:\\Users\\bb201\\AppData\\Local\\Temp\\tmpzc1a155h/qdrant', 'embedding_model_dims': 384}},\n    'llm': {'provider': 'openai', 'config': {'api_key': 'fake', 'model': 'gpt-4o-mini'}},\n    'embedder': {'provider': 'fastembed', 'config': {'model': 'sentence-transformers/all-MiniLM-L6-v2'}}\n}\nm = Memory.from_config(cfg)\nm.add('The telescope observed forty-two pulsars in nebula quadrant three.', user_id='u1', infer=False)\nfor _ in range(10):\n    m.search('pulsars in nebula', user_id='u1')\n    time.sleep(0.1)\n"
+              ],
+              "peak_mb": 275.8359375
+            }
+          ],
+          "sample_count": 126,
+          "samples_tail": [
+            {
+              "timestamp": 1793604306.703,
+              "total_tree_mb": 279.01,
+              "processes": [
+                {
+                  "pid": 17484,
+                  "rss_mb": 3.24
+                },
+                {
+                  "pid": 11836,
+                  "rss_mb": 275.77
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604306.813,
+              "total_tree_mb": 186.84,
+              "processes": [
+                {
+                  "pid": 17484,
+                  "rss_mb": 3.24
+                },
+                {
+                  "pid": 11836,
+                  "rss_mb": 183.6
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604306.921,
+              "total_tree_mb": 186.86,
+              "processes": [
+                {
+                  "pid": 17484,
+                  "rss_mb": 3.24
+                },
+                {
+                  "pid": 11836,
+                  "rss_mb": 183.62
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604307.029,
+              "total_tree_mb": 184.49,
+              "processes": [
+                {
+                  "pid": 17484,
+                  "rss_mb": 3.24
+                },
+                {
+                  "pid": 11836,
+                  "rss_mb": 181.25
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604307.139,
+              "total_tree_mb": 178.59,
+              "processes": [
+                {
+                  "pid": 17484,
+                  "rss_mb": 3.24
+                },
+                {
+                  "pid": 11836,
+                  "rss_mb": 175.34
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "repeat": 2,
+          "peak_tree_mb": 279.86,
+          "observed_processes": [
+            {
+              "pid": 10732,
+              "name": "python.exe",
+              "cmdline": [
+                "C:\\Users\\bb201\\Desktop\\Mesh\\benchmarks\\.venv-mem0\\Scripts\\python.exe",
+                "-c",
+                "\nimport os, time\nfrom mem0 import Memory\ncfg = {\n    'version': 'v1.1',\n    'vector_store': {'provider': 'qdrant', 'config': {'path': r'C:\\Users\\bb201\\AppData\\Local\\Temp\\tmp6u_m45vn/qdrant', 'embedding_model_dims': 384}},\n    'llm': {'provider': 'openai', 'config': {'api_key': 'fake', 'model': 'gpt-4o-mini'}},\n    'embedder': {'provider': 'fastembed', 'config': {'model': 'sentence-transformers/all-MiniLM-L6-v2'}}\n}\nm = Memory.from_config(cfg)\nm.add('The telescope observed forty-two pulsars in nebula quadrant three.', user_id='u1', infer=False)\nfor _ in range(10):\n    m.search('pulsars in nebula', user_id='u1')\n    time.sleep(0.1)\n"
+              ],
+              "peak_mb": 3.23828125
+            },
+            {
+              "pid": 5816,
+              "name": "python.exe",
+              "cmdline": [
+                "C:\\Users\\bb201\\Desktop\\Mesh\\benchmarks\\.venv-mem0\\Scripts\\python.exe",
+                "-c",
+                "\nimport os, time\nfrom mem0 import Memory\ncfg = {\n    'version': 'v1.1',\n    'vector_store': {'provider': 'qdrant', 'config': {'path': r'C:\\Users\\bb201\\AppData\\Local\\Temp\\tmp6u_m45vn/qdrant', 'embedding_model_dims': 384}},\n    'llm': {'provider': 'openai', 'config': {'api_key': 'fake', 'model': 'gpt-4o-mini'}},\n    'embedder': {'provider': 'fastembed', 'config': {'model': 'sentence-transformers/all-MiniLM-L6-v2'}}\n}\nm = Memory.from_config(cfg)\nm.add('The telescope observed forty-two pulsars in nebula quadrant three.', user_id='u1', infer=False)\nfor _ in range(10):\n    m.search('pulsars in nebula', user_id='u1')\n    time.sleep(0.1)\n"
+              ],
+              "peak_mb": 276.625
+            }
+          ],
+          "sample_count": 141,
+          "samples_tail": [
+            {
+              "timestamp": 1793604322.885,
+              "total_tree_mb": 185.55,
+              "processes": [
+                {
+                  "pid": 10732,
+                  "rss_mb": 3.24
+                },
+                {
+                  "pid": 5816,
+                  "rss_mb": 182.32
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604322.997,
+              "total_tree_mb": 185.57,
+              "processes": [
+                {
+                  "pid": 10732,
+                  "rss_mb": 3.24
+                },
+                {
+                  "pid": 5816,
+                  "rss_mb": 182.34
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604323.13,
+              "total_tree_mb": 185.58,
+              "processes": [
+                {
+                  "pid": 10732,
+                  "rss_mb": 3.24
+                },
+                {
+                  "pid": 5816,
+                  "rss_mb": 182.34
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604323.244,
+              "total_tree_mb": 185.58,
+              "processes": [
+                {
+                  "pid": 10732,
+                  "rss_mb": 3.24
+                },
+                {
+                  "pid": 5816,
+                  "rss_mb": 182.34
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604323.368,
+              "total_tree_mb": 171.3,
+              "processes": [
+                {
+                  "pid": 10732,
+                  "rss_mb": 3.24
+                },
+                {
+                  "pid": 5816,
+                  "rss_mb": 168.07
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "repeat": 3,
+          "peak_tree_mb": 279.7,
+          "observed_processes": [
+            {
+              "pid": 17924,
+              "name": "python.exe",
+              "cmdline": [
+                "C:\\Users\\bb201\\Desktop\\Mesh\\benchmarks\\.venv-mem0\\Scripts\\python.exe",
+                "-c",
+                "\nimport os, time\nfrom mem0 import Memory\ncfg = {\n    'version': 'v1.1',\n    'vector_store': {'provider': 'qdrant', 'config': {'path': r'C:\\Users\\bb201\\AppData\\Local\\Temp\\tmp47zitvjj/qdrant', 'embedding_model_dims': 384}},\n    'llm': {'provider': 'openai', 'config': {'api_key': 'fake', 'model': 'gpt-4o-mini'}},\n    'embedder': {'provider': 'fastembed', 'config': {'model': 'sentence-transformers/all-MiniLM-L6-v2'}}\n}\nm = Memory.from_config(cfg)\nm.add('The telescope observed forty-two pulsars in nebula quadrant three.', user_id='u1', infer=False)\nfor _ in range(10):\n    m.search('pulsars in nebula', user_id='u1')\n    time.sleep(0.1)\n"
+              ],
+              "peak_mb": 3.2421875
+            },
+            {
+              "pid": 17176,
+              "name": "python.exe",
+              "cmdline": [
+                "C:\\Users\\bb201\\Desktop\\Mesh\\benchmarks\\.venv-mem0\\Scripts\\python.exe",
+                "-c",
+                "\nimport os, time\nfrom mem0 import Memory\ncfg = {\n    'version': 'v1.1',\n    'vector_store': {'provider': 'qdrant', 'config': {'path': r'C:\\Users\\bb201\\AppData\\Local\\Temp\\tmp47zitvjj/qdrant', 'embedding_model_dims': 384}},\n    'llm': {'provider': 'openai', 'config': {'api_key': 'fake', 'model': 'gpt-4o-mini'}},\n    'embedder': {'provider': 'fastembed', 'config': {'model': 'sentence-transformers/all-MiniLM-L6-v2'}}\n}\nm = Memory.from_config(cfg)\nm.add('The telescope observed forty-two pulsars in nebula quadrant three.', user_id='u1', infer=False)\nfor _ in range(10):\n    m.search('pulsars in nebula', user_id='u1')\n    time.sleep(0.1)\n"
+              ],
+              "peak_mb": 276.4609375
+            }
+          ],
+          "sample_count": 118,
+          "samples_tail": [
+            {
+              "timestamp": 1793604336.495,
+              "total_tree_mb": 187.49,
+              "processes": [
+                {
+                  "pid": 17924,
+                  "rss_mb": 3.24
+                },
+                {
+                  "pid": 17176,
+                  "rss_mb": 184.25
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604336.609,
+              "total_tree_mb": 184.89,
+              "processes": [
+                {
+                  "pid": 17924,
+                  "rss_mb": 3.24
+                },
+                {
+                  "pid": 17176,
+                  "rss_mb": 181.65
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604336.723,
+              "total_tree_mb": 184.89,
+              "processes": [
+                {
+                  "pid": 17924,
+                  "rss_mb": 3.24
+                },
+                {
+                  "pid": 17176,
+                  "rss_mb": 181.65
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604336.835,
+              "total_tree_mb": 184.89,
+              "processes": [
+                {
+                  "pid": 17924,
+                  "rss_mb": 3.24
+                },
+                {
+                  "pid": 17176,
+                  "rss_mb": 181.65
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604336.96,
+              "total_tree_mb": 168.09,
+              "processes": [
+                {
+                  "pid": 17924,
+                  "rss_mb": 3.24
+                },
+                {
+                  "pid": 17176,
+                  "rss_mb": 164.85
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "Mesh CLI Cold (Class B)": {
+      "tool": "Mesh CLI Cold (Class B)",
+      "repeats": 3,
+      "peak_mb_median": 27.67,
+      "peak_mb_mean": 27.44,
+      "peak_mb_min": 26.89,
+      "peak_mb_max": 27.75,
+      "runs": [
+        {
+          "repeat": 1,
+          "peak_tree_mb": 26.89,
+          "observed_processes": [
+            {
+              "pid": 13552,
+              "name": "python.exe",
+              "cmdline": [
+                "C:\\Python314\\python.exe",
+                "-m",
+                "mesh"
+              ],
+              "peak_mb": 26.890625
+            }
+          ],
+          "sample_count": 6,
+          "samples_tail": [
+            {
+              "timestamp": 1793604337.877,
+              "total_tree_mb": 11.62,
+              "processes": [
+                {
+                  "pid": 13552,
+                  "rss_mb": 11.62
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604337.995,
+              "total_tree_mb": 16.61,
+              "processes": [
+                {
+                  "pid": 13552,
+                  "rss_mb": 16.61
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604338.128,
+              "total_tree_mb": 18.96,
+              "processes": [
+                {
+                  "pid": 13552,
+                  "rss_mb": 18.96
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604338.244,
+              "total_tree_mb": 23.9,
+              "processes": [
+                {
+                  "pid": 13552,
+                  "rss_mb": 23.9
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604338.356,
+              "total_tree_mb": 26.89,
+              "processes": [
+                {
+                  "pid": 13552,
+                  "rss_mb": 26.89
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "repeat": 2,
+          "peak_tree_mb": 27.67,
+          "observed_processes": [
+            {
+              "pid": 8816,
+              "name": "python.exe",
+              "cmdline": [
+                "C:\\Python314\\python.exe",
+                "-m",
+                "mesh"
+              ],
+              "peak_mb": 27.671875
+            }
+          ],
+          "sample_count": 4,
+          "samples_tail": [
+            {
+              "timestamp": 1793604339.06,
+              "total_tree_mb": 4.27,
+              "processes": [
+                {
+                  "pid": 8816,
+                  "rss_mb": 4.27
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604339.171,
+              "total_tree_mb": 17.41,
+              "processes": [
+                {
+                  "pid": 8816,
+                  "rss_mb": 17.41
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604339.278,
+              "total_tree_mb": 21.64,
+              "processes": [
+                {
+                  "pid": 8816,
+                  "rss_mb": 21.64
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604339.386,
+              "total_tree_mb": 27.67,
+              "processes": [
+                {
+                  "pid": 8816,
+                  "rss_mb": 27.67
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "repeat": 3,
+          "peak_tree_mb": 27.75,
+          "observed_processes": [
+            {
+              "pid": 18464,
+              "name": "python.exe",
+              "cmdline": [
+                "C:\\Python314\\python.exe",
+                "-m",
+                "mesh"
+              ],
+              "peak_mb": 27.75
+            }
+          ],
+          "sample_count": 6,
+          "samples_tail": [
+            {
+              "timestamp": 1793604340.229,
+              "total_tree_mb": 11.62,
+              "processes": [
+                {
+                  "pid": 18464,
+                  "rss_mb": 11.62
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604340.342,
+              "total_tree_mb": 16.6,
+              "processes": [
+                {
+                  "pid": 18464,
+                  "rss_mb": 16.6
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604340.459,
+              "total_tree_mb": 19.45,
+              "processes": [
+                {
+                  "pid": 18464,
+                  "rss_mb": 19.45
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604340.577,
+              "total_tree_mb": 23.95,
+              "processes": [
+                {
+                  "pid": 18464,
+                  "rss_mb": 23.95
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604340.691,
+              "total_tree_mb": 27.75,
+              "processes": [
+                {
+                  "pid": 18464,
+                  "rss_mb": 27.75
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "Mesh CLI Daemon (Class B)": {
+      "tool": "Mesh CLI Daemon (Class B)",
+      "repeats": 3,
+      "peak_mb_median": 214.01,
+      "peak_mb_mean": 213.93,
+      "peak_mb_min": 213.36,
+      "peak_mb_max": 214.43,
+      "runs": [
+        {
+          "repeat": 1,
+          "peak_tree_mb": 213.36,
+          "observed_processes": [
+            {
+              "pid": 8708,
+              "name": "python.exe",
+              "cmdline": [
+                "C:\\Python314\\python.exe",
+                "-m",
+                "mesh"
+              ],
+              "peak_mb": 25.91796875
+            },
+            {
+              "pid": 16856,
+              "name": "pythonw.exe",
+              "cmdline": [
+                "C:\\Python314\\pythonw.exe",
+                "-m",
+                "mesh.http_server"
+              ],
+              "peak_mb": 187.4453125
+            }
+          ],
+          "sample_count": 6,
+          "samples_tail": [
+            {
+              "timestamp": 1793604352.233,
+              "total_tree_mb": 10.03,
+              "processes": [
+                {
+                  "pid": 8708,
+                  "rss_mb": 10.03
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604352.392,
+              "total_tree_mb": 11.9,
+              "processes": [
+                {
+                  "pid": 8708,
+                  "rss_mb": 11.9
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604352.507,
+              "total_tree_mb": 17.43,
+              "processes": [
+                {
+                  "pid": 8708,
+                  "rss_mb": 17.43
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604352.621,
+              "total_tree_mb": 18.89,
+              "processes": [
+                {
+                  "pid": 8708,
+                  "rss_mb": 18.89
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604352.731,
+              "total_tree_mb": 25.92,
+              "processes": [
+                {
+                  "pid": 8708,
+                  "rss_mb": 25.92
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "repeat": 2,
+          "peak_tree_mb": 214.43,
+          "observed_processes": [
+            {
+              "pid": 284,
+              "name": "python.exe",
+              "cmdline": [
+                "C:\\Python314\\python.exe",
+                "-m",
+                "mesh"
+              ],
+              "peak_mb": 27.4765625
+            },
+            {
+              "pid": 16948,
+              "name": "pythonw.exe",
+              "cmdline": [
+                "C:\\Python314\\pythonw.exe",
+                "-m",
+                "mesh.http_server"
+              ],
+              "peak_mb": 186.94921875
+            }
+          ],
+          "sample_count": 5,
+          "samples_tail": [
+            {
+              "timestamp": 1793604365.71,
+              "total_tree_mb": 5.75,
+              "processes": [
+                {
+                  "pid": 284,
+                  "rss_mb": 5.75
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604365.823,
+              "total_tree_mb": 13.11,
+              "processes": [
+                {
+                  "pid": 284,
+                  "rss_mb": 13.11
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604365.935,
+              "total_tree_mb": 18.32,
+              "processes": [
+                {
+                  "pid": 284,
+                  "rss_mb": 18.32
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604366.047,
+              "total_tree_mb": 23.51,
+              "processes": [
+                {
+                  "pid": 284,
+                  "rss_mb": 23.51
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604366.164,
+              "total_tree_mb": 27.48,
+              "processes": [
+                {
+                  "pid": 284,
+                  "rss_mb": 27.48
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "repeat": 3,
+          "peak_tree_mb": 214.01,
+          "observed_processes": [
+            {
+              "pid": 10668,
+              "name": "python.exe",
+              "cmdline": [
+                "C:\\Python314\\python.exe",
+                "-m",
+                "mesh"
+              ],
+              "peak_mb": 27.44140625
+            },
+            {
+              "pid": 21368,
+              "name": "pythonw.exe",
+              "cmdline": [
+                "C:\\Python314\\pythonw.exe",
+                "-m",
+                "mesh.http_server"
+              ],
+              "peak_mb": 186.56640625
+            }
+          ],
+          "sample_count": 6,
+          "samples_tail": [
+            {
+              "timestamp": 1793604376.36,
+              "total_tree_mb": 11.54,
+              "processes": [
+                {
+                  "pid": 10668,
+                  "rss_mb": 11.54
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604376.474,
+              "total_tree_mb": 16.37,
+              "processes": [
+                {
+                  "pid": 10668,
+                  "rss_mb": 16.37
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604376.591,
+              "total_tree_mb": 18.97,
+              "processes": [
+                {
+                  "pid": 10668,
+                  "rss_mb": 18.97
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604376.707,
+              "total_tree_mb": 24.11,
+              "processes": [
+                {
+                  "pid": 10668,
+                  "rss_mb": 24.11
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604376.823,
+              "total_tree_mb": 27.44,
+              "processes": [
+                {
+                  "pid": 10668,
+                  "rss_mb": 27.44
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "Basic Memory CLI (Class B)": {
+      "tool": "Basic Memory CLI (Class B)",
+      "repeats": 3,
+      "peak_mb_median": 287.04,
+      "peak_mb_mean": 287.01,
+      "peak_mb_min": 286.59,
+      "peak_mb_max": 287.39,
+      "runs": [
+        {
+          "repeat": 1,
+          "peak_tree_mb": 287.04,
+          "observed_processes": [
+            {
+              "pid": 19972,
+              "name": "basic-memory.exe",
+              "cmdline": [
+                "C:\\Users\\bb201\\Desktop\\Mesh\\benchmarks\\.venv-mem0\\Scripts\\basic-memory.exe",
+                "status"
+              ],
+              "peak_mb": 3.42578125
+            },
+            {
+              "pid": 17088,
+              "name": "python.exe",
+              "cmdline": [
+                "C:\\Users\\bb201\\Desktop\\Mesh\\benchmarks\\.venv-mem0\\Scripts\\python.exe",
+                "C:\\Users\\bb201\\Desktop\\Mesh\\benchmarks\\.venv-mem0\\Scripts\\basic-memory.exe",
+                "status"
+              ],
+              "peak_mb": 3.23828125
+            },
+            {
+              "pid": 16968,
+              "name": "python.exe",
+              "cmdline": [
+                "C:\\Users\\bb201\\Desktop\\Mesh\\benchmarks\\.venv-mem0\\Scripts\\python.exe",
+                "C:\\Users\\bb201\\Desktop\\Mesh\\benchmarks\\.venv-mem0\\Scripts\\basic-memory.exe",
+                "status"
+              ],
+              "peak_mb": 280.37890625
+            }
+          ],
+          "sample_count": 230,
+          "samples_tail": [
+            {
+              "timestamp": 1793604404.12,
+              "total_tree_mb": 287.04,
+              "processes": [
+                {
+                  "pid": 19972,
+                  "rss_mb": 3.43
+                },
+                {
+                  "pid": 17088,
+                  "rss_mb": 3.24
+                },
+                {
+                  "pid": 16968,
+                  "rss_mb": 280.38
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604404.228,
+              "total_tree_mb": 287.04,
+              "processes": [
+                {
+                  "pid": 19972,
+                  "rss_mb": 3.43
+                },
+                {
+                  "pid": 17088,
+                  "rss_mb": 3.24
+                },
+                {
+                  "pid": 16968,
+                  "rss_mb": 280.38
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604404.343,
+              "total_tree_mb": 283.93,
+              "processes": [
+                {
+                  "pid": 19972,
+                  "rss_mb": 3.43
+                },
+                {
+                  "pid": 17088,
+                  "rss_mb": 3.24
+                },
+                {
+                  "pid": 16968,
+                  "rss_mb": 277.26
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604404.461,
+              "total_tree_mb": 253.45,
+              "processes": [
+                {
+                  "pid": 19972,
+                  "rss_mb": 3.43
+                },
+                {
+                  "pid": 17088,
+                  "rss_mb": 3.24
+                },
+                {
+                  "pid": 16968,
+                  "rss_mb": 246.78
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604404.576,
+              "total_tree_mb": 110.2,
+              "processes": [
+                {
+                  "pid": 19972,
+                  "rss_mb": 3.43
+                },
+                {
+                  "pid": 17088,
+                  "rss_mb": 3.24
+                },
+                {
+                  "pid": 16968,
+                  "rss_mb": 103.54
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "repeat": 2,
+          "peak_tree_mb": 286.59,
+          "observed_processes": [
+            {
+              "pid": 16864,
+              "name": "basic-memory.exe",
+              "cmdline": [
+                "C:\\Users\\bb201\\Desktop\\Mesh\\benchmarks\\.venv-mem0\\Scripts\\basic-memory.exe",
+                "status"
+              ],
+              "peak_mb": 3.43359375
+            },
+            {
+              "pid": 17044,
+              "name": "python.exe",
+              "cmdline": [
+                "C:\\Users\\bb201\\Desktop\\Mesh\\benchmarks\\.venv-mem0\\Scripts\\python.exe",
+                "C:\\Users\\bb201\\Desktop\\Mesh\\benchmarks\\.venv-mem0\\Scripts\\basic-memory.exe",
+                "status"
+              ],
+              "peak_mb": 3.23828125
+            },
+            {
+              "pid": 9456,
+              "name": "python.exe",
+              "cmdline": [
+                "C:\\Users\\bb201\\Desktop\\Mesh\\benchmarks\\.venv-mem0\\Scripts\\python.exe",
+                "C:\\Users\\bb201\\Desktop\\Mesh\\benchmarks\\.venv-mem0\\Scripts\\basic-memory.exe",
+                "status"
+              ],
+              "peak_mb": 279.921875
+            }
+          ],
+          "sample_count": 213,
+          "samples_tail": [
+            {
+              "timestamp": 1793604429.113,
+              "total_tree_mb": 286.59,
+              "processes": [
+                {
+                  "pid": 16864,
+                  "rss_mb": 3.43
+                },
+                {
+                  "pid": 17044,
+                  "rss_mb": 3.24
+                },
+                {
+                  "pid": 9456,
+                  "rss_mb": 279.92
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604429.23,
+              "total_tree_mb": 286.59,
+              "processes": [
+                {
+                  "pid": 16864,
+                  "rss_mb": 3.43
+                },
+                {
+                  "pid": 17044,
+                  "rss_mb": 3.24
+                },
+                {
+                  "pid": 9456,
+                  "rss_mb": 279.92
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604429.35,
+              "total_tree_mb": 283.72,
+              "processes": [
+                {
+                  "pid": 16864,
+                  "rss_mb": 3.43
+                },
+                {
+                  "pid": 17044,
+                  "rss_mb": 3.24
+                },
+                {
+                  "pid": 9456,
+                  "rss_mb": 277.05
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604429.467,
+              "total_tree_mb": 259.18,
+              "processes": [
+                {
+                  "pid": 16864,
+                  "rss_mb": 3.43
+                },
+                {
+                  "pid": 17044,
+                  "rss_mb": 3.24
+                },
+                {
+                  "pid": 9456,
+                  "rss_mb": 252.5
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604429.583,
+              "total_tree_mb": 106.02,
+              "processes": [
+                {
+                  "pid": 16864,
+                  "rss_mb": 3.43
+                },
+                {
+                  "pid": 17044,
+                  "rss_mb": 3.24
+                },
+                {
+                  "pid": 9456,
+                  "rss_mb": 99.34
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "repeat": 3,
+          "peak_tree_mb": 287.39,
+          "observed_processes": [
+            {
+              "pid": 12524,
+              "name": "basic-memory.exe",
+              "cmdline": [
+                "C:\\Users\\bb201\\Desktop\\Mesh\\benchmarks\\.venv-mem0\\Scripts\\basic-memory.exe",
+                "status"
+              ],
+              "peak_mb": 3.421875
+            },
+            {
+              "pid": 14980,
+              "name": "python.exe",
+              "cmdline": [
+                "C:\\Users\\bb201\\Desktop\\Mesh\\benchmarks\\.venv-mem0\\Scripts\\python.exe",
+                "C:\\Users\\bb201\\Desktop\\Mesh\\benchmarks\\.venv-mem0\\Scripts\\basic-memory.exe",
+                "status"
+              ],
+              "peak_mb": 3.23828125
+            },
+            {
+              "pid": 12128,
+              "name": "python.exe",
+              "cmdline": [
+                "C:\\Users\\bb201\\Desktop\\Mesh\\benchmarks\\.venv-mem0\\Scripts\\python.exe",
+                "C:\\Users\\bb201\\Desktop\\Mesh\\benchmarks\\.venv-mem0\\Scripts\\basic-memory.exe",
+                "status"
+              ],
+              "peak_mb": 280.734375
+            }
+          ],
+          "sample_count": 223,
+          "samples_tail": [
+            {
+              "timestamp": 1793604455.586,
+              "total_tree_mb": 287.39,
+              "processes": [
+                {
+                  "pid": 12524,
+                  "rss_mb": 3.42
+                },
+                {
+                  "pid": 14980,
+                  "rss_mb": 3.24
+                },
+                {
+                  "pid": 12128,
+                  "rss_mb": 280.73
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604455.704,
+              "total_tree_mb": 287.39,
+              "processes": [
+                {
+                  "pid": 12524,
+                  "rss_mb": 3.42
+                },
+                {
+                  "pid": 14980,
+                  "rss_mb": 3.24
+                },
+                {
+                  "pid": 12128,
+                  "rss_mb": 280.73
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604455.817,
+              "total_tree_mb": 284.39,
+              "processes": [
+                {
+                  "pid": 12524,
+                  "rss_mb": 3.42
+                },
+                {
+                  "pid": 14980,
+                  "rss_mb": 3.24
+                },
+                {
+                  "pid": 12128,
+                  "rss_mb": 277.73
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604455.933,
+              "total_tree_mb": 259.81,
+              "processes": [
+                {
+                  "pid": 12524,
+                  "rss_mb": 3.42
+                },
+                {
+                  "pid": 14980,
+                  "rss_mb": 3.24
+                },
+                {
+                  "pid": 12128,
+                  "rss_mb": 253.15
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604456.059,
+              "total_tree_mb": 226.63,
+              "processes": [
+                {
+                  "pid": 12524,
+                  "rss_mb": 3.42
+                },
+                {
+                  "pid": 14980,
+                  "rss_mb": 3.24
+                },
+                {
+                  "pid": 12128,
+                  "rss_mb": 219.97
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "Auxly CLI (Class B)": {
+      "tool": "Auxly CLI (Class B)",
+      "repeats": 3,
+      "peak_mb_median": 5.29,
+      "peak_mb_mean": 4.83,
+      "peak_mb_min": 1.58,
+      "peak_mb_max": 7.63,
+      "runs": [
+        {
+          "repeat": 1,
+          "peak_tree_mb": 1.58,
+          "observed_processes": [
+            {
+              "pid": 10656,
+              "name": "auxly.exe",
+              "cmdline": [
+                "C:\\Users\\bb201\\Desktop\\Mesh\\benchmarks\\bin\\auxly.exe",
+                "list"
+              ],
+              "peak_mb": 1.58203125
+            }
+          ],
+          "sample_count": 1,
+          "samples_tail": [
+            {
+              "timestamp": 1793604456.436,
+              "total_tree_mb": 1.58,
+              "processes": [
+                {
+                  "pid": 10656,
+                  "rss_mb": 1.58
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "repeat": 2,
+          "peak_tree_mb": 5.29,
+          "observed_processes": [
+            {
+              "pid": 10956,
+              "name": "auxly.exe",
+              "cmdline": [
+                "C:\\Users\\bb201\\Desktop\\Mesh\\benchmarks\\bin\\auxly.exe",
+                "list"
+              ],
+              "peak_mb": 5.28515625
+            }
+          ],
+          "sample_count": 1,
+          "samples_tail": [
+            {
+              "timestamp": 1793604456.571,
+              "total_tree_mb": 5.29,
+              "processes": [
+                {
+                  "pid": 10956,
+                  "rss_mb": 5.29
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "repeat": 3,
+          "peak_tree_mb": 7.63,
+          "observed_processes": [
+            {
+              "pid": 15456,
+              "name": "auxly.exe",
+              "cmdline": [
+                "C:\\Users\\bb201\\Desktop\\Mesh\\benchmarks\\bin\\auxly.exe",
+                "list"
+              ],
+              "peak_mb": 7.6328125
+            }
+          ],
+          "sample_count": 1,
+          "samples_tail": [
+            {
+              "timestamp": 1793604456.698,
+              "total_tree_mb": 7.63,
+              "processes": [
+                {
+                  "pid": 15456,
+                  "rss_mb": 7.63
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "Mesh MCP (Class C)": {
+      "tool": "Mesh MCP (Class C)",
+      "repeats": 3,
+      "peak_mb_median": 51.26,
+      "peak_mb_mean": 51.6,
+      "peak_mb_min": 50.59,
+      "peak_mb_max": 52.96,
+      "runs": [
+        {
+          "repeat": 1,
+          "peak_tree_mb": 51.26,
+          "observed_processes": [
+            {
+              "pid": 18120,
+              "name": "python.exe",
+              "cmdline": [
+                "C:\\Python314\\python.exe",
+                "-c",
+                "\nimport subprocess, sys, time, json\np = subprocess.Popen([sys.executable, '-m', 'mesh', 'mcp'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)\n# Send MCP init\ninit_msg = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {'protocolVersion': '2024-11-05', 'capabilities': {}, 'clientInfo': {'name': 'bench-client', 'version': '1.0'}}}).encode() + b'\\n'\np.stdin.write(init_msg)\np.stdin.flush()\ntime.sleep(1.5)\np.terminate()\np.wait()\n"
+              ],
+              "peak_mb": 12.74609375
+            },
+            {
+              "pid": 22124,
+              "name": "python.exe",
+              "cmdline": [
+                "C:\\Python314\\python.exe",
+                "-m",
+                "mesh"
+              ],
+              "peak_mb": 38.51171875
+            }
+          ],
+          "sample_count": 15,
+          "samples_tail": [
+            {
+              "timestamp": 1793604457.958,
+              "total_tree_mb": 49.17,
+              "processes": [
+                {
+                  "pid": 18120,
+                  "rss_mb": 12.75
+                },
+                {
+                  "pid": 22124,
+                  "rss_mb": 36.43
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604458.077,
+              "total_tree_mb": 50.19,
+              "processes": [
+                {
+                  "pid": 18120,
+                  "rss_mb": 12.75
+                },
+                {
+                  "pid": 22124,
+                  "rss_mb": 37.44
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604458.195,
+              "total_tree_mb": 50.2,
+              "processes": [
+                {
+                  "pid": 18120,
+                  "rss_mb": 12.75
+                },
+                {
+                  "pid": 22124,
+                  "rss_mb": 37.46
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604458.312,
+              "total_tree_mb": 51.26,
+              "processes": [
+                {
+                  "pid": 18120,
+                  "rss_mb": 12.75
+                },
+                {
+                  "pid": 22124,
+                  "rss_mb": 38.51
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604458.43,
+              "total_tree_mb": 12.61,
+              "processes": [
+                {
+                  "pid": 18120,
+                  "rss_mb": 12.61
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "repeat": 2,
+          "peak_tree_mb": 50.59,
+          "observed_processes": [
+            {
+              "pid": 16344,
+              "name": "python.exe",
+              "cmdline": [
+                "C:\\Python314\\python.exe",
+                "-c",
+                "\nimport subprocess, sys, time, json\np = subprocess.Popen([sys.executable, '-m', 'mesh', 'mcp'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)\n# Send MCP init\ninit_msg = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {'protocolVersion': '2024-11-05', 'capabilities': {}, 'clientInfo': {'name': 'bench-client', 'version': '1.0'}}}).encode() + b'\\n'\np.stdin.write(init_msg)\np.stdin.flush()\ntime.sleep(1.5)\np.terminate()\np.wait()\n"
+              ],
+              "peak_mb": 12.7265625
+            },
+            {
+              "pid": 2112,
+              "name": "python.exe",
+              "cmdline": [
+                "C:\\Python314\\python.exe",
+                "-m",
+                "mesh"
+              ],
+              "peak_mb": 37.8671875
+            }
+          ],
+          "sample_count": 14,
+          "samples_tail": [
+            {
+              "timestamp": 1793604459.586,
+              "total_tree_mb": 48.3,
+              "processes": [
+                {
+                  "pid": 16344,
+                  "rss_mb": 12.73
+                },
+                {
+                  "pid": 2112,
+                  "rss_mb": 35.57
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604459.703,
+              "total_tree_mb": 50.09,
+              "processes": [
+                {
+                  "pid": 16344,
+                  "rss_mb": 12.73
+                },
+                {
+                  "pid": 2112,
+                  "rss_mb": 37.36
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604459.856,
+              "total_tree_mb": 50.26,
+              "processes": [
+                {
+                  "pid": 16344,
+                  "rss_mb": 12.73
+                },
+                {
+                  "pid": 2112,
+                  "rss_mb": 37.54
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604460.076,
+              "total_tree_mb": 50.27,
+              "processes": [
+                {
+                  "pid": 16344,
+                  "rss_mb": 12.73
+                },
+                {
+                  "pid": 2112,
+                  "rss_mb": 37.54
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604460.189,
+              "total_tree_mb": 50.59,
+              "processes": [
+                {
+                  "pid": 16344,
+                  "rss_mb": 12.73
+                },
+                {
+                  "pid": 2112,
+                  "rss_mb": 37.87
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "repeat": 3,
+          "peak_tree_mb": 52.96,
+          "observed_processes": [
+            {
+              "pid": 10152,
+              "name": "python.exe",
+              "cmdline": [
+                "C:\\Python314\\python.exe",
+                "-c",
+                "\nimport subprocess, sys, time, json\np = subprocess.Popen([sys.executable, '-m', 'mesh', 'mcp'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)\n# Send MCP init\ninit_msg = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {'protocolVersion': '2024-11-05', 'capabilities': {}, 'clientInfo': {'name': 'bench-client', 'version': '1.0'}}}).encode() + b'\\n'\np.stdin.write(init_msg)\np.stdin.flush()\ntime.sleep(1.5)\np.terminate()\np.wait()\n"
+              ],
+              "peak_mb": 12.48046875
+            },
+            {
+              "pid": 3308,
+              "name": "python.exe",
+              "cmdline": [
+                "C:\\Python314\\python.exe",
+                "-m",
+                "mesh"
+              ],
+              "peak_mb": 40.4765625
+            }
+          ],
+          "sample_count": 16,
+          "samples_tail": [
+            {
+              "timestamp": 1793604461.567,
+              "total_tree_mb": 50.18,
+              "processes": [
+                {
+                  "pid": 10152,
+                  "rss_mb": 12.48
+                },
+                {
+                  "pid": 3308,
+                  "rss_mb": 37.7
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604461.683,
+              "total_tree_mb": 50.8,
+              "processes": [
+                {
+                  "pid": 10152,
+                  "rss_mb": 12.48
+                },
+                {
+                  "pid": 3308,
+                  "rss_mb": 38.32
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604461.799,
+              "total_tree_mb": 51.88,
+              "processes": [
+                {
+                  "pid": 10152,
+                  "rss_mb": 12.48
+                },
+                {
+                  "pid": 3308,
+                  "rss_mb": 39.4
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604461.913,
+              "total_tree_mb": 52.96,
+              "processes": [
+                {
+                  "pid": 10152,
+                  "rss_mb": 12.48
+                },
+                {
+                  "pid": 3308,
+                  "rss_mb": 40.48
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604462.028,
+              "total_tree_mb": 12.35,
+              "processes": [
+                {
+                  "pid": 10152,
+                  "rss_mb": 12.35
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "Basic Memory MCP (Class C)": {
+      "tool": "Basic Memory MCP (Class C)",
+      "repeats": 3,
+      "peak_mb_median": 60.61,
+      "peak_mb_mean": 60.58,
+      "peak_mb_min": 60.4,
+      "peak_mb_max": 60.75,
+      "runs": [
+        {
+          "repeat": 1,
+          "peak_tree_mb": 60.75,
+          "observed_processes": [
+            {
+              "pid": 19332,
+              "name": "python.exe",
+              "cmdline": [
+                "C:\\Python314\\python.exe",
+                "-c",
+                "\nimport subprocess, sys, time, json\np = subprocess.Popen([r'C:\\Users\\bb201\\Desktop\\Mesh\\benchmarks\\.venv-mem0\\Scripts\\basic-memory.exe', 'mcp'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)\ntime.sleep(1.5)\np.terminate()\np.wait()\n"
+              ],
+              "peak_mb": 12.81640625
+            },
+            {
+              "pid": 14528,
+              "name": "basic-memory.exe",
+              "cmdline": [
+                "C:\\Users\\bb201\\Desktop\\Mesh\\benchmarks\\.venv-mem0\\Scripts\\basic-memory.exe",
+                "mcp"
+              ],
+              "peak_mb": 3.42578125
+            },
+            {
+              "pid": 16140,
+              "name": "python.exe",
+              "cmdline": [
+                "C:\\Users\\bb201\\Desktop\\Mesh\\benchmarks\\.venv-mem0\\Scripts\\python.exe",
+                "C:\\Users\\bb201\\Desktop\\Mesh\\benchmarks\\.venv-mem0\\Scripts\\basic-memory.exe",
+                "mcp"
+              ],
+              "peak_mb": 3.23828125
+            },
+            {
+              "pid": 7912,
+              "name": "python.exe",
+              "cmdline": [
+                "C:\\Users\\bb201\\Desktop\\Mesh\\benchmarks\\.venv-mem0\\Scripts\\python.exe",
+                "C:\\Users\\bb201\\Desktop\\Mesh\\benchmarks\\.venv-mem0\\Scripts\\basic-memory.exe",
+                "mcp"
+              ],
+              "peak_mb": 41.265625
+            }
+          ],
+          "sample_count": 15,
+          "samples_tail": [
+            {
+              "timestamp": 1793604463.285,
+              "total_tree_mb": 53.46,
+              "processes": [
+                {
+                  "pid": 19332,
+                  "rss_mb": 12.82
+                },
+                {
+                  "pid": 14528,
+                  "rss_mb": 3.43
+                },
+                {
+                  "pid": 16140,
+                  "rss_mb": 3.24
+                },
+                {
+                  "pid": 7912,
+                  "rss_mb": 33.98
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604463.4,
+              "total_tree_mb": 55.54,
+              "processes": [
+                {
+                  "pid": 19332,
+                  "rss_mb": 12.82
+                },
+                {
+                  "pid": 14528,
+                  "rss_mb": 3.43
+                },
+                {
+                  "pid": 16140,
+                  "rss_mb": 3.24
+                },
+                {
+                  "pid": 7912,
+                  "rss_mb": 36.06
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604463.513,
+              "total_tree_mb": 56.99,
+              "processes": [
+                {
+                  "pid": 19332,
+                  "rss_mb": 12.82
+                },
+                {
+                  "pid": 14528,
+                  "rss_mb": 3.43
+                },
+                {
+                  "pid": 16140,
+                  "rss_mb": 3.24
+                },
+                {
+                  "pid": 7912,
+                  "rss_mb": 37.51
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604463.628,
+              "total_tree_mb": 59.02,
+              "processes": [
+                {
+                  "pid": 19332,
+                  "rss_mb": 12.82
+                },
+                {
+                  "pid": 14528,
+                  "rss_mb": 3.43
+                },
+                {
+                  "pid": 16140,
+                  "rss_mb": 3.24
+                },
+                {
+                  "pid": 7912,
+                  "rss_mb": 39.54
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604463.743,
+              "total_tree_mb": 60.75,
+              "processes": [
+                {
+                  "pid": 19332,
+                  "rss_mb": 12.82
+                },
+                {
+                  "pid": 14528,
+                  "rss_mb": 3.43
+                },
+                {
+                  "pid": 16140,
+                  "rss_mb": 3.24
+                },
+                {
+                  "pid": 7912,
+                  "rss_mb": 41.27
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "repeat": 2,
+          "peak_tree_mb": 60.61,
+          "observed_processes": [
+            {
+              "pid": 4252,
+              "name": "python.exe",
+              "cmdline": [
+                "C:\\Python314\\python.exe",
+                "-c",
+                "\nimport subprocess, sys, time, json\np = subprocess.Popen([r'C:\\Users\\bb201\\Desktop\\Mesh\\benchmarks\\.venv-mem0\\Scripts\\basic-memory.exe', 'mcp'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)\ntime.sleep(1.5)\np.terminate()\np.wait()\n"
+              ],
+              "peak_mb": 12.54296875
+            },
+            {
+              "pid": 17340,
+              "name": "basic-memory.exe",
+              "cmdline": [
+                "C:\\Users\\bb201\\Desktop\\Mesh\\benchmarks\\.venv-mem0\\Scripts\\basic-memory.exe",
+                "mcp"
+              ],
+              "peak_mb": 3.4296875
+            },
+            {
+              "pid": 20908,
+              "name": "python.exe",
+              "cmdline": [
+                "C:\\Users\\bb201\\Desktop\\Mesh\\benchmarks\\.venv-mem0\\Scripts\\python.exe",
+                "C:\\Users\\bb201\\Desktop\\Mesh\\benchmarks\\.venv-mem0\\Scripts\\basic-memory.exe",
+                "mcp"
+              ],
+              "peak_mb": 3.23828125
+            },
+            {
+              "pid": 11316,
+              "name": "python.exe",
+              "cmdline": [
+                "C:\\Users\\bb201\\Desktop\\Mesh\\benchmarks\\.venv-mem0\\Scripts\\python.exe",
+                "C:\\Users\\bb201\\Desktop\\Mesh\\benchmarks\\.venv-mem0\\Scripts\\basic-memory.exe",
+                "mcp"
+              ],
+              "peak_mb": 41.39453125
+            }
+          ],
+          "sample_count": 15,
+          "samples_tail": [
+            {
+              "timestamp": 1793604465.183,
+              "total_tree_mb": 53.18,
+              "processes": [
+                {
+                  "pid": 4252,
+                  "rss_mb": 12.54
+                },
+                {
+                  "pid": 17340,
+                  "rss_mb": 3.43
+                },
+                {
+                  "pid": 20908,
+                  "rss_mb": 3.24
+                },
+                {
+                  "pid": 11316,
+                  "rss_mb": 33.96
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604465.299,
+              "total_tree_mb": 55.08,
+              "processes": [
+                {
+                  "pid": 4252,
+                  "rss_mb": 12.54
+                },
+                {
+                  "pid": 17340,
+                  "rss_mb": 3.43
+                },
+                {
+                  "pid": 20908,
+                  "rss_mb": 3.24
+                },
+                {
+                  "pid": 11316,
+                  "rss_mb": 35.87
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604465.414,
+              "total_tree_mb": 57.05,
+              "processes": [
+                {
+                  "pid": 4252,
+                  "rss_mb": 12.54
+                },
+                {
+                  "pid": 17340,
+                  "rss_mb": 3.43
+                },
+                {
+                  "pid": 20908,
+                  "rss_mb": 3.24
+                },
+                {
+                  "pid": 11316,
+                  "rss_mb": 37.84
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604465.528,
+              "total_tree_mb": 58.81,
+              "processes": [
+                {
+                  "pid": 4252,
+                  "rss_mb": 12.54
+                },
+                {
+                  "pid": 17340,
+                  "rss_mb": 3.43
+                },
+                {
+                  "pid": 20908,
+                  "rss_mb": 3.24
+                },
+                {
+                  "pid": 11316,
+                  "rss_mb": 39.6
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604465.643,
+              "total_tree_mb": 60.61,
+              "processes": [
+                {
+                  "pid": 4252,
+                  "rss_mb": 12.54
+                },
+                {
+                  "pid": 17340,
+                  "rss_mb": 3.43
+                },
+                {
+                  "pid": 20908,
+                  "rss_mb": 3.24
+                },
+                {
+                  "pid": 11316,
+                  "rss_mb": 41.39
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "repeat": 3,
+          "peak_tree_mb": 60.4,
+          "observed_processes": [
+            {
+              "pid": 8836,
+              "name": "python.exe",
+              "cmdline": [
+                "C:\\Python314\\python.exe",
+                "-c",
+                "\nimport subprocess, sys, time, json\np = subprocess.Popen([r'C:\\Users\\bb201\\Desktop\\Mesh\\benchmarks\\.venv-mem0\\Scripts\\basic-memory.exe', 'mcp'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)\ntime.sleep(1.5)\np.terminate()\np.wait()\n"
+              ],
+              "peak_mb": 12.65625
+            },
+            {
+              "pid": 22200,
+              "name": "basic-memory.exe",
+              "cmdline": [
+                "C:\\Users\\bb201\\Desktop\\Mesh\\benchmarks\\.venv-mem0\\Scripts\\basic-memory.exe",
+                "mcp"
+              ],
+              "peak_mb": 3.4296875
+            },
+            {
+              "pid": 21172,
+              "name": "python.exe",
+              "cmdline": [
+                "C:\\Users\\bb201\\Desktop\\Mesh\\benchmarks\\.venv-mem0\\Scripts\\python.exe",
+                "C:\\Users\\bb201\\Desktop\\Mesh\\benchmarks\\.venv-mem0\\Scripts\\basic-memory.exe",
+                "mcp"
+              ],
+              "peak_mb": 3.23828125
+            },
+            {
+              "pid": 1144,
+              "name": "python.exe",
+              "cmdline": [
+                "C:\\Users\\bb201\\Desktop\\Mesh\\benchmarks\\.venv-mem0\\Scripts\\python.exe",
+                "C:\\Users\\bb201\\Desktop\\Mesh\\benchmarks\\.venv-mem0\\Scripts\\basic-memory.exe",
+                "mcp"
+              ],
+              "peak_mb": 41.07421875
+            }
+          ],
+          "sample_count": 15,
+          "samples_tail": [
+            {
+              "timestamp": 1793604466.932,
+              "total_tree_mb": 54.33,
+              "processes": [
+                {
+                  "pid": 8836,
+                  "rss_mb": 12.66
+                },
+                {
+                  "pid": 22200,
+                  "rss_mb": 3.43
+                },
+                {
+                  "pid": 21172,
+                  "rss_mb": 3.24
+                },
+                {
+                  "pid": 1144,
+                  "rss_mb": 35.0
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604467.054,
+              "total_tree_mb": 55.45,
+              "processes": [
+                {
+                  "pid": 8836,
+                  "rss_mb": 12.66
+                },
+                {
+                  "pid": 22200,
+                  "rss_mb": 3.43
+                },
+                {
+                  "pid": 21172,
+                  "rss_mb": 3.24
+                },
+                {
+                  "pid": 1144,
+                  "rss_mb": 36.12
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604467.174,
+              "total_tree_mb": 56.86,
+              "processes": [
+                {
+                  "pid": 8836,
+                  "rss_mb": 12.66
+                },
+                {
+                  "pid": 22200,
+                  "rss_mb": 3.43
+                },
+                {
+                  "pid": 21172,
+                  "rss_mb": 3.24
+                },
+                {
+                  "pid": 1144,
+                  "rss_mb": 37.53
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604467.29,
+              "total_tree_mb": 58.58,
+              "processes": [
+                {
+                  "pid": 8836,
+                  "rss_mb": 12.66
+                },
+                {
+                  "pid": 22200,
+                  "rss_mb": 3.43
+                },
+                {
+                  "pid": 21172,
+                  "rss_mb": 3.24
+                },
+                {
+                  "pid": 1144,
+                  "rss_mb": 39.25
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604467.406,
+              "total_tree_mb": 60.4,
+              "processes": [
+                {
+                  "pid": 8836,
+                  "rss_mb": 12.66
+                },
+                {
+                  "pid": 22200,
+                  "rss_mb": 3.43
+                },
+                {
+                  "pid": 21172,
+                  "rss_mb": 3.24
+                },
+                {
+                  "pid": 1144,
+                  "rss_mb": 41.07
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "Auxly MCP (Class C)": {
+      "tool": "Auxly MCP (Class C)",
+      "repeats": 3,
+      "peak_mb_median": 98.34,
+      "peak_mb_mean": 97.37,
+      "peak_mb_min": 94.81,
+      "peak_mb_max": 98.96,
+      "runs": [
+        {
+          "repeat": 1,
+          "peak_tree_mb": 98.34,
+          "observed_processes": [
+            {
+              "pid": 19792,
+              "name": "python.exe",
+              "cmdline": [
+                "C:\\Python314\\python.exe",
+                "-c",
+                "\nimport subprocess, sys, time\np = subprocess.Popen([r'C:\\Users\\bb201\\Desktop\\Mesh\\benchmarks\\bin\\auxly.exe', '--path', r'C:\\Users\\bb201\\AppData\\Local\\Temp\\tmpl973rhp6', 'mcp-server'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)\ntime.sleep(1.5)\np.terminate()\np.wait()\n"
+              ],
+              "peak_mb": 12.33203125
+            },
+            {
+              "pid": 8908,
+              "name": "auxly.exe",
+              "cmdline": [
+                "C:\\Users\\bb201\\Desktop\\Mesh\\benchmarks\\bin\\auxly.exe",
+                "--path",
+                "C:\\Users\\bb201\\AppData\\Local\\Temp\\tmpl973rhp6"
+              ],
+              "peak_mb": 12.109375
+            },
+            {
+              "pid": 19268,
+              "name": "powershell.exe",
+              "cmdline": [
+                "powershell",
+                "-NoProfile",
+                "-NonInteractive"
+              ],
+              "peak_mb": 73.8984375
+            }
+          ],
+          "sample_count": 15,
+          "samples_tail": [
+            {
+              "timestamp": 1793604468.713,
+              "total_tree_mb": 90.22,
+              "processes": [
+                {
+                  "pid": 19792,
+                  "rss_mb": 12.33
+                },
+                {
+                  "pid": 8908,
+                  "rss_mb": 12.03
+                },
+                {
+                  "pid": 19268,
+                  "rss_mb": 65.86
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604468.821,
+              "total_tree_mb": 92.44,
+              "processes": [
+                {
+                  "pid": 19792,
+                  "rss_mb": 12.33
+                },
+                {
+                  "pid": 8908,
+                  "rss_mb": 12.03
+                },
+                {
+                  "pid": 19268,
+                  "rss_mb": 68.07
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604468.938,
+              "total_tree_mb": 94.0,
+              "processes": [
+                {
+                  "pid": 19792,
+                  "rss_mb": 12.33
+                },
+                {
+                  "pid": 8908,
+                  "rss_mb": 12.03
+                },
+                {
+                  "pid": 19268,
+                  "rss_mb": 69.64
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604469.065,
+              "total_tree_mb": 94.62,
+              "processes": [
+                {
+                  "pid": 19792,
+                  "rss_mb": 12.33
+                },
+                {
+                  "pid": 8908,
+                  "rss_mb": 12.04
+                },
+                {
+                  "pid": 19268,
+                  "rss_mb": 70.25
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604469.181,
+              "total_tree_mb": 98.34,
+              "processes": [
+                {
+                  "pid": 19792,
+                  "rss_mb": 12.33
+                },
+                {
+                  "pid": 8908,
+                  "rss_mb": 12.11
+                },
+                {
+                  "pid": 19268,
+                  "rss_mb": 73.9
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "repeat": 2,
+          "peak_tree_mb": 94.81,
+          "observed_processes": [
+            {
+              "pid": 11992,
+              "name": "python.exe",
+              "cmdline": [
+                "C:\\Python314\\python.exe",
+                "-c",
+                "\nimport subprocess, sys, time\np = subprocess.Popen([r'C:\\Users\\bb201\\Desktop\\Mesh\\benchmarks\\bin\\auxly.exe', '--path', r'C:\\Users\\bb201\\AppData\\Local\\Temp\\tmpigo2ryjq', 'mcp-server'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)\ntime.sleep(1.5)\np.terminate()\np.wait()\n"
+              ],
+              "peak_mb": 12.3828125
+            },
+            {
+              "pid": 20680,
+              "name": "auxly.exe",
+              "cmdline": [
+                "C:\\Users\\bb201\\Desktop\\Mesh\\benchmarks\\bin\\auxly.exe",
+                "--path",
+                "C:\\Users\\bb201\\AppData\\Local\\Temp\\tmpigo2ryjq"
+              ],
+              "peak_mb": 13.55078125
+            },
+            {
+              "pid": 13056,
+              "name": "powershell.exe",
+              "cmdline": [
+                "powershell",
+                "-NoProfile",
+                "-NonInteractive"
+              ],
+              "peak_mb": 70.484375
+            }
+          ],
+          "sample_count": 16,
+          "samples_tail": [
+            {
+              "timestamp": 1793604470.599,
+              "total_tree_mb": 25.93,
+              "processes": [
+                {
+                  "pid": 11992,
+                  "rss_mb": 12.38
+                },
+                {
+                  "pid": 20680,
+                  "rss_mb": 13.55
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604470.706,
+              "total_tree_mb": 25.93,
+              "processes": [
+                {
+                  "pid": 11992,
+                  "rss_mb": 12.38
+                },
+                {
+                  "pid": 20680,
+                  "rss_mb": 13.55
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604470.818,
+              "total_tree_mb": 25.93,
+              "processes": [
+                {
+                  "pid": 11992,
+                  "rss_mb": 12.38
+                },
+                {
+                  "pid": 20680,
+                  "rss_mb": 13.55
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604470.929,
+              "total_tree_mb": 25.93,
+              "processes": [
+                {
+                  "pid": 11992,
+                  "rss_mb": 12.38
+                },
+                {
+                  "pid": 20680,
+                  "rss_mb": 13.55
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604471.045,
+              "total_tree_mb": 11.8,
+              "processes": [
+                {
+                  "pid": 11992,
+                  "rss_mb": 11.8
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "repeat": 3,
+          "peak_tree_mb": 98.96,
+          "observed_processes": [
+            {
+              "pid": 20200,
+              "name": "python.exe",
+              "cmdline": [
+                "C:\\Python314\\python.exe",
+                "-c",
+                "\nimport subprocess, sys, time\np = subprocess.Popen([r'C:\\Users\\bb201\\Desktop\\Mesh\\benchmarks\\bin\\auxly.exe', '--path', r'C:\\Users\\bb201\\AppData\\Local\\Temp\\tmp2h6oypy5', 'mcp-server'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)\ntime.sleep(1.5)\np.terminate()\np.wait()\n"
+              ],
+              "peak_mb": 12.296875
+            },
+            {
+              "pid": 20400,
+              "name": "auxly.exe",
+              "cmdline": [
+                "C:\\Users\\bb201\\Desktop\\Mesh\\benchmarks\\bin\\auxly.exe",
+                "--path",
+                "C:\\Users\\bb201\\AppData\\Local\\Temp\\tmp2h6oypy5"
+              ],
+              "peak_mb": 13.48046875
+            },
+            {
+              "pid": 18872,
+              "name": "powershell.exe",
+              "cmdline": [
+                "powershell",
+                "-NoProfile",
+                "-NonInteractive"
+              ],
+              "peak_mb": 74.58984375
+            }
+          ],
+          "sample_count": 15,
+          "samples_tail": [
+            {
+              "timestamp": 1793604472.452,
+              "total_tree_mb": 94.59,
+              "processes": [
+                {
+                  "pid": 20200,
+                  "rss_mb": 12.27
+                },
+                {
+                  "pid": 20400,
+                  "rss_mb": 12.1
+                },
+                {
+                  "pid": 18872,
+                  "rss_mb": 70.23
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604472.565,
+              "total_tree_mb": 98.96,
+              "processes": [
+                {
+                  "pid": 20200,
+                  "rss_mb": 12.27
+                },
+                {
+                  "pid": 20400,
+                  "rss_mb": 12.11
+                },
+                {
+                  "pid": 18872,
+                  "rss_mb": 74.59
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604472.681,
+              "total_tree_mb": 25.75,
+              "processes": [
+                {
+                  "pid": 20200,
+                  "rss_mb": 12.27
+                },
+                {
+                  "pid": 20400,
+                  "rss_mb": 13.48
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604472.796,
+              "total_tree_mb": 25.75,
+              "processes": [
+                {
+                  "pid": 20200,
+                  "rss_mb": 12.27
+                },
+                {
+                  "pid": 20400,
+                  "rss_mb": 13.48
+                }
+              ]
+            },
+            {
+              "timestamp": 1793604472.914,
+              "total_tree_mb": 12.3,
+              "processes": [
+                {
+                  "pid": 20200,
+                  "rss_mb": 12.3
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
