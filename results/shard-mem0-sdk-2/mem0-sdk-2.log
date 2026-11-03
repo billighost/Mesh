@@ -1,0 +1,10 @@
+2026-11-03 01:46:33,039 [INFO] Starting Official LongMemEval-S Pilot Evaluation
+2026-11-03 01:46:33,039 [INFO] Power and sleep readiness asserted: {'power_status': {'platform': 'linux', 'on_ac': True, 'battery_pct': 100}, 'active_scheme': 'N/A', 'timeouts': {'ac_sleep_seconds': 0, 'ac_hibernate_seconds': 0}, 'checked_at': '2026-11-03T01:46:33.039863+00:00'}
+2026-11-03 01:46:40,419 [INFO] Preparing haystacks for 250 questions (start_idx=250) with opaque tags at START...
+2026-11-03 01:46:40,559 [INFO] Total turns across 250 questions: 123081 (mean: 492.3 turns/q)
+2026-11-03 01:46:40,559 [INFO] === Running Class A: Mem0 SDK (Python 3.12 worker) ===
+2026-11-03 02:24:23,365 [INFO] All selected tools completed. Results saved to benchmarks/results/ci/mem0-sdk-2_results.json
+2026-11-03 02:24:23,365 [INFO] Post-run Kernel-Power sleep/resume audit: 0 events found in run window
+2026-11-03 02:24:23,387 [INFO] Pilot results saved to benchmarks/results/ci/mem0-sdk-2_results.json
+
+Pilot evaluation run completed successfully.
