@@ -220,10 +220,10 @@ def generate_digest(
 
     if audit_db.exists():
         try:
-            conn = _connect_audit(audit_db)
-            conn.row_factory = sqlite3.Row
-            if _has_table(conn, "audit_log"):
-                cursor = conn.cursor()
+            audit_conn = _connect_audit(audit_db)
+            audit_conn.row_factory = sqlite3.Row
+            if _has_table(audit_conn, "audit_log"):
+                cursor = audit_conn.cursor()
                 sql_floor = (since_dt - timedelta(days=1)).strftime("%Y-%m-%d")
                 cursor.execute(
                     """

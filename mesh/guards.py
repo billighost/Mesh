@@ -19,11 +19,10 @@ import threading
 import unicodedata
 from typing import Iterable, NamedTuple, Optional
 
-from .c_bridge import c_guard_prescan as _c_guard_prescan
-
 from .secrets import (
     INVISIBLE_CHAR_CLASS,
     ZERO_WIDTH_RE,
+    guard_prescan,
     is_credential,
     redact_secrets_local,
 )
@@ -122,8 +121,8 @@ def _normalize_for_poison_check(text: str) -> str:
 
 def is_poison_attempt(text: str) -> bool:
     """Return True if `text` matches any prompt-injection or structural breakout pattern."""
-    # Fast-path: C pre-scanner guarantees no trigger tokens and clean ASCII — skip regex.
-    if isinstance(text, str) and 0 < len(text.strip()) <= 16384 and _c_guard_prescan(text):
+    # Fast-path: pre-scanner guarantees no trigger tokens and clean ASCII — skip regex.
+    if isinstance(text, str) and 0 < len(text.strip()) <= 16384 and guard_prescan(text):
         return False
 
     if isinstance(text, str) and len(text) <= 4096:
@@ -176,10 +175,10 @@ def guard_ingest(content: str, local_only: bool = False) -> GuardResult:
     if not isinstance(content, str):
         content = str(content or "")
 
-    # Fast-path: C pre-scanner guarantees clean ASCII, no secret patterns, no injection tokens.
-    # Skip all regex work and return accepted result immediately (< 0.002 ms).
+    # Fast-path: pre-scanner guarantees clean ASCII, no secret patterns, no injection tokens.
+    # Skip all regex work and return accepted result immediately (< 0.005 ms).
     _stripped = content.strip()
-    if _stripped and 0 < len(_stripped) <= min(16384, _max_content_len()) and _c_guard_prescan(content):
+    if _stripped and 0 < len(_stripped) <= min(16384, _max_content_len()) and guard_prescan(content):
         return GuardResult(
             content=_stripped,
             local_only=bool(local_only),

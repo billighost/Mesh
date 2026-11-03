@@ -219,7 +219,7 @@ export default function FooterWordmark() {
   }, [tick]);
 
   const handlePointerEnter = (event) => {
-    if (!motion || event.pointerType !== "mouse") return;
+    if (!motion) return;
     const word = wordRef.current;
     if (!word) return;
     word.classList.add("is-live");
@@ -229,12 +229,36 @@ export default function FooterWordmark() {
   };
 
   const handlePointerMove = (event) => {
-    if (!motion || event.pointerType !== "mouse") return;
+    if (!motion) return;
     pointRef.current = { x: event.clientX, y: event.clientY };
     if (!frameRef.current) frameRef.current = requestAnimationFrame(tickRef.current);
   };
 
   const handlePointerLeave = () => {
+    reset();
+  };
+
+  const handleTouchStart = (event) => {
+    if (!motion) return;
+    const touch = event.touches[0];
+    if (!touch) return;
+    const word = wordRef.current;
+    if (!word) return;
+    word.classList.add("is-live");
+    pointRef.current = { x: touch.clientX, y: touch.clientY };
+    displayRef.current = { x: touch.clientX, y: touch.clientY };
+    paint(touch.clientX, touch.clientY);
+  };
+
+  const handleTouchMove = (event) => {
+    if (!motion) return;
+    const touch = event.touches[0];
+    if (!touch) return;
+    pointRef.current = { x: touch.clientX, y: touch.clientY };
+    if (!frameRef.current) frameRef.current = requestAnimationFrame(tickRef.current);
+  };
+
+  const handleTouchEnd = () => {
     reset();
   };
 
@@ -245,6 +269,9 @@ export default function FooterWordmark() {
       onPointerEnter={handlePointerEnter}
       onPointerMove={handlePointerMove}
       onPointerLeave={handlePointerLeave}
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
+      onTouchEnd={handleTouchEnd}
       aria-hidden="true"
     >
       <div className="footer__word-stage">

@@ -1,0 +1,414 @@
+{
+  "scale_1000": {
+    "scale": 1000,
+    "repeats": 3,
+    "ingest_throughput_wps": {
+      "median": 475.7,
+      "min": 33.8,
+      "max": 591.9,
+      "range": [
+        33.8,
+        591.9
+      ]
+    },
+    "ingest_seconds": {
+      "median": 2.1,
+      "min": 1.69,
+      "max": 29.59,
+      "range": [
+        1.69,
+        29.59
+      ]
+    },
+    "db_size_mb": {
+      "median": 3.05,
+      "min": 3.05,
+      "max": 3.05,
+      "range": [
+        3.05,
+        3.05
+      ]
+    },
+    "vector_cache_ms": {
+      "median": 0.27,
+      "min": 0.26,
+      "max": 0.32,
+      "range": [
+        0.26,
+        0.32
+      ]
+    },
+    "peak_ram_mb": {
+      "median": 299.3,
+      "min": 271.0,
+      "max": 327.8,
+      "range": [
+        271.0,
+        327.8
+      ]
+    },
+    "ram_delta_mb": {
+      "median": 27.5,
+      "min": 27.1,
+      "max": 38.8,
+      "range": [
+        27.1,
+        38.8
+      ]
+    },
+    "dense_simd_recall_p50_ms": {
+      "median": 7.73,
+      "min": 6.38,
+      "max": 7.85,
+      "range": [
+        6.38,
+        7.85
+      ]
+    },
+    "dense_simd_recall_p95_ms": {
+      "median": 28.84,
+      "min": 27.11,
+      "max": 33.3,
+      "range": [
+        27.11,
+        33.3
+      ]
+    },
+    "inspect_p50_ms": {
+      "median": 2.55,
+      "min": 2.29,
+      "max": 2.91,
+      "range": [
+        2.29,
+        2.91
+      ]
+    },
+    "project_brief_p50_ms": {
+      "median": 2.08,
+      "min": 2.05,
+      "max": 2.1,
+      "range": [
+        2.05,
+        2.1
+      ]
+    },
+    "task_list_p50_ms": {
+      "median": 1.94,
+      "min": 1.72,
+      "max": 2.17,
+      "range": [
+        1.72,
+        2.17
+      ]
+    }
+  },
+  "scale_5000": {
+    "scale": 5000,
+    "repeats": 3,
+    "ingest_throughput_wps": {
+      "median": 33.5,
+      "min": 19.5,
+      "max": 41.6,
+      "range": [
+        19.5,
+        41.6
+      ]
+    },
+    "ingest_seconds": {
+      "median": 149.47,
+      "min": 120.13,
+      "max": 255.9,
+      "range": [
+        120.13,
+        255.9
+      ]
+    },
+    "db_size_mb": {
+      "median": 16.83,
+      "min": 16.83,
+      "max": 16.83,
+      "range": [
+        16.83,
+        16.83
+      ]
+    },
+    "vector_cache_ms": {
+      "median": 0.29,
+      "min": 0.28,
+      "max": 0.47,
+      "range": [
+        0.28,
+        0.47
+      ]
+    },
+    "peak_ram_mb": {
+      "median": 652.9,
+      "min": 494.8,
+      "max": 811.3,
+      "range": [
+        494.8,
+        811.3
+      ]
+    },
+    "ram_delta_mb": {
+      "median": 152.8,
+      "min": 152.4,
+      "max": 166.2,
+      "range": [
+        152.4,
+        166.2
+      ]
+    },
+    "dense_simd_recall_p50_ms": {
+      "median": 41.2,
+      "min": 28.47,
+      "max": 114.74,
+      "range": [
+        28.47,
+        114.74
+      ]
+    },
+    "dense_simd_recall_p95_ms": {
+      "median": 76.66,
+      "min": 45.56,
+      "max": 228.85,
+      "range": [
+        45.56,
+        228.85
+      ]
+    },
+    "inspect_p50_ms": {
+      "median": 18.73,
+      "min": 12.25,
+      "max": 27.06,
+      "range": [
+        12.25,
+        27.06
+      ]
+    },
+    "project_brief_p50_ms": {
+      "median": 6.48,
+      "min": 6.08,
+      "max": 10.86,
+      "range": [
+        6.08,
+        10.86
+      ]
+    },
+    "task_list_p50_ms": {
+      "median": 3.27,
+      "min": 2.97,
+      "max": 17.51,
+      "range": [
+        2.97,
+        17.51
+      ]
+    }
+  },
+  "scale_10000": {
+    "scale": 10000,
+    "repeats": 3,
+    "ingest_throughput_wps": {
+      "median": 38.1,
+      "min": 34.1,
+      "max": 41.8,
+      "range": [
+        34.1,
+        41.8
+      ]
+    },
+    "ingest_seconds": {
+      "median": 262.72,
+      "min": 239.18,
+      "max": 293.56,
+      "range": [
+        239.18,
+        293.56
+      ]
+    },
+    "db_size_mb": {
+      "median": 32.24,
+      "min": 32.24,
+      "max": 32.24,
+      "range": [
+        32.24,
+        32.24
+      ]
+    },
+    "vector_cache_ms": {
+      "median": 0.3,
+      "min": 0.28,
+      "max": 0.47,
+      "range": [
+        0.28,
+        0.47
+      ]
+    },
+    "peak_ram_mb": {
+      "median": 1255.1,
+      "min": 986.2,
+      "max": 1543.5,
+      "range": [
+        986.2,
+        1543.5
+      ]
+    },
+    "ram_delta_mb": {
+      "median": 257.1,
+      "min": 167.4,
+      "max": 278.9,
+      "range": [
+        167.4,
+        278.9
+      ]
+    },
+    "dense_simd_recall_p50_ms": {
+      "median": 56.21,
+      "min": 46.69,
+      "max": 62.9,
+      "range": [
+        46.69,
+        62.9
+      ]
+    },
+    "dense_simd_recall_p95_ms": {
+      "median": 74.63,
+      "min": 69.91,
+      "max": 196.65,
+      "range": [
+        69.91,
+        196.65
+      ]
+    },
+    "inspect_p50_ms": {
+      "median": 28.75,
+      "min": 28.31,
+      "max": 31.24,
+      "range": [
+        28.31,
+        31.24
+      ]
+    },
+    "project_brief_p50_ms": {
+      "median": 11.17,
+      "min": 10.32,
+      "max": 16.32,
+      "range": [
+        10.32,
+        16.32
+      ]
+    },
+    "task_list_p50_ms": {
+      "median": 3.8,
+      "min": 3.3,
+      "max": 7.52,
+      "range": [
+        3.3,
+        7.52
+      ]
+    }
+  },
+  "longmemeval_1000_realistic": {
+    "scale": 1000,
+    "repeats": 3,
+    "ingest_throughput_wps": {
+      "median": 97.4,
+      "min": 5.0,
+      "max": 122.3,
+      "range": [
+        5.0,
+        122.3
+      ]
+    },
+    "ingest_seconds": {
+      "median": 10.27,
+      "min": 8.18,
+      "max": 199.11,
+      "range": [
+        8.18,
+        199.11
+      ]
+    },
+    "db_size_mb": {
+      "median": 12.29,
+      "min": 12.29,
+      "max": 12.29,
+      "range": [
+        12.29,
+        12.29
+      ]
+    },
+    "vector_cache_ms": {
+      "median": 0.25,
+      "min": 0.22,
+      "max": 1.74,
+      "range": [
+        0.22,
+        1.74
+      ]
+    },
+    "peak_ram_mb": {
+      "median": 2102.2,
+      "min": 2032.6,
+      "max": 2172.6,
+      "range": [
+        2032.6,
+        2172.6
+      ]
+    },
+    "ram_delta_mb": {
+      "median": 68.9,
+      "min": 68.5,
+      "max": 462.3,
+      "range": [
+        68.5,
+        462.3
+      ]
+    },
+    "dense_simd_recall_p50_ms": {
+      "median": 24.36,
+      "min": 22.02,
+      "max": 47.17,
+      "range": [
+        22.02,
+        47.17
+      ]
+    },
+    "dense_simd_recall_p95_ms": {
+      "median": 44.73,
+      "min": 41.07,
+      "max": 64.53,
+      "range": [
+        41.07,
+        64.53
+      ]
+    },
+    "inspect_p50_ms": {
+      "median": 2.98,
+      "min": 2.68,
+      "max": 6.85,
+      "range": [
+        2.68,
+        6.85
+      ]
+    },
+    "project_brief_p50_ms": {
+      "median": 3.27,
+      "min": 2.84,
+      "max": 5.88,
+      "range": [
+        2.84,
+        5.88
+      ]
+    },
+    "task_list_p50_ms": {
+      "median": 3.51,
+      "min": 2.05,
+      "max": 4.68,
+      "range": [
+        2.05,
+        4.68
+      ]
+    }
+  }
+}

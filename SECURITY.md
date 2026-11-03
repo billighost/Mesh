@@ -60,6 +60,7 @@ These are statements about the code in this repository, not a guarantee. Each ha
 - `guard_ingest` scans memory content and tags for credential patterns, redacts detected values, and forces the record to `local_only=True`. This is best-effort pattern matching, not a guarantee.
 - **Known limitation:** the independent field test found 3 of 9 planted secret types were not caught (issue T-002): a keyword-free locker code, a token split across lines, and a task PIN. Task descriptions are not scanned by the same path as memories. Do not store secrets in Mesh.
 - Secret references (`env://`, `keyring://`, `op://`, and the local vault used by `mesh run --vault`) store a pointer, not the value, in memory content. Resolution happens at execution time. This reduces exposure but does not make it safe to put a secret in a memory body.
+- The local vault (`~/.mesh/vault.json` / `.keyring_vault.json`) stores isolated secret references with owner-only permissions (`0600` on POSIX, restricted ACL on Windows). When at-rest encryption is active (`mesh encrypt-db`, `MESH_PASSPHRASE`, or `MESH_ENCRYPT_AT_REST=1`), the vault is encrypted with authenticated envelopes before writing and fails closed (raising an error without touching disk) if encryption fails. Plaintext storage is used only when encryption was never configured.
 - Suspected secrets are **not** rejected; they are redacted and made private. A redaction can miss a value and a private memory is still readable on disk.
 
 ### Encryption at rest
@@ -91,3 +92,39 @@ Backups, exports, copied data directories, and cloud sync destinations are outsi
 - Never store credentials; use `secret_ref` and `mesh run --vault`, and still assume detection can miss.
 - Review `mesh install --dry-run` before letting the installer edit agent configuration, and review project-scope `.mcp.json`/MCP configs in cloned repositories.
 - Run `mesh audit export` to review access metadata; audit events are content-free by design.
+
+## 5. Verifying your install
+
+Mesh packages are built with GitHub Actions Trusted Publishing and cryptographically attested using Sigstore (`actions/attest-build-provenance`). Every release publishes `SHA256SUMS.txt` alongside wheels and source distributions on GitHub Releases.
+
+### Verify wheel checksum with pip
+
+To verify package hashes during installation:
+
+```bash
+# Verify using pip hash-checking mode with the official SHA256SUMS:
+curl -sSLO https://github.com/billighost/mesh/releases/download/v0.8.3/SHA256SUMS.txt
+pip install --require-hashes -r <(sed -E 's/^([a-f0-9]+)\s+(.+)$/\2 --hash=sha256:\1/' SHA256SUMS.txt)
+```
+
+Or manually verify the downloaded distribution:
+
+```bash
+# macOS/Linux
+sha256sum -c SHA256SUMS.txt --ignore-missing
+
+# Windows (PowerShell)
+Get-FileHash dist/mesh_context_layer-*.whl -Algorithm SHA256
+```
+
+### Verify build provenance attestation with GitHub CLI
+
+Every release artifact can be cryptographically verified against the GitHub Actions build workflow:
+
+```bash
+gh attestation verify mesh_context_layer-0.8.3-py3-none-any.whl --owner billighost
+```
+
+## 6. Independent Reviews
+
+Independently reviewed by 3 people (Jason, Mark and Adesire). See [docs/REVIEWS.md](docs/REVIEWS.md) for review scopes, findings (F1–F8, S1–S12, N1–N8), and resolutions.

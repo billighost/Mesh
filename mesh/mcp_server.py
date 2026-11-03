@@ -480,7 +480,8 @@ def _try_proxy_via_daemon(name: str, arguments: dict[str, Any]) -> Optional[dict
                 else:
                     reused_conn = True
 
-                assert _DAEMON_CONN is not None
+                if _DAEMON_CONN is None:
+                    raise RuntimeError("Daemon connection unexpectedly uninitialized")
                 _DAEMON_CONN.request(
                     "POST",
                     "/mcp",
@@ -1838,7 +1839,7 @@ def _execute_tool_sync_impl(
                         "namespace": mesh.namespace,
                         "namespace_exists": True,
                         "total": total_matching,
-                        "memories": memories,
+                        "memories": [{k: v for k, v in m.items() if not k.startswith("_")} for m in memories],
                         "untrusted_reference_data": True,
                         "notice": _UNTRUSTED_NOTICE,
                     }
@@ -2384,6 +2385,14 @@ def run() -> None:
             threading.Thread(target=background_sync_worker, daemon=True).start()
         elif is_interactive and request_user_permission("start the background MCP cache warmup worker"):
             threading.Thread(target=background_sync_worker, daemon=True).start()
+
+    eng = get_engine_status()
+    if eng.get("embedding_degraded") or eng.get("model_tag") == "hash-384":
+        logger.warning(
+            "Mesh MCP server is operating with hash-384 fallback embeddings (lower semantic search quality). "
+            "Run 'mesh setup' to download the verified ONNX model, or set MESH_REQUIRE_MODEL=1 to enforce strict model availability."
+        )
+
     asyncio.run(_run())
 
 

@@ -124,7 +124,7 @@ Open `~/mesh-qa-sandbox` in Cursor. Ensure `.cursor/mcp.json` is present and `.c
 **Expected Agent Behavior:**
 1. Cursor evaluates `.cursorrules` ("RECALL FIRST: query `mesh_recall` before asking the user or assuming conventions").
 2. Cursor invokes `mesh_recall(query="auth microservice port token signing algorithm")`.
-3. Returns: Port `8085` and `RS256` asymmetric keys directly from Mesh memory.
+3. Returns: Port `8085` and `RS256` asymmetric keys directly from Mesh.
 
 ---
 

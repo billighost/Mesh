@@ -35,8 +35,6 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-import numpy as np
-
 from .audit import (
     _get_audit_db_path,
     ensure_secure_mesh_dir,
@@ -354,6 +352,8 @@ def _blake2b_ctr_xor(data: bytes, enc_key: bytes, nonce: bytes) -> bytes:
         for blk in range(n_blocks)
     ]
     stream = b"".join(blocks)[:n_len]
+    import numpy as np
+
     a_arr = np.frombuffer(data, dtype=np.uint8)
     b_arr = np.frombuffer(stream, dtype=np.uint8)
     return np.bitwise_xor(a_arr, b_arr).tobytes()

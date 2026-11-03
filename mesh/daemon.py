@@ -68,6 +68,7 @@ AUTOSTART_MARKER_FILE = _autostart_marker_file()
 DEFAULT_PORT = env_int("MESH_HTTP_PORT", 7701, minimum=1, maximum=65535)
 DEFAULT_HOST = os.environ.get("MESH_HTTP_HOST", "127.0.0.1")
 DEFAULT_IDLE_TIMEOUT = env_float("MESH_IDLE_UNLOAD_SECONDS", 180.0, minimum=0.0)
+DEFAULT_VERIFY_TIMEOUT = env_float("MESH_DAEMON_VERIFY_TIMEOUT", 1.0, minimum=0.2)
 
 _WIN_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 _WIN_RUN_VALUE_NAME = "MeshContextDaemon"
@@ -430,11 +431,42 @@ def get_daemon_health(
     return None
 
 
+def get_daemon_readiness(
+    host: str = DEFAULT_HOST,
+    port: int = DEFAULT_PORT,
+    timeout: float = 0.6,
+) -> Optional[dict[str, Any]]:
+    """
+    Check if the daemon is ready to answer queries (/ready endpoint returns HTTP 200).
+    Returns response dict if ready, or None if warming up (HTTP 503) or unreachable.
+    """
+    url = f"http://{host}:{port}/ready"
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={"Accept": "application/json"},
+            method="GET",
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if resp.status == 200:
+                data = json.loads(resp.read().decode("utf-8"))
+                if isinstance(data, dict) and data.get("status") == "ready":
+                    return data
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+        pass
+    return None
+
+
 def verify_daemon_identity(
     host: str = DEFAULT_HOST,
     port: int = DEFAULT_PORT,
-    timeout: float = 0.5,
+    timeout: Optional[float] = None,
 ) -> Optional[dict[str, Any]]:
+    actual_timeout = (
+        env_float("MESH_DAEMON_VERIFY_TIMEOUT", 1.0, minimum=0.2)
+        if timeout is None
+        else float(timeout)
+    )
     key = (host, int(port))
     now = time.monotonic()
     with _VERIFIED_DAEMON_LOCK:
@@ -450,7 +482,7 @@ def verify_daemon_identity(
     nonce_bytes = bytes.fromhex(nonce)
     expected_proof = hmac.new(token.encode("utf-8"), nonce_bytes, hashlib.sha256).hexdigest()
 
-    conn = http.client.HTTPConnection(host, port, timeout=timeout)
+    conn = http.client.HTTPConnection(host, port, timeout=actual_timeout)
     try:
         conn.connect()
         if conn.sock is not None:
@@ -504,7 +536,7 @@ def trigger_daemon_unload(
     host: str = DEFAULT_HOST,
     port: int = DEFAULT_PORT,
 ) -> Optional[dict[str, Any]]:
-    if not verify_daemon_identity(host=host, port=port, timeout=0.5):
+    if not verify_daemon_identity(host=host, port=port):
         return None
     try:
         headers = {"Content-Type": "application/json", **get_auth_headers()}
@@ -612,23 +644,50 @@ def _is_mesh_daemon_process(pid: int) -> bool:
     if not _is_pid_alive(pid):
         return False
     if os.name == "nt":
+        cmdline: Optional[str] = None
         try:
-            out = subprocess.check_output(
+            wmic_out = subprocess.check_output(
                 [
-                    "powershell",
-                    "-NoProfile",
-                    "-Command",
-                    f"(Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}').CommandLine",
+                    "wmic",
+                    "process",
+                    "where",
+                    f"ProcessId={pid}",
+                    "get",
+                    "CommandLine",
                 ],
                 stderr=subprocess.DEVNULL,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
-                timeout=2.5,
+                timeout=2.0,
             ).decode("utf-8", errors="ignore").strip()
-            if out:
-                return _matches_mesh_daemon_cmdline(out)
-            return False
+            lines = [line.strip() for line in wmic_out.splitlines() if line.strip()]
+            if lines and lines[0].lower().startswith("commandline"):
+                cmdline = " ".join(lines[1:]).strip()
+            elif lines and "no instance" in lines[0].lower():
+                return False
         except Exception:
-            return False
+            cmdline = None
+
+        if not cmdline:
+            try:
+                ps_out = subprocess.check_output(
+                    [
+                        "powershell",
+                        "-NoProfile",
+                        "-Command",
+                        f"(Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}').CommandLine",
+                    ],
+                    stderr=subprocess.DEVNULL,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
+                    timeout=5.0,
+                ).decode("utf-8", errors="ignore").strip()
+                if ps_out:
+                    cmdline = ps_out
+            except Exception:
+                cmdline = None
+
+        if cmdline:
+            return _matches_mesh_daemon_cmdline(cmdline)
+        return False
 
     proc_dir = Path(f"/proc/{pid}")
     if proc_dir.exists():
@@ -732,6 +791,7 @@ def start_daemon(
     idle_timeout: float = DEFAULT_IDLE_TIMEOUT,
     lazy: bool = False,
     wait: bool = True,
+    wait_for_ready: bool = True,
     interactive_prompt: bool = False,
     assume_yes: bool = False,
 ) -> dict[str, Any]:
@@ -744,6 +804,7 @@ def start_daemon(
         pid = existing_ident.get("pid") or _read_pid_file()
         if pid:
             _write_pid_file(int(pid))
+        ready_info = get_daemon_readiness(host=host, port=port, timeout=0.35) if (wait and wait_for_ready and not lazy) else None
         return {
             "running": True,
             "already_running": True,
@@ -751,6 +812,7 @@ def start_daemon(
             "host": host,
             "port": port,
             "health": existing_ident,
+            "ready": ready_info is not None if (wait and wait_for_ready and not lazy) else True,
         }
 
     existing_pid = _read_pid_file()
@@ -873,6 +935,7 @@ def start_daemon(
     verified: Optional[dict[str, Any]] = None
     for i in range(40):
         if proc.poll() is not None:
+            verified = verify_daemon_identity(host=host, port=port, timeout=0.35)
             break
         time.sleep(0.04 if i < 10 else 0.12)
         verified = verify_daemon_identity(host=host, port=port, timeout=0.35)
@@ -880,14 +943,52 @@ def start_daemon(
             break
 
     if verified is not None:
-        _write_pid_file(proc.pid)
+        daemon_pid = int(verified.get("pid") or proc.pid)
+        _write_pid_file(daemon_pid)
+
+        is_ready = True
+        startup_sec = 0.0
+        if wait and wait_for_ready and not lazy:
+            t0_ready = time.perf_counter()
+            ready_timeout = env_float("MESH_DAEMON_READY_TIMEOUT", 30.0, minimum=1.0)
+            is_ready = False
+            deadline = time.time() + ready_timeout
+            while time.time() < deadline:
+                if proc.poll() is not None:
+                    break
+                r_info = get_daemon_readiness(host=host, port=port, timeout=0.35)
+                if r_info is not None:
+                    is_ready = True
+                    break
+                time.sleep(0.08)
+            startup_sec = round(time.perf_counter() - t0_ready, 3)
+
+            if not is_ready:
+                return {
+                    "running": proc.poll() is None,
+                    "already_running": False,
+                    "spawning": False,
+                    "retryable": False,
+                    "pid": daemon_pid,
+                    "host": host,
+                    "port": port,
+                    "health": verified,
+                    "ready": False,
+                    "error": (
+                        f"Mesh daemon (PID {daemon_pid}) started on {host}:{port} but readiness probe "
+                        f"timed out after {ready_timeout}s while warming models. Check daemon log."
+                    ),
+                }
+
         return {
             "running": True,
             "already_running": False,
-            "pid": proc.pid,
+            "pid": daemon_pid,
             "host": host,
             "port": port,
             "health": verified,
+            "ready": is_ready,
+            "startup_duration_seconds": startup_sec,
         }
 
     proc_dead = proc.poll() is not None
@@ -924,7 +1025,7 @@ def start_daemon(
 
 def stop_daemon(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> dict[str, Any]:
     pid_from_file = _read_pid_file()
-    ident = verify_daemon_identity(host=host, port=port, timeout=0.5)
+    ident = verify_daemon_identity(host=host, port=port)
     pid_from_identity = (
         int(ident["pid"])
         if (ident and ident.get("identity_verified") and ident.get("pid"))

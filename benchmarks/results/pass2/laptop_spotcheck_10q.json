@@ -1,0 +1,1339 @@
+{
+  "metadata": {
+    "benchmark": "Windows Laptop Spot-Check",
+    "questions_evaluated": 10,
+    "date": "2026-11-02",
+    "environment": "Windows 11 Home, AMD Ryzen 7 5700U (8c/16t, 1.8-4.3 GHz), 16GB DDR4, NVMe SSD",
+    "sleep_guard_audited": true,
+    "execution_guard": "ExecutionStateGuard active (ES_CONTINUOUS | ES_SYSTEM_REQUIRED)"
+  },
+  "tool_aggregates": {
+    "Mesh SDK": {
+      "write_time_sec_mean": 20.4,
+      "time_to_searchable_sec_mean": 0.028,
+      "cold_first_query_ms_median": 23.32,
+      "query_p50_ms_median": 25.82,
+      "query_p95_ms_median": 37.68,
+      "all_queries_p50_ms": 24.52,
+      "all_queries_p95_ms": 107.3,
+      "all_queries_count": 100,
+      "all_queries_max_ms": 228.05,
+      "per_question_p50_spread": [
+        9.22,
+        106.87
+      ],
+      "per_question_p95_spread": [
+        14.45,
+        228.05
+      ]
+    },
+    "Mem0 SDK": {
+      "write_time_sec_mean": 82.26,
+      "time_to_searchable_sec_mean": 0.317,
+      "cold_first_query_ms_median": 202.4,
+      "query_p50_ms_median": 175.48,
+      "query_p95_ms_median": 281.84,
+      "all_queries_p50_ms": 170.89,
+      "all_queries_p95_ms": 456.98,
+      "all_queries_count": 100,
+      "all_queries_max_ms": 1839.67,
+      "per_question_p50_spread": [
+        95.73,
+        312.42
+      ],
+      "per_question_p95_spread": [
+        117.42,
+        1839.67
+      ]
+    },
+    "Mesh CLI (Daemon)": {
+      "write_time_sec_mean": 20.13,
+      "time_to_searchable_sec_mean": 1.133,
+      "cold_first_query_ms_median": 610.04,
+      "query_p50_ms_median": 613.96,
+      "query_p95_ms_median": 1015.93,
+      "all_queries_p50_ms": 595.42,
+      "all_queries_p95_ms": 3868.08,
+      "all_queries_count": 100,
+      "all_queries_max_ms": 5437.88,
+      "per_question_p50_spread": [
+        437.22,
+        3775.04
+      ],
+      "per_question_p95_spread": [
+        577.01,
+        5437.88
+      ]
+    },
+    "Auxly CLI": {
+      "write_time_sec_mean": 1.23,
+      "time_to_searchable_sec_mean": 17.788,
+      "cold_first_query_ms_median": 2863.26,
+      "query_p50_ms_median": 2021.58,
+      "query_p95_ms_median": 3661.73,
+      "all_queries_p50_ms": 1945.01,
+      "all_queries_p95_ms": 14635.22,
+      "all_queries_count": 100,
+      "all_queries_max_ms": 49929.01,
+      "per_question_p50_spread": [
+        1154.46,
+        13900.59
+      ],
+      "per_question_p95_spread": [
+        1463.89,
+        49929.01
+      ]
+    },
+    "Basic Memory CLI": {
+      "write_time_sec_mean": 19.3,
+      "time_to_searchable_sec_mean": 7.153,
+      "cold_first_query_ms_median": 5535.26,
+      "query_p50_ms_median": 5740.5,
+      "query_p95_ms_median": 8256.05,
+      "all_queries_p50_ms": 5870.27,
+      "all_queries_p95_ms": 40018.01,
+      "all_queries_count": 100,
+      "all_queries_max_ms": 64532.93,
+      "per_question_p50_spread": [
+        3545.27,
+        34973.31
+      ],
+      "per_question_p95_spread": [
+        4656.61,
+        64532.93
+      ]
+    }
+  },
+  "per_question_results": [
+    {
+      "question_id": "e47becba",
+      "turn_count": 543,
+      "tool_order": [
+        "Mesh SDK",
+        "Mem0 SDK",
+        "Mesh CLI (Daemon)",
+        "Auxly CLI",
+        "Basic Memory CLI"
+      ],
+      "tools": {
+        "Mesh SDK": {
+          "write_time_sec": 13.57,
+          "time_to_searchable_sec": 0.015,
+          "cold_first_query_ms": 8.18,
+          "query_p50_ms": 9.22,
+          "query_p95_ms": 14.45,
+          "query_mean_ms": 9.56,
+          "query_min_ms": 6.71,
+          "query_max_ms": 14.45,
+          "raw_queries_ms": [
+            6.71,
+            7.36,
+            7.36,
+            8.94,
+            9.14,
+            9.31,
+            9.45,
+            10.23,
+            12.68,
+            14.45
+          ]
+        },
+        "Mem0 SDK": {
+          "write_time_sec": 60.05,
+          "time_to_searchable_sec": 0.123,
+          "cold_first_query_ms": 95.77,
+          "query_p50_ms": 194.02,
+          "query_p95_ms": 203.92,
+          "query_mean_ms": 160.68,
+          "query_min_ms": 92.19,
+          "query_max_ms": 203.92,
+          "raw_queries_ms": [
+            92.19,
+            93.65,
+            96.84,
+            135.93,
+            191.34,
+            196.71,
+            196.87,
+            199.2,
+            200.14,
+            203.92
+          ]
+        },
+        "Mesh CLI (Daemon)": {
+          "write_time_sec": 9.22,
+          "time_to_searchable_sec": 0.489,
+          "cold_first_query_ms": 481.84,
+          "query_p50_ms": 437.37,
+          "query_p95_ms": 997.47,
+          "query_mean_ms": 535.0,
+          "query_min_ms": 356.77,
+          "query_max_ms": 997.47,
+          "raw_queries_ms": [
+            356.77,
+            379.44,
+            402.7,
+            405.36,
+            431.97,
+            442.76,
+            458.76,
+            586.99,
+            887.82,
+            997.47
+          ]
+        },
+        "Auxly CLI": {
+          "write_time_sec": 0.63,
+          "time_to_searchable_sec": 7.5,
+          "cold_first_query_ms": 1464.28,
+          "query_p50_ms": 1297.76,
+          "query_p95_ms": 1553.07,
+          "query_mean_ms": 1323.3,
+          "query_min_ms": 1197.49,
+          "query_max_ms": 1553.07,
+          "raw_queries_ms": [
+            1197.49,
+            1217.28,
+            1242.67,
+            1254.99,
+            1289.53,
+            1305.98,
+            1367.84,
+            1378.63,
+            1425.54,
+            1553.07
+          ]
+        },
+        "Basic Memory CLI": {
+          "write_time_sec": 6.81,
+          "time_to_searchable_sec": 3.486,
+          "cold_first_query_ms": 3708.21,
+          "query_p50_ms": 3674.75,
+          "query_p95_ms": 4656.61,
+          "query_mean_ms": 3759.21,
+          "query_min_ms": 3332.99,
+          "query_max_ms": 4656.61,
+          "raw_queries_ms": [
+            3332.99,
+            3374.29,
+            3402.05,
+            3643.71,
+            3669.38,
+            3680.13,
+            3740.37,
+            4035.66,
+            4056.89,
+            4656.61
+          ]
+        }
+      }
+    },
+    {
+      "question_id": "118b2229",
+      "turn_count": 485,
+      "tool_order": [
+        "Mem0 SDK",
+        "Mesh CLI (Daemon)",
+        "Auxly CLI",
+        "Basic Memory CLI",
+        "Mesh SDK"
+      ],
+      "tools": {
+        "Mem0 SDK": {
+          "write_time_sec": 38.11,
+          "time_to_searchable_sec": 0.155,
+          "cold_first_query_ms": 97.77,
+          "query_p50_ms": 95.73,
+          "query_p95_ms": 117.42,
+          "query_mean_ms": 97.6,
+          "query_min_ms": 86.52,
+          "query_max_ms": 117.42,
+          "raw_queries_ms": [
+            86.52,
+            87.34,
+            87.79,
+            89.07,
+            91.87,
+            99.58,
+            101.24,
+            106.08,
+            109.05,
+            117.42
+          ]
+        },
+        "Mesh CLI (Daemon)": {
+          "write_time_sec": 10.28,
+          "time_to_searchable_sec": 0.429,
+          "cold_first_query_ms": 392.86,
+          "query_p50_ms": 437.22,
+          "query_p95_ms": 1034.38,
+          "query_mean_ms": 492.37,
+          "query_min_ms": 378.08,
+          "query_max_ms": 1034.38,
+          "raw_queries_ms": [
+            378.08,
+            392.02,
+            397.5,
+            406.92,
+            433.22,
+            441.21,
+            442.35,
+            447.48,
+            550.51,
+            1034.38
+          ]
+        },
+        "Auxly CLI": {
+          "write_time_sec": 0.53,
+          "time_to_searchable_sec": 6.047,
+          "cold_first_query_ms": 1124.82,
+          "query_p50_ms": 1154.46,
+          "query_p95_ms": 1463.89,
+          "query_mean_ms": 1185.24,
+          "query_min_ms": 1091.51,
+          "query_max_ms": 1463.89,
+          "raw_queries_ms": [
+            1091.51,
+            1103.17,
+            1105.83,
+            1116.38,
+            1150.75,
+            1158.18,
+            1168.67,
+            1179.51,
+            1314.5,
+            1463.89
+          ]
+        },
+        "Basic Memory CLI": {
+          "write_time_sec": 5.15,
+          "time_to_searchable_sec": 3.572,
+          "cold_first_query_ms": 3395.02,
+          "query_p50_ms": 3545.27,
+          "query_p95_ms": 5996.48,
+          "query_mean_ms": 3790.82,
+          "query_min_ms": 3373.95,
+          "query_max_ms": 5996.48,
+          "raw_queries_ms": [
+            3373.95,
+            3376.75,
+            3417.62,
+            3454.01,
+            3532.59,
+            3557.95,
+            3608.54,
+            3609.16,
+            3981.1,
+            5996.48
+          ]
+        },
+        "Mesh SDK": {
+          "write_time_sec": 7.32,
+          "time_to_searchable_sec": 0.014,
+          "cold_first_query_ms": 16.72,
+          "query_p50_ms": 19.22,
+          "query_p95_ms": 24.6,
+          "query_mean_ms": 19.23,
+          "query_min_ms": 14.71,
+          "query_max_ms": 24.6,
+          "raw_queries_ms": [
+            14.71,
+            15.47,
+            16.65,
+            18.59,
+            19.12,
+            19.32,
+            19.45,
+            20.14,
+            24.23,
+            24.6
+          ]
+        }
+      }
+    },
+    {
+      "question_id": "51a45a95",
+      "turn_count": 528,
+      "tool_order": [
+        "Mesh CLI (Daemon)",
+        "Auxly CLI",
+        "Basic Memory CLI",
+        "Mesh SDK",
+        "Mem0 SDK"
+      ],
+      "tools": {
+        "Mesh CLI (Daemon)": {
+          "write_time_sec": 9.09,
+          "time_to_searchable_sec": 0.401,
+          "cold_first_query_ms": 433.8,
+          "query_p50_ms": 439.98,
+          "query_p95_ms": 593.77,
+          "query_mean_ms": 455.52,
+          "query_min_ms": 385.45,
+          "query_max_ms": 593.77,
+          "raw_queries_ms": [
+            385.45,
+            389.69,
+            397.85,
+            399.04,
+            436.04,
+            443.92,
+            476.51,
+            508.85,
+            524.1,
+            593.77
+          ]
+        },
+        "Auxly CLI": {
+          "write_time_sec": 0.6,
+          "time_to_searchable_sec": 7.023,
+          "cold_first_query_ms": 1226.61,
+          "query_p50_ms": 1346.35,
+          "query_p95_ms": 1887.0,
+          "query_mean_ms": 1382.55,
+          "query_min_ms": 1172.17,
+          "query_max_ms": 1887.0,
+          "raw_queries_ms": [
+            1172.17,
+            1210.85,
+            1259.71,
+            1263.09,
+            1331.17,
+            1361.54,
+            1402.06,
+            1450.13,
+            1487.83,
+            1887.0
+          ]
+        },
+        "Basic Memory CLI": {
+          "write_time_sec": 6.18,
+          "time_to_searchable_sec": 4.107,
+          "cold_first_query_ms": 4552.72,
+          "query_p50_ms": 4698.89,
+          "query_p95_ms": 6143.7,
+          "query_mean_ms": 4677.89,
+          "query_min_ms": 3492.77,
+          "query_max_ms": 6143.7,
+          "raw_queries_ms": [
+            3492.77,
+            3653.42,
+            3816.75,
+            4390.87,
+            4653.35,
+            4744.44,
+            4952.98,
+            4992.53,
+            5938.14,
+            6143.7
+          ]
+        },
+        "Mesh SDK": {
+          "write_time_sec": 9.67,
+          "time_to_searchable_sec": 0.02,
+          "cold_first_query_ms": 19.61,
+          "query_p50_ms": 17.9,
+          "query_p95_ms": 26.31,
+          "query_mean_ms": 18.23,
+          "query_min_ms": 12.71,
+          "query_max_ms": 26.31,
+          "raw_queries_ms": [
+            12.71,
+            15.01,
+            16.97,
+            17.22,
+            17.52,
+            18.28,
+            18.79,
+            19.63,
+            19.93,
+            26.31
+          ]
+        },
+        "Mem0 SDK": {
+          "write_time_sec": 53.13,
+          "time_to_searchable_sec": 0.603,
+          "cold_first_query_ms": 231.18,
+          "query_p50_ms": 195.28,
+          "query_p95_ms": 1252.26,
+          "query_mean_ms": 362.56,
+          "query_min_ms": 137.06,
+          "query_max_ms": 1252.26,
+          "raw_queries_ms": [
+            137.06,
+            175.38,
+            176.45,
+            183.21,
+            192.34,
+            198.22,
+            201.87,
+            206.27,
+            902.58,
+            1252.26
+          ]
+        }
+      }
+    },
+    {
+      "question_id": "58bf7951",
+      "turn_count": 610,
+      "tool_order": [
+        "Auxly CLI",
+        "Basic Memory CLI",
+        "Mesh SDK",
+        "Mem0 SDK",
+        "Mesh CLI (Daemon)"
+      ],
+      "tools": {
+        "Auxly CLI": {
+          "write_time_sec": 1.05,
+          "time_to_searchable_sec": 10.544,
+          "cold_first_query_ms": 2136.38,
+          "query_p50_ms": 1952.54,
+          "query_p95_ms": 2577.13,
+          "query_mean_ms": 2049.28,
+          "query_min_ms": 1829.95,
+          "query_max_ms": 2577.13,
+          "raw_queries_ms": [
+            1829.95,
+            1878.03,
+            1904.18,
+            1929.78,
+            1941.41,
+            1963.66,
+            1963.76,
+            1977.91,
+            2527.0,
+            2577.13
+          ]
+        },
+        "Basic Memory CLI": {
+          "write_time_sec": 8.73,
+          "time_to_searchable_sec": 5.517,
+          "cold_first_query_ms": 5457.26,
+          "query_p50_ms": 4850.47,
+          "query_p95_ms": 6494.83,
+          "query_mean_ms": 4906.24,
+          "query_min_ms": 3779.17,
+          "query_max_ms": 6494.83,
+          "raw_queries_ms": [
+            3779.17,
+            3801.26,
+            3848.19,
+            3993.81,
+            4826.09,
+            4874.84,
+            5382.44,
+            5750.0,
+            6311.81,
+            6494.83
+          ]
+        },
+        "Mesh SDK": {
+          "write_time_sec": 10.71,
+          "time_to_searchable_sec": 0.021,
+          "cold_first_query_ms": 18.25,
+          "query_p50_ms": 17.22,
+          "query_p95_ms": 23.79,
+          "query_mean_ms": 17.64,
+          "query_min_ms": 13.65,
+          "query_max_ms": 23.79,
+          "raw_queries_ms": [
+            13.65,
+            14.22,
+            14.62,
+            15.57,
+            16.34,
+            18.1,
+            19.06,
+            20.32,
+            20.78,
+            23.79
+          ]
+        },
+        "Mem0 SDK": {
+          "write_time_sec": 70.24,
+          "time_to_searchable_sec": 0.18,
+          "cold_first_query_ms": 151.51,
+          "query_p50_ms": 107.48,
+          "query_p95_ms": 152.96,
+          "query_mean_ms": 115.25,
+          "query_min_ms": 94.24,
+          "query_max_ms": 152.96,
+          "raw_queries_ms": [
+            94.24,
+            100.38,
+            101.84,
+            104.98,
+            107.15,
+            107.81,
+            107.98,
+            133.09,
+            142.06,
+            152.96
+          ]
+        },
+        "Mesh CLI (Daemon)": {
+          "write_time_sec": 6.89,
+          "time_to_searchable_sec": 0.386,
+          "cold_first_query_ms": 385.51,
+          "query_p50_ms": 465.25,
+          "query_p95_ms": 577.01,
+          "query_mean_ms": 462.18,
+          "query_min_ms": 414.84,
+          "query_max_ms": 577.01,
+          "raw_queries_ms": [
+            414.84,
+            415.1,
+            425.64,
+            429.14,
+            457.99,
+            472.52,
+            473.03,
+            476.29,
+            480.23,
+            577.01
+          ]
+        }
+      }
+    },
+    {
+      "question_id": "1e043500",
+      "turn_count": 509,
+      "tool_order": [
+        "Basic Memory CLI",
+        "Mesh SDK",
+        "Mem0 SDK",
+        "Mesh CLI (Daemon)",
+        "Auxly CLI"
+      ],
+      "tools": {
+        "Basic Memory CLI": {
+          "write_time_sec": 5.42,
+          "time_to_searchable_sec": 6.131,
+          "cold_first_query_ms": 20223.26,
+          "query_p50_ms": 6215.21,
+          "query_p95_ms": 8229.44,
+          "query_mean_ms": 6353.21,
+          "query_min_ms": 5194.61,
+          "query_max_ms": 8229.44,
+          "raw_queries_ms": [
+            5194.61,
+            5561.17,
+            5802.4,
+            6120.1,
+            6133.69,
+            6296.72,
+            6394.99,
+            6582.09,
+            7216.93,
+            8229.44
+          ]
+        },
+        "Mesh SDK": {
+          "write_time_sec": 12.7,
+          "time_to_searchable_sec": 0.028,
+          "cold_first_query_ms": 25.93,
+          "query_p50_ms": 32.42,
+          "query_p95_ms": 46.8,
+          "query_mean_ms": 31.83,
+          "query_min_ms": 17.1,
+          "query_max_ms": 46.8,
+          "raw_queries_ms": [
+            17.1,
+            22.94,
+            25.91,
+            29.55,
+            32.37,
+            32.48,
+            35.71,
+            37.42,
+            38.02,
+            46.8
+          ]
+        },
+        "Mem0 SDK": {
+          "write_time_sec": 83.48,
+          "time_to_searchable_sec": 0.346,
+          "cold_first_query_ms": 362.24,
+          "query_p50_ms": 312.42,
+          "query_p95_ms": 962.76,
+          "query_mean_ms": 387.02,
+          "query_min_ms": 251.72,
+          "query_max_ms": 962.76,
+          "raw_queries_ms": [
+            251.72,
+            257.5,
+            266.96,
+            269.04,
+            280.9,
+            343.94,
+            384.11,
+            396.33,
+            456.98,
+            962.76
+          ]
+        },
+        "Mesh CLI (Daemon)": {
+          "write_time_sec": 31.97,
+          "time_to_searchable_sec": 1.059,
+          "cold_first_query_ms": 1480.8,
+          "query_p50_ms": 643.79,
+          "query_p95_ms": 1528.43,
+          "query_mean_ms": 851.3,
+          "query_min_ms": 468.58,
+          "query_max_ms": 1528.43,
+          "raw_queries_ms": [
+            468.58,
+            534.33,
+            534.89,
+            565.28,
+            623.82,
+            663.76,
+            904.34,
+            1326.01,
+            1363.54,
+            1528.43
+          ]
+        },
+        "Auxly CLI": {
+          "write_time_sec": 0.92,
+          "time_to_searchable_sec": 8.019,
+          "cold_first_query_ms": 4304.21,
+          "query_p50_ms": 2090.61,
+          "query_p95_ms": 4535.77,
+          "query_mean_ms": 2363.6,
+          "query_min_ms": 1642.19,
+          "query_max_ms": 4535.77,
+          "raw_queries_ms": [
+            1642.19,
+            1687.27,
+            1770.11,
+            1886.12,
+            1946.91,
+            2234.3,
+            2399.66,
+            2477.66,
+            3055.98,
+            4535.77
+          ]
+        }
+      }
+    },
+    {
+      "question_id": "c5e8278d",
+      "turn_count": 469,
+      "tool_order": [
+        "Mesh SDK",
+        "Mem0 SDK",
+        "Mesh CLI (Daemon)",
+        "Auxly CLI",
+        "Basic Memory CLI"
+      ],
+      "tools": {
+        "Mesh SDK": {
+          "write_time_sec": 9.29,
+          "time_to_searchable_sec": 0.01,
+          "cold_first_query_ms": 20.72,
+          "query_p50_ms": 17.95,
+          "query_p95_ms": 28.56,
+          "query_mean_ms": 19.74,
+          "query_min_ms": 15.29,
+          "query_max_ms": 28.56,
+          "raw_queries_ms": [
+            15.29,
+            15.32,
+            16.43,
+            16.58,
+            17.64,
+            18.26,
+            19.34,
+            24.56,
+            25.39,
+            28.56
+          ]
+        },
+        "Mem0 SDK": {
+          "write_time_sec": 76.33,
+          "time_to_searchable_sec": 0.628,
+          "cold_first_query_ms": 231.3,
+          "query_p50_ms": 177.34,
+          "query_p95_ms": 226.98,
+          "query_mean_ms": 184.91,
+          "query_min_ms": 154.17,
+          "query_max_ms": 226.98,
+          "raw_queries_ms": [
+            154.17,
+            158.85,
+            160.52,
+            162.49,
+            172.06,
+            182.63,
+            197.91,
+            215.64,
+            217.84,
+            226.98
+          ]
+        },
+        "Mesh CLI (Daemon)": {
+          "write_time_sec": 14.24,
+          "time_to_searchable_sec": 0.631,
+          "cold_first_query_ms": 766.5,
+          "query_p50_ms": 604.04,
+          "query_p95_ms": 815.0,
+          "query_mean_ms": 608.83,
+          "query_min_ms": 454.31,
+          "query_max_ms": 815.0,
+          "raw_queries_ms": [
+            454.31,
+            551.93,
+            556.02,
+            578.49,
+            600.0,
+            608.08,
+            628.69,
+            629.4,
+            666.4,
+            815.0
+          ]
+        },
+        "Auxly CLI": {
+          "write_time_sec": 0.69,
+          "time_to_searchable_sec": 8.074,
+          "cold_first_query_ms": 5066.48,
+          "query_p50_ms": 2633.77,
+          "query_p95_ms": 5490.3,
+          "query_mean_ms": 2975.75,
+          "query_min_ms": 1638.01,
+          "query_max_ms": 5490.3,
+          "raw_queries_ms": [
+            1638.01,
+            1762.67,
+            1801.6,
+            2138.82,
+            2231.46,
+            3036.08,
+            3336.52,
+            4015.47,
+            4306.61,
+            5490.3
+          ]
+        },
+        "Basic Memory CLI": {
+          "write_time_sec": 30.45,
+          "time_to_searchable_sec": 7.873,
+          "cold_first_query_ms": 4996.82,
+          "query_p50_ms": 5907.86,
+          "query_p95_ms": 33029.4,
+          "query_mean_ms": 9197.36,
+          "query_min_ms": 4827.27,
+          "query_max_ms": 33029.4,
+          "raw_queries_ms": [
+            4827.27,
+            4833.74,
+            4968.73,
+            5188.14,
+            5714.57,
+            6101.15,
+            6405.71,
+            6846.4,
+            14058.52,
+            33029.4
+          ]
+        }
+      }
+    },
+    {
+      "question_id": "6ade9755",
+      "turn_count": 509,
+      "tool_order": [
+        "Mem0 SDK",
+        "Mesh CLI (Daemon)",
+        "Auxly CLI",
+        "Basic Memory CLI",
+        "Mesh SDK"
+      ],
+      "tools": {
+        "Mem0 SDK": {
+          "write_time_sec": 96.43,
+          "time_to_searchable_sec": 0.163,
+          "cold_first_query_ms": 292.61,
+          "query_p50_ms": 128.37,
+          "query_p95_ms": 151.7,
+          "query_mean_ms": 130.49,
+          "query_min_ms": 114.7,
+          "query_max_ms": 151.7,
+          "raw_queries_ms": [
+            114.7,
+            119.3,
+            119.57,
+            119.76,
+            123.36,
+            133.38,
+            135.6,
+            141.63,
+            145.9,
+            151.7
+          ]
+        },
+        "Mesh CLI (Daemon)": {
+          "write_time_sec": 34.47,
+          "time_to_searchable_sec": 3.495,
+          "cold_first_query_ms": 4073.03,
+          "query_p50_ms": 3775.04,
+          "query_p95_ms": 5437.88,
+          "query_mean_ms": 3957.39,
+          "query_min_ms": 2782.29,
+          "query_max_ms": 5437.88,
+          "raw_queries_ms": [
+            2782.29,
+            3179.72,
+            3422.64,
+            3650.95,
+            3682.0,
+            3868.08,
+            3910.47,
+            4463.45,
+            5176.45,
+            5437.88
+          ]
+        },
+        "Auxly CLI": {
+          "write_time_sec": 1.57,
+          "time_to_searchable_sec": 65.603,
+          "cold_first_query_ms": 3925.13,
+          "query_p50_ms": 13900.59,
+          "query_p95_ms": 49929.01,
+          "query_mean_ms": 21260.36,
+          "query_min_ms": 8495.47,
+          "query_max_ms": 49929.01,
+          "raw_queries_ms": [
+            8495.47,
+            10526.23,
+            11393.56,
+            12949.49,
+            13838.37,
+            13962.81,
+            20870.8,
+            24744.68,
+            45893.17,
+            49929.01
+          ]
+        },
+        "Basic Memory CLI": {
+          "write_time_sec": 77.27,
+          "time_to_searchable_sec": 8.176,
+          "cold_first_query_ms": 27153.04,
+          "query_p50_ms": 34973.31,
+          "query_p95_ms": 64532.93,
+          "query_mean_ms": 40736.04,
+          "query_min_ms": 20591.48,
+          "query_max_ms": 64532.93,
+          "raw_queries_ms": [
+            20591.48,
+            25663.62,
+            28420.39,
+            30697.57,
+            33136.43,
+            36810.2,
+            48122.43,
+            57411.71,
+            61973.67,
+            64532.93
+          ]
+        },
+        "Mesh SDK": {
+          "write_time_sec": 49.64,
+          "time_to_searchable_sec": 0.059,
+          "cold_first_query_ms": 75.3,
+          "query_p50_ms": 76.36,
+          "query_p95_ms": 85.15,
+          "query_mean_ms": 75.52,
+          "query_min_ms": 60.84,
+          "query_max_ms": 85.15,
+          "raw_queries_ms": [
+            60.84,
+            72.04,
+            72.26,
+            72.42,
+            75.35,
+            77.38,
+            78.85,
+            79.33,
+            81.64,
+            85.15
+          ]
+        }
+      }
+    },
+    {
+      "question_id": "6f9b354f",
+      "turn_count": 494,
+      "tool_order": [
+        "Mesh CLI (Daemon)",
+        "Auxly CLI",
+        "Basic Memory CLI",
+        "Mesh SDK",
+        "Mem0 SDK"
+      ],
+      "tools": {
+        "Mesh CLI (Daemon)": {
+          "write_time_sec": 61.26,
+          "time_to_searchable_sec": 2.499,
+          "cold_first_query_ms": 2127.48,
+          "query_p50_ms": 1235.5,
+          "query_p95_ms": 1817.3,
+          "query_mean_ms": 1283.67,
+          "query_min_ms": 932.8,
+          "query_max_ms": 1817.3,
+          "raw_queries_ms": [
+            932.8,
+            1141.49,
+            1199.9,
+            1218.7,
+            1223.48,
+            1247.53,
+            1257.59,
+            1314.29,
+            1483.63,
+            1817.3
+          ]
+        },
+        "Auxly CLI": {
+          "write_time_sec": 2.41,
+          "time_to_searchable_sec": 25.663,
+          "cold_first_query_ms": 3590.14,
+          "query_p50_ms": 4278.65,
+          "query_p95_ms": 7567.76,
+          "query_mean_ms": 4979.11,
+          "query_min_ms": 3717.28,
+          "query_max_ms": 7567.76,
+          "raw_queries_ms": [
+            3717.28,
+            3774.71,
+            4046.01,
+            4088.63,
+            4212.93,
+            4344.36,
+            5111.35,
+            5904.97,
+            7023.11,
+            7567.76
+          ]
+        },
+        "Basic Memory CLI": {
+          "write_time_sec": 23.07,
+          "time_to_searchable_sec": 15.445,
+          "cold_first_query_ms": 10240.02,
+          "query_p50_ms": 9219.9,
+          "query_p95_ms": 14081.43,
+          "query_mean_ms": 9481.14,
+          "query_min_ms": 6892.83,
+          "query_max_ms": 14081.43,
+          "raw_queries_ms": [
+            6892.83,
+            6901.0,
+            7343.92,
+            7692.72,
+            8996.16,
+            9443.63,
+            10247.56,
+            11097.15,
+            12114.99,
+            14081.43
+          ]
+        },
+        "Mesh SDK": {
+          "write_time_sec": 41.82,
+          "time_to_searchable_sec": 0.043,
+          "cold_first_query_ms": 58.44,
+          "query_p50_ms": 106.87,
+          "query_p95_ms": 228.05,
+          "query_mean_ms": 116.59,
+          "query_min_ms": 53.46,
+          "query_max_ms": 228.05,
+          "raw_queries_ms": [
+            53.46,
+            72.92,
+            77.61,
+            92.29,
+            106.44,
+            107.3,
+            117.44,
+            117.84,
+            192.6,
+            228.05
+          ]
+        },
+        "Mem0 SDK": {
+          "write_time_sec": 167.04,
+          "time_to_searchable_sec": 0.436,
+          "cold_first_query_ms": 400.65,
+          "query_p50_ms": 300.16,
+          "query_p95_ms": 1839.67,
+          "query_mean_ms": 456.43,
+          "query_min_ms": 233.12,
+          "query_max_ms": 1839.67,
+          "raw_queries_ms": [
+            233.12,
+            241.63,
+            284.93,
+            292.89,
+            297.41,
+            302.91,
+            351.17,
+            356.03,
+            364.54,
+            1839.67
+          ]
+        }
+      }
+    },
+    {
+      "question_id": "58ef2f1c",
+      "turn_count": 515,
+      "tool_order": [
+        "Auxly CLI",
+        "Basic Memory CLI",
+        "Mesh SDK",
+        "Mem0 SDK",
+        "Mesh CLI (Daemon)"
+      ],
+      "tools": {
+        "Auxly CLI": {
+          "write_time_sec": 3.06,
+          "time_to_searchable_sec": 28.597,
+          "cold_first_query_ms": 4846.84,
+          "query_p50_ms": 5385.77,
+          "query_p95_ms": 14635.22,
+          "query_mean_ms": 6357.05,
+          "query_min_ms": 4166.99,
+          "query_max_ms": 14635.22,
+          "raw_queries_ms": [
+            4166.99,
+            4350.89,
+            4649.9,
+            4780.63,
+            5068.31,
+            5703.22,
+            6428.61,
+            6590.31,
+            7196.45,
+            14635.22
+          ]
+        },
+        "Basic Memory CLI": {
+          "write_time_sec": 21.45,
+          "time_to_searchable_sec": 11.551,
+          "cold_first_query_ms": 11595.03,
+          "query_p50_ms": 19882.71,
+          "query_p95_ms": 40018.01,
+          "query_mean_ms": 22542.38,
+          "query_min_ms": 13573.37,
+          "query_max_ms": 40018.01,
+          "raw_queries_ms": [
+            13573.37,
+            17191.68,
+            18036.13,
+            18425.76,
+            19484.3,
+            20281.11,
+            25095.48,
+            25920.64,
+            27397.31,
+            40018.01
+          ]
+        },
+        "Mesh SDK": {
+          "write_time_sec": 38.46,
+          "time_to_searchable_sec": 0.039,
+          "cold_first_query_ms": 63.23,
+          "query_p50_ms": 59.45,
+          "query_p95_ms": 66.06,
+          "query_mean_ms": 57.68,
+          "query_min_ms": 46.38,
+          "query_max_ms": 66.06,
+          "raw_queries_ms": [
+            46.38,
+            51.67,
+            51.69,
+            54.99,
+            59.44,
+            59.46,
+            61.03,
+            62.95,
+            63.08,
+            66.06
+          ]
+        },
+        "Mem0 SDK": {
+          "write_time_sec": 117.85,
+          "time_to_searchable_sec": 0.329,
+          "cold_first_query_ms": 173.62,
+          "query_p50_ms": 173.61,
+          "query_p95_ms": 388.29,
+          "query_mean_ms": 225.73,
+          "query_min_ms": 162.56,
+          "query_max_ms": 388.29,
+          "raw_queries_ms": [
+            162.56,
+            164.68,
+            169.72,
+            172.72,
+            173.1,
+            174.11,
+            175.26,
+            333.67,
+            343.14,
+            388.29
+          ]
+        },
+        "Mesh CLI (Daemon)": {
+          "write_time_sec": 8.62,
+          "time_to_searchable_sec": 0.637,
+          "cold_first_query_ms": 572.39,
+          "query_p50_ms": 623.88,
+          "query_p95_ms": 852.76,
+          "query_mean_ms": 661.16,
+          "query_min_ms": 575.73,
+          "query_max_ms": 852.76,
+          "raw_queries_ms": [
+            575.73,
+            590.38,
+            591.61,
+            597.07,
+            601.61,
+            646.16,
+            660.97,
+            725.3,
+            770.05,
+            852.76
+          ]
+        }
+      }
+    },
+    {
+      "question_id": "f8c5f88b",
+      "turn_count": 487,
+      "tool_order": [
+        "Basic Memory CLI",
+        "Mesh SDK",
+        "Mem0 SDK",
+        "Mesh CLI (Daemon)",
+        "Auxly CLI"
+      ],
+      "tools": {
+        "Basic Memory CLI": {
+          "write_time_sec": 8.45,
+          "time_to_searchable_sec": 5.672,
+          "cold_first_query_ms": 5613.26,
+          "query_p50_ms": 5573.15,
+          "query_p95_ms": 8282.66,
+          "query_mean_ms": 5799.74,
+          "query_min_ms": 4774.91,
+          "query_max_ms": 8282.66,
+          "raw_queries_ms": [
+            4774.91,
+            5172.88,
+            5250.48,
+            5522.93,
+            5541.0,
+            5605.31,
+            5800.81,
+            5957.01,
+            6089.4,
+            8282.66
+          ]
+        },
+        "Mesh SDK": {
+          "write_time_sec": 10.83,
+          "time_to_searchable_sec": 0.026,
+          "cold_first_query_ms": 31.02,
+          "query_p50_ms": 41.0,
+          "query_p95_ms": 62.28,
+          "query_mean_ms": 39.07,
+          "query_min_ms": 22.24,
+          "query_max_ms": 62.28,
+          "raw_queries_ms": [
+            22.24,
+            24.12,
+            24.47,
+            36.33,
+            40.77,
+            41.24,
+            41.98,
+            46.42,
+            50.86,
+            62.28
+          ]
+        },
+        "Mem0 SDK": {
+          "write_time_sec": 59.9,
+          "time_to_searchable_sec": 0.203,
+          "cold_first_query_ms": 163.78,
+          "query_p50_ms": 157.72,
+          "query_p95_ms": 336.71,
+          "query_mean_ms": 175.74,
+          "query_min_ms": 148.37,
+          "query_max_ms": 336.71,
+          "raw_queries_ms": [
+            148.37,
+            148.72,
+            153.66,
+            156.75,
+            157.28,
+            158.16,
+            158.93,
+            162.96,
+            175.9,
+            336.71
+          ]
+        },
+        "Mesh CLI (Daemon)": {
+          "write_time_sec": 15.28,
+          "time_to_searchable_sec": 1.299,
+          "cold_first_query_ms": 647.69,
+          "query_p50_ms": 718.64,
+          "query_p95_ms": 1340.09,
+          "query_mean_ms": 806.38,
+          "query_min_ms": 579.88,
+          "query_max_ms": 1340.09,
+          "raw_queries_ms": [
+            579.88,
+            582.88,
+            611.7,
+            620.88,
+            689.09,
+            748.18,
+            896.42,
+            964.83,
+            1029.82,
+            1340.09
+          ]
+        },
+        "Auxly CLI": {
+          "write_time_sec": 0.82,
+          "time_to_searchable_sec": 10.814,
+          "cold_first_query_ms": 2024.88,
+          "query_p50_ms": 1859.65,
+          "query_p95_ms": 2787.69,
+          "query_mean_ms": 1996.96,
+          "query_min_ms": 1700.41,
+          "query_max_ms": 2787.69,
+          "raw_queries_ms": [
+            1700.41,
+            1764.79,
+            1775.68,
+            1821.45,
+            1830.65,
+            1888.65,
+            1933.34,
+            1943.1,
+            2523.86,
+            2787.69
+          ]
+        }
+      }
+    }
+  ]
+}

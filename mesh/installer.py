@@ -21,6 +21,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+try:
+    import tomllib
+except ModuleNotFoundError:
+    try:
+        import tomli as tomllib  # type: ignore[no-redef]
+    except ModuleNotFoundError:
+        tomllib = None  # type: ignore[assignment]
+
 from .version import VERSION
 
 logger = logging.getLogger(__name__)
@@ -74,7 +82,7 @@ def get_rules_block_content(version: str = VERSION) -> str:
         body = _RULES_BLOCK_FILE.read_text(encoding="utf-8").strip()
     else:
         body = (
-            "# Mesh Memory & Task Protocol (Always-On)\n"
+            "# Mesh Context & Task Protocol (Always-On)\n"
             "1. SESSION START: Call `mesh_project_brief(max_tokens=500)` immediately to load open tasks, recent completions, and facts.\n"
             "2. RECALL FIRST: Before asking the user or assuming conventions/ports/commands, query `mesh_recall` with targeted keywords.\n"
             "3. RECORD WITH RATIONALE: Store durable architectural decisions WITH their reason (\"because <reason>\"), ports, commands, and conventions via `mesh_learn`.\n"
@@ -277,13 +285,13 @@ class GeminiCliAdapter(AgentAdapter):
             "gemini-cli",
             "Gemini CLI",
             verified=False,
-            verification_note="Unverified: official documentation references settings.json rather than mcp.json.",
+            verification_note="Official documentation specifies ~/.gemini/settings.json or .gemini/settings.json with an 'mcpServers' object.",
         )
 
     def get_mcp_config_path(self, scope: str, project_dir: Optional[Path] = None) -> Optional[Path]:
         if scope == "project" and project_dir:
-            return project_dir / ".gemini" / "mcp.json"
-        return self.get_user_home() / ".gemini" / "mcp.json"
+            return project_dir / ".gemini" / "settings.json"
+        return self.get_user_home() / ".gemini" / "settings.json"
 
     def get_skill_root_path(self, scope: str, project_dir: Optional[Path] = None) -> Optional[Path]:
         if scope == "project" and project_dir:
@@ -322,12 +330,12 @@ class WindsurfAdapter(AgentAdapter):
             "windsurf",
             "Windsurf",
             verified=False,
-            verification_note="User-scope verified (~/.codeium/windsurf/mcp_config.json); project-scope (.windsurf/mcp_config.json) unverified in official Codeium docs.",
+            verification_note="User-scope verified (~/.codeium/windsurf/mcp_config.json, targeting Windsurf editor; JetBrains plugin uses ~/.codeium/mcp_config.json). Project-level MCP config is not documented by Windsurf, so Mesh does not write one.",
         )
 
     def get_mcp_config_path(self, scope: str, project_dir: Optional[Path] = None) -> Optional[Path]:
-        if scope == "project" and project_dir:
-            return project_dir / ".windsurf" / "mcp_config.json"
+        if scope == "project":
+            return None
         return self.get_user_home() / ".codeium" / "windsurf" / "mcp_config.json"
 
     def get_skill_root_path(self, scope: str, project_dir: Optional[Path] = None) -> Optional[Path]:
@@ -347,13 +355,13 @@ class OpenCodeAdapter(AgentAdapter):
             "opencode",
             "OpenCode",
             verified=False,
-            verification_note="Unverified: OpenCode MCP schema requires {'mcp': {'servers': ...}} in opencode.json.",
+            verification_note="Official documentation specifies opencode.json with an 'mcp' table (type: 'local', command: [...]).",
         )
 
     def get_mcp_config_path(self, scope: str, project_dir: Optional[Path] = None) -> Optional[Path]:
         if scope == "project" and project_dir:
             return project_dir / "opencode.json"
-        return self.get_xdg_config() / "opencode" / "mcp.json"
+        return self.get_xdg_config() / "opencode" / "opencode.json"
 
     def get_skill_root_path(self, scope: str, project_dir: Optional[Path] = None) -> Optional[Path]:
         if scope == "project" and project_dir:
@@ -372,13 +380,13 @@ class CodexAdapter(AgentAdapter):
             "codex",
             "OpenAI Codex CLI",
             verified=False,
-            verification_note="Unverified: OpenAI Codex CLI MCP config schema and path are not standardized in official docs.",
+            verification_note="Official documentation specifies ~/.codex/config.toml or .codex/config.toml ([mcp_servers.<name>] TOML tables).",
         )
 
     def get_mcp_config_path(self, scope: str, project_dir: Optional[Path] = None) -> Optional[Path]:
         if scope == "project" and project_dir:
-            return project_dir / ".codex" / "mcp.json"
-        return self.get_user_home() / ".codex" / "mcp.json"
+            return project_dir / ".codex" / "config.toml"
+        return self.get_user_home() / ".codex" / "config.toml"
 
     def get_skill_root_path(self, scope: str, project_dir: Optional[Path] = None) -> Optional[Path]:
         if scope == "project" and project_dir:
@@ -406,6 +414,183 @@ ADAPTER_MAP: dict[str, AgentAdapter] = {a.agent_id: a for a in _ALL_ADAPTERS}
 SUPPORTED_AGENTS: list[str] = list(ADAPTER_MAP.keys())
 
 
+def _format_toml_mcp_section(command: str, args: list[str], env: Optional[dict[str, str]] = None) -> str:
+    lines = [
+        "[mcp_servers.mesh]",
+        f"command = {json.dumps(command)}",
+        f"args = {json.dumps(args)}",
+    ]
+    if env:
+        lines.append("[mcp_servers.mesh.env]")
+        for k, v in sorted(env.items()):
+            lines.append(f"{k} = {json.dumps(v)}")
+    return "\n".join(lines) + "\n"
+
+
+def _splice_toml_mcp_section(content: str, replacement: Optional[str]) -> str:
+    lines = content.splitlines(keepends=True)
+    out: list[str] = []
+    in_mesh = False
+    mesh_inserted = False
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("["):
+            header = stripped.lstrip("[").rstrip("]").strip()
+            if header == "mcp_servers.mesh" or header.startswith("mcp_servers.mesh."):
+                in_mesh = True
+                if replacement and not mesh_inserted:
+                    out.append(replacement if replacement.endswith("\n") else replacement + "\n")
+                    mesh_inserted = True
+                continue
+            else:
+                in_mesh = False
+        if not in_mesh:
+            out.append(line)
+
+    if replacement and not mesh_inserted:
+        if out and not out[-1].endswith("\n"):
+            out[-1] = out[-1] + "\n"
+        if out and out[-1].strip():
+            out.append("\n")
+        out.append(replacement if replacement.endswith("\n") else replacement + "\n")
+
+    return "".join(out)
+
+
+def _update_toml_mcp_config(
+    config_path: Path,
+    command: str,
+    args: list[str],
+    env: Optional[dict[str, str]] = None,
+    *,
+    dry_run: bool = False,
+) -> tuple[bool, str, Optional[Path]]:
+    old_content = ""
+    if config_path.exists():
+        try:
+            old_content = config_path.read_text(encoding="utf-8")
+            if old_content.strip() and tomllib is not None:
+                tomllib.loads(old_content)
+        except Exception as exc:
+            raise ValueError(f"Existing MCP config at {config_path} contains invalid TOML: {exc}")
+
+    replacement = _format_toml_mcp_section(command, args, env)
+    new_content = _splice_toml_mcp_section(old_content, replacement)
+
+    if tomllib is not None:
+        try:
+            tomllib.loads(new_content)
+        except Exception as exc:
+            raise ValueError(f"Generated invalid TOML for {config_path}: {exc}")
+
+    return _atomic_write_with_backup(config_path, new_content, dry_run=dry_run)
+
+
+def _remove_toml_mcp_config(
+    config_path: Path,
+    *,
+    dry_run: bool = False,
+) -> tuple[bool, str, Optional[Path]]:
+    if not config_path.exists():
+        return False, "", None
+
+    try:
+        old_content = config_path.read_text(encoding="utf-8")
+        if old_content.strip() and tomllib is not None:
+            data = tomllib.loads(old_content)
+            if not isinstance(data.get("mcp_servers", {}), dict) or "mesh" not in data.get("mcp_servers", {}):
+                return False, "", None
+    except Exception as exc:
+        raise ValueError(f"Invalid TOML in {config_path}: {exc}")
+
+    new_content = _splice_toml_mcp_section(old_content, None).strip()
+    if not new_content:
+        if dry_run:
+            return True, f"would delete empty {config_path}", None
+        config_path.unlink()
+        return True, f"deleted empty {config_path}", None
+
+    new_content += "\n"
+    if tomllib is not None:
+        try:
+            tomllib.loads(new_content)
+        except Exception as exc:
+            raise ValueError(f"Generated invalid TOML during removal in {config_path}: {exc}")
+
+    return _atomic_write_with_backup(config_path, new_content, dry_run=dry_run)
+
+
+def _update_opencode_json_mcp(
+    config_path: Path,
+    command: str,
+    args: list[str],
+    env: Optional[dict[str, str]] = None,
+    *,
+    dry_run: bool = False,
+) -> tuple[bool, str, Optional[Path]]:
+    data: dict[str, Any] = {}
+    if config_path.exists():
+        try:
+            content = config_path.read_text(encoding="utf-8")
+            if content.strip():
+                data = json.loads(content)
+        except Exception as exc:
+            raise ValueError(f"Existing MCP config at {config_path} contains invalid JSON: {exc}")
+
+    if not isinstance(data, dict):
+        raise ValueError(f"Existing MCP config at {config_path} is not a JSON object.")
+
+    mcp = data.setdefault("mcp", {})
+    if not isinstance(mcp, dict):
+        raise ValueError(f"Invalid 'mcp' entry in {config_path}: expected JSON object.")
+
+    cmd_list = [command] + list(args)
+    server_entry: dict[str, Any] = {
+        "type": "local",
+        "command": cmd_list,
+        "enabled": True,
+    }
+    if env:
+        server_entry["environment"] = env
+
+    mcp["mesh"] = server_entry
+    new_json = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+    return _atomic_write_with_backup(config_path, new_json, dry_run=dry_run)
+
+
+def _remove_opencode_json_mcp(
+    config_path: Path,
+    *,
+    dry_run: bool = False,
+) -> tuple[bool, str, Optional[Path]]:
+    if not config_path.exists():
+        return False, "", None
+
+    try:
+        content = config_path.read_text(encoding="utf-8")
+        data = json.loads(content)
+    except Exception as exc:
+        raise ValueError(f"Invalid JSON in {config_path}: {exc}")
+
+    if not isinstance(data, dict):
+        return False, "", None
+
+    mcp = data.get("mcp")
+    if not isinstance(mcp, dict) or "mesh" not in mcp:
+        return False, "", None
+
+    del mcp["mesh"]
+    if len(data) == 1 and not mcp:
+        if dry_run:
+            return True, f"would delete empty {config_path}", None
+        config_path.unlink()
+        return True, f"deleted empty {config_path}", None
+
+    new_json = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+    return _atomic_write_with_backup(config_path, new_json, dry_run=dry_run)
+
+
 def update_mcp_config_file(
     config_path: Path,
     command: str,
@@ -417,7 +602,13 @@ def update_mcp_config_file(
     """
     Safely update an MCP config file to register 'mesh' without touching other servers.
     Preserves all existing top-level keys and server entries.
+    Supports standard JSON mcpServers, OpenCode mcp object, and Codex TOML tables.
     """
+    if config_path.suffix == ".toml":
+        return _update_toml_mcp_config(config_path, command, args, env=env, dry_run=dry_run)
+    if "opencode" in config_path.name:
+        return _update_opencode_json_mcp(config_path, command, args, env=env, dry_run=dry_run)
+
     data: dict[str, Any] = {}
     if config_path.exists():
         try:
@@ -454,6 +645,11 @@ def remove_mcp_config_entry(
     """Remove the 'mesh' entry from an MCP config file, preserving everything else."""
     if not config_path.exists():
         return False, "", None
+
+    if config_path.suffix == ".toml":
+        return _remove_toml_mcp_config(config_path, dry_run=dry_run)
+    if "opencode" in config_path.name:
+        return _remove_opencode_json_mcp(config_path, dry_run=dry_run)
 
     try:
         content = config_path.read_text(encoding="utf-8")

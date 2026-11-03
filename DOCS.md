@@ -505,13 +505,26 @@ No flags. Checks data directory, SQLite/FTS5, daemon, model/engine, MCP configs,
 
 Flags: `--yes`, `--json`. Examples: `mesh namespaces stats work`, `mesh namespaces rename old new`, `mesh namespaces delete scratch`.
 
-#### `mesh export <output.json>`
+#### `mesh export <output>`
 
-Flags: `--namespace`, `--no-embeddings`, `--encrypt`, `--passphrase`. Private memories are never exported.
+Exports memories from the selected namespace to JSON, Markdown, or CSV.
+
+- **Formats (`--format {json,markdown,csv}`)**: Inferred from the output extension (`.json`, `.md`, `.csv`) if omitted.
+- **JSON**: The only lossless round-trip format; can be restored with `mesh import`. Supports `--encrypt` (authenticated envelope) and vector embeddings (toggle with `--no-embeddings`).
+- **Markdown (`.md`)**: One-way human-readable summary of memories and work items (cannot be re-imported). Memory bodies and summaries are rendered in fenced code blocks to prevent markdown headings, links, or HTML injection. Vector embeddings are omitted by default.
+- **CSV (`.csv`)**: One-way tabular export for spreadsheets (cannot be re-imported). Vector embeddings are omitted by default. Neutralizes spreadsheet formula injection (CWE-1236) by automatically prefixing cells starting with `=`, `+`, `-`, `@`, `\t`, or `\r` with a single quote (`'`). Note that bullet-style text such as `- use pnpm` or `+ add test` will appear with a leading quote (`'- use pnpm`) in CSV to prevent formula execution in Excel/Calc.
+- **Privacy & Security**: Private (`local_only`) memories are strictly omitted from all exports. Export files are written with owner-only permissions (mode `0600` on POSIX, owner-only ACL on Windows). All exports contain plain text unless JSON `--encrypt` is used.
+- Flags: `--format`, `--namespace`, `--no-embeddings`, `--encrypt` (JSON only), `--passphrase`. Private memories are never exported in any format.
 
 #### `mesh import <input.json>`
 
 Flags: `--namespace`, `--overwrite`, `--dry-run`, `--passphrase`.
+
+#### `mesh reembed`
+
+Re-embed memories using the active ONNX model to resolve mixed vector spaces and eliminate `hash-384` fallback vectors.
+
+Flags: `--namespace NAME` (target namespace; default: active or shared), `--all` (re-embed across all namespaces), `--force` (re-embed all memories even if already on ONNX), `--batch-size N` (batch size, default 32), `--dry-run` (preview memories needing re-embedding without writing).
 
 #### `mesh encrypt-db`
 
@@ -596,12 +609,14 @@ Auth: every route except `GET /health` requires the bearer token from `~/.mesh/a
 ```bash
 TOKEN=$(cat ~/.mesh/auth_token)
 curl -s http://127.0.0.1:7701/health
+curl -s http://127.0.0.1:7701/ready
 curl -s http://127.0.0.1:7701/engine -H "Authorization: Bearer $TOKEN"
 ```
 
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/health` | Liveness; unauthenticated |
+| GET | `/ready` | Readiness probe; returns 200 when models are warmed, 503 while warming; unauthenticated |
 | GET | `/engine` | Engine/model state |
 | POST | `/warmup` | Load the model (`namespace`, `namespaces`, `blocking=false`) |
 | POST | `/unload` | Release model memory |
@@ -756,6 +771,8 @@ It binds loopback by default. Non-loopback binding requires an explicit `--host`
 
 | Variable | Meaning |
 |---|---|
+| `MESH_REQUIRE_MODEL` | `1` enables strict embedding mode: raises an error immediately if the ONNX model is unavailable, forbidding silent fallback to `hash-384`. |
+| `MESH_AUTO_DOWNLOAD_MODEL` | `1` automatically downloads and verifies the canonical ONNX model without interactive confirmation prompts (automation/CI mode). |
 | `MESH_NO_MODEL_DOWNLOAD` | `1` disables ONNX download; stays on `hash-384`. |
 | `MESH_SKIP_CHECKSUM` | Skips model checksum verification. Not recommended. |
 | `MESH_MODEL_SHA256` | Additional/replacement ONNX SHA-256 allowlist entry. |
@@ -775,13 +792,6 @@ It binds loopback by default. Non-loopback binding requires an explicit `--host`
 | `MESH_EMBED_CACHE_SIZE` | In-memory embedding LRU size. Default 1024. |
 | `MESH_IDLE_UNLOAD_SECONDS` | Idle seconds before unloading the model; `0` never unloads. |
 
-### Native acceleration (C core)
-
-| Variable | Meaning |
-|---|---|
-| `MESH_DISABLE_NATIVE` | `1` disables native C acceleration library (`mesh/_c_core.dll` / `.so`), forcing pure-Python fallbacks. |
-| `MESH_C_CORE_PATH` | Custom path to the native compiled library (`_c_core.dll` / `_c_core.so`). |
-
 ### Storage and limits
 
 | Variable | Meaning |
@@ -791,7 +801,10 @@ It binds loopback by default. Non-loopback binding requires an explicit `--host`
 | `MESH_MAX_OPEN_NAMESPACES` | Limit on simultaneously open namespace handles. |
 | `MESH_MAX_POOL_SIZE` | SQLite connection pool cap. |
 | `MESH_MAX_VECTOR_CACHE_SIZE` | In-memory vector cache cap. |
-| `MESH_MAX_QUERY_ROWS` | Query result cap. |
+| `MESH_MAX_QUERY_ROWS` | Retention cap on stored search query records per namespace (default 1000). Pruned automatically in FIFO order. |
+| `MESH_LOG_QUERY_TEXT` | `1` (default) stores redacted search queries in the local `queries` table. `0` or `false` disables query-text logging entirely (stores empty query string, preserving query count metrics with zero search terms recorded). |
+| `MESH_TRACKING_BATCH` | In-memory access tracking batch write limit before flushing to SQLite. Default 128. |
+| `MESH_TRACKING_FLUSH_SECONDS` | In-memory access tracking maximum flush interval in seconds. Default 5.0. |
 | `MESH_MAX_AUDIT_ROWS` | Audit row cap. |
 | `MESH_STRICT_FSYNC` | `1` enforces SQLite `PRAGMA synchronous=NORMAL` instead of `OFF` for strict durability. |
 | `MESH_INIT_LOCK_RETRY_SECONDS` | Seconds to wait/retry acquiring initialization lock for database creation/migration. Default 10. |
@@ -808,6 +821,9 @@ It binds loopback by default. Non-loopback binding requires an explicit `--host`
 | `MESH_UNIX_SOCKET` | POSIX Unix socket path (mode `0600`). |
 | `MESH_AUTH_TOKEN`, `MESH_TOKEN` | Token overrides for server/client. Prefer the generated `~/.mesh/auth_token`. |
 | `MESH_FORCE_DAEMON_PROBE` | `1` forces port probing even if `daemon.pid` is absent. |
+| `MESH_DAEMON_REQUEST_TIMEOUT` | CLI-to-daemon HTTP request timeout in seconds (default 10.0 s, minimum 1.0 s). |
+| `MESH_DAEMON_VERIFY_TIMEOUT` | Daemon identity verification timeout in seconds (default 1.0 s, minimum 0.2 s). |
+| `MESH_DAEMON_READY_TIMEOUT` | Daemon model-warming readiness probe timeout in seconds (default 30.0 s, minimum 1.0 s). |
 | `MESH_CSRF` | CSRF protection control for browser surfaces. |
 | `MESH_IN_DAEMON` | Internal: marks a process running inside the daemon. |
 
@@ -885,9 +901,9 @@ Mesh embeds locally with ONNX Runtime (`all-MiniLM-L6-v2`, 384 dimensions) or th
 - A version string and package name during an opt-in update check.
 - Log text or summaries only if you explicitly enable cloud capture; `--local-only` prevents it.
 
-### Telemetry
+### Local access tracking and telemetry policy
 
-No remote telemetry. Local audit events are content-free. `mesh audit export` exports them to a file you choose.
+No remote telemetry or phone-home. Local access tracking records (`access_count`, `accessed_at`, `queries`) and operational audit events remain strictly on the local machine in SQLite. They are never transmitted over the network and are completely excluded from all exports (`mesh export`, CSV, Markdown, JSON). Query text records are automatically pruned according to `MESH_MAX_QUERY_ROWS` (default 1,000) and can be disabled via `MESH_LOG_QUERY_TEXT=0`. Local audit events are content-free and only exportable via `mesh audit export` to a local file you explicitly choose.
 
 ### Log capture
 

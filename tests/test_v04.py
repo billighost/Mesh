@@ -22,6 +22,7 @@ from mesh.digest import generate_digest
 from mesh.memory import (
     Mesh,
     _embed_cached,
+    drain_reembed_worker,
     get_engine_status,
     set_idle_unload_seconds,
     unload_model,
@@ -224,6 +225,7 @@ def test_engine_idle_unload_clears_cache():
     try:
         mesh = Mesh(namespace=ns, agent_id="test")
         mesh.learn("FastEmbed and idle unload test memory")
+        drain_reembed_worker(timeout=5.0)
 
         status_before = get_engine_status()
         assert status_before["embed_cache_entries"] >= 1

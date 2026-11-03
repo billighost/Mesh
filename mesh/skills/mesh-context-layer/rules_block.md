@@ -1,4 +1,4 @@
-# Mesh Memory & Task Protocol (Always-On)
+# Mesh Context & Task Protocol (Always-On)
 1. SESSION START: Call `mesh_project_brief(max_tokens=500)` immediately to load open tasks, recent completions, and facts.
 2. RECALL FIRST: Before asking the user or assuming conventions/ports/commands, query `mesh_recall` with targeted keywords.
 3. RECORD WITH RATIONALE: Store durable architectural decisions WITH their reason ("because <reason>"), ports, commands, and conventions via `mesh_learn`.

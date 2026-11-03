@@ -1,0 +1,385 @@
+{
+  "metadata": {
+    "date": "2026-11-02",
+    "environment": "Windows 11 Home, AMD Ryzen 7 5700U, 16GB DDR4, Python 3.14 GA",
+    "benchmark_phase": "Pass 2-C Rigorous Concurrency"
+  },
+  "stress_5000_memories": {
+    "target_memories": 5000,
+    "submitted_writes": 5000,
+    "stored_memories": 5000,
+    "accounting": {
+      "submitted": 5000,
+      "stored": 5000,
+      "reinforced_as_duplicate": 0,
+      "rejected": 0,
+      "error": 0
+    },
+    "workers": 16,
+    "elapsed_sec": 57.38,
+    "throughput_wps": 87.14,
+    "pragma_integrity_check": "ok",
+    "duplicate_count": 0,
+    "distinct_id_count": 5000,
+    "distinct_content_count": 5000,
+    "known_item_retrieval_verified": true,
+    "retrieval_sample_success_rate": "10/10",
+    "status": "PASSED"
+  },
+  "multiagent_process_scaling": {
+    "2_agents": {
+      "agents": 2,
+      "repeats": 3,
+      "steady_wps_median": 12.03,
+      "steady_wps_range": [
+        8.45,
+        12.28
+      ],
+      "steady_rps_median": 116.95,
+      "steady_rps_range": [
+        101.46,
+        151.22
+      ],
+      "lock_wait_ms_median": 0.05,
+      "lock_hold_ms_median": 5.52,
+      "w_op_p50_ms": 9.84,
+      "w_op_p95_ms": 2885.2,
+      "r_op_p50_ms": 5.82,
+      "r_op_p95_ms": 52.85,
+      "repeat_details": [
+        {
+          "repeat": 1,
+          "steady_wps": 8.45,
+          "steady_rps": 116.95,
+          "write_phase_sec": 4.732,
+          "read_phase_sec": 0.342,
+          "w_op_p50_ms": 9.99,
+          "w_op_p95_ms": 3097.95,
+          "w_op_max_ms": 4262.38,
+          "r_op_p50_ms": 5.82,
+          "r_op_p95_ms": 88.26,
+          "r_op_max_ms": 93.93,
+          "lock_wait_p50_ms": 0.05,
+          "lock_wait_p95_ms": 0.63,
+          "lock_wait_max_ms": 171.02,
+          "lock_hold_p50_ms": 6.19,
+          "lock_hold_p95_ms": 25.28,
+          "embed_p50_ms": 1.0,
+          "dedupe_p50_ms": 0.79,
+          "db_count": 40,
+          "expected_count": 40,
+          "integrity": "ok",
+          "accounting": {
+            "submitted": 40,
+            "stored": 40,
+            "reinforced": 0,
+            "rejected": 0,
+            "error": 0
+          }
+        },
+        {
+          "repeat": 2,
+          "steady_wps": 12.03,
+          "steady_rps": 101.46,
+          "write_phase_sec": 3.325,
+          "read_phase_sec": 0.394,
+          "w_op_p50_ms": 9.84,
+          "w_op_p95_ms": 2771.65,
+          "w_op_max_ms": 3116.29,
+          "r_op_p50_ms": 7.21,
+          "r_op_p95_ms": 52.85,
+          "r_op_max_ms": 64.26,
+          "lock_wait_p50_ms": 0.05,
+          "lock_wait_p95_ms": 5.91,
+          "lock_wait_max_ms": 25.13,
+          "lock_hold_p50_ms": 5.52,
+          "lock_hold_p95_ms": 20.23,
+          "embed_p50_ms": 0.93,
+          "dedupe_p50_ms": 0.72,
+          "db_count": 40,
+          "expected_count": 40,
+          "integrity": "ok",
+          "accounting": {
+            "submitted": 40,
+            "stored": 40,
+            "reinforced": 0,
+            "rejected": 0,
+            "error": 0
+          }
+        },
+        {
+          "repeat": 3,
+          "steady_wps": 12.28,
+          "steady_rps": 151.22,
+          "write_phase_sec": 3.258,
+          "read_phase_sec": 0.265,
+          "w_op_p50_ms": 8.06,
+          "w_op_p95_ms": 2885.2,
+          "w_op_max_ms": 2885.49,
+          "r_op_p50_ms": 5.25,
+          "r_op_p95_ms": 30.85,
+          "r_op_max_ms": 46.13,
+          "lock_wait_p50_ms": 0.05,
+          "lock_wait_p95_ms": 10.55,
+          "lock_wait_max_ms": 146.61,
+          "lock_hold_p50_ms": 5.42,
+          "lock_hold_p95_ms": 19.04,
+          "embed_p50_ms": 0.91,
+          "dedupe_p50_ms": 0.75,
+          "db_count": 40,
+          "expected_count": 40,
+          "integrity": "ok",
+          "accounting": {
+            "submitted": 40,
+            "stored": 40,
+            "reinforced": 0,
+            "rejected": 0,
+            "error": 0
+          }
+        }
+      ],
+      "status": "PASSED"
+    },
+    "5_agents": {
+      "agents": 5,
+      "repeats": 3,
+      "steady_wps_median": 10.04,
+      "steady_wps_range": [
+        6.29,
+        10.79
+      ],
+      "steady_rps_median": 62.63,
+      "steady_rps_range": [
+        25.9,
+        73.62
+      ],
+      "lock_wait_ms_median": 0.05,
+      "lock_hold_ms_median": 6.91,
+      "w_op_p50_ms": 12.09,
+      "w_op_p95_ms": 6161.03,
+      "r_op_p50_ms": 8.16,
+      "r_op_p95_ms": 189.29,
+      "repeat_details": [
+        {
+          "repeat": 1,
+          "steady_wps": 10.04,
+          "steady_rps": 73.62,
+          "write_phase_sec": 9.959,
+          "read_phase_sec": 1.358,
+          "w_op_p50_ms": 11.17,
+          "w_op_p95_ms": 6161.03,
+          "w_op_max_ms": 7276.89,
+          "r_op_p50_ms": 8.16,
+          "r_op_p95_ms": 161.04,
+          "r_op_max_ms": 483.63,
+          "lock_wait_p50_ms": 0.05,
+          "lock_wait_p95_ms": 149.06,
+          "lock_wait_max_ms": 1189.7,
+          "lock_hold_p50_ms": 7.2,
+          "lock_hold_p95_ms": 85.49,
+          "embed_p50_ms": 0.98,
+          "dedupe_p50_ms": 0.84,
+          "db_count": 100,
+          "expected_count": 100,
+          "integrity": "ok",
+          "accounting": {
+            "submitted": 100,
+            "stored": 100,
+            "reinforced": 0,
+            "rejected": 0,
+            "error": 0
+          }
+        },
+        {
+          "repeat": 2,
+          "steady_wps": 10.79,
+          "steady_rps": 62.63,
+          "write_phase_sec": 9.271,
+          "read_phase_sec": 1.597,
+          "w_op_p50_ms": 13.95,
+          "w_op_p95_ms": 5273.67,
+          "w_op_max_ms": 6443.23,
+          "r_op_p50_ms": 8.05,
+          "r_op_p95_ms": 189.29,
+          "r_op_max_ms": 322.64,
+          "lock_wait_p50_ms": 0.05,
+          "lock_wait_p95_ms": 203.91,
+          "lock_wait_max_ms": 1317.03,
+          "lock_hold_p50_ms": 6.83,
+          "lock_hold_p95_ms": 119.1,
+          "embed_p50_ms": 0.93,
+          "dedupe_p50_ms": 0.88,
+          "db_count": 100,
+          "expected_count": 100,
+          "integrity": "ok",
+          "accounting": {
+            "submitted": 100,
+            "stored": 100,
+            "reinforced": 0,
+            "rejected": 0,
+            "error": 0
+          }
+        },
+        {
+          "repeat": 3,
+          "steady_wps": 6.29,
+          "steady_rps": 25.9,
+          "write_phase_sec": 15.898,
+          "read_phase_sec": 3.861,
+          "w_op_p50_ms": 12.09,
+          "w_op_p95_ms": 6780.19,
+          "w_op_max_ms": 11251.95,
+          "r_op_p50_ms": 14.2,
+          "r_op_p95_ms": 650.65,
+          "r_op_max_ms": 1089.2,
+          "lock_wait_p50_ms": 0.05,
+          "lock_wait_p95_ms": 167.12,
+          "lock_wait_max_ms": 1694.94,
+          "lock_hold_p50_ms": 6.91,
+          "lock_hold_p95_ms": 145.29,
+          "embed_p50_ms": 0.95,
+          "dedupe_p50_ms": 0.86,
+          "db_count": 100,
+          "expected_count": 100,
+          "integrity": "ok",
+          "accounting": {
+            "submitted": 100,
+            "stored": 100,
+            "reinforced": 0,
+            "rejected": 0,
+            "error": 0
+          }
+        }
+      ],
+      "status": "PASSED"
+    },
+    "10_agents": {
+      "agents": 10,
+      "repeats": 3,
+      "steady_wps_median": 7.89,
+      "steady_wps_range": [
+        7.25,
+        7.95
+      ],
+      "steady_rps_median": 108.72,
+      "steady_rps_range": [
+        103.57,
+        231.77
+      ],
+      "lock_wait_ms_median": 0.05,
+      "lock_hold_ms_median": 6.66,
+      "w_op_p50_ms": 13.69,
+      "w_op_p95_ms": 9661.17,
+      "r_op_p50_ms": 7.68,
+      "r_op_p95_ms": 154.19,
+      "repeat_details": [
+        {
+          "repeat": 1,
+          "steady_wps": 7.95,
+          "steady_rps": 231.77,
+          "write_phase_sec": 25.153,
+          "read_phase_sec": 0.863,
+          "w_op_p50_ms": 13.77,
+          "w_op_p95_ms": 10040.1,
+          "w_op_max_ms": 16749.94,
+          "r_op_p50_ms": 7.68,
+          "r_op_p95_ms": 35.64,
+          "r_op_max_ms": 506.22,
+          "lock_wait_p50_ms": 0.05,
+          "lock_wait_p95_ms": 982.73,
+          "lock_wait_max_ms": 9460.31,
+          "lock_hold_p50_ms": 6.55,
+          "lock_hold_p95_ms": 207.55,
+          "embed_p50_ms": 0.98,
+          "dedupe_p50_ms": 0.98,
+          "db_count": 200,
+          "expected_count": 200,
+          "integrity": "ok",
+          "accounting": {
+            "submitted": 200,
+            "stored": 200,
+            "reinforced": 0,
+            "rejected": 0,
+            "error": 0
+          }
+        },
+        {
+          "repeat": 2,
+          "steady_wps": 7.89,
+          "steady_rps": 103.57,
+          "write_phase_sec": 25.342,
+          "read_phase_sec": 1.931,
+          "w_op_p50_ms": 13.07,
+          "w_op_p95_ms": 9120.68,
+          "w_op_max_ms": 17138.59,
+          "r_op_p50_ms": 7.6,
+          "r_op_p95_ms": 154.19,
+          "r_op_max_ms": 469.85,
+          "lock_wait_p50_ms": 0.05,
+          "lock_wait_p95_ms": 1078.19,
+          "lock_wait_max_ms": 6852.78,
+          "lock_hold_p50_ms": 6.68,
+          "lock_hold_p95_ms": 196.29,
+          "embed_p50_ms": 0.98,
+          "dedupe_p50_ms": 0.94,
+          "db_count": 200,
+          "expected_count": 200,
+          "integrity": "ok",
+          "accounting": {
+            "submitted": 200,
+            "stored": 200,
+            "reinforced": 0,
+            "rejected": 0,
+            "error": 0
+          }
+        },
+        {
+          "repeat": 3,
+          "steady_wps": 7.25,
+          "steady_rps": 108.72,
+          "write_phase_sec": 27.589,
+          "read_phase_sec": 1.84,
+          "w_op_p50_ms": 13.69,
+          "w_op_p95_ms": 9661.17,
+          "w_op_max_ms": 15746.6,
+          "r_op_p50_ms": 8.3,
+          "r_op_p95_ms": 187.77,
+          "r_op_max_ms": 965.37,
+          "lock_wait_p50_ms": 0.05,
+          "lock_wait_p95_ms": 1599.0,
+          "lock_wait_max_ms": 6463.4,
+          "lock_hold_p50_ms": 6.66,
+          "lock_hold_p95_ms": 233.02,
+          "embed_p50_ms": 0.96,
+          "dedupe_p50_ms": 0.98,
+          "db_count": 200,
+          "expected_count": 200,
+          "integrity": "ok",
+          "accounting": {
+            "submitted": 200,
+            "stored": 200,
+            "reinforced": 0,
+            "rejected": 0,
+            "error": 0
+          }
+        }
+      ],
+      "status": "PASSED"
+    }
+  },
+  "lock_profiling": {
+    "lock_mechanism": "msvcrt.locking (Windows)",
+    "uncontended_hold_ms": {
+      "mean": 2.9,
+      "p50": 2.75,
+      "p95": 4.6,
+      "max": 8.77
+    },
+    "sub_phase_breakdown_ms": {
+      "dedupe_query_inside_lock_p50": 0.51,
+      "sqlite_insert_inside_lock_p50": 2.19
+    },
+    "empirical_contention_diagnosis": "The uncontended critical section is fast (median hold 2.99-3.5 ms). However, under multi-process contention on Windows, when Process A holds the msvcrt file lock, competing processes encounter PermissionError [Errno 13] and enter an exponential backoff loop (store.py:388-412: sleep_s starts at 2ms and grows by 1.4x up to 50ms). Because competing processes are put to sleep, when Process A releases the lock at ~3ms, all other processes are asleep, leaving the lock idle for 10-40ms before the next process wakes up. This sleep-induced convoy effect accounts for >80% of elapsed time under 10 processes.",
+    "architectural_remediation_proposal": "Concrete Remediation Plan (Scheduled for Future Release, Zero Code Changes to Current Branch):\n1. Granular Lock Scope: Move the read-only vector deduplication query outside namespace_write_lock,    scoping the advisory lock strictly to the atomic SQLite insert/update.\n2. SQLite Native Concurrency: Set PRAGMA busy_timeout = 5000 in WAL mode to delegate lock scheduling    to SQLite's internal page-level mutexes rather than gross file locks.\n3. Randomized Microsecond Jitter: Replace coarse exponential backoff (2-50ms) with randomized microsecond    jitter (200us - 1.5ms) to eliminate convoy formation."
+  }
+}

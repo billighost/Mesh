@@ -211,7 +211,7 @@ def run_quiz():
     quiz_results = []
     total_score = 0.0
 
-    print("\n--- Running 15-Question Quiz against Mesh Memory ---")
+    print("\n--- Running 15-Question Quiz against Mesh Context Layer ---")
     for q in gt["quiz_questions"]:
         qid = q["qid"]
         question = q["question"]

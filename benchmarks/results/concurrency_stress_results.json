@@ -1,0 +1,28 @@
+{
+  "dedup_race": {
+    "threads": 16,
+    "elapsed_ms": 2204.38,
+    "final_count": 1,
+    "status": "PASSED"
+  },
+  "multi_writer": {
+    "threads": 16,
+    "total_writes": 320,
+    "elapsed_seconds": 3.01,
+    "throughput_wps": 106.3,
+    "status": "PASSED"
+  },
+  "interleaved": {
+    "read_ops": 427,
+    "write_ops": 37,
+    "duration_seconds": 4.14,
+    "status": "PASSED"
+  },
+  "multi_process": {
+    "processes": 4,
+    "items_per_process": 25,
+    "total_stored": 100,
+    "elapsed_seconds": 20.04,
+    "status": "PASSED"
+  }
+}

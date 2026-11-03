@@ -1,0 +1,2252 @@
+[
+  {
+    "question_idx": 1,
+    "question_id": "gpt4_2655b836",
+    "question": "What was the first issue I had with my new car after its first service?",
+    "gold_answer": "GPS system not functioning correctly",
+    "gold_tags": [
+      "[turn:00000]",
+      "[turn:00014]"
+    ],
+    "first_hit_rank": 5,
+    "candidates": [
+      {
+        "rank": 1,
+        "tag": "[turn:00075]",
+        "is_hit": false,
+        "similarity": 0.7505,
+        "semantic_similarity": 0.0952,
+        "lexical_score": 0.8121,
+        "composite_score": 0.7687,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00075] Wise decision to get the \"check engine\" light checked out!  Maintenance costs are an essential factor to consider whe"
+      },
+      {
+        "rank": 2,
+        "tag": "[turn:00880]",
+        "is_hit": false,
+        "similarity": 0.7112,
+        "semantic_similarity": 0.0505,
+        "lexical_score": 0.7723,
+        "composite_score": 0.7404,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00880] I'm happy to help you with your internet speed issues and negotiating with your provider!  Firstly, congratulations o"
+      },
+      {
+        "rank": 3,
+        "tag": "[turn:00874]",
+        "is_hit": false,
+        "similarity": 0.663,
+        "semantic_similarity": 0.1635,
+        "lexical_score": 0.711,
+        "composite_score": 0.7057,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00874] It sounds like slow speeds and connectivity issues are impacting your work-from-home experience and entertainment set"
+      },
+      {
+        "rank": 4,
+        "tag": "[turn:01064]",
+        "is_hit": false,
+        "similarity": 0.6574,
+        "semantic_similarity": 0.1139,
+        "lexical_score": 0.7074,
+        "composite_score": 0.7016,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:01064] Congratulations on your acceptance to UC Berkeley's exchange program! I'd be happy to help you prepare for your semes"
+      },
+      {
+        "rank": 5,
+        "tag": "[turn:00000]",
+        "is_hit": true,
+        "similarity": 0.6043,
+        "semantic_similarity": 0.2508,
+        "lexical_score": 0.5766,
+        "composite_score": 0.6634,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00000] I'm thinking of getting my car detailed soon. Do you know any good detailers in the area or have any recommendations?"
+      }
+    ]
+  },
+  {
+    "question_idx": 7,
+    "question_id": "2c63a862",
+    "question": "How many days did it take for me to find a house I loved after starting to work with Rachel?",
+    "gold_answer": "14 days. 15 days (including the last day) is also acceptable.",
+    "gold_tags": [
+      "[turn:00162]",
+      "[turn:00166]"
+    ],
+    "first_hit_rank": null,
+    "candidates": [
+      {
+        "rank": 1,
+        "tag": "[turn:00169]",
+        "is_hit": false,
+        "similarity": 0.5215,
+        "semantic_similarity": 0.0418,
+        "lexical_score": 0.5678,
+        "composite_score": 0.6038,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00169] Congratulations on getting pre-approved for a mortgage! That's a great step in the homebuying process.  Including an "
+      },
+      {
+        "rank": 2,
+        "tag": "[turn:00157]",
+        "is_hit": false,
+        "similarity": 0.4902,
+        "semantic_similarity": 0.0504,
+        "lexical_score": 0.533,
+        "composite_score": 0.5813,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00157] Irvine is a great city with a lot to offer. I'd be happy to provide you with some insights on family-friendly neighbo"
+      },
+      {
+        "rank": 3,
+        "tag": "[turn:00168]",
+        "is_hit": false,
+        "similarity": 0.462,
+        "semantic_similarity": 0.1683,
+        "lexical_score": 0.4299,
+        "composite_score": 0.561,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00168] I've already got pre-approved for a mortgage, actually, on February 10th. The amount was $350,000, which is slightly "
+      },
+      {
+        "rank": 4,
+        "tag": "[turn:01228]",
+        "is_hit": false,
+        "similarity": 0.4602,
+        "semantic_similarity": 0.1009,
+        "lexical_score": 0.4825,
+        "composite_score": 0.5597,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:01228] Sydney is an amazing city! You'll have a blast exploring the iconic landmarks, stunning beaches, and vibrant cultural"
+      },
+      {
+        "rank": 5,
+        "tag": "[turn:01180]",
+        "is_hit": false,
+        "similarity": 0.4498,
+        "semantic_similarity": 0.2304,
+        "lexical_score": 0.3448,
+        "composite_score": 0.5522,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:01180] What a wonderful idea! A heartfelt letter to Rachel is a thoughtful and personalized way to express your congratulati"
+      }
+    ]
+  },
+  {
+    "question_idx": 9,
+    "question_id": "2a1811e2",
+    "question": "How many days had passed between the Hindu festival of Holi and the Sunday mass at St. Mary's Church?",
+    "gold_answer": "21 days. 22 days (including the last day) is also acceptable.",
+    "gold_tags": [
+      "[turn:00209]",
+      "[turn:00197]"
+    ],
+    "first_hit_rank": 2,
+    "candidates": [
+      {
+        "rank": 1,
+        "tag": "[turn:00142]",
+        "is_hit": false,
+        "similarity": 0.616,
+        "semantic_similarity": 0.3138,
+        "lexical_score": 0.5371,
+        "composite_score": 0.6767,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00142] I'm thinking of volunteering at a local charity event soon. Do you have any information on organizations that focus o"
+      },
+      {
+        "rank": 2,
+        "tag": "[turn:00197]",
+        "is_hit": true,
+        "similarity": 0.5486,
+        "semantic_similarity": 0.1957,
+        "lexical_score": 0.5343,
+        "composite_score": 0.6282,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00197] I'm planning to volunteer at a local community event next weekend and I was wondering if you could suggest some ideas"
+      },
+      {
+        "rank": 3,
+        "tag": "[turn:00203]",
+        "is_hit": false,
+        "similarity": 0.5443,
+        "semantic_similarity": 0.3171,
+        "lexical_score": 0.4079,
+        "composite_score": 0.6251,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00203] That's super helpful, thank you! I think we can definitely make the bake sale a success with these tips. By the way, "
+      },
+      {
+        "rank": 4,
+        "tag": "[turn:00207]",
+        "is_hit": false,
+        "similarity": 0.4682,
+        "semantic_similarity": 0.2044,
+        "lexical_score": 0.4058,
+        "composite_score": 0.5703,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00207] I'm excited to share these social media tips with my team to help promote our charity event. By the way, I caught up "
+      },
+      {
+        "rank": 5,
+        "tag": "[turn:00219]",
+        "is_hit": false,
+        "similarity": 0.4567,
+        "semantic_similarity": 0.2651,
+        "lexical_score": 0.3224,
+        "composite_score": 0.5571,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00219] I'm happy to help you with those recipes! However, I noticed that you mentioned attending the Hindu festival of Holi "
+      }
+    ]
+  },
+  {
+    "question_idx": 10,
+    "question_id": "bbf86515",
+    "question": "How many days before the 'Rack Fest' did I participate in the 'Turbocharged Tuesdays' event?",
+    "gold_answer": "4 days.",
+    "gold_tags": [
+      "[turn:00221]",
+      "[turn:00233]"
+    ],
+    "first_hit_rank": 2,
+    "candidates": [
+      {
+        "rank": 1,
+        "tag": "[turn:00223]",
+        "is_hit": false,
+        "similarity": 0.6297,
+        "semantic_similarity": 0.3336,
+        "lexical_score": 0.5416,
+        "composite_score": 0.6817,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00223] I'm also looking for some advice on how to optimize my car's performance for auto racking events. Do you have any tip"
+      },
+      {
+        "rank": 2,
+        "tag": "[turn:00221]",
+        "is_hit": true,
+        "similarity": 0.5958,
+        "semantic_similarity": 0.1502,
+        "lexical_score": 0.6359,
+        "composite_score": 0.6573,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00221] I'm looking for some recommendations on performance air filters for my 2018 Ford Mustang GT. I recently modified my e"
+      },
+      {
+        "rank": 3,
+        "tag": "[turn:00241]",
+        "is_hit": false,
+        "similarity": 0.4265,
+        "semantic_similarity": 0.1189,
+        "lexical_score": 0.4283,
+        "composite_score": 0.5354,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00241] I'm in the nearby city where I attended the \"Rack Fest\" event last weekend, on June 18th. I'm looking to get some per"
+      },
+      {
+        "rank": 4,
+        "tag": "[turn:00227]",
+        "is_hit": false,
+        "similarity": 0.4262,
+        "semantic_similarity": 0.1394,
+        "lexical_score": 0.4067,
+        "composite_score": 0.5352,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00227] I'm looking for some advice on how to improve my car's aerodynamics. I've been thinking of getting a rear spoiler or "
+      },
+      {
+        "rank": 5,
+        "tag": "[turn:00233]",
+        "is_hit": true,
+        "similarity": 0.4239,
+        "semantic_similarity": 0.119,
+        "lexical_score": 0.4232,
+        "composite_score": 0.5335,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00233] I'm looking for some recommendations on car wax products. I've been using SpeedShine's detailing kit and it's been wo"
+      }
+    ]
+  },
+  {
+    "question_idx": 11,
+    "question_id": "gpt4_5dcc0aab",
+    "question": "Which pair of shoes did I clean last month?",
+    "gold_answer": "white Adidas sneakers",
+    "gold_tags": [
+      "[turn:00261]"
+    ],
+    "first_hit_rank": 10,
+    "candidates": [
+      {
+        "rank": 1,
+        "tag": "[turn:00266]",
+        "is_hit": false,
+        "similarity": 0.7873,
+        "semantic_similarity": 0.2403,
+        "lexical_score": 0.8456,
+        "composite_score": 0.7952,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00266] It's great that you've found a new favorite pair of shoes in your Vans Old Skool sneakers. They're a classic choice f"
+      },
+      {
+        "rank": 2,
+        "tag": "[turn:00254]",
+        "is_hit": false,
+        "similarity": 0.7022,
+        "semantic_similarity": 0.3457,
+        "lexical_score": 0.658,
+        "composite_score": 0.7339,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00254] I'm happy to help you with tips on keeping your running shoes in good condition!  However, I have to say that I'm a l"
+      },
+      {
+        "rank": 3,
+        "tag": "[turn:00752]",
+        "is_hit": false,
+        "similarity": 0.6734,
+        "semantic_similarity": 0.3597,
+        "lexical_score": 0.5916,
+        "composite_score": 0.7132,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00752] It sounds like you've had a bit of a shoe-filled month!  Now, let's get to those dirty sneakers! Cleaning them proper"
+      },
+      {
+        "rank": 4,
+        "tag": "[turn:00751]",
+        "is_hit": false,
+        "similarity": 0.6441,
+        "semantic_similarity": 0.2257,
+        "lexical_score": 0.657,
+        "composite_score": 0.6921,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00751] I'm looking for some shoe cleaning tips. I've got a pair of sneakers that I wore to play basketball on February 1st a"
+      },
+      {
+        "rank": 5,
+        "tag": "[turn:00739]",
+        "is_hit": false,
+        "similarity": 0.6361,
+        "semantic_similarity": 0.1849,
+        "lexical_score": 0.6732,
+        "composite_score": 0.6863,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00739] I'm thinking of organizing my shoe collection and I was wondering if you could help me with some shoe care tips, spec"
+      }
+    ]
+  },
+  {
+    "question_idx": 12,
+    "question_id": "gpt4_0b2f1d21",
+    "question": "Which event happened first, the purchase of the coffee maker or the malfunction of the stand mixer?",
+    "gold_answer": "The malfunction of the stand mixer",
+    "gold_tags": [
+      "[turn:00301]",
+      "[turn:00313]"
+    ],
+    "first_hit_rank": null,
+    "candidates": [
+      {
+        "rank": 1,
+        "tag": "[turn:00318]",
+        "is_hit": false,
+        "similarity": 0.6457,
+        "semantic_similarity": 0.0581,
+        "lexical_score": 0.6998,
+        "composite_score": 0.6932,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00318] Wise decision! Maintaining your kitchen appliances can save you from last-minute stress and ensure a smooth dinner pa"
+      },
+      {
+        "rank": 2,
+        "tag": "[turn:00322]",
+        "is_hit": false,
+        "similarity": 0.507,
+        "semantic_similarity": 0.1786,
+        "lexical_score": 0.4831,
+        "composite_score": 0.5934,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00322] What a great idea! Using your coffee maker or other appliances can be a fantastic way to create delicious desserts wi"
+      },
+      {
+        "rank": 3,
+        "tag": "[turn:00321]",
+        "is_hit": false,
+        "similarity": 0.4687,
+        "semantic_similarity": 0.0963,
+        "lexical_score": 0.5042,
+        "composite_score": 0.5658,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00321] I'm thinking of making some desserts for my dinner party, and I was wondering if you have any ideas for desserts that"
+      },
+      {
+        "rank": 4,
+        "tag": "[turn:00317]",
+        "is_hit": false,
+        "similarity": 0.448,
+        "semantic_similarity": 0.1642,
+        "lexical_score": 0.4159,
+        "composite_score": 0.5509,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00317] I'm also thinking of organizing a dinner party soon, and I want to make sure I have all the necessary kitchen utensil"
+      },
+      {
+        "rank": 5,
+        "tag": "[turn:00314]",
+        "is_hit": false,
+        "similarity": 0.3889,
+        "semantic_similarity": 0.1666,
+        "lexical_score": 0.3229,
+        "composite_score": 0.5083,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00314] I totally understand your concern! Having a stand mixer break down can be frustrating, especially when you're in the "
+      }
+    ]
+  },
+  {
+    "question_idx": 13,
+    "question_id": "f0853d11",
+    "question": "How many days had passed between the 'Walk for Hunger' event and the 'Coastal Cleanup' event?",
+    "gold_answer": "14 days. 8 days (including the last day) is also acceptable.",
+    "gold_tags": [
+      "[turn:00337]",
+      "[turn:00325]"
+    ],
+    "first_hit_rank": 7,
+    "candidates": [
+      {
+        "rank": 1,
+        "tag": "[turn:00330]",
+        "is_hit": false,
+        "similarity": 0.6007,
+        "semantic_similarity": 0.2565,
+        "lexical_score": 0.559,
+        "composite_score": 0.6657,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00330] That's wonderful that you volunteered at the Coastal Cleanup event! Every effort counts in protecting our oceans and "
+      },
+      {
+        "rank": 2,
+        "tag": "[turn:01236]",
+        "is_hit": false,
+        "similarity": 0.5662,
+        "semantic_similarity": 0.1598,
+        "lexical_score": 0.5841,
+        "composite_score": 0.6408,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:01236] That's great to hear! Having a supportive personal trainer can make a big difference in achieving your fitness goals."
+      },
+      {
+        "rank": 3,
+        "tag": "[turn:00338]",
+        "is_hit": false,
+        "similarity": 0.5639,
+        "semantic_similarity": 0.3664,
+        "lexical_score": 0.3898,
+        "composite_score": 0.6343,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00338] That's great to hear that you had a wonderful time at the \"Walk for Hunger\" 5K walk! There are numerous charity event"
+      },
+      {
+        "rank": 4,
+        "tag": "[turn:00414]",
+        "is_hit": false,
+        "similarity": 0.514,
+        "semantic_similarity": 0.2491,
+        "lexical_score": 0.4264,
+        "composite_score": 0.5984,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00414] What a great way to stay active while making a positive impact! I've got some fantastic suggestions for you:  **Chari"
+      },
+      {
+        "rank": 5,
+        "tag": "[turn:01318]",
+        "is_hit": false,
+        "similarity": 0.5048,
+        "semantic_similarity": 0.3693,
+        "lexical_score": 0.2604,
+        "composite_score": 0.5966,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:01318] I'd be happy to help you with that.  Finding charity events like the 5K run you participated in can be a great way to"
+      }
+    ]
+  },
+  {
+    "question_idx": 14,
+    "question_id": "gpt4_6ed717ea",
+    "question": "Which item did I purchase first, the dog bed for Max or the training pads for Luna?",
+    "gold_answer": "Training pads for Luna",
+    "gold_tags": [
+      "[turn:00349]",
+      "[turn:00361]"
+    ],
+    "first_hit_rank": 2,
+    "candidates": [
+      {
+        "rank": 1,
+        "tag": "[turn:00350]",
+        "is_hit": false,
+        "similarity": 0.5304,
+        "semantic_similarity": 0.2016,
+        "lexical_score": 0.4973,
+        "composite_score": 0.6102,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00350] Congratulations on taking the eco-friendly route with Luna's potty training! Those training pads from Chewy.com are a"
+      },
+      {
+        "rank": 2,
+        "tag": "[turn:00349]",
+        "is_hit": true,
+        "similarity": 0.5298,
+        "semantic_similarity": 0.3077,
+        "lexical_score": 0.3916,
+        "composite_score": 0.6098,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00349] I'm thinking of getting some more supplies for my puppy, Luna. She's still in potty-training, and I've been using tho"
+      },
+      {
+        "rank": 3,
+        "tag": "[turn:00369]",
+        "is_hit": false,
+        "similarity": 0.4873,
+        "semantic_similarity": 0.2659,
+        "lexical_score": 0.3702,
+        "composite_score": 0.5792,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00369] I was thinking of getting Max a new chew toy, something that would last him a while and be good for his teeth. I got "
+      },
+      {
+        "rank": 4,
+        "tag": "[turn:00370]",
+        "is_hit": false,
+        "similarity": 0.4627,
+        "semantic_similarity": 0.2415,
+        "lexical_score": 0.3529,
+        "composite_score": 0.5615,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00370] That's great to hear that the new dog bed is helping with Max's arthritis! Orthopedic Memory Foam dog beds can make a"
+      },
+      {
+        "rank": 5,
+        "tag": "[turn:00361]",
+        "is_hit": true,
+        "similarity": 0.4434,
+        "semantic_similarity": 0.2034,
+        "lexical_score": 0.3696,
+        "composite_score": 0.5476,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00361] I'm looking for some advice on dog arthritis. I recently got a new Orthopedic Memory Foam dog bed for my golden retri"
+      }
+    ]
+  },
+  {
+    "question_idx": 15,
+    "question_id": "gpt4_70e84552",
+    "question": "Which task did I complete first, fixing the fence or trimming the goats' hooves?",
+    "gold_answer": "Fixing the fence",
+    "gold_tags": [
+      "[turn:00385]",
+      "[turn:00373]"
+    ],
+    "first_hit_rank": 2,
+    "candidates": [
+      {
+        "rank": 1,
+        "tag": "[turn:00374]",
+        "is_hit": false,
+        "similarity": 0.4903,
+        "semantic_similarity": 0.1388,
+        "lexical_score": 0.4928,
+        "composite_score": 0.5813,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00374] Congratulations on fixing that broken fence! It's great to hear that your goats are now safe and secure.  Now, let's "
+      },
+      {
+        "rank": 2,
+        "tag": "[turn:00373]",
+        "is_hit": true,
+        "similarity": 0.4613,
+        "semantic_similarity": 0.178,
+        "lexical_score": 0.4199,
+        "composite_score": 0.5605,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00373] I'm thinking of hosting a farm open house event soon and I want to make sure everything is perfect. Can you help me c"
+      },
+      {
+        "rank": 3,
+        "tag": "[turn:00392]",
+        "is_hit": false,
+        "similarity": 0.3583,
+        "semantic_similarity": 0.1342,
+        "lexical_score": 0.3139,
+        "composite_score": 0.4863,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00392] You're doing a great job with your farm, and it's wonderful that you're taking the time to research and care for your"
+      },
+      {
+        "rank": 4,
+        "tag": "[turn:00385]",
+        "is_hit": true,
+        "similarity": 0.3421,
+        "semantic_similarity": 0.1475,
+        "lexical_score": 0.2805,
+        "composite_score": 0.4746,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00385] I'm thinking of hosting a farm open house event soon and I was wondering if you could help me come up with some fun a"
+      },
+      {
+        "rank": 5,
+        "tag": "[turn:00037]",
+        "is_hit": false,
+        "similarity": 0.3259,
+        "semantic_similarity": 0.2161,
+        "lexical_score": 0.17,
+        "composite_score": 0.463,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00037] Congratulations on taking the first step towards improving your time management skills! There are many fantastic apps"
+      }
+    ]
+  },
+  {
+    "question_idx": 16,
+    "question_id": "a3838d2b",
+    "question": "How many charity events did I participate in before the 'Run for the Cure' event?",
+    "gold_answer": "4",
+    "gold_tags": [
+      "[turn:00397]",
+      "[turn:00453]",
+      "[turn:00433]",
+      "[turn:00441]",
+      "[turn:00421]",
+      "[turn:00409]"
+    ],
+    "first_hit_rank": 8,
+    "candidates": [
+      {
+        "rank": 1,
+        "tag": "[turn:00414]",
+        "is_hit": false,
+        "similarity": 0.9431,
+        "semantic_similarity": 0.4046,
+        "lexical_score": 0.9937,
+        "composite_score": 0.9122,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00414] What a great way to stay active while making a positive impact! I've got some fantastic suggestions for you:  **Chari"
+      },
+      {
+        "rank": 2,
+        "tag": "[turn:00405]",
+        "is_hit": false,
+        "similarity": 0.9252,
+        "semantic_similarity": 0.4679,
+        "lexical_score": 0.974,
+        "composite_score": 0.8993,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00405] The \"Run for the Cure\" event was truly inspiring, and I think what resonated with me the most was seeing so many peop"
+      },
+      {
+        "rank": 3,
+        "tag": "[turn:00398]",
+        "is_hit": false,
+        "similarity": 0.8913,
+        "semantic_similarity": 0.5766,
+        "lexical_score": 0.8969,
+        "composite_score": 0.8784,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00398] Congratulations on your achievement! It's fantastic that you participated in the \"Run for the Cure\" event and raised "
+      },
+      {
+        "rank": 4,
+        "tag": "[turn:00404]",
+        "is_hit": false,
+        "similarity": 0.8829,
+        "semantic_similarity": 0.5873,
+        "lexical_score": 0.866,
+        "composite_score": 0.8689,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00404] Congratulations on completing the \"Run for the Cure\" event! That's amazing! It's great to hear that you had an incred"
+      },
+      {
+        "rank": 5,
+        "tag": "[turn:00338]",
+        "is_hit": false,
+        "similarity": 0.8661,
+        "semantic_similarity": 0.4775,
+        "lexical_score": 0.8974,
+        "composite_score": 0.8568,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00338] That's great to hear that you had a wonderful time at the \"Walk for Hunger\" 5K walk! There are numerous charity event"
+      }
+    ]
+  },
+  {
+    "question_idx": 17,
+    "question_id": "gpt4_93159ced",
+    "question": "How long have I been working before I started my current job at NovaTech?",
+    "gold_answer": "4 years and 9 months",
+    "gold_tags": [
+      "[turn:00487]",
+      "[turn:00467]",
+      "[turn:00481]"
+    ],
+    "first_hit_rank": 3,
+    "candidates": [
+      {
+        "rank": 1,
+        "tag": "[turn:00924]",
+        "is_hit": false,
+        "similarity": 0.6285,
+        "semantic_similarity": 0.2247,
+        "lexical_score": 0.6291,
+        "composite_score": 0.6808,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00924] The interview process is a crucial step in the EB-2 visa application process. As a data scientist with a master's deg"
+      },
+      {
+        "rank": 2,
+        "tag": "[turn:00926]",
+        "is_hit": false,
+        "similarity": 0.5771,
+        "semantic_similarity": 0.2297,
+        "lexical_score": 0.5451,
+        "composite_score": 0.6438,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00926] When asked about your long-term plans in the United States, it's essential to be honest and forthright while also dem"
+      },
+      {
+        "rank": 3,
+        "tag": "[turn:00487]",
+        "is_hit": true,
+        "similarity": 0.5382,
+        "semantic_similarity": 0.2363,
+        "lexical_score": 0.4832,
+        "composite_score": 0.6158,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00487] I'll start by saying that I'm a software engineer, specifically a backend developer, and I've been in this field sinc"
+      },
+      {
+        "rank": 4,
+        "tag": "[turn:00147]",
+        "is_hit": false,
+        "similarity": 0.4689,
+        "semantic_similarity": 0.1567,
+        "lexical_score": 0.4472,
+        "composite_score": 0.5659,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00147] Wonderful! Catholic Charities' housing and shelter services are a vital part of their mission to support vulnerable i"
+      },
+      {
+        "rank": 5,
+        "tag": "[turn:00726]",
+        "is_hit": false,
+        "similarity": 0.4577,
+        "semantic_similarity": 0.1715,
+        "lexical_score": 0.4176,
+        "composite_score": 0.5579,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00726] Listening to music or podcasts can make a huge difference in making your morning walk more enjoyable.  **Music Recomm"
+      }
+    ]
+  },
+  {
+    "question_idx": 18,
+    "question_id": "gpt4_2d58bcd6",
+    "question": "Which book did I finish reading first, 'The Hate U Give' or 'The Nightingale'?",
+    "gold_answer": "'The Hate U Give'",
+    "gold_tags": [
+      "[turn:00489]",
+      "[turn:00501]"
+    ],
+    "first_hit_rank": 2,
+    "candidates": [
+      {
+        "rank": 1,
+        "tag": "[turn:00503]",
+        "is_hit": false,
+        "similarity": 0.8514,
+        "semantic_similarity": 0.4783,
+        "lexical_score": 0.8662,
+        "composite_score": 0.8413,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00503] I'm glad you liked \"The Hate U Give\". I've been trying to read more diversely, and that book was a great choice for o"
+      },
+      {
+        "rank": 2,
+        "tag": "[turn:00501]",
+        "is_hit": true,
+        "similarity": 0.7406,
+        "semantic_similarity": 0.4406,
+        "lexical_score": 0.6519,
+        "composite_score": 0.7615,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00501] I'm looking for some book recommendations. I've been trying to read more diversely and I just finished \"The Hate U Gi"
+      },
+      {
+        "rank": 3,
+        "tag": "[turn:00573]",
+        "is_hit": false,
+        "similarity": 0.7053,
+        "semantic_similarity": 0.3829,
+        "lexical_score": 0.6362,
+        "composite_score": 0.7361,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00573] I'm looking for some book recommendations. I recently finished \"The Nightingale\" by Kristin Hannah, which took me thr"
+      },
+      {
+        "rank": 4,
+        "tag": "[turn:00489]",
+        "is_hit": true,
+        "similarity": 0.6817,
+        "semantic_similarity": 0.3379,
+        "lexical_score": 0.6314,
+        "composite_score": 0.7191,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00489] I'm looking for some book recommendations. I just finished reading three fiction novels - \"The Seven Husbands of Evel"
+      },
+      {
+        "rank": 5,
+        "tag": "[turn:01081]",
+        "is_hit": false,
+        "similarity": 0.6525,
+        "semantic_similarity": 0.3312,
+        "lexical_score": 0.5844,
+        "composite_score": 0.6981,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:01081] That's really informative. I'll definitely share this with my book club member who's publishing her debut novel. By t"
+      }
+    ]
+  },
+  {
+    "question_idx": 21,
+    "question_id": "b9cfe692",
+    "question": "How long did I take to finish 'The Seven Husbands of Evelyn Hugo' and 'The Nightingale' combined?",
+    "gold_answer": "5.5 weeks",
+    "gold_tags": [
+      "[turn:00585]",
+      "[turn:00573]"
+    ],
+    "first_hit_rank": 6,
+    "candidates": [
+      {
+        "rank": 1,
+        "tag": "[turn:00504]",
+        "is_hit": false,
+        "similarity": 0.7597,
+        "semantic_similarity": 0.125,
+        "lexical_score": 0.8188,
+        "composite_score": 0.7753,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00504] Wow, congratulations on finishing three novels in one weekend! That's impressive!  I think you'll be pleased to know "
+      },
+      {
+        "rank": 2,
+        "tag": "[turn:00489]",
+        "is_hit": false,
+        "similarity": 0.7422,
+        "semantic_similarity": 0.3222,
+        "lexical_score": 0.7525,
+        "composite_score": 0.7676,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00489] I'm looking for some book recommendations. I just finished reading three fiction novels - \"The Seven Husbands of Evel"
+      },
+      {
+        "rank": 3,
+        "tag": "[turn:00503]",
+        "is_hit": false,
+        "similarity": 0.7209,
+        "semantic_similarity": 0.2711,
+        "lexical_score": 0.748,
+        "composite_score": 0.7522,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00503] I'm glad you liked \"The Hate U Give\". I've been trying to read more diversely, and that book was a great choice for o"
+      },
+      {
+        "rank": 4,
+        "tag": "[turn:00490]",
+        "is_hit": false,
+        "similarity": 0.7121,
+        "semantic_similarity": 0.0782,
+        "lexical_score": 0.7708,
+        "composite_score": 0.741,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00490] What a great combination of books you've read! Based on your reading taste, I'd be happy to suggest some similar book"
+      },
+      {
+        "rank": 5,
+        "tag": "[turn:00586]",
+        "is_hit": false,
+        "similarity": 0.6804,
+        "semantic_similarity": 0.0686,
+        "lexical_score": 0.7371,
+        "composite_score": 0.7182,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00586] I'm so glad you enjoyed \"The Seven Husbands of Evelyn Hugo\"! That's a fantastic book. I'd be happy to recommend some "
+      }
+    ]
+  },
+  {
+    "question_idx": 22,
+    "question_id": "gpt4_4edbafa2",
+    "question": "What was the date on which I attended the first BBQ event in June?",
+    "gold_answer": "June 3rd",
+    "gold_tags": [
+      "[turn:00609]",
+      "[turn:00597]"
+    ],
+    "first_hit_rank": 2,
+    "candidates": [
+      {
+        "rank": 1,
+        "tag": "[turn:00346]",
+        "is_hit": false,
+        "similarity": 0.6169,
+        "semantic_similarity": 0.2207,
+        "lexical_score": 0.6138,
+        "composite_score": 0.6725,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00346] The Pancreatic Cancer Action Network's (PanCAN) PurpleStride event is an amazing way to make a difference in the figh"
+      },
+      {
+        "rank": 2,
+        "tag": "[turn:00609]",
+        "is_hit": true,
+        "similarity": 0.585,
+        "semantic_similarity": 0.1911,
+        "lexical_score": 0.5931,
+        "composite_score": 0.6495,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00609] Hi! I'm looking for some recommendations on BBQ sauce brands. I've been using Sweet Baby Ray's and love it, but I wan"
+      },
+      {
+        "rank": 3,
+        "tag": "[turn:00440]",
+        "is_hit": false,
+        "similarity": 0.5767,
+        "semantic_similarity": 0.1966,
+        "lexical_score": 0.571,
+        "composite_score": 0.6435,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00440] Securing sponsors and donors is a crucial aspect of hosting a successful charity golf tournament. I'd be happy to sha"
+      },
+      {
+        "rank": 4,
+        "tag": "[turn:01074]",
+        "is_hit": false,
+        "similarity": 0.5343,
+        "semantic_similarity": 0.2879,
+        "lexical_score": 0.4181,
+        "composite_score": 0.6179,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:01074] UC Berkeley is known for its vibrant campus life, with a wide range of events and activities that cater to diverse in"
+      },
+      {
+        "rank": 5,
+        "tag": "[turn:00619]",
+        "is_hit": false,
+        "similarity": 0.5394,
+        "semantic_similarity": 0.2809,
+        "lexical_score": 0.4386,
+        "composite_score": 0.6167,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00619] I'm thinking of hosting my own BBQ party soon, and I want to make sure I have a variety of dishes to cater to my gues"
+      }
+    ]
+  },
+  {
+    "question_idx": 26,
+    "question_id": "c9f37c46",
+    "question": "How long had I been watching stand-up comedy specials regularly when I attended the open mic night at the local comedy club?",
+    "gold_answer": "2 months",
+    "gold_tags": [
+      "[turn:00693]",
+      "[turn:00705]"
+    ],
+    "first_hit_rank": 2,
+    "candidates": [
+      {
+        "rank": 1,
+        "tag": "[turn:00696]",
+        "is_hit": false,
+        "similarity": 0.8372,
+        "semantic_similarity": 0.5537,
+        "lexical_score": 0.7667,
+        "composite_score": 0.8311,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00696] Live comedy is a whole different beast, and it's great that you're interested in exploring it! Unfortunately, I'm a l"
+      },
+      {
+        "rank": 2,
+        "tag": "[turn:00705]",
+        "is_hit": true,
+        "similarity": 0.8037,
+        "semantic_similarity": 0.5029,
+        "lexical_score": 0.7344,
+        "composite_score": 0.807,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00705] I'm looking for some advice on writing jokes. I've recently gotten into stand-up comedy and I'm trying to improve my "
+      },
+      {
+        "rank": 3,
+        "tag": "[turn:00713]",
+        "is_hit": false,
+        "similarity": 0.6727,
+        "semantic_similarity": 0.3075,
+        "lexical_score": 0.6607,
+        "composite_score": 0.7127,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00713] I've been trying to write jokes about my everyday experiences, but I'm struggling to make them funny. Last month, I f"
+      },
+      {
+        "rank": 4,
+        "tag": "[turn:00706]",
+        "is_hit": false,
+        "similarity": 0.6671,
+        "semantic_similarity": 0.1229,
+        "lexical_score": 0.7174,
+        "composite_score": 0.7086,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00706] Congratulations on taking the first step into the world of stand-up comedy! Attending an open mic night is a great wa"
+      },
+      {
+        "rank": 5,
+        "tag": "[turn:00693]",
+        "is_hit": true,
+        "similarity": 0.6512,
+        "semantic_similarity": 0.438,
+        "lexical_score": 0.4628,
+        "composite_score": 0.6972,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00693] I'm looking for some comedy recommendations. I've been really into stand-up lately - I think it started about 3 month"
+      }
+    ]
+  },
+  {
+    "question_idx": 29,
+    "question_id": "gpt4_b4a80587",
+    "question": "Which event happened first, the road trip to the coast or the arrival of the new prime lens?",
+    "gold_answer": "The arrival of the new prime lens",
+    "gold_tags": [
+      "[turn:00765]",
+      "[turn:00775]"
+    ],
+    "first_hit_rank": 2,
+    "candidates": [
+      {
+        "rank": 1,
+        "tag": "[turn:00768]",
+        "is_hit": false,
+        "similarity": 0.4597,
+        "semantic_similarity": 0.1679,
+        "lexical_score": 0.4241,
+        "composite_score": 0.5593,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00768] That's awesome to hear! Mastering the manual focus ring takes time and practice, but the reward is well worth it. The"
+      },
+      {
+        "rank": 2,
+        "tag": "[turn:00775]",
+        "is_hit": true,
+        "similarity": 0.4499,
+        "semantic_similarity": 0.2487,
+        "lexical_score": 0.3307,
+        "composite_score": 0.5522,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00775] I'm looking for some tips on editing photos of landscapes. I just got back from a road trip to the coast with friends"
+      },
+      {
+        "rank": 3,
+        "tag": "[turn:00085]",
+        "is_hit": false,
+        "similarity": 0.4333,
+        "semantic_similarity": 0.123,
+        "lexical_score": 0.4274,
+        "composite_score": 0.5452,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00085] A trip to Hawaii sounds like a wonderful idea! I'd be happy to help you with some must-visit places to add to your it"
+      },
+      {
+        "rank": 4,
+        "tag": "[turn:00547]",
+        "is_hit": false,
+        "similarity": 0.3887,
+        "semantic_similarity": 0.2501,
+        "lexical_score": 0.2263,
+        "composite_score": 0.5082,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00547] That sounds great! I'm really excited to explore the Bay Area. By the way, speaking of road trips, I recall that abou"
+      },
+      {
+        "rank": 5,
+        "tag": "[turn:01022]",
+        "is_hit": false,
+        "similarity": 0.3862,
+        "semantic_similarity": 0.0958,
+        "lexical_score": 0.3879,
+        "composite_score": 0.5064,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:01022] Costa Rica is an excellent choice for a birding trip! With over 850 species, it's a paradise for bird enthusiasts. Pr"
+      }
+    ]
+  },
+  {
+    "question_idx": 30,
+    "question_id": "gpt4_9a159967",
+    "question": "Which airline did I fly with the most in March and April?",
+    "gold_answer": "United Airlines",
+    "gold_tags": [
+      "[turn:00799]",
+      "[turn:00807]",
+      "[turn:00789]"
+    ],
+    "first_hit_rank": 2,
+    "candidates": [
+      {
+        "rank": 1,
+        "tag": "[turn:00801]",
+        "is_hit": false,
+        "similarity": 0.5956,
+        "semantic_similarity": 0.188,
+        "lexical_score": 0.6102,
+        "composite_score": 0.662,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00801] I'm planning to travel to San Francisco from the 10th to the 14th of next month. I'll be flying into SFO. I'd prefer "
+      },
+      {
+        "rank": 2,
+        "tag": "[turn:00799]",
+        "is_hit": true,
+        "similarity": 0.5671,
+        "semantic_similarity": 0.1282,
+        "lexical_score": 0.6128,
+        "composite_score": 0.6415,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00799] I'm planning a trip to San Francisco next month and I'm considering flying with Southwest Airlines. I've had a good e"
+      },
+      {
+        "rank": 3,
+        "tag": "[turn:00789]",
+        "is_hit": true,
+        "similarity": 0.5537,
+        "semantic_similarity": 0.0881,
+        "lexical_score": 0.6051,
+        "composite_score": 0.627,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00789] I was impressed with United's in-flight entertainment system on my recent trip. In March, I took a business trip to C"
+      },
+      {
+        "rank": 4,
+        "tag": "[turn:00813]",
+        "is_hit": false,
+        "similarity": 0.5027,
+        "semantic_similarity": 0.1937,
+        "lexical_score": 0.4687,
+        "composite_score": 0.5903,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00813] I'll make sure to check the airport's website and transportation services' websites to see what's available. By the w"
+      },
+      {
+        "rank": 5,
+        "tag": "[turn:00105]",
+        "is_hit": false,
+        "similarity": 0.4986,
+        "semantic_similarity": 0.0327,
+        "lexical_score": 0.5425,
+        "composite_score": 0.5873,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00105] Hawaii's weather is one of the main reasons people flock to the islands. It's generally warm and pleasant year-round,"
+      }
+    ]
+  },
+  {
+    "question_idx": 32,
+    "question_id": "gpt4_8c8961ae",
+    "question": "Which trip did I take first, the one to Europe with family or the solo trip to Thailand?",
+    "gold_answer": "The solo trip to Thailand",
+    "gold_tags": [
+      "[turn:00853]",
+      "[turn:00855]"
+    ],
+    "first_hit_rank": 2,
+    "candidates": [
+      {
+        "rank": 1,
+        "tag": "[turn:00857]",
+        "is_hit": false,
+        "similarity": 0.5806,
+        "semantic_similarity": 0.2273,
+        "lexical_score": 0.5562,
+        "composite_score": 0.6463,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00857] I think I'll definitely want to prioritize flexibility and autonomy in my trip, since I had to compromise a lot on th"
+      },
+      {
+        "rank": 2,
+        "tag": "[turn:00855]",
+        "is_hit": true,
+        "similarity": 0.568,
+        "semantic_similarity": 0.3072,
+        "lexical_score": 0.4586,
+        "composite_score": 0.6373,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00855] I'm considering planning a solo trip to South America and I'm wondering if you can help me with some research. I've b"
+      },
+      {
+        "rank": 3,
+        "tag": "[turn:00843]",
+        "is_hit": false,
+        "similarity": 0.5503,
+        "semantic_similarity": 0.2598,
+        "lexical_score": 0.4789,
+        "composite_score": 0.6245,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00843] I'm planning a solo trip to South America and I'm considering going with a group tour or on my own. Do you have any r"
+      },
+      {
+        "rank": 4,
+        "tag": "[turn:00863]",
+        "is_hit": false,
+        "similarity": 0.5336,
+        "semantic_similarity": 0.3026,
+        "lexical_score": 0.4037,
+        "composite_score": 0.6125,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00863] It seems like I accidentally reacted to the assistant's message with a \"thanks\" at the beginning. Let me try again.  "
+      },
+      {
+        "rank": 5,
+        "tag": "[turn:00862]",
+        "is_hit": false,
+        "similarity": 0.5087,
+        "semantic_similarity": 0.2038,
+        "lexical_score": 0.4628,
+        "composite_score": 0.5946,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00862] I'm thrilled you're excited about the Patagonia itinerary!  It's great to hear that your parents enjoyed the scenic b"
+      }
+    ]
+  },
+  {
+    "question_idx": 33,
+    "question_id": "gpt4_d9af6064",
+    "question": "Which device did I set up first, the smart thermostat or the new router?",
+    "gold_answer": "new router",
+    "gold_tags": [
+      "[turn:00879]",
+      "[turn:00867]"
+    ],
+    "first_hit_rank": 3,
+    "candidates": [
+      {
+        "rank": 1,
+        "tag": "[turn:00868]",
+        "is_hit": false,
+        "similarity": 0.7812,
+        "semantic_similarity": 0.2485,
+        "lexical_score": 0.8326,
+        "composite_score": 0.7956,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00868] Congratulations on finally setting up your smart thermostat! Now, let's tackle that internet speed issue.  I'd be hap"
+      },
+      {
+        "rank": 2,
+        "tag": "[turn:00886]",
+        "is_hit": false,
+        "similarity": 0.6909,
+        "semantic_similarity": 0.2866,
+        "lexical_score": 0.6841,
+        "composite_score": 0.7306,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00886] You're just scratching the surface of your smart speaker's capabilities! I'm happy to help you explore its features a"
+      },
+      {
+        "rank": 3,
+        "tag": "[turn:00869]",
+        "is_hit": true,
+        "similarity": 0.668,
+        "semantic_similarity": 0.2573,
+        "lexical_score": 0.6696,
+        "composite_score": 0.7141,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00869] I'm with XYZ Internet, and I currently have a 500 Mbps plan. I recently got a new router on January 15th, which has i"
+      },
+      {
+        "rank": 4,
+        "tag": "[turn:00513]",
+        "is_hit": false,
+        "similarity": 0.6187,
+        "semantic_similarity": 0.2746,
+        "lexical_score": 0.5778,
+        "composite_score": 0.6786,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00513] I'm having some issues with my desktop computer, it's been freezing up on me randomly and I'm thinking of upgrading i"
+      },
+      {
+        "rank": 5,
+        "tag": "[turn:00874]",
+        "is_hit": false,
+        "similarity": 0.6002,
+        "semantic_similarity": 0.202,
+        "lexical_score": 0.6029,
+        "composite_score": 0.6688,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00874] It sounds like slow speeds and connectivity issues are impacting your work-from-home experience and entertainment set"
+      }
+    ]
+  },
+  {
+    "question_idx": 34,
+    "question_id": "gpt4_7de946e7",
+    "question": "Which health issue did I deal with first, the persistent cough or the skin tag removal?",
+    "gold_answer": "Persistent cough",
+    "gold_tags": [
+      "[turn:00909]",
+      "[turn:00891]"
+    ],
+    "first_hit_rank": 2,
+    "candidates": [
+      {
+        "rank": 1,
+        "tag": "[turn:00904]",
+        "is_hit": false,
+        "similarity": 0.6024,
+        "semantic_similarity": 0.1625,
+        "lexical_score": 0.6338,
+        "composite_score": 0.662,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00904] I'm so sorry to hear you've been dealing with health issues lately! Congratulations on taking steps to get back on tr"
+      },
+      {
+        "rank": 2,
+        "tag": "[turn:00891]",
+        "is_hit": true,
+        "similarity": 0.4949,
+        "semantic_similarity": 0.1983,
+        "lexical_score": 0.4505,
+        "composite_score": 0.5846,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00891] I've been having some stomach issues lately and I'm trying to figure out what's causing them. I've been keeping a foo"
+      },
+      {
+        "rank": 3,
+        "tag": "[turn:00910]",
+        "is_hit": false,
+        "similarity": 0.4654,
+        "semantic_similarity": 0.1246,
+        "lexical_score": 0.4713,
+        "composite_score": 0.5634,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00910] I'm so glad to hear that you're nearing the end of your antibiotic treatment for pneumonia! It's great that you're lo"
+      },
+      {
+        "rank": 4,
+        "tag": "[turn:00903]",
+        "is_hit": false,
+        "similarity": 0.4527,
+        "semantic_similarity": 0.1221,
+        "lexical_score": 0.4614,
+        "composite_score": 0.5543,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00903] I'm trying to get my health back on track after a few setbacks. I recently had a skin tag removed from my neck and I'"
+      },
+      {
+        "rank": 5,
+        "tag": "[turn:00352]",
+        "is_hit": false,
+        "similarity": 0.3758,
+        "semantic_similarity": 0.0081,
+        "lexical_score": 0.4107,
+        "composite_score": 0.4989,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00352] Flea and tick prevention is a crucial aspect of pet care! You're on the right track with the generic Frontline from C"
+      }
+    ]
+  },
+  {
+    "question_idx": 35,
+    "question_id": "d01c6aa8",
+    "question": "How old was I when I moved to the United States?",
+    "gold_answer": "27",
+    "gold_tags": [
+      "[turn:00915]",
+      "[turn:00933]"
+    ],
+    "first_hit_rank": 4,
+    "candidates": [
+      {
+        "rank": 1,
+        "tag": "[turn:00788]",
+        "is_hit": false,
+        "similarity": 0.5196,
+        "semantic_similarity": 0.2054,
+        "lexical_score": 0.4779,
+        "composite_score": 0.6024,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00788] I'm happy to help you with your question! However, I have to clarify that I'm a large language model, I don't have ac"
+      },
+      {
+        "rank": 2,
+        "tag": "[turn:00925]",
+        "is_hit": false,
+        "similarity": 0.5051,
+        "semantic_similarity": 0.1666,
+        "lexical_score": 0.4964,
+        "composite_score": 0.592,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00925] I'd like to ask a question about the interview process. What if I'm asked about my long-term plans in the United Stat"
+      },
+      {
+        "rank": 3,
+        "tag": "[turn:00926]",
+        "is_hit": false,
+        "similarity": 0.4921,
+        "semantic_similarity": 0.1589,
+        "lexical_score": 0.479,
+        "composite_score": 0.5875,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00926] When asked about your long-term plans in the United States, it's essential to be honest and forthright while also dem"
+      },
+      {
+        "rank": 4,
+        "tag": "[turn:00933]",
+        "is_hit": true,
+        "similarity": 0.4983,
+        "semantic_similarity": 0.1556,
+        "lexical_score": 0.4957,
+        "composite_score": 0.5871,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00933] I've been living in the United States for the past five years on a work visa, and I'm not sure if I need any addition"
+      },
+      {
+        "rank": 5,
+        "tag": "[turn:00935]",
+        "is_hit": false,
+        "similarity": 0.4874,
+        "semantic_similarity": 0.14,
+        "lexical_score": 0.4926,
+        "composite_score": 0.5792,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00935] That's a lot to take in, but I think I have a better understanding of the vaccination requirements now. Since I've be"
+      }
+    ]
+  },
+  {
+    "question_idx": 36,
+    "question_id": "993da5e2",
+    "question": "How long had I been using the new area rug when I rearranged my living room furniture?",
+    "gold_answer": "One week. Answers ranging from 7 days to 10 days are also acceptable.",
+    "gold_tags": [
+      "[turn:00949]",
+      "[turn:00937]"
+    ],
+    "first_hit_rank": 2,
+    "candidates": [
+      {
+        "rank": 1,
+        "tag": "[turn:00938]",
+        "is_hit": false,
+        "similarity": 0.6847,
+        "semantic_similarity": 0.2908,
+        "lexical_score": 0.6724,
+        "composite_score": 0.7213,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00938] I'd be happy to help you find some decorative items that will complement your newly rearranged living room.  To give "
+      },
+      {
+        "rank": 2,
+        "tag": "[turn:00937]",
+        "is_hit": true,
+        "similarity": 0.6712,
+        "semantic_similarity": 0.3195,
+        "lexical_score": 0.6296,
+        "composite_score": 0.7116,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00937] I'm thinking of getting some new decorative items for my living room, like vases or sculptures. Since I recently rear"
+      },
+      {
+        "rank": 3,
+        "tag": "[turn:00939]",
+        "is_hit": false,
+        "similarity": 0.5921,
+        "semantic_similarity": 0.1432,
+        "lexical_score": 0.6358,
+        "composite_score": 0.6546,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00939] My living room has a pretty relaxed, cozy vibe, and I'd describe the style as a mix of modern and traditional. The do"
+      },
+      {
+        "rank": 4,
+        "tag": "[turn:00949]",
+        "is_hit": true,
+        "similarity": 0.5282,
+        "semantic_similarity": 0.1744,
+        "lexical_score": 0.5214,
+        "composite_score": 0.6086,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00949] I'm looking for some advice on plant care. I've recently started collecting indoor plants and I'm not sure how often "
+      },
+      {
+        "rank": 5,
+        "tag": "[turn:00957]",
+        "is_hit": false,
+        "similarity": 0.4924,
+        "semantic_similarity": 0.2297,
+        "lexical_score": 0.4173,
+        "composite_score": 0.5828,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00957] I think I'll go with the deep coral color for my throw pillows. It'll add a nice pop of color to the room and complem"
+      }
+    ]
+  },
+  {
+    "question_idx": 37,
+    "question_id": "a3045048",
+    "question": "How many days before my best friend's birthday party did I order her gift?",
+    "gold_answer": "7 days. 8 days (including the last day) is also acceptable.",
+    "gold_tags": [
+      "[turn:00961]",
+      "[turn:00975]"
+    ],
+    "first_hit_rank": 2,
+    "candidates": [
+      {
+        "rank": 1,
+        "tag": "[turn:00967]",
+        "is_hit": false,
+        "similarity": 0.7778,
+        "semantic_similarity": 0.3132,
+        "lexical_score": 0.8195,
+        "composite_score": 0.7883,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00967] That's really helpful, thanks! I think I'll go ahead with the Skagen Ancher. I'm sure my brother will love it. By the"
+      },
+      {
+        "rank": 2,
+        "tag": "[turn:00961]",
+        "is_hit": true,
+        "similarity": 0.6291,
+        "semantic_similarity": 0.2736,
+        "lexical_score": 0.5945,
+        "composite_score": 0.6813,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00961] I'm looking for some ideas for gifts for my brother's birthday in June. I've been thinking of getting him a new watch"
+      },
+      {
+        "rank": 3,
+        "tag": "[turn:00975]",
+        "is_hit": true,
+        "similarity": 0.6112,
+        "semantic_similarity": 0.2672,
+        "lexical_score": 0.572,
+        "composite_score": 0.6684,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00975] I'm particularly interested in the Fossil Grant Chronograph Watch, can you tell me more about it? Also, I had a great"
+      },
+      {
+        "rank": 4,
+        "tag": "[turn:01284]",
+        "is_hit": false,
+        "similarity": 0.583,
+        "semantic_similarity": 0.1321,
+        "lexical_score": 0.6264,
+        "composite_score": 0.6481,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:01284] What a lovely sibling you are! I'd be happy to help you make your sister's birthday dinner even more special.  Firstl"
+      },
+      {
+        "rank": 5,
+        "tag": "[turn:00622]",
+        "is_hit": false,
+        "similarity": 0.5241,
+        "semantic_similarity": 0.2117,
+        "lexical_score": 0.4788,
+        "composite_score": 0.6057,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00622] Happy birthday to your sister! I'd be happy to help you find a thoughtful gift that fits your budget.  First, let's e"
+      }
+    ]
+  },
+  {
+    "question_idx": 40,
+    "question_id": "gpt4_88806d6e",
+    "question": "Who did I meet first, Mark and Sarah or Tom?",
+    "gold_answer": "Tom",
+    "gold_tags": [
+      "[turn:01027]",
+      "[turn:01039]"
+    ],
+    "first_hit_rank": 2,
+    "candidates": [
+      {
+        "rank": 1,
+        "tag": "[turn:01049]",
+        "is_hit": false,
+        "similarity": 0.5387,
+        "semantic_similarity": 0.2437,
+        "lexical_score": 0.4793,
+        "composite_score": 0.6162,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:01049] I was thinking of asking Mark and Sarah about the local history and culture of their hometown. They might have some i"
+      },
+      {
+        "rank": 2,
+        "tag": "[turn:01039]",
+        "is_hit": true,
+        "similarity": 0.5343,
+        "semantic_similarity": 0.2366,
+        "lexical_score": 0.4793,
+        "composite_score": 0.613,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:01039] I'm planning a trip to visit my friends Mark and Sarah, who I met on a beach trip about a month ago, and I was wonder"
+      },
+      {
+        "rank": 3,
+        "tag": "[turn:01042]",
+        "is_hit": false,
+        "similarity": 0.5294,
+        "semantic_similarity": 0.245,
+        "lexical_score": 0.4563,
+        "composite_score": 0.6095,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:01042] Unfortunately, without the exact name of the town, it's a bit challenging to provide specific restaurant recommendati"
+      },
+      {
+        "rank": 4,
+        "tag": "[turn:01040]",
+        "is_hit": false,
+        "similarity": 0.513,
+        "semantic_similarity": 0.2153,
+        "lexical_score": 0.4611,
+        "composite_score": 0.5977,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:01040] I'd be happy to help! However, I would need a bit more information from you. Could you please provide me with the fol"
+      },
+      {
+        "rank": 5,
+        "tag": "[turn:01044]",
+        "is_hit": false,
+        "similarity": 0.5119,
+        "semantic_similarity": 0.2198,
+        "lexical_score": 0.4525,
+        "composite_score": 0.5969,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:01044] Reaching out to Mark and Sarah will definitely help you get the exact details you need.  In the meantime, small towns"
+      }
+    ]
+  },
+  {
+    "question_idx": 41,
+    "question_id": "gpt4_4cd9eba1",
+    "question": "How many weeks have I been accepted into the exchange program when I started attending the pre-departure orientation sessions?",
+    "gold_answer": "one week",
+    "gold_tags": [
+      "[turn:01063]",
+      "[turn:01051]"
+    ],
+    "first_hit_rank": 2,
+    "candidates": [
+      {
+        "rank": 1,
+        "tag": "[turn:01052]",
+        "is_hit": false,
+        "similarity": 0.5683,
+        "semantic_similarity": 0.076,
+        "lexical_score": 0.6136,
+        "composite_score": 0.6375,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:01052] Congratulations on your semester abroad! I'd be happy to help you with packing tips.  Firstly, it's great to hear tha"
+      },
+      {
+        "rank": 2,
+        "tag": "[turn:01051]",
+        "is_hit": true,
+        "similarity": 0.5537,
+        "semantic_similarity": 0.2397,
+        "lexical_score": 0.5027,
+        "composite_score": 0.627,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:01051] I'm heading to the US soon for a semester abroad and I need help with packing. Can you give me some general tips on w"
+      },
+      {
+        "rank": 3,
+        "tag": "[turn:01064]",
+        "is_hit": false,
+        "similarity": 0.5324,
+        "semantic_similarity": 0.1203,
+        "lexical_score": 0.5653,
+        "composite_score": 0.62,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:01064] Congratulations on your acceptance to UC Berkeley's exchange program! I'd be happy to help you prepare for your semes"
+      },
+      {
+        "rank": 4,
+        "tag": "[turn:01063]",
+        "is_hit": true,
+        "similarity": 0.4854,
+        "semantic_similarity": 0.212,
+        "lexical_score": 0.4237,
+        "composite_score": 0.5778,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:01063] I'm preparing for my semester abroad at the University of California, Berkeley, and I was wondering if you could help"
+      },
+      {
+        "rank": 5,
+        "tag": "[turn:00150]",
+        "is_hit": false,
+        "similarity": 0.4316,
+        "semantic_similarity": 0.2755,
+        "lexical_score": 0.2654,
+        "composite_score": 0.5391,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00150] I'm interested in learning more about their entrepreneurship training program. Can you tell me more about the types o"
+      }
+    ]
+  },
+  {
+    "question_idx": 43,
+    "question_id": "b29f3365",
+    "question": "How long had I been taking guitar lessons when I bought the new guitar amp?",
+    "gold_answer": "Four weeks",
+    "gold_tags": [
+      "[turn:01123]",
+      "[turn:01111]"
+    ],
+    "first_hit_rank": 2,
+    "candidates": [
+      {
+        "rank": 1,
+        "tag": "[turn:01117]",
+        "is_hit": false,
+        "similarity": 0.6793,
+        "semantic_similarity": 0.3117,
+        "lexical_score": 0.6504,
+        "composite_score": 0.7174,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:01117] I've been using a metronome to help with my timing, but I'm not sure if I'm using it to its full potential. By the wa"
+      },
+      {
+        "rank": 2,
+        "tag": "[turn:01111]",
+        "is_hit": true,
+        "similarity": 0.5641,
+        "semantic_similarity": 0.2411,
+        "lexical_score": 0.5188,
+        "composite_score": 0.6345,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:01111] I'm trying to learn more about music theory, specifically chord progressions. Do you have any resources or tips on ho"
+      },
+      {
+        "rank": 3,
+        "tag": "[turn:01124]",
+        "is_hit": false,
+        "similarity": 0.5133,
+        "semantic_similarity": 0.0216,
+        "lexical_score": 0.5595,
+        "composite_score": 0.5979,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:01124] Congrats on the new amp! Choosing the right guitar strings can definitely make a big difference in your tone and play"
+      },
+      {
+        "rank": 4,
+        "tag": "[turn:01122]",
+        "is_hit": false,
+        "similarity": 0.5113,
+        "semantic_similarity": 0.1606,
+        "lexical_score": 0.5053,
+        "composite_score": 0.5965,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:01122] That's great to hear! Learning to play the ukulele can be a wonderful addition to your musical journey. The ukulele i"
+      },
+      {
+        "rank": 5,
+        "tag": "[turn:01112]",
+        "is_hit": false,
+        "similarity": 0.4763,
+        "semantic_similarity": 0.1021,
+        "lexical_score": 0.5035,
+        "composite_score": 0.5713,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:01112] That's great to hear that you're taking guitar lessons and making progress with your music theory understanding! Chor"
+      }
+    ]
+  },
+  {
+    "question_idx": 44,
+    "question_id": "gpt4_2f56ae70",
+    "question": "Which streaming service did I start using most recently?",
+    "gold_answer": "Disney+",
+    "gold_tags": [
+      "[turn:01135]",
+      "[turn:01159]",
+      "[turn:01147]"
+    ],
+    "first_hit_rank": null,
+    "candidates": [
+      {
+        "rank": 1,
+        "tag": "[turn:00378]",
+        "is_hit": false,
+        "similarity": 0.603,
+        "semantic_similarity": 0.0984,
+        "lexical_score": 0.6499,
+        "composite_score": 0.6625,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00378] A farm-to-table section is a great way to showcase your farm's bounty and offer visitors a taste of your hard work. H"
+      },
+      {
+        "rank": 2,
+        "tag": "[turn:00868]",
+        "is_hit": false,
+        "similarity": 0.555,
+        "semantic_similarity": 0.1092,
+        "lexical_score": 0.5989,
+        "composite_score": 0.6362,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00868] Congratulations on finally setting up your smart thermostat! Now, let's tackle that internet speed issue.  I'd be hap"
+      },
+      {
+        "rank": 3,
+        "tag": "[turn:00665]",
+        "is_hit": false,
+        "similarity": 0.552,
+        "semantic_similarity": 0.0948,
+        "lexical_score": 0.6051,
+        "composite_score": 0.6258,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00665] I've been consuming a lot of media content across various streaming services, and I'm really enjoying the variety of "
+      },
+      {
+        "rank": 4,
+        "tag": "[turn:00660]",
+        "is_hit": false,
+        "similarity": 0.5391,
+        "semantic_similarity": 0.0734,
+        "lexical_score": 0.5828,
+        "composite_score": 0.6165,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00660] A \"Friends\" fan, eh? I'm happy to recommend some sitcoms and comedies that you might enjoy. Since you've been re-watc"
+      },
+      {
+        "rank": 5,
+        "tag": "[turn:00874]",
+        "is_hit": false,
+        "similarity": 0.4659,
+        "semantic_similarity": 0.1541,
+        "lexical_score": 0.4457,
+        "composite_score": 0.5748,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00874] It sounds like slow speeds and connectivity issues are impacting your work-from-home experience and entertainment set"
+      }
+    ]
+  },
+  {
+    "question_idx": 45,
+    "question_id": "6613b389",
+    "question": "How many months before my anniversary did Rachel get engaged?",
+    "gold_answer": "2",
+    "gold_tags": [
+      "[turn:01171]",
+      "[turn:01195]"
+    ],
+    "first_hit_rank": 3,
+    "candidates": [
+      {
+        "rank": 1,
+        "tag": "[turn:01181]",
+        "is_hit": false,
+        "similarity": 0.5387,
+        "semantic_similarity": 0.1549,
+        "lexical_score": 0.5535,
+        "composite_score": 0.6162,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:01181] I like those tips! I'll definitely keep them in mind when writing the letter to Rachel. You know, I've been thinking "
+      },
+      {
+        "rank": 2,
+        "tag": "[turn:01246]",
+        "is_hit": false,
+        "similarity": 0.5353,
+        "semantic_similarity": 0.0,
+        "lexical_score": 0.5851,
+        "composite_score": 0.6137,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:01246] Staying in touch with new acquaintances and building meaningful relationships is a great topic! It's wonderful that y"
+      },
+      {
+        "rank": 3,
+        "tag": "[turn:01171]",
+        "is_hit": true,
+        "similarity": 0.5265,
+        "semantic_similarity": 0.1395,
+        "lexical_score": 0.5466,
+        "composite_score": 0.6123,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:01171] I'm looking for some gift ideas for my sister-in-law's sister, who got married last December. I finally got around to"
+      },
+      {
+        "rank": 4,
+        "tag": "[turn:00163]",
+        "is_hit": false,
+        "similarity": 0.4375,
+        "semantic_similarity": 0.1818,
+        "lexical_score": 0.3786,
+        "composite_score": 0.5433,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00163] Rachel can definitely provide you with valuable insights on the new construction listings in these areas, especially "
+      },
+      {
+        "rank": 5,
+        "tag": "[turn:00626]",
+        "is_hit": false,
+        "similarity": 0.4225,
+        "semantic_similarity": 0.0194,
+        "lexical_score": 0.4619,
+        "composite_score": 0.5325,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00626] Designing a custom phone case or journal can be a fun and creative process. There are many websites and tools that ma"
+      }
+    ]
+  },
+  {
+    "question_idx": 46,
+    "question_id": "gpt4_78cf46a3",
+    "question": "Which event happened first, the narrator losing their phone charger or the narrator receiving their new phone case?",
+    "gold_answer": "Receiving the new phone case",
+    "gold_tags": [
+      "[turn:01217]",
+      "[turn:01213]"
+    ],
+    "first_hit_rank": 3,
+    "candidates": [
+      {
+        "rank": 1,
+        "tag": "[turn:01223]",
+        "is_hit": false,
+        "similarity": 0.5019,
+        "semantic_similarity": 0.385,
+        "lexical_score": 0.2344,
+        "composite_score": 0.5897,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:01223] I think I'll go with the 200GB plan. I've been meaning to back up my phone data for a while now, and this will give m"
+      },
+      {
+        "rank": 2,
+        "tag": "[turn:01214]",
+        "is_hit": false,
+        "similarity": 0.4984,
+        "semantic_similarity": 0.2493,
+        "lexical_score": 0.4018,
+        "composite_score": 0.5872,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:01214] Buying a new phone charger is a great idea! Losing a charger can be frustrating, especially when you need to keep you"
+      },
+      {
+        "rank": 3,
+        "tag": "[turn:01213]",
+        "is_hit": true,
+        "similarity": 0.4816,
+        "semantic_similarity": 0.3126,
+        "lexical_score": 0.3061,
+        "composite_score": 0.5751,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:01213] I'm actually planning to buy a new phone charger, since I lost my old one at the gym about two weeks ago."
+      },
+      {
+        "rank": 4,
+        "tag": "[turn:01217]",
+        "is_hit": true,
+        "similarity": 0.4708,
+        "semantic_similarity": 0.3434,
+        "lexical_score": 0.2412,
+        "composite_score": 0.5673,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:01217] I'm thinking of backing up my phone data, but I'm not sure where to start. Can you walk me through the process? By th"
+      },
+      {
+        "rank": 5,
+        "tag": "[turn:00045]",
+        "is_hit": false,
+        "similarity": 0.425,
+        "semantic_similarity": 0.2975,
+        "lexical_score": 0.2196,
+        "composite_score": 0.5392,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00045] The habit of mindlessly checking your phone can be a tough one to break! It's great that you're making progress with "
+      }
+    ]
+  },
+  {
+    "question_idx": 47,
+    "question_id": "gpt4_0a05b494",
+    "question": "Who did I meet first, the woman selling jam at the farmer's market or the tourist from Australia?",
+    "gold_answer": "the woman selling jam at the farmer's market",
+    "gold_tags": [
+      "[turn:01241]",
+      "[turn:01229]"
+    ],
+    "first_hit_rank": 2,
+    "candidates": [
+      {
+        "rank": 1,
+        "tag": "[turn:01230]",
+        "is_hit": false,
+        "similarity": 0.4655,
+        "semantic_similarity": 0.1126,
+        "lexical_score": 0.4802,
+        "composite_score": 0.5635,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:01230] What a lovely encounter! It's always great to make new friends while traveling, and it sounds like you made a nice co"
+      },
+      {
+        "rank": 2,
+        "tag": "[turn:01241]",
+        "is_hit": true,
+        "similarity": 0.4246,
+        "semantic_similarity": 0.2022,
+        "lexical_score": 0.3411,
+        "composite_score": 0.534,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:01241] That's great! I'm definitely going to try out some of these recipes. I had a lovely conversation with a jam maker at "
+      },
+      {
+        "rank": 3,
+        "tag": "[turn:00396]",
+        "is_hit": false,
+        "similarity": 0.3921,
+        "semantic_similarity": 0.0601,
+        "lexical_score": 0.4237,
+        "composite_score": 0.5106,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00396] What a great idea! A farm store can be a fantastic way to connect with customers and showcase your farm's bounty. Her"
+      },
+      {
+        "rank": 4,
+        "tag": "[turn:00394]",
+        "is_hit": false,
+        "similarity": 0.3651,
+        "semantic_similarity": 0.1296,
+        "lexical_score": 0.3271,
+        "composite_score": 0.4912,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00394] Selling your milk and cheese products at your farm open house event is a great way to showcase your farm's bounty and"
+      },
+      {
+        "rank": 5,
+        "tag": "[turn:01229]",
+        "is_hit": true,
+        "similarity": 0.3561,
+        "semantic_similarity": 0.1502,
+        "lexical_score": 0.2968,
+        "composite_score": 0.4847,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:01229] Speaking of Sydney, I actually met a tourist from Australia last Thursday on the subway when I was on my way to work."
+      }
+    ]
+  },
+  {
+    "question_idx": 48,
+    "question_id": "gpt4_1a1dc16d",
+    "question": "Which event happened first, the meeting with Rachel or the pride parade?",
+    "gold_answer": "The meeting with Rachel",
+    "gold_tags": [
+      "[turn:01267]",
+      "[turn:01251]"
+    ],
+    "first_hit_rank": 2,
+    "candidates": [
+      {
+        "rank": 1,
+        "tag": "[turn:01257]",
+        "is_hit": false,
+        "similarity": 0.4126,
+        "semantic_similarity": 0.0829,
+        "lexical_score": 0.4395,
+        "composite_score": 0.5254,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:01257] That's really interesting. I've been thinking a lot about the importance of diversity and inclusion, especially after"
+      },
+      {
+        "rank": 2,
+        "tag": "[turn:01251]",
+        "is_hit": true,
+        "similarity": 0.3897,
+        "semantic_similarity": 0.029,
+        "lexical_score": 0.4367,
+        "composite_score": 0.5089,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:01251] I'm interested in learning more about the representation of women in leadership positions in various industries. Can "
+      },
+      {
+        "rank": 3,
+        "tag": "[turn:01258]",
+        "is_hit": false,
+        "similarity": 0.3878,
+        "semantic_similarity": 0.0293,
+        "lexical_score": 0.423,
+        "composite_score": 0.5075,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:01258] What a great connection! Attending the pride parade on May 1st is a wonderful way to celebrate diversity and inclusiv"
+      },
+      {
+        "rank": 4,
+        "tag": "[turn:00409]",
+        "is_hit": false,
+        "similarity": 0.3754,
+        "semantic_similarity": 0.2168,
+        "lexical_score": 0.2508,
+        "composite_score": 0.5035,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00409] I'm looking for some information on local charity events happening in the next few months. I've been really active in"
+      },
+      {
+        "rank": 5,
+        "tag": "[turn:00410]",
+        "is_hit": false,
+        "similarity": 0.3437,
+        "semantic_similarity": 0.1861,
+        "lexical_score": 0.2354,
+        "composite_score": 0.4806,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00410] That's great to hear that you're active in the charity scene! Unfortunately, I'm a large language model, I don't have"
+      }
+    ]
+  },
+  {
+    "question_idx": 49,
+    "question_id": "gpt4_2f584639",
+    "question": "Which gift did I buy first, the necklace for my sister or the photo album for my mom?",
+    "gold_answer": "the photo album for my mom",
+    "gold_tags": [
+      "[turn:01283]",
+      "[turn:01273]"
+    ],
+    "first_hit_rank": 5,
+    "candidates": [
+      {
+        "rank": 1,
+        "tag": "[turn:01276]",
+        "is_hit": false,
+        "similarity": 0.6364,
+        "semantic_similarity": 0.3654,
+        "lexical_score": 0.5176,
+        "composite_score": 0.6865,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:01276] That's wonderful! A customized photo album is a thoughtful and personalized gift that your mom will surely treasure. "
+      },
+      {
+        "rank": 2,
+        "tag": "[turn:00622]",
+        "is_hit": false,
+        "similarity": 0.5675,
+        "semantic_similarity": 0.2029,
+        "lexical_score": 0.5523,
+        "composite_score": 0.6452,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00622] Happy birthday to your sister! I'd be happy to help you find a thoughtful gift that fits your budget.  First, let's e"
+      },
+      {
+        "rank": 3,
+        "tag": "[turn:00970]",
+        "is_hit": false,
+        "similarity": 0.5701,
+        "semantic_similarity": 0.3321,
+        "lexical_score": 0.4308,
+        "composite_score": 0.6388,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00970] What a thoughtful gift idea! A customized necklace with your mom's birthstone and children's names engraved on it is "
+      },
+      {
+        "rank": 4,
+        "tag": "[turn:01275]",
+        "is_hit": false,
+        "similarity": 0.5386,
+        "semantic_similarity": 0.1978,
+        "lexical_score": 0.5176,
+        "composite_score": 0.6161,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:01275] I think I'll follow your tips to package the cake nicely. Speaking of gifts, I also got my mom a customized photo alb"
+      },
+      {
+        "rank": 5,
+        "tag": "[turn:01273]",
+        "is_hit": true,
+        "similarity": 0.5311,
+        "semantic_similarity": 0.1775,
+        "lexical_score": 0.5225,
+        "composite_score": 0.6107,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:01273] That's a great list! I think I'll try making the Tiffany Blue Velvet Cake. By the way, I've been doing a lot of onlin"
+      }
+    ]
+  },
+  {
+    "question_idx": 50,
+    "question_id": "gpt4_213fd887",
+    "question": "Which event did I participate in first, the volleyball league or the charity 5K run to raise money for a local children's hospital?",
+    "gold_answer": "volleyball league",
+    "gold_tags": [
+      "[turn:01307]",
+      "[turn:01297]"
+    ],
+    "first_hit_rank": 4,
+    "candidates": [
+      {
+        "rank": 1,
+        "tag": "[turn:00338]",
+        "is_hit": false,
+        "similarity": 0.7621,
+        "semantic_similarity": 0.3753,
+        "lexical_score": 0.7475,
+        "composite_score": 0.7902,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00338] That's great to hear that you had a wonderful time at the \"Walk for Hunger\" 5K walk! There are numerous charity event"
+      },
+      {
+        "rank": 2,
+        "tag": "[turn:00340]",
+        "is_hit": false,
+        "similarity": 0.6867,
+        "semantic_similarity": 0.3015,
+        "lexical_score": 0.6661,
+        "composite_score": 0.7337,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00340] Summer is a great time to get outdoors and participate in charity events. Here are some charity walks and runs that t"
+      },
+      {
+        "rank": 3,
+        "tag": "[turn:00405]",
+        "is_hit": false,
+        "similarity": 0.6656,
+        "semantic_similarity": 0.3911,
+        "lexical_score": 0.5463,
+        "composite_score": 0.7159,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:00405] The \"Run for the Cure\" event was truly inspiring, and I think what resonated with me the most was seeing so many peop"
+      },
+      {
+        "rank": 4,
+        "tag": "[turn:01307]",
+        "is_hit": true,
+        "similarity": 0.6573,
+        "semantic_similarity": 0.3547,
+        "lexical_score": 0.5707,
+        "composite_score": 0.7016,
+        "match_reason": "exact+semantic",
+        "snippet": "[turn:01307] Hi! I'm looking for some tips on how to improve my overall fitness. I've been playing volleyball regularly and trying"
+      },
+      {
+        "rank": 5,
+        "tag": "[turn:00398]",
+        "is_hit": false,
+        "similarity": 0.6206,
+        "semantic_similarity": 0.3811,
+        "lexical_score": 0.4675,
+        "composite_score": 0.6883,
+        "match_reason": "lexical+semantic",
+        "snippet": "[turn:00398] Congratulations on your achievement! It's fantastic that you participated in the \"Run for the Cure\" event and raised "
+      }
+    ]
+  }
+]

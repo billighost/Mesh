@@ -222,7 +222,7 @@ Benchmarks need the ONNX model for representative numbers; `hash-384` results ar
 2. Implement `get_mcp_config_path`, `get_skill_root_path`, `get_rules_path`, and `supports_scope`.
 3. Add the instance to `_ALL_ADAPTERS`; `ADAPTER_MAP` and `SUPPORTED_AGENTS` update automatically.
 4. Verify user and project scope paths, merge behavior, backups, dry-run, and uninstall.
-5. Add the agent to the README/DOCS tables and state clearly whether it was field-tested.
+5. Add the agent to the README/DOCS and COMPATIBILITY.md tables and state verification status.
 6. When adding hook support for an agent adapter, implement `get_hooks_path()` and ensure `supports_hooks()` returns `True`.
 
 ### Add an agent lifecycle hook

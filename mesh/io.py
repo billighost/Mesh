@@ -1,5 +1,5 @@
 """
-mesh/io.py — High-speed export and import for Mesh memory stores.
+mesh/io.py — High-speed export and import for Mesh stores.
 
 Addresses Findings:
   - S1: Preserves and validates `secret_ref` locator metadata across export and import
@@ -48,7 +48,7 @@ from .store import (
     MeshStore,
     _normalize_trust_tier,
     _parse_iso_utc,
-    flush_all_telemetry,
+    flush_all_access_tracking,
     validate_memory_id,
 )
 from .version import VERSION, is_version_compatible
@@ -146,25 +146,210 @@ def _load_existing_id_privacy_map(namespace: str) -> dict[str, bool]:
     return out
 
 
+def sanitize_csv_cell(value: Any) -> Any:
+    """
+    Neutralize spreadsheet formula injection (CSV Injection / CWE-1236).
+    If a string value starts with =, +, -, @, \\t, or \\r (or starts with whitespace
+    followed by =, +, -, @), prefix with a single quote (') so spreadsheet applications
+    (Excel, Google Sheets, Calc) treat it strictly as text.
+    """
+    if not isinstance(value, str):
+        return value
+    if not value:
+        return value
+    stripped = value.lstrip(" \t\r\n")
+    if stripped and stripped[0] in ("=", "+", "-", "@"):
+        return "'" + value
+    if value[0] in ("\t", "\r"):
+        return "'" + value
+    return value
+
+
+def export_to_csv(export_data: dict[str, Any]) -> str:
+    """
+    Render exported memories to CSV format with formula injection neutralization.
+    Vectors are excluded from CSV exports.
+    """
+    import csv
+    import io
+
+    output = io.StringIO()
+    writer = csv.writer(output, lineterminator="\n")
+
+    headers = [
+        "id",
+        "memory_type",
+        "confidence",
+        "content",
+        "tags",
+        "source_agent",
+        "trust_tier",
+        "created_at",
+        "ttl_days",
+        "secret_ref",
+    ]
+    writer.writerow(headers)
+
+    for mem in export_data.get("memories", []):
+        tags_raw = mem.get("tags") or []
+        tags_str = ", ".join(tags_raw) if isinstance(tags_raw, list) else str(tags_raw)
+        secret_ref_str = json.dumps(mem["secret_ref"]) if mem.get("secret_ref") else ""
+        row = [
+            sanitize_csv_cell(mem.get("id", "")),
+            sanitize_csv_cell(mem.get("memory_type", "")),
+            mem.get("confidence", 1.0),
+            sanitize_csv_cell(mem.get("content", "")),
+            sanitize_csv_cell(tags_str),
+            sanitize_csv_cell(mem.get("source_agent", "")),
+            sanitize_csv_cell(mem.get("trust_tier", "")),
+            sanitize_csv_cell(mem.get("created_at", "")),
+            mem.get("ttl_days") if mem.get("ttl_days") is not None else "",
+            sanitize_csv_cell(secret_ref_str),
+        ]
+        writer.writerow(row)
+
+    return output.getvalue()
+
+
+def _fence_markdown(text: str) -> str:
+    """
+    Safely enclose arbitrary text in a fenced code block so content
+    cannot inject markdown headings, links, or HTML tags into exports.
+    """
+    if not text:
+        return ""
+    fence = "```"
+    while fence in text:
+        fence += "`"
+    return f"{fence}text\n{text}\n{fence}"
+
+
+def export_to_markdown(export_data: dict[str, Any]) -> str:
+    """
+    Render export data to structured Markdown format.
+    Memory content is rendered in fenced code blocks to prevent markdown or HTML injection.
+    Vectors are excluded from Markdown exports.
+    """
+    ns = export_data.get("namespace", "shared")
+    exported_at = export_data.get("exported_at", "")
+    memories = export_data.get("memories", [])
+    work_items = export_data.get("work_items", [])
+
+    lines = [
+        f"# Mesh Export: {ns}",
+        "",
+        f"- **Namespace**: `{ns}`",
+        f"- **Exported at**: {exported_at}",
+        f"- **Mesh Version**: v{export_data.get('mesh_version', VERSION)}",
+        f"- **Memory Count**: {len(memories)}",
+        f"- **Work Items Count**: {len(work_items)}",
+        "",
+        "---",
+        "",
+        "## Memories",
+        "",
+    ]
+
+    if not memories:
+        lines.append("*No memories exported.*")
+        lines.append("")
+    else:
+        for mem in memories:
+            mid = mem.get("id", "unknown")
+            mtype = mem.get("memory_type", "fact").upper()
+            conf = mem.get("confidence", 1.0)
+            tags = mem.get("tags", [])
+            tags_str = ", ".join(f"`{t}`" for t in tags) if tags else "none"
+            agent = mem.get("source_agent", "unknown")
+            tier = mem.get("trust_tier", "user")
+            created = mem.get("created_at", "")
+            content = mem.get("content", "")
+
+            lines.append(f"### [{mid}] {mtype} (Confidence: {conf})")
+            lines.append(f"- **Tags**: {tags_str}")
+            lines.append(f"- **Source**: `{agent}` | **Tier**: `{tier}` | **Created**: {created}")
+            if mem.get("secret_ref"):
+                lines.append(f"- **Secret Reference**: `{json.dumps(mem['secret_ref'])}`")
+            lines.append("")
+            lines.append(_fence_markdown(content))
+            lines.append("")
+
+    if work_items:
+        lines.append("---")
+        lines.append("")
+        lines.append("## Work Items")
+        lines.append("")
+        for w in work_items:
+            wid = w.get("short_id") or w.get("id") or "task"
+            raw_title = str(w.get("title", ""))
+            safe_title = raw_title.replace("\r", " ").replace("\n", " ").replace("`", "'")
+            status = str(w.get("status", "todo")).upper()
+            priority = w.get("priority", "normal")
+            summary = w.get("completion_summary") or ""
+            evidence = w.get("evidence") or []
+
+            lines.append(f"### [{wid}] {safe_title}")
+            lines.append(f"- **Status**: `{status}` | **Priority**: `{priority}`")
+            if summary:
+                lines.append(f"- **Completion Summary**:\n{_fence_markdown(summary)}")
+            if evidence:
+                lines.append(f"- **Evidence**: {', '.join(evidence)}")
+            lines.append("")
+
+    return "\n".join(lines) + "\n"
+
+
 def export_namespace(
     namespace: str = "shared",
     output_path: Optional[str] = None,
-    include_embeddings: bool = True,
+    format: str = "json",
+    include_embeddings: Optional[bool] = None,
     encrypt: bool = False,
     passphrase: Optional[str] = None,
     include_quarantined: bool = False,
 ) -> dict[str, Any]:
     """
     Export all non-private (and by default non-quarantined) memories from an existing
-    namespace to a JSON file, optionally encrypting the export payload (Findings S5, S8, N6).
-    Raises `NamespaceNotFoundError` (a `ValueError` subclass) if the namespace does not exist.
+    namespace to a JSON, Markdown, or CSV file.
+
+    Format notes:
+      - 'json': Lossless round-trip export format supported by `mesh import`. Supports --encrypt.
+      - 'markdown': One-way human-readable summary. Embeddings are omitted by default.
+      - 'csv': One-way spreadsheet format. Embeddings are omitted by default. Neutralizes
+               spreadsheet formula injection (CWE-1236) by prepending single quotes (') to
+               cells beginning with =, +, -, @, \\t, or \\r.
     """
     clean_ns = validate_namespace(namespace)
-    flush_all_telemetry()
+    clean_fmt = (format or "json").lower().strip()
+    if output_path and not format:
+        p_str = output_path.lower()
+        if p_str.endswith(".md") or p_str.endswith(".markdown"):
+            clean_fmt = "markdown"
+        elif p_str.endswith(".csv"):
+            clean_fmt = "csv"
+        else:
+            clean_fmt = "json"
+
+    if clean_fmt not in ("json", "markdown", "csv"):
+        raise ValueError(
+            f"Unsupported export format '{clean_fmt}'. Supported formats: 'json', 'markdown', 'csv'."
+        )
+
+    if encrypt and clean_fmt != "json":
+        raise ValueError(
+            f"Encrypted export is currently only supported for JSON format (requested '{clean_fmt}')."
+        )
+
+    if include_embeddings is None:
+        incl_emb = (clean_fmt == "json")
+    else:
+        incl_emb = bool(include_embeddings)
+
+    flush_all_access_tracking()
     store = MeshStore(namespace=clean_ns, create=False)
     total_count = store.count()
     raw_exportable = store.get_exportable_memories(
-        include_embeddings=include_embeddings,
+        include_embeddings=incl_emb,
         include_quarantined=include_quarantined,
     )
 
@@ -193,7 +378,7 @@ def export_namespace(
         }
         if mem.get("secret_ref"):
             entry["secret_ref"] = mem["secret_ref"]
-        if include_embeddings:
+        if incl_emb:
             entry["embedding"] = mem.get("embedding")
         exportable.append(entry)
 
@@ -228,9 +413,18 @@ def export_namespace(
         if path.parent.exists():
             reject_symlink(path.parent)
         path.parent.mkdir(parents=True, exist_ok=True)
-        content_str = json.dumps(payload_to_write, indent=2, ensure_ascii=False)
+
+        if clean_fmt == "markdown":
+            content_str = export_to_markdown(export_data)
+        elif clean_fmt == "csv":
+            content_str = export_to_csv(export_data)
+        else:
+            content_str = json.dumps(payload_to_write, indent=2, ensure_ascii=False)
+            if not content_str.endswith("\n"):
+                content_str += "\n"
+
         if os.name == "nt":
-            with open(path, "w", encoding="utf-8") as f:
+            with open(path, "w", encoding="utf-8", newline="") as f:
                 f.write(content_str)
         else:
             flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
@@ -244,7 +438,7 @@ def export_namespace(
             from . import ui
 
             ui.success(
-                f"Exported {ui.plural(len(exportable), 'memory', 'memories')}",
+                f"Exported {ui.plural(len(exportable), 'memory', 'memories')} ({clean_fmt})",
                 ui.short_path(path),
                 stream=sys.stderr,
             )
@@ -317,7 +511,7 @@ def import_namespace(
     namespace = validate_namespace(raw_ns)
     memories = data.get("memories", [])
 
-    flush_all_telemetry()
+    flush_all_access_tracking()
     existing_privacy_map = _load_existing_id_privacy_map(namespace)
     seen_ids: set[str] = set(existing_privacy_map.keys())
     file_seen_ids: set[str] = set()

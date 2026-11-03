@@ -140,7 +140,7 @@ FTS5 virtual table (`porter unicode61`) with `id UNINDEXED`, `content`, `tags`, 
 
 ### `queries`
 
-Recall telemetry for patterns/gaps: `id`, `namespace`, `query_text`, `agent_id`, `best_similarity`, `result_count`, `timestamp`. Pruned to `MESH_MAX_QUERY_ROWS`.
+Local access tracking for patterns/gaps: `id`, `namespace`, `query_text` (redacted of secrets), `agent_id`, `best_similarity`, `result_count`, `timestamp`. Pruned to `MESH_MAX_QUERY_ROWS`. Excluded from all exports; query text recording disabled when `MESH_LOG_QUERY_TEXT=0`.
 
 ### `contradictions`
 
@@ -263,7 +263,7 @@ sequenceDiagram
     S-->>M: candidates with similarity and reasons
     M->>M: effective confidence + decay + stale flag
     M->>M: composite score and sort
-    M->>D: access_count/accessed_at + query telemetry
+    M->>D: access_count/accessed_at + query access tracking
     M-->>A: results + other_possible_memories
 ```
 
@@ -412,7 +412,7 @@ Safety:
 
 `audit_<namespace>.db` stores operational events from MCP, CLI, HTTP, and SDK: timestamp, surface, action, tool name, latency, counts, status, agent ID. Memory text is not stored. `mesh why` reads human-oriented events; `mesh audit export` emits JSON. Retention is capped by `MESH_MAX_AUDIT_ROWS`. Updates/deletes scrub references to removed memory text.
 
-There is no remote telemetry.
+There is no remote telemetry or phone-home mechanism.
 
 ---
 
