@@ -49,6 +49,8 @@ Source: `benchmarks/results/pass2/concurrency_multiagent.json` (keys: `multiagen
 | **5 Agents** | **10.04 wps** `[6.29, 10.79]` | **62.63 rps** `[25.90, 73.62]` | 0.05 ms | 6.91 ms | 12.09 ms | 6161.03 ms | 3 | 🟢 100% Intact | 🟢 **PASSED** |
 | **10 Agents** | **7.89 wps** `[7.25, 7.95]` | **108.72 rps** `[103.57, 231.77]` | 0.05 ms | 6.66 ms | 13.69 ms | 9661.17 ms | 3 | 🟢 100% Intact | 🟢 **PASSED** |
 
+> **Multi-Process Concurrency Reality:** Separate-process writes serialize on one lock; at 10 agents the median write is about 14 ms but p95 is about 9.7 s and total throughput is about 8 writes/s; the remediation plan is future work.
+
 ---
 
 ## 3. Advisory Lock Profiling & Multi-Process Throughput Analysis
@@ -92,22 +94,26 @@ Source: `benchmarks/results/pass2/b2_ram_timeseries.json` (keys: `metadata`, `to
 
 ---
 
-## 5. Table 5: Ingestion Latency Breakdown across Turn Lengths & Store Growth (B4 Profiling)
+## 5. Table 5: Ingestion Like-for-Like Comparison (548 Turns, Question 0)
 
-Empirical turn-by-turn profiling of Question 0 (550 turns) of LongMemEval-S comparing Mesh `learn()` internal stages against Mem0 SDK.
-- **Overall Mesh Ingestion:** Mean **22.88 ms**, Median **15.98 ms**, p95 **53.48 ms**.
-- **Overall Mem0 Ingestion:** Mean **117.22 ms**, Median **89.70 ms**, p95 **274.10 ms**.
+Empirical turn-by-turn ingestion on Question 0 of LongMemEval-S comparing:
+1. **Mesh Default Mode:** time to accept each turn (`learn()` with fast `hash-384` upfront) AND total time until the background ONNX re-embedding queue drains.
+2. **Mesh Synchronous ONNX Mode (`MESH_SYNC_ONNX=1`):** true like-for-like synchronous ONNX transformer inference per turn in-process.
+3. **Mem0 SDK (`infer=False`):** synchronous FastEmbed ONNX embedding per turn.
 
-Source: `benchmarks/results/pass2/b4_ingestion_profile.json` (keys: `by_char_length_bucket`, `by_store_growth_stage`)
+Source: `benchmarks/results/pass2/b4_like_for_like.json` (keys: `summary`, `raw_samples`)
 
-| Turn Length Bucket | Sample Size | Mesh Total p50 | Guards p50 | ONNX Embed p50 | Dedupe Query p50 | Contradiction Check p50 | DB Write p50 | Mem0 Total p50 |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **short (<100 chars)** | 63 turns | **9.19 ms** | 0.17 ms | 0.57 ms | 0.82 ms | 1.38 ms | 3.11 ms | **29.18 ms** |
-| **medium (200-500 chars)** | 113 turns | **15.10 ms** | 0.31 ms | 1.93 ms | 0.96 ms | 3.10 ms | 5.15 ms | **61.23 ms** |
-| **long (1000-3000 chars)** | 205 turns | **31.71 ms** | 5.95 ms | 10.11 ms | 1.03 ms | 4.92 ms | 3.65 ms | **182.64 ms** |
-| **very_long (>4000 chars)** | 1 turns | **75.68 ms** | 13.57 ms | 36.69 ms | 1.05 ms | 8.77 ms | 11.70 ms | **156.20 ms** |
+| Ingestion Pipeline & Tool | Embedding & Processing Strategy | Turn Latency p50 | Turn Latency Mean | Turn Latency p95 | Ingestion Phase Time | Re-Embed Queue Drain Time | Total Time to Fully Embedded | Throughput |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Mesh Default Mode (Time to Accept)** | Deferred Background ONNX (`hash-384` upfront) | **13.16 ms** | 21.16 ms | 51.05 ms | 11.60 s | — | — | **47.2 turns/s** |
+| **Mesh Default Mode (Fully Embedded)** | Complete Post-Ingest Queue Drain (`drain_reembed_worker()`) | — | — | — | 11.60 s | 171.53 s | **183.13 s** | **3.0 turns/s** |
+| **Mesh Synchronous Mode (`MESH_SYNC_ONNX=1`)** | Synchronous CPU ONNX (`all-MiniLM-L6-v2`) | **170.71 ms** | 329.04 ms | 1100.32 ms | 180.32 s | 0.00 s | **180.32 s** | **3.0 turns/s** |
+| **Mem0 SDK (`infer=False`)** | Synchronous FastEmbed ONNX (`all-MiniLM-L6-v2`) | **111.35 ms** | 168.87 ms | 482.79 ms | 92.54 s | 0.00 s | **92.54 s** | **5.9 turns/s** |
 
-> **Reconciliation Analysis (~165 ms vs ~86 ms):** Empirical turn-by-turn ingestion profiling confirms that under default production settings (2-stage fast hashing with background ONNX re-embedding), Mesh SDK is significantly faster than Mem0 SDK (Mesh mean 22.88 ms, p50 15.98 ms vs Mem0 mean 117.22 ms, p50 89.70 ms, a ~5.1x throughput advantage). Furthermore, Mesh demonstrates zero latency degradation as store depth grows: latency across turns 1-50 averages 30.69 ms, stabilizing to 21.15 ms for turns 401+, because SQLite B-tree index scans remain sub-millisecond. The earlier 165 ms per-turn measurement occurred exclusively in pilot runs where MESH_SYNC_ONNX=1 was set, forcing synchronous CPU ONNX transformer tokenization and inference per turn (~140 ms CPU overhead).
+> **Architectural Analysis of Ingestion Modes & Vector Quality:**
+> 1. **Default Mode Quality Tradeoff:** In default mode (`MESH_SYNC_ONNX` unset), Mesh prioritizes agent interactivity by accepting memories in ~13 ms via fast 384-dimensional lexical hashing (`hash-384`) while enqueuing background ONNX re-embedding (`mesh/memory.py:1914`). **Any semantic search executed before the background queue has fully drained operates over lower-quality hash vectors** or temporarily excludes un-embedded turns from dense cosine search. Full neural search quality is established once the background worker drains.
+> 2. **Like-for-Like Synchronous Comparison:** When strict synchronous ONNX embedding is enforced per turn (`MESH_SYNC_ONNX=1`), Mesh takes 170.71 ms p50 per turn (180.32 s total) versus Mem0's 111.35 ms p50 (92.54 s total). Mem0 achieves lower per-turn latency in synchronous mode because with `infer=False` it appends raw vectors without prompt injection guards, tag validation, slot conflict tracking, or contradiction detection, whereas Mesh executes full guard evaluation and contradiction slot checks on every turn.
+> 3. **Store Depth Scaling:** Mesh demonstrates zero latency degradation as store depth grows from turn 1 to turn 548, as SQLite B-tree index seeks remain sub-millisecond throughout the session.
 
 ---
 
@@ -142,8 +148,6 @@ Source: `benchmarks/results/pass2/b1_daemon_breakdown.json` (keys: `python_inter
 | **CLI `mesh ask` Subprocess**| 700.33 ms | **694.40 ms** | 1125.65 ms | 416.48 ms | 1291.81 ms | Complete CLI command execution |
 | **CLI `mesh brief` Subprocess**| 629.49 ms | **640.67 ms** | 992.33 ms | 385.03 ms | 1000.27 ms | Summary generation command |
 
-> **Discrepancy Resolution:** The old smoke test reported ~440 ms because it measured an in-process CLI wrapper or repeated function calls where python and imports were already loaded. In real subprocess CLI execution, steady-state 'mesh ask' takes ~2.6-2.9 s because: (1) Windows Python interpreter startup is ~45-55 ms; (2) Importing mesh.cli and its dependencies (Typer, AnyIO, Starlette, httpx, etc.) takes ~1,400-1,600 ms; (3) CLI option parsing, environment checks, and output formatting take ~700-900 ms; (4) The daemon HTTP round trip itself takes only ~18 ms. The daemon successfully eliminates the 25+ second in-process ONNX model load, but Python CLI subprocess invocations still incur interpreter and import overhead.
-
 ---
 
 ## 8. Table 8: Windows Laptop Spot-Check (10 Questions, Sleep-Proofed)
@@ -160,10 +164,10 @@ Source: `benchmarks/results/pass2/laptop_spotcheck_10q.json` (keys: `tool_aggreg
 | **Auxly CLI** | Class B | **1.23 s** | **17.788 s** | 2863.26 ms | [1154.46, 13900.59] ms | **1945.01 ms** | **14635.22 ms** | 49929.01 ms | 100 queries |
 | **Basic Memory CLI** | Class B | **19.30 s** | **7.153 s** | 5535.26 ms | [3545.27, 34973.31] ms | **5870.27 ms** | **40018.01 ms** | 64532.93 ms | 100 queries |
 
-> **Analysis of Windows Latency Tails:**
+> **Analysis of Windows Latency Tails & CLI Architecture:**
 > 1. **Auxly Unbuffered Directory Walk:** Auxly stores 1 Markdown file per turn (~490 individual files per store). On Windows NTFS, substring search performs an unbuffered sequential directory walk (`os.ReadDir`) across all 490 files per query. Under Windows Defender handle inspection and cold NTFS cache, traversing 490 file descriptors causes the 17.8 s time-to-searchable delay and the 14,635 ms p95 tail.
 > 2. **Basic Memory Subprocess Startup Overhead:** Basic Memory CLI executes an isolated Python 3.12 process booting Typer, FastMCP, and SQLite per call, resulting in a cold first query of 5,535 ms and tail latencies up to 40,018 ms.
-> 3. **Mesh Cold CLI vs Daemon Advantage:** Mesh CLI Cold incurs ~740 ms per query due to Python 3.14 interpreter bootstrap and Typer import overhead; keeping the Mesh background daemon warm reduces latency to low-millisecond socket round-trips.
+> 3. **Mesh CLI Standalone Modes & Architecture (`mesh/cli.py:1165` and `1294`):** When executed without a running daemon, standalone `mesh add` and `mesh recall`/`ask` check whether the ONNX embedding model is already loaded in-process. If not, and unless `MESH_CLI_FORCE_ONNX=1` is explicitly set, the CLI automatically falls back to fast 384-dimensional lexical hash embedding (`os.environ['MESH_FORCE_HASH_EMBED'] = '1'`). This avoids loading the heavy ONNX transformer runtime (~25-second cold load and ~130 MB RAM overhead) inside a short-lived CLI command, keeping cold CLI RAM at **77.67 MB**. However, queries run in this standalone fallback mode operate over lower-quality hash representations rather than dense neural embeddings. Full neural semantic search quality is provided when queries are routed through the resident background daemon (`mesh daemon start`), called via the Python SDK / MCP server, or when `MESH_CLI_FORCE_ONNX=1` is explicitly set.
 
 ---
 

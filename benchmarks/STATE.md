@@ -40,9 +40,10 @@ Hardware:
 - **5,000-Memory Integrity Test:** Ingested 5,000 distinct memories across 16 concurrent threads in 57.38 s (**87.14 writes/s**). Exactly 5,000 submitted, 5,000 stored, 0 duplicates, 0 rejected, 0 errors, `PRAGMA integrity_check = ok`, retrieval 10/10 verified.
 - **Accounting Explanation:** All 5,000 submitted writes are accounted for. The earlier 4,992 count was caused by integer division truncation (`5000 // 16 = 312` with remainder 8 dropped), which has been corrected by remainder partitioning (`8 * 313 + 8 * 312 = 5000`). Zero duplicate reinforcements, zero guard rejections, zero lost writes.
 - **Multi-Agent Process Scaling (Separate OS Processes, 3 Repeats, multiprocessing.Barrier):**
-  - 2 Agents: Steady Write Throughput: **12.03 wps** `[8.45, 12.28]`; Read Throughput: **116.95 rps** `[101.46, 151.22]`; Lock wait p50: **0.05 ms**; Lock hold p50: **5.52 ms**; Status: PASSED (100% database integrity, 0 errors across all 3 repeats).
-  - 5 Agents: Steady Write Throughput: **10.04 wps** `[6.29, 10.79]`; Read Throughput: **62.63 rps** `[25.90, 73.62]`; Lock wait p50: **0.05 ms**; Lock hold p50: **6.91 ms**; Status: PASSED (100% database integrity, 0 errors across all 3 repeats).
-  - 10 Agents: Steady Write Throughput: **7.89 wps** `[7.25, 7.95]`; Read Throughput: **108.72 rps** `[103.57, 231.77]`; Lock wait p50: **0.05 ms**; Lock hold p50: **6.66 ms**; Status: PASSED (100% database integrity, 0 errors across all 3 repeats).
+  - 2 Agents: Steady Write Throughput: **12.03 wps** `[8.45, 12.28]`; Read Throughput: **116.95 rps** `[101.46, 151.22]`; Lock wait p50: **0.05 ms**; Lock hold p50: **5.52 ms**; Write op p50: **9.84 ms**; Write op p95: **2885.20 ms**; Status: PASSED (100% database integrity, 0 errors across all 3 repeats).
+  - 5 Agents: Steady Write Throughput: **10.04 wps** `[6.29, 10.79]`; Read Throughput: **62.63 rps** `[25.90, 73.62]`; Lock wait p50: **0.05 ms**; Lock hold p50: **6.91 ms**; Write op p50: **12.09 ms**; Write op p95: **6161.03 ms**; Status: PASSED (100% database integrity, 0 errors across all 3 repeats).
+  - 10 Agents: Steady Write Throughput: **7.89 wps** `[7.25, 7.95]`; Read Throughput: **108.72 rps** `[103.57, 231.77]`; Lock wait p50: **0.05 ms**; Lock hold p50: **6.66 ms**; Write op p50: **13.69 ms**; Write op p95: **9661.17 ms**; Status: PASSED (100% database integrity, 0 errors across all 3 repeats).
+- **Concurrency Reality:** Separate-process writes serialize on one lock; at 10 agents the median write is about 14 ms but p95 is about 9.7 s and total throughput is about 8 writes/s; the remediation plan is future work.
 - **Lock Profiling:** Uncontended lock hold time is **5.48 ms p50** (p95: **7.42 ms**).
 - **Contention Root Cause Diagnosis:** Multi-threaded throughput is 87 writes/s because threads share in-memory connection pooling and SQLite internal mutexes. Multi-process throughput drops to 7.9–12.0 writes/s because cross-process concurrency relies on file-level locking (`msvcrt.locking` on Windows, `fcntl.flock` on POSIX) protecting the entire `learn()` critical section (including read-only vector deduplication queries), combined with coarse 5-50 ms exponential backoff sleep intervals that induce lock convoy formation.
 - **Architectural Remediation Proposal (Scheduled for Future Release, Zero Code Changes on Current Branch):**
@@ -78,39 +79,40 @@ Hardware:
   - Auxly: **0.00 MB** (No neural model assets).
   - The pilot v2 directory size of 195.66 MB was caused by 109.00 MB of stale temporary download artifacts (`model.tmp.16336.2464` at 68.38 MB and `model.tmp.3888.15404` at 40.63 MB) left by earlier interrupted downloads.
 
-### E. Ingestion Latency Breakdown & Reconciliation (B4 Profiling)
-*Source: `benchmarks/results/pass2/b4_ingestion_profile.json`*
-- **Overall Mesh Ingestion:** Mean **22.88 ms**, Median **15.98 ms**, p95 **44.82 ms**.
-- **Overall Mem0 Ingestion:** Mean **117.22 ms**, Median **89.70 ms**, p95 **241.01 ms**.
-- **Turn Length Breakdown (Mesh vs Mem0):**
-  - <100 chars (n=54): Mesh p50 **10.59 ms** | Mem0 p50 **55.45 ms**
-  - 100–250 chars (n=85): Mesh p50 **11.23 ms** | Mem0 p50 **67.12 ms**
-  - 250–500 chars (n=115): Mesh p50 **13.56 ms** | Mem0 p50 **82.35 ms**
-  - 500–1000 chars (n=120): Mesh p50 **15.42 ms** | Mem0 p50 **91.80 ms**
-  - 1000–2000 chars (n=105): Mesh p50 **17.91 ms** | Mem0 p50 **95.22 ms**
-  - 2000+ chars (n=71): Mesh p50 **24.52 ms** | Mem0 p50 **110.15 ms**
-- **Internal Stage Breakdown (Mesh):**
-  - Input guards: **0.02 ms p50**
-  - ONNX embedding: **11.45 ms p50**
-  - Deduplication query: **2.35 ms p50**
-  - Contradiction check: **0.01 ms p50**
-  - SQLite write: **2.15 ms p50**
-- **Reconciliation of Latency Measurements (23 ms vs 42 ms vs 165 ms vs 278 ms):**
-  - 23 ms (B4): Ingests raw clean turns through default Stage 1 fast hashing (`hash-384`, sub-millisecond) with background ONNX re-embedding.
-  - 42 ms (Spot-Check): Multi-turn conversational ingestion with session tracking and conflict slot verification.
-  - 165 ms (Pilot v2): `MESH_SYNC_ONNX=1` in `run_pilot.py` forced synchronous CPU ONNX inference per turn (~140 ms CPU overhead).
-  - 278 ms (Scale Benchmark): 1,000 realistic-length turns with synchronous embedding and full validation.
+### E. Like-for-Like Ingestion Profiling & Vector Quality Disclosures (B4 Profiling)
+*Source: `benchmarks/results/pass2/b4_like_for_like.json` and `benchmarks/results/pass2/b4_ingestion_profile.json`*
+- **Workload:** 548 safe turns from LongMemEval-S Question 0 evaluated across 3 ingestion configurations.
+- **Mesh Default Mode (Time to Accept):**
+  - Per-Turn Accept Latency: Median **13.16 ms**, Mean **21.16 ms**, p95 **51.05 ms**.
+  - Total Accept Time: **11.60 s** (**47.2 turns/s**).
+  - Background Re-embedding Drain Time: **171.53 s** (546/546 memories upgraded to `onnx-minilm-l6-v2`).
+  - Total Time to Fully Embedded: **183.13 s** (**3.0 turns/s**).
+  - **Vector Quality Disclosure:** In default mode (`MESH_SYNC_ONNX` unset), Mesh accepts turns in ~13 ms via fast 384-dimensional lexical hashing (`hash-384`) while enqueuing background ONNX re-embedding (`mesh/memory.py:1914`). **Any search executed before the background queue drains operates over lower-quality hash vectors** or temporarily excludes un-embedded turns from dense cosine search.
+- **Mesh Synchronous Mode (`MESH_SYNC_ONNX=1`):**
+  - Per-Turn Latency: Median **170.71 ms**, Mean **329.04 ms**, p95 **1100.32 ms**.
+  - Total Time to Fully Embedded: **180.32 s** (**3.0 turns/s**).
+  - Synchronous in-process ONNX inference per turn with full guard and contradiction evaluation.
+- **Mem0 SDK Mode (`infer=False`):**
+  - Per-Turn Latency: Median **111.35 ms**, Mean **168.87 ms**, p95 **482.79 ms**.
+  - Total Time to Fully Embedded: **92.54 s** (**5.9 turns/s**).
+  - Synchronous FastEmbed ONNX inference writing raw vectors without guard, slot, or contradiction validation.
+- **Latency Reconciliation Across Benchmarks:**
+  - 13 ms (B4 Like-for-Like Default): Time-to-accept using fast hashing + background re-embedding queue.
+  - 24 ms (B4 Profile Mean): Clean turns through default pipeline.
+  - 42 ms (Spot-Check): Multi-turn conversational ingestion with session tracking.
+  - 171 ms (B4 Sync ONNX): Per-turn synchronous ONNX CPU embedding (`MESH_SYNC_ONNX=1`), matching the ~165 ms pilot v2 measurement.
+  - 278 ms (Scale Benchmark): 1,000 realistic-length turns with synchronous embedding.
 
 ### F. Daemon CLI Breakdown (B1 Resolution)
 *Source: `benchmarks/results/pass2/b1_daemon_breakdown.json`*
 - **Test Gate:** `tests/test_daemon_cli_performance.py` asserts that CLI recall with a running daemon delegates over HTTP without loading the ONNX model in-process (PASSED).
-- **Discrepancy Resolution:**
-  - Bare Python startup: **46.21 ms p50** (Mean: 51.15 ms, p95: 78.40 ms).
-  - Import `mesh.cli` and dependencies (Typer, httpx, Starlette): **188.35 ms p50** (Mean: 196.80 ms, p95: 235.10 ms).
-  - Direct HTTP query to running daemon (keep-alive TCP socket): **4.54 ms p50** (Mean: 5.12 ms, p95: 7.20 ms).
-  - CLI `mesh ask` subprocess execution: **604.42 ms p50** (Mean: 622.18 ms, p95: 785.40 ms).
-  - CLI `mesh brief` subprocess execution: **641.48 ms p50** (Mean: 658.90 ms, p95: 812.30 ms).
-  - The ~440 ms figure in early tests measured in-process Typer invocation without Python startup overhead; the ~2.9 s figure in pilot v2 included cold model initialization and network probe overhead. The daemon completely eliminates in-process ONNX model loading (~25 s cold load).
+- **Stage Breakdown (30 Iterations):**
+  - Bare Python startup: **104.03 ms p50** (Mean: 95.03 ms, p95: 121.39 ms).
+  - Import `mesh.cli` (Typer, httpx, Starlette): **336.54 ms p50** (Mean: 338.17 ms, p95: 612.28 ms).
+  - Direct HTTP query to running daemon (keep-alive TCP socket): **6.50 ms p50** (Mean: 6.58 ms, p95: 8.55 ms).
+  - CLI `mesh ask` subprocess execution: **694.40 ms p50** (Mean: 700.33 ms, p95: 1125.65 ms).
+  - CLI `mesh brief` subprocess execution: **640.67 ms p50** (Mean: 629.49 ms, p95: 992.33 ms).
+- **Daemon Architecture:** The daemon completely eliminates in-process ONNX model loading (~25 s cold load) by maintaining a warm resident transformer session.
 
 ### G. Windows Laptop Spot-Check (10 Questions, Sleep-Proofed Bare-Metal)
 *Source: `benchmarks/results/pass2/laptop_spotcheck_10q.json`*
@@ -124,6 +126,8 @@ Hardware:
 | **Mesh CLI (Daemon)** | Class B | **20.13 s** | **1.133 s** | 610.04 ms | [437.22, 3775.04] ms | **595.42 ms** | **3868.08 ms** | 5437.88 ms | 100 queries |
 | **Auxly CLI** | Class B | **1.23 s** | **17.788 s** | 2863.26 ms | [1154.46, 13900.59] ms | **1945.01 ms** | **14635.22 ms** | 49929.01 ms | 100 queries |
 | **Basic Memory CLI** | Class B | **19.30 s** | **7.153 s** | 5535.26 ms | [3545.27, 34973.31] ms | **5870.27 ms** | **40018.01 ms** | 64532.93 ms | 100 queries |
+
+- **CLI Standalone Modes & Architecture (`mesh/cli.py:1165` and `1294`):** When executed without a running daemon, standalone `mesh add` and `mesh recall`/`ask` check whether the ONNX embedding model is already loaded in-process. If not, and unless `MESH_CLI_FORCE_ONNX=1` is explicitly set, the CLI automatically falls back to fast 384-dimensional lexical hash embedding (`os.environ['MESH_FORCE_HASH_EMBED'] = '1'`). This avoids loading the heavy ONNX transformer runtime inside a short-lived CLI command, keeping cold CLI RAM at **77.67 MB**. However, queries run in this standalone fallback mode operate over lower-quality hash representations rather than dense neural embeddings. Full neural semantic search quality is provided when queries are routed through the resident background daemon (`mesh daemon start`), called via the Python SDK / MCP server, or when `MESH_CLI_FORCE_ONNX=1` is explicitly set.
 
 ---
 

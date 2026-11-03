@@ -120,6 +120,8 @@ def format_table_2_concurrency(conc_data: dict[str, Any]) -> str:
         )
 
     lines.append("")
+    lines.append("> **Multi-Process Concurrency Reality:** Separate-process writes serialize on one lock; at 10 agents the median write is about 14 ms but p95 is about 9.7 s and total throughput is about 8 writes/s; the remediation plan is future work.")
+    lines.append("")
     return "\n".join(lines)
 
 
@@ -190,41 +192,39 @@ def format_table_4_ram(ram_data: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def format_table_5_ingestion(b4_data: dict[str, Any]) -> str:
-    ov = b4_data.get("overall_summary", {})
-    by_len = b4_data.get("by_char_length_bucket", {})
+def format_table_5_ingestion(like_data: dict[str, Any]) -> str:
+    meta = like_data.get("metadata", {})
+    summary = like_data.get("summary", {})
+    n_turns = meta.get("turns_count", 548)
+
+    def_acc = summary.get("mesh_default_time_to_accept", {})
+    def_drain = summary.get("mesh_default_background_drain", {})
+    sync_m = summary.get("mesh_sync_onnx_mode", {})
+    mem0_m = summary.get("mem0_sdk_mode", {})
 
     lines = [
-        "## 5. Table 5: Ingestion Latency Breakdown across Turn Lengths & Store Growth (B4 Profiling)",
+        f"## 5. Table 5: Ingestion Like-for-Like Comparison ({n_turns} Turns, Question 0)",
         "",
-        "Empirical turn-by-turn profiling of Question 0 (550 turns) of LongMemEval-S comparing Mesh `learn()` internal stages against Mem0 SDK.",
-        f"- **Overall Mesh Ingestion:** Mean **{ov.get('mesh_mean_ms', 0.0):.2f} ms**, Median **{ov.get('mesh_p50_ms', 0.0):.2f} ms**, p95 **{ov.get('mesh_p95_ms', 0.0):.2f} ms**.",
-        f"- **Overall Mem0 Ingestion:** Mean **{ov.get('mem0_mean_ms', 0.0):.2f} ms**, Median **{ov.get('mem0_p50_ms', 0.0):.2f} ms**, p95 **{ov.get('mem0_p95_ms', 0.0):.2f} ms**.",
+        "Empirical turn-by-turn ingestion on Question 0 of LongMemEval-S comparing:",
+        "1. **Mesh Default Mode:** time to accept each turn (`learn()` with fast `hash-384` upfront) AND total time until the background ONNX re-embedding queue drains.",
+        "2. **Mesh Synchronous ONNX Mode (`MESH_SYNC_ONNX=1`):** true like-for-like synchronous ONNX transformer inference per turn in-process.",
+        "3. **Mem0 SDK (`infer=False`):** synchronous FastEmbed ONNX embedding per turn.",
         "",
-        "Source: `benchmarks/results/pass2/b4_ingestion_profile.json` (keys: `by_char_length_bucket`, `by_store_growth_stage`)",
+        "Source: `benchmarks/results/pass2/b4_like_for_like.json` (keys: `summary`, `raw_samples`)",
         "",
-        "| Turn Length Bucket | Sample Size | Mesh Total p50 | Guards p50 | ONNX Embed p50 | Dedupe Query p50 | Contradiction Check p50 | DB Write p50 | Mem0 Total p50 |",
-        "| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |",
+        "| Ingestion Pipeline & Tool | Embedding & Processing Strategy | Turn Latency p50 | Turn Latency Mean | Turn Latency p95 | Ingestion Phase Time | Re-Embed Queue Drain Time | Total Time to Fully Embedded | Throughput |",
+        "| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |",
+        f"| **Mesh Default Mode (Time to Accept)** | Deferred Background ONNX (`hash-384` upfront) | **{def_acc.get('p50_ms', 0.0):.2f} ms** | {def_acc.get('mean_ms', 0.0):.2f} ms | {def_acc.get('p95_ms', 0.0):.2f} ms | {def_acc.get('accept_phase_total_sec', 0.0):.2f} s | — | — | **{def_acc.get('throughput_turns_per_sec', 0.0):.1f} turns/s** |",
+        f"| **Mesh Default Mode (Fully Embedded)** | Complete Post-Ingest Queue Drain (`drain_reembed_worker()`) | — | — | — | {def_acc.get('accept_phase_total_sec', 0.0):.2f} s | {def_drain.get('drain_elapsed_sec', 0.0):.2f} s | **{def_drain.get('total_time_to_fully_embedded_sec', 0.0):.2f} s** | **{n_turns / max(0.001, def_drain.get('total_time_to_fully_embedded_sec', 1.0)):.1f} turns/s** |",
+        f"| **Mesh Synchronous Mode (`MESH_SYNC_ONNX=1`)** | Synchronous CPU ONNX (`all-MiniLM-L6-v2`) | **{sync_m.get('p50_ms', 0.0):.2f} ms** | {sync_m.get('mean_ms', 0.0):.2f} ms | {sync_m.get('p95_ms', 0.0):.2f} ms | {sync_m.get('sync_phase_total_sec', 0.0):.2f} s | 0.00 s | **{sync_m.get('total_time_to_fully_embedded_sec', 0.0):.2f} s** | **{sync_m.get('throughput_turns_per_sec', 0.0):.1f} turns/s** |",
+        f"| **Mem0 SDK (`infer=False`)** | Synchronous FastEmbed ONNX (`all-MiniLM-L6-v2`) | **{mem0_m.get('p50_ms', 0.0):.2f} ms** | {mem0_m.get('mean_ms', 0.0):.2f} ms | {mem0_m.get('p95_ms', 0.0):.2f} ms | {mem0_m.get('mem0_phase_total_sec', 0.0):.2f} s | 0.00 s | **{mem0_m.get('total_time_to_fully_embedded_sec', 0.0):.2f} s** | **{mem0_m.get('throughput_turns_per_sec', 0.0):.1f} turns/s** |",
+        "",
+        "> **Architectural Analysis of Ingestion Modes & Vector Quality:**",
+        "> 1. **Default Mode Quality Tradeoff:** In default mode (`MESH_SYNC_ONNX` unset), Mesh prioritizes agent interactivity by accepting memories in ~13 ms via fast 384-dimensional lexical hashing (`hash-384`) while enqueuing background ONNX re-embedding (`mesh/memory.py:1914`). **Any semantic search executed before the background queue has fully drained operates over lower-quality hash vectors** or temporarily excludes un-embedded turns from dense cosine search. Full neural search quality is established once the background worker drains.",
+        "> 2. **Like-for-Like Synchronous Comparison:** When strict synchronous ONNX embedding is enforced per turn (`MESH_SYNC_ONNX=1`), Mesh takes 170.71 ms p50 per turn (180.32 s total) versus Mem0's 111.35 ms p50 (92.54 s total). Mem0 achieves lower per-turn latency in synchronous mode because with `infer=False` it appends raw vectors without prompt injection guards, tag validation, slot conflict tracking, or contradiction detection, whereas Mesh executes full guard evaluation and contradiction slot checks on every turn.",
+        "> 3. **Store Depth Scaling:** Mesh demonstrates zero latency degradation as store depth grows from turn 1 to turn 548, as SQLite B-tree index seeks remain sub-millisecond throughout the session.",
+        "",
     ]
-
-    for b_name, b_val in by_len.items():
-        n = b_val.get("sample_size", 0)
-        m_tot = b_val.get("mesh_total", {}).get("p50", 0.0)
-        g_p50 = b_val.get("mesh_guards", {}).get("p50", 0.0)
-        e_p50 = b_val.get("mesh_embedding", {}).get("p50", 0.0)
-        d_p50 = b_val.get("mesh_dedupe_query", {}).get("p50", 0.0)
-        c_p50 = b_val.get("mesh_contradiction_check", {}).get("p50", 0.0)
-        db_p50 = b_val.get("mesh_db_write", {}).get("p50", 0.0)
-        mem0_tot = b_val.get("mem0_total", {}).get("p50", 0.0)
-
-        lines.append(
-            f"| **{b_name}** | {n} turns | **{m_tot:.2f} ms** | {g_p50:.2f} ms | {e_p50:.2f} ms | "
-            f"{d_p50:.2f} ms | {c_p50:.2f} ms | {db_p50:.2f} ms | **{mem0_tot:.2f} ms** |"
-        )
-
-    lines.append("")
-    lines.append("> **Reconciliation Analysis (~165 ms vs ~86 ms):** " + b4_data.get("reconciliation_explanation", ""))
-    lines.append("")
     return "\n".join(lines)
 
 
@@ -282,8 +282,6 @@ def format_table_7_daemon(b1_data: dict[str, Any]) -> str:
         f"| **CLI `mesh ask` Subprocess**| {cli_ask.get('mean_ms', 0.0):.2f} ms | **{cli_ask.get('p50_ms', 0.0):.2f} ms** | {cli_ask.get('p95_ms', 0.0):.2f} ms | {cli_ask.get('min_ms', 0.0):.2f} ms | {cli_ask.get('max_ms', 0.0):.2f} ms | Complete CLI command execution |",
         f"| **CLI `mesh brief` Subprocess**| {cli_brief.get('mean_ms', 0.0):.2f} ms | **{cli_brief.get('p50_ms', 0.0):.2f} ms** | {cli_brief.get('p95_ms', 0.0):.2f} ms | {cli_brief.get('min_ms', 0.0):.2f} ms | {cli_brief.get('max_ms', 0.0):.2f} ms | Summary generation command |",
         "",
-        "> **Discrepancy Resolution:** " + b1_data.get("discrepancy_explanation", ""),
-        "",
     ]
     return "\n".join(lines)
 
@@ -321,10 +319,10 @@ def format_table_8_spotcheck(spot_data: dict[str, Any]) -> str:
         )
 
     lines.append("")
-    lines.append("> **Analysis of Windows Latency Tails:**")
+    lines.append("> **Analysis of Windows Latency Tails & CLI Architecture:**")
     lines.append("> 1. **Auxly Unbuffered Directory Walk:** Auxly stores 1 Markdown file per turn (~490 individual files per store). On Windows NTFS, substring search performs an unbuffered sequential directory walk (`os.ReadDir`) across all 490 files per query. Under Windows Defender handle inspection and cold NTFS cache, traversing 490 file descriptors causes the 17.8 s time-to-searchable delay and the 14,635 ms p95 tail.")
     lines.append("> 2. **Basic Memory Subprocess Startup Overhead:** Basic Memory CLI executes an isolated Python 3.12 process booting Typer, FastMCP, and SQLite per call, resulting in a cold first query of 5,535 ms and tail latencies up to 40,018 ms.")
-    lines.append("> 3. **Mesh Cold CLI vs Daemon Advantage:** Mesh CLI Cold incurs ~740 ms per query due to Python 3.14 interpreter bootstrap and Typer import overhead; keeping the Mesh background daemon warm reduces latency to low-millisecond socket round-trips.")
+    lines.append("> 3. **Mesh CLI Standalone Modes & Architecture (`mesh/cli.py:1165` and `1294`):** When executed without a running daemon, standalone `mesh add` and `mesh recall`/`ask` check whether the ONNX embedding model is already loaded in-process. If not, and unless `MESH_CLI_FORCE_ONNX=1` is explicitly set, the CLI automatically falls back to fast 384-dimensional lexical hash embedding (`os.environ['MESH_FORCE_HASH_EMBED'] = '1'`). This avoids loading the heavy ONNX transformer runtime (~25-second cold load and ~130 MB RAM overhead) inside a short-lived CLI command, keeping cold CLI RAM at **77.67 MB**. However, queries run in this standalone fallback mode operate over lower-quality hash representations rather than dense neural embeddings. Full neural semantic search quality is provided when queries are routed through the resident background daemon (`mesh daemon start`), called via the Python SDK / MCP server, or when `MESH_CLI_FORCE_ONNX=1` is explicitly set.")
     lines.append("")
     return "\n".join(lines)
 
@@ -390,12 +388,12 @@ def format_public_numbers_audit() -> str:
     return "\n".join(lines)
 
 
-def main() -> None:
+def main():
     print("[Report Generator] Loading raw JSON files...")
     scale_data = load_json("benchmarks/results/pass2/scale_benchmark_clean.json")
     conc_data = load_json("benchmarks/results/pass2/concurrency_multiagent.json")
     ram_data = load_json("benchmarks/results/pass2/b2_ram_timeseries.json")
-    b4_data = load_json("benchmarks/results/pass2/b4_ingestion_profile.json")
+    like_data = load_json("benchmarks/results/pass2/b4_like_for_like.json")
     disk_data = load_json("benchmarks/results/pass2/b3_disk_inventory.json")
     b1_data = load_json("benchmarks/results/pass2/b1_daemon_breakdown.json")
     spot_data = load_json("benchmarks/results/pass2/laptop_spotcheck_10q.json")
@@ -424,7 +422,7 @@ def main() -> None:
         format_table_4_ram(ram_data),
         "---",
         "",
-        format_table_5_ingestion(b4_data),
+        format_table_5_ingestion(like_data),
         "---",
         "",
         format_table_6_disk(disk_data),
@@ -450,4 +448,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
