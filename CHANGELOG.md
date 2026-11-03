@@ -4,6 +4,33 @@ All notable changes to Mesh Context Layer are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (pre-1.0: minor versions may include behavior changes).
 
+## [0.9.0] - Unreleased
+
+Release consolidating pure-Python architecture, multi-format export, embedding-downgrade protections, hardened coding agent installer configurations, and formal empirical benchmark methodology.
+
+### Added
+- **Multi-Format Data Export (`mesh/io.py`, `mesh/cli.py`)**: Added full export support for JSON (complete round-trip), Markdown summaries, and spreadsheet CSV formats (`mesh export --format {json,markdown,csv}`). CSV export neutralizes formula injection attempts (CWE-1236) by escaping leading `=`, `+`, `-`, `@`, `	`, and `` characters.
+- **Embedding-Downgrade Protections & Re-Embedding CLI (`mesh reembed`, `mesh/memory.py`)**: Enforced dimension and model validation preventing high-dimensional ONNX vectors from being silently overwritten by lexical hash vectors. Added `mesh reembed` CLI command and API to explicitly drain and upgrade memory stores to target neural embedding models.
+- **Daemon Readiness Probe (`mesh/daemon.py`, `mesh/cli.py`)**: Added deterministic health and readiness endpoints (`/healthz`, `/readyz`) with keep-alive socket checks to confirm transformer model readiness before CLI query delegation.
+- **Access Controls & Privacy Defaults (`mesh/mcp_server.py`, `mesh/guard.py`)**: Server-side security enforcement for `local_only` flags and namespace isolation locks. Audit events remain strictly content-free (tool names, counts, and timings only, never payload text or secrets).
+- **Release Documentation & Security Gate (`scripts/check_docs.py --release`)**: Automated release gate enforcing resolution of external reviewer findings and sign-offs in `docs/REVIEWS.md` prior to packaging.
+
+### Changed
+- **Installer Adaptations for Modern Coding Agents (`mesh/installer.py`)**: Aligned OpenAI Codex CLI adapter to TOML configuration (`~/.codex/config.toml`), Gemini CLI to `settings.json`, OpenCode to XDG `opencode.json`, and Windsurf to strictly user-scoped MCP configuration per upstream vendor specifications.
+- **Distribution Architecture**: Standardized package distribution exclusively as pure `py3-none-any.whl` without platform-specific binary wheel builds.
+
+### Fixed
+- **CLI Subprocess Timeout & Daemon Delegation**: Resolved cold ONNX model loading latency during CLI execution by automatically routing queries to resident background daemon over local keep-alive HTTP sockets.
+- **Namespace Connection Pooling & Lock Recovery**: Fixed SQLite database connection pooling under multi-process contention with improved busy-timeout retry handling.
+
+### Security
+- **Strict Input Validation & Prompt Injection Defense**: Hardened `mesh/guard.py` delimiter sanitization preventing prompt injection probes within ingested conversational turns.
+- **Secret Redaction Integrity**: Verified zero leakage of multiline bearer tokens, API keys, and environment credentials in logs, audits, and exports.
+
+### Removed
+- **Legacy Native C Core**: Removed `c_core/`, `c_cli/`, `mesh/c_bridge.py`, `mesh/native_cli.py`, and prebuilt DLL binaries.
+- **Deprecated Environment Variables**: Removed `MESH_DISABLE_NATIVE` and `MESH_C_CORE_PATH`.
+
 ## [0.8.3] - 2026-10-25 (Beta)
 
 Performance acceleration and reliability release introducing pure-Python prescan filters, background stage-2 ONNX re-embedding, filesystem path memoization, and namespace pooling fixes.

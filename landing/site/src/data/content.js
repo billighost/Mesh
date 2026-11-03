@@ -83,7 +83,7 @@ export const stageMeta = [
 
 export const memoryFeatures = [
   { title: "Namespaces", body: "One SQLite WAL per project. MESH_LOCKED_NAMESPACE can confine a server to a single namespace. Separate databases means separate isolation — not just logical partitions." },
-  { title: "Consent", body: "y/n before starting a daemon, registering auto-start, downloading the ~90 MB model, or syncing logs to a cloud API. Nothing happens silently in the background." },
+  { title: "Consent", body: "y/n before starting a daemon, registering auto-start, downloading the ~86 MB model, or syncing logs to a cloud API. Nothing happens silently in the background." },
   { title: "Audit", body: "Reads, writes, updates, and deletes are logged to a local, content-free audit DB. Private memories are scrubbed from audit, conflict history, and digests." },
   { title: "Portable", body: "A local SQLite file. No external database daemon. Back it up like any file, move it across machines, or copy it to an offline environment." },
 ];
@@ -251,7 +251,7 @@ export const faq = [
   },
   {
     q: "How does mesh setup work?",
-    a: "mesh setup asks before doing anything: downloading the ONNX model (~90 MB, SHA-256 verified), starting the optional daemon, and optionally registering login auto-start. Each step is an explicit y/n. Use MESH_NO_MODEL_DOWNLOAD=1 to skip the download entirely.",
+    a: "mesh setup asks before doing anything: downloading the ONNX model (~86 MB, SHA-256 verified), starting the optional daemon, and optionally registering login auto-start. Each step is an explicit y/n. Use MESH_NO_MODEL_DOWNLOAD=1 to skip the download entirely.",
   },
   {
     q: "Can I store secrets in Mesh?",

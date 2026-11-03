@@ -561,6 +561,11 @@ def check_review_markers(errors: list[str] | None = None, release_mode: bool = F
     return errors
 
 
+def check_no_review_placeholders_in_published_files(errors: list[str] | None = None) -> list[str]:
+    """Backwards-compatible alias for review placeholder checks."""
+    return check_review_markers(errors=errors, release_mode=False)
+
+
 def main() -> int:
     import argparse
     parser = argparse.ArgumentParser(description="Automated verification of Mesh documentation consistency.")

@@ -59,7 +59,10 @@ def validate_archive_contents(dist_dir: pathlib.Path) -> None:
     with zipfile.ZipFile(wheel_files[0]) as z:
         wheel_members = z.namelist()
 
-    banned_extensions = (".mp4", ".mov", ".webm", ".png", ".jpg", ".jpeg", ".mp3", ".wav")
+    banned_extensions = (
+        ".mp4", ".mov", ".webm", ".png", ".jpg", ".jpeg", ".mp3", ".wav",
+        ".dll", ".so", ".dylib", ".pyd", ".exe",
+    )
     leaks = []
     for member in sdist_members + wheel_members:
         lower = member.lower()
