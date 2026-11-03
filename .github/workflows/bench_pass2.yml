@@ -113,7 +113,7 @@ jobs:
           python-version: "3.12"
 
       - name: Cache dependencies and embedding models
-        uses: actions/cache@d4323d4df104b026a6aa633fdb11d772115f6ec1  # v4.2.2
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.2.0
         with:
           path: |
             ~/.cache/pip
@@ -141,24 +141,15 @@ jobs:
           /tmp/venv_bm/bin/pip install --upgrade pip
           /tmp/venv_bm/bin/pip install "basic-memory==0.24.1" "fastmcp>=4.1" psutil
 
-          # Download Auxly binary for Linux x86_64 if not present
+          # Download Auxly binary for Linux x86_64
           mkdir -p benchmarks/bin
-          if [ ! -f benchmarks/bin/auxly ]; then
-            echo "Downloading Linux auxly binary..."
-            curl -sSL "https://github.com/auxly-ai/auxly/releases/download/v0.1.2/auxly_Linux_x86_64.tar.gz" | tar -xz -C benchmarks/bin/ auxly || true
-            chmod +x benchmarks/bin/auxly || true
-          fi
+          curl -fsSL "https://github.com/Tzamun-Arabia-IT-Co/auxly-memory-cli/releases/download/v1.5.0/auxly-linux-amd64" -o benchmarks/bin/auxly || true
+          chmod +x benchmarks/bin/auxly || true
 
       - name: Pre-download verified ONNX embedding model for Mesh
         run: |
           mkdir -p ~/.mesh
-          python -c "
-          import os
-          from pathlib import Path
-          from mesh.models import ensure_embedding_model
-          model_path = ensure_embedding_model()
-          print('Pre-downloaded ONNX model at:', model_path)
-          "
+          python -c "from mesh.memory import ensure_model_downloaded; ensure_model_downloaded(blocking=True, assume_yes=True); print('Pre-downloaded ONNX model successfully')"
 
       - name: Execute Shard Benchmark
         run: |
@@ -168,7 +159,7 @@ jobs:
             --output "/tmp/results/${{ matrix.shard_id }}.json"
 
       - name: Upload Shard Artifact
-        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1  # v4.6.1
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.1
         if: always()
         with:
           name: "raw-${{ matrix.shard_id }}"
@@ -214,7 +205,7 @@ jobs:
           python benchmarks/profile_b4_real_loop.py
 
       - name: Upload Scale & Ingestion Artifacts
-        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1  # v4.6.1
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.1
         if: always()
         with:
           name: "raw-scale-and-ingestion"
@@ -252,7 +243,7 @@ jobs:
           python benchmarks/profile_concurrency_multiagent.py
 
       - name: Upload Concurrency Artifact
-        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1  # v4.6.1
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.1
         if: always()
         with:
           name: "raw-concurrency"
@@ -281,7 +272,7 @@ jobs:
           python-version: "3.12"
 
       - name: Download all shard artifacts
-        uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806  # v4.1.9
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16  # v4.1.8
         with:
           path: /tmp/all_shards
 

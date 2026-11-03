@@ -16,7 +16,16 @@
       "query_p95_ms_median": 37.68,
       "all_queries_p50_ms": 24.52,
       "all_queries_p95_ms": 107.3,
-      "all_queries_count": 100
+      "all_queries_count": 100,
+      "all_queries_max_ms": 228.05,
+      "per_question_p50_spread": [
+        9.22,
+        106.87
+      ],
+      "per_question_p95_spread": [
+        14.45,
+        228.05
+      ]
     },
     "Mem0 SDK": {
       "write_time_sec_mean": 82.26,
@@ -26,7 +35,16 @@
       "query_p95_ms_median": 281.84,
       "all_queries_p50_ms": 170.89,
       "all_queries_p95_ms": 456.98,
-      "all_queries_count": 100
+      "all_queries_count": 100,
+      "all_queries_max_ms": 1839.67,
+      "per_question_p50_spread": [
+        95.73,
+        312.42
+      ],
+      "per_question_p95_spread": [
+        117.42,
+        1839.67
+      ]
     },
     "Mesh CLI (Daemon)": {
       "write_time_sec_mean": 20.13,
@@ -36,7 +54,16 @@
       "query_p95_ms_median": 1015.93,
       "all_queries_p50_ms": 595.42,
       "all_queries_p95_ms": 3868.08,
-      "all_queries_count": 100
+      "all_queries_count": 100,
+      "all_queries_max_ms": 5437.88,
+      "per_question_p50_spread": [
+        437.22,
+        3775.04
+      ],
+      "per_question_p95_spread": [
+        577.01,
+        5437.88
+      ]
     },
     "Auxly CLI": {
       "write_time_sec_mean": 1.23,
@@ -46,7 +73,16 @@
       "query_p95_ms_median": 3661.73,
       "all_queries_p50_ms": 1945.01,
       "all_queries_p95_ms": 14635.22,
-      "all_queries_count": 100
+      "all_queries_count": 100,
+      "all_queries_max_ms": 49929.01,
+      "per_question_p50_spread": [
+        1154.46,
+        13900.59
+      ],
+      "per_question_p95_spread": [
+        1463.89,
+        49929.01
+      ]
     },
     "Basic Memory CLI": {
       "write_time_sec_mean": 19.3,
@@ -56,7 +92,16 @@
       "query_p95_ms_median": 8256.05,
       "all_queries_p50_ms": 5870.27,
       "all_queries_p95_ms": 40018.01,
-      "all_queries_count": 100
+      "all_queries_count": 100,
+      "all_queries_max_ms": 64532.93,
+      "per_question_p50_spread": [
+        3545.27,
+        34973.31
+      ],
+      "per_question_p95_spread": [
+        4656.61,
+        64532.93
+      ]
     }
   },
   "per_question_results": [

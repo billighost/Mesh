@@ -98,6 +98,48 @@ def main() -> None:
             "environment": "Windows 11 Home, AMD Ryzen 7 5700U, NVMe PCIe SSD",
         },
         "tools": {},
+        "model_caches": {
+            "Mesh": {
+                "model_name": "sentence-transformers/all-MiniLM-L6-v2 (ONNX)",
+                "cache_directory": "~/.mesh/models/all-MiniLM-L6-v2-onnx",
+                "total_cache_mb": 86.66,
+                "files": [
+                    {"file": "model.onnx", "size_bytes": 90412878, "size_mb": 86.224, "role": "ONNX Model Weights (Float32)"},
+                    {"file": "tokenizer.json", "size_bytes": 462414, "size_mb": 0.441, "role": "WordPiece Tokenizer Vocabulary & Rules"}
+                ]
+            },
+            "Mem0": {
+                "model_name": "sentence-transformers/all-MiniLM-L6-v2 (FastEmbed ONNX)",
+                "cache_directory": "%TEMP%/fastembed_cache/models--Qdrant--all-MiniLM-L6-v2-onnx",
+                "total_cache_mb": 86.88,
+                "files": [
+                    {"file": "model.onnx", "size_bytes": 90387630, "size_mb": 86.200, "role": "FastEmbed ONNX Model Weights"},
+                    {"file": "tokenizer.json", "size_bytes": 711649, "size_mb": 0.679, "role": "Tokenizer Vocabulary"},
+                    {"file": "tokenizer_config.json", "size_bytes": 1412, "size_mb": 0.001, "role": "Tokenizer Configuration"},
+                    {"file": "special_tokens_map.json", "size_bytes": 695, "size_mb": 0.001, "role": "Special Tokens Map"},
+                    {"file": "config.json", "size_bytes": 650, "size_mb": 0.001, "role": "Model Configuration"}
+                ]
+            },
+            "Basic Memory": {
+                "model_name": "BAAI/bge-small-en-v1.5 (FastEmbed ONNX Quantized)",
+                "cache_directory": "%TEMP%/fastembed_cache/models--Qdrant--bge-small-en-v1.5-onnx-Q",
+                "total_cache_mb": 64.07,
+                "files": [
+                    {"file": "model_optimized.onnx", "size_bytes": 66465124, "size_mb": 63.386, "role": "Quantized ONNX Model Weights (Int8/Q)"},
+                    {"file": "tokenizer.json", "size_bytes": 711396, "size_mb": 0.678, "role": "Tokenizer Vocabulary"},
+                    {"file": "tokenizer_config.json", "size_bytes": 1242, "size_mb": 0.001, "role": "Tokenizer Configuration"},
+                    {"file": "special_tokens_map.json", "size_bytes": 695, "size_mb": 0.001, "role": "Special Tokens Map"},
+                    {"file": "config.json", "size_bytes": 706, "size_mb": 0.001, "role": "Model Configuration"}
+                ]
+            },
+            "Auxly": {
+                "model_name": "None (No Neural Model)",
+                "cache_directory": "N/A",
+                "total_cache_mb": 0.0,
+                "files": [],
+                "explanation": "Auxly uses exact keyword, regex, and frontmatter indexing with no neural embedding model."
+            }
+        },
         "model_reconciliation": {
             "clean_onnx_model_weights_mb": 86.22,
             "clean_tokenizer_mb": 0.44,
@@ -170,11 +212,12 @@ for t in turns:
         subprocess.run([python_mem0, "-c", worker_code], input=json.dumps(turns), text=True, check=True)
         files = inventory_dir(Path(tmp_mem0), base_category="DATA")
         data_bytes = sum(f["size_bytes"] for f in files if f["category"] == "DATA")
+        mem0_model_mb = 86.88
         results["tools"]["Mem0"] = {
             "total_data_bytes": data_bytes,
             "total_data_mb": round(data_bytes / (1024.0 * 1024.0), 3),
-            "shared_model_asset_mb": 86.66,
-            "total_disk_footprint_mb": round((data_bytes / (1024.0 * 1024.0)) + 86.66, 3),
+            "shared_model_asset_mb": mem0_model_mb,
+            "total_disk_footprint_mb": round((data_bytes / (1024.0 * 1024.0)) + mem0_model_mb, 3),
             "file_count": len(files),
             "files": files,
         }
@@ -182,21 +225,45 @@ for t in turns:
         shutil.rmtree(tmp_mem0, ignore_errors=True)
 
     # 3. Basic Memory Store (489 turns)
-    print("Measuring Basic Memory store footprint...")
+    print("Measuring Basic Memory store footprint (including full SQLite index & vector database)...")
     tmp_bm = tempfile.mkdtemp()
     try:
+        bm_bin = str(PROJECT_ROOT / "benchmarks" / ".venv-mem0" / "Scripts" / "basic-memory.exe")
+        env = os.environ.copy()
+        env["BASIC_MEMORY_HOME"] = tmp_bm
+        env["HOME"] = tmp_bm
+        env["USERPROFILE"] = tmp_bm
+        env["HF_HUB_OFFLINE"] = "1"
+
+        # Pre-seed cached FastEmbed model so Basic Memory runs 100% offline
+        cached_model = Path(tempfile.gettempdir()) / "fastembed_cache" / "models--Qdrant--bge-small-en-v1.5-onnx-Q"
+        bm_cache_dest = Path(tmp_bm) / ".basic-memory" / "fastembed_cache" / "models--Qdrant--bge-small-en-v1.5-onnx-Q"
+        if cached_model.exists():
+            bm_cache_dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(cached_model, bm_cache_dest)
+
         notes_dir = Path(tmp_bm) / "notes"
         notes_dir.mkdir(parents=True, exist_ok=True)
         for i, t in enumerate(turns):
             (notes_dir / f"turn_{i:04d}.md").write_text(f"# Turn {i}\n\n{t}\n", encoding="utf-8")
 
+        # Full reindex to build .basic-memory/memory.db and sqlite-vec embeddings
+        subprocess.run([bm_bin, "reindex", "--full"], env=env, capture_output=True, check=True)
+
         files = inventory_dir(Path(tmp_bm), base_category="DATA")
+        # Ensure model cache files are categorized as MODEL/ASSET
+        for f in files:
+            if "fastembed_cache" in f["relative_path"]:
+                f["category"] = "MODEL/ASSET"
+                f["role"] = "FastEmbed BGE-Small ONNX Cache"
+
         data_bytes = sum(f["size_bytes"] for f in files if f["category"] == "DATA")
+        bm_model_mb = 64.07  # BAAI/bge-small-en-v1.5-onnx-Q
         results["tools"]["Basic Memory"] = {
             "total_data_bytes": data_bytes,
             "total_data_mb": round(data_bytes / (1024.0 * 1024.0), 3),
-            "shared_model_asset_mb": 86.66,
-            "total_disk_footprint_mb": round((data_bytes / (1024.0 * 1024.0)) + 86.66, 3),
+            "shared_model_asset_mb": bm_model_mb,
+            "total_disk_footprint_mb": round((data_bytes / (1024.0 * 1024.0)) + bm_model_mb, 3),
             "file_count": len(files),
             "files": files,
         }
