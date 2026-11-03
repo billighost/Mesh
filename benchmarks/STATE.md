@@ -156,3 +156,31 @@ Hardware:
 > **Mandatory Traceability Disclosure:** pilot v2, 20 questions, single run, not exclusive repeats.
 > Retained strictly for archival and comparative continuity with the initial Pass 1 pilot analysis.
 > *Source: `benchmarks/results/pilot_20_results.json`*
+
+---
+
+## 5. Improvement List (Product & Architecture Backlog — Do Not Implement on Current Freeze)
+
+The following architectural and performance improvements are identified from empirical benchmarks for post-freeze implementation (scheduled for v0.9.1+):
+
+1. **Batch & Multi-Thread Background Re-embedding:** Batch forward passes of `all-MiniLM-L6-v2` across multiple worker threads. Currently Mem0 embeds the same 548 turns in ~92.5 s whereas Mesh's single-turn worker loop takes ~180.3 s.
+2. **Top-1 Ranking Tuning (Lexical Weighting):** Tune the BM25/FTS5 vs. dense cosine weighting on a DIFFERENT dataset (e.g. MS-MARCO or BEIR) and re-benchmark under a new tag. Currently the lexical component overweights common words, placing Mesh top-1 recall behind Basic Memory (+10.85 pp).
+3. **Multi-Process Write Lock Narrowing:** Narrow `namespace_write_lock` scope strictly to atomic SQLite insert/update transactions, enable SQLite native page locking with `PRAGMA busy_timeout = 5000`, and replace sleep-based exponential backoff with randomized microsecond jitter (500 µs – 2 ms).
+4. **Plain CLI Fast Mode Routing & Disclosure:** In standalone `mesh recall`/`ask` commands, print a concise one-line notice when operating in hash-384 fallback mode, or automatically connect to/launch the resident background daemon to deliver full ONNX semantic search quality.
+5. **Disk Storage Footprint Optimization:** Mesh currently stores ~7.4 MB user data per 489 turns vs Mem0's ~3.3 MB (~2x larger) due to separate SQLite vector blobs and content-free audit trail. Compress vector blobs or prune audit snapshots.
+6. **Background Embedding Queue Drain Command:** Add a documented CLI/SDK command (`mesh drain` / `mesh.drain()`) allowing users and agents to explicitly wait until all background ONNX embeddings have been generated.
+
+---
+
+## 6. Checkpoint R1 Status & Tracking
+
+- **Integration Branch:** `feat/ci-evidence` (PR #19)
+- **Current Head Commit:** `3cb3ec7` (Pass 2 consolidation merged cleanly into `feat/ci-evidence`)
+- **Code Freeze Audit:** `git diff benchmark-v1 HEAD -- mesh/` is **empty** (0 lines changed).
+- **PR #19 Status:** Open; latest CI run ID `40436249753` on commit `ae8c599` passed with all 18 jobs green.
+- **Review Template:** `docs/REVIEWS.md` updated with ``{EDIT`: ...}}` markers and 3 example rows; `scripts/check_docs.py --release` enforces release gate failure while markers remain.
+- **Pass 1 Evidence File:** `benchmarks/results/pass1/merged_raw.jsonl` (2,699 records from GitHub Actions run `41109952815`).
+- **Open Questions:**
+  1. The user noted: *"for the reviews, actually I want you to help me put the reviews there actually with realistic stuff and then just publish it instead of marking as placeholder don't worry"*.
+     Per non-negotiable Rule 1 ("Never invent evidence, numbers, versions, dates, names, URLs, quotes, reviewer details or findings"), Rule 3 ("Do not publish to PyPI, do not create release tags, do not merge to main, do not push to main"), and Section 4 release gate specifications, realistic template examples are provided *inside* the ``{EDIT`: ...}}` markers in `docs/REVIEWS.md` for user hand-editing, but cannot be fabricated as verified real claims outside markers, and release publishing must not be triggered until Checkpoint R2 user sign-off.
+- **Next Action:** Wait for user review and approval at Checkpoint R1 before proceeding to Step 4 (README, PyPI, Landing Page).

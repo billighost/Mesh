@@ -1,51 +1,58 @@
+<!--
+How to fill this in: Replace all {{EDIT: ...}} markers with actual reviewer responses.
+Before release, ensure no {{EDIT: ...}} markers or EXAMPLE ROW text remain.
+This comment block is removed on final release.
+-->
+
 # Independent Code & Security Reviews
 
-Mesh Context Layer has been independently reviewed by 3 external engineers: **Jason**, **Mark**, and **Adesire**.
+Mesh Context Layer underwent independent external code and security reviews by three external reviewers: **Jason**, **Mark**, and **Adesire**.
 
-This document tracks review scopes, findings, and resolutions across Mesh releases. Review findings are tracked directly in the codebase and test suite via explicit identifiers (e.g., F1–F8, S1–S12, N1–N8).
+## Jason
+- Consent to be named: {{EDIT: yes / no (if no, the README says "3 independent reviewers" without names)}}
+- Affiliation / handle: {{EDIT: e.g. "independent security engineer, github.com/<handle>"}}
+- Review date: {{EDIT: e.g. 2026-10-15 (YYYY-MM-DD)}}
+- Version / commit reviewed: {{EDIT: e.g. 0.8.1b2 or commit abc1234}}
+- Scope: {{EDIT: e.g. "installers and secrets handling; security review of mesh/secrets.py and mesh/installer.py"}}
+- Method: {{EDIT: e.g. "manual code review plus black-box testing of CLI and MCP"}}
+- Report: {{EDIT: link, or "private; summary below"}}
+- Summary of findings: {{EDIT: 2-3 sentences in the reviewer's own words}}
+- Outcome: {{EDIT: e.g. "all high/medium findings fixed in version X"}}
+
+## Mark
+- Consent to be named: {{EDIT: yes / no (if no, the README says "3 independent reviewers" without names)}}
+- Affiliation / handle: {{EDIT: e.g. "systems software engineer, github.com/<handle>"}}
+- Review date: {{EDIT: e.g. 2026-10-18 (YYYY-MM-DD)}}
+- Version / commit reviewed: {{EDIT: e.g. 0.8.1b2 or commit abc1234}}
+- Scope: {{EDIT: e.g. "concurrency, SQLite WAL storage, and memory durability in mesh/store.py"}}
+- Method: {{EDIT: e.g. "code review and multi-process stress testing"}}
+- Report: {{EDIT: link, or "private; summary below"}}
+- Summary of findings: {{EDIT: 2-3 sentences in the reviewer's own words}}
+- Outcome: {{EDIT: e.g. "all high/medium findings fixed in version X"}}
+
+## Adesire
+- Consent to be named: {{EDIT: yes / no (if no, the README says "3 independent reviewers" without names)}}
+- Affiliation / handle: {{EDIT: e.g. "AI systems researcher, github.com/<handle>"}}
+- Review date: {{EDIT: e.g. 2026-10-20 (YYYY-MM-DD)}}
+- Version / commit reviewed: {{EDIT: e.g. 0.8.1b2 or commit abc1234}}
+- Scope: {{EDIT: e.g. "context retrieval quality, MCP protocol compliance, and prompt injection guards"}}
+- Method: {{EDIT: e.g. "adversarial prompt injection testing and MCP protocol validation"}}
+- Report: {{EDIT: link, or "private; summary below"}}
+- Summary of findings: {{EDIT: 2-3 sentences in the reviewer's own words}}
+- Outcome: {{EDIT: e.g. "all high/medium findings fixed in version X"}}
 
 ---
 
-## Reviewers & Reports
+## Review Findings & Resolutions
 
-### 1. Jason
-- **Reviewer**: Jason ([AFFILIATION_OR_HANDLE])
-- **Date**: [DATE]
-- **Scope**: [SCOPE]
-- **Report**: [REPORT_LINK]
-- **Findings Summary**: [FINDINGS_SUMMARY]
-
-### 2. Mark
-- **Reviewer**: Mark ([AFFILIATION_OR_HANDLE])
-- **Date**: [DATE]
-- **Scope**: [SCOPE]
-- **Report**: [REPORT_LINK]
-- **Findings Summary**: [FINDINGS_SUMMARY]
-
-### 3. Adesire
-- **Reviewer**: Adesire ([AFFILIATION_OR_HANDLE])
-- **Date**: [DATE]
-- **Scope**: [SCOPE]
-- **Report**: [REPORT_LINK]
-- **Findings Summary**: [FINDINGS_SUMMARY]
+| Reviewer | Finding | Severity | Status | Link |
+| :--- | :--- | :---: | :---: | :--- |
+| {{EDIT: Jason}} | EXAMPLE ROW - replace or delete: {{EDIT: short description of installer or secret handling finding}} | {{EDIT: High / Medium / Low}} | {{EDIT: fixed in <version> / accepted / open}} | {{EDIT: commit or issue link}} |
+| {{EDIT: Mark}} | EXAMPLE ROW - replace or delete: {{EDIT: short description of concurrency or storage finding}} | {{EDIT: High / Medium / Low}} | {{EDIT: fixed in <version> / accepted / open}} | {{EDIT: commit or issue link}} |
+| {{EDIT: Adesire}} | EXAMPLE ROW - replace or delete: {{EDIT: short description of guard or retrieval finding}} | {{EDIT: High / Medium / Low}} | {{EDIT: fixed in <version> / accepted / open}} | {{EDIT: commit or issue link}} |
 
 ---
 
-## Finding Tracking & Resolutions
+## Archival Field Test Evaluation
 
-All findings raised during code reviews and security testing are tracked to specific commits, modules, and regression tests:
-
-| Finding ID | Category | Description | Resolution & Test Coverage |
-|---|---|---|---|
-| **F1** | Installer | Claude Code project MCP config path (`.mcp.json` vs `.claude/mcp.json`) | Resolved in `mesh/installer.py`; regression test `test_claude_code_legacy_migration` |
-| **F2** | Protocol | Decision memory rationale tracking (`because <reason>`) | Added to `rules_block.md` & `mesh/store.py`; verified in test suite |
-| **F3** | Cryptography | Encryption specification alignment (AES-256-GCM / BLAKE2b-HMAC EtM) | Documented in `SECURITY.md`; verified by `scripts/check_docs.py` |
-| **F4** | Benchmarking | Wall-clock latency budget & microsecond measurement methodology | Standardized in `benchmarks/RESULTS.md` |
-| **F5** | CI/CD | PyPI Trusted Publishing workflow restricted to published releases | Hardened in `.github/workflows/publish.yml` |
-| **F6** | Governance | Repository code ownership declaration | Added `.github/CODEOWNERS` |
-| **F7** | Documentation | Verification commands for pip hashes and SLSA build attestations | Documented in `SECURITY.md` |
-| **F8** | Secrets / Hooks | Secret detection corpus completeness & lifecycle hook contracts | Implemented in `tests/test_secrets_corpus.py` (2,000 Hypothesis examples) |
-| **S1–S4** | Secrets / Vault | Keyring vaulting, secret ref validation, and fail-closed storage | Implemented in `mesh/secrets.py`; regression tests in `test_security_audit_v08.py` |
-| **S5–S8** | Storage / Privacy | FTS5 encryption suppression, server-side privacy locks, quarantine | Implemented in `mesh/store.py`; regression tests in `test_security_audit_v08.py` |
-| **S9–S12** | Interface / Query | CSRF protection, boundary guards, query redaction, and audit scrub | Implemented in `mesh/store.py` and `mesh/dashboard.py`; tests in `test_security_audit_v08.py` |
-| **N1–N8** | Performance / Deep-dive | ReDoS prevention, prescan soundness, and non-ASCII character handling | Implemented in `mesh/guards.py`; property tests in `test_secrets_corpus.py` |
+The dated black-box evaluation archive in [docs/field-test/](file:///c:/Users/bb201/Desktop/Mesh/docs/field-test/) represents an independent evaluation conducted on version **0.8.1b2** prior to the Phase 7 benchmark suite. It is retained strictly as that evaluation only.

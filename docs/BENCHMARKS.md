@@ -17,7 +17,13 @@ This document provides the authoritative empirical evidence for **Pass 1 (Eviden
 1. **Evidence Retrieval Scoring (Not QA Accuracy):** This benchmark evaluates whether each persistent memory layer successfully retrieves the gold conversation turn and gold session holding the ground-truth evidence required to answer the query. It does not evaluate generative LLM synthesis.
 2. **Abstention Separation:** The LongMemEval-S corpus contains 500 questions, of which exactly 30 questions (`*_abs`) evaluate abstention (where no gold answer exists). Per preregistered methodology, abstention questions are excluded from evidence retrieval ranking; the **$N=470$ non-abstention corpus is the PRIMARY evaluation**, and $N=500$ is provided as a secondary reference.
 3. **No Runner Timings as Results:** Cloud virtualized runners (`ubuntu-24.04`) experience noisy hypervisor scheduling and variable I/O. As preregistered in `benchmarks/PHASE7_PLAN.md`, all shared-runner timings are excluded as results. Precise latency, throughput, RAM footprint, and disk growth are reserved for **Pass 2** on dedicated bare-metal hardware.
-4. **Statistical Rigor:** All metrics report paired bootstrap 95% confidence intervals (1,000 resamples, `seed=42`). Primary comparisons are strictly defined as **Turn Recall@1 and Turn Recall@5 (Mesh SDK vs. Mem0 SDK and vs. Basic Memory MCP)**. All other comparisons are explicitly labeled exploratory. A sensitivity analysis with 99% confidence intervals evaluates robustness against multiple testing.
+4. **Statistical Rigor & Metrics:**
+   - **Metrics Evaluated:** Recall@1/5/10 (hit rate: any gold turn present in top-$k$), Fraction of Gold Found, MRR (Mean Reciprocal Rank: $1 / 	ext{rank}$ of first gold turn), and NDCG@10.
+   - **NDCG@10 Formula:** Binary relevance ($r_i \in \{0, 1\}$), where $r_i = 1$ if candidate turn at rank $i$ is in ground-truth gold evidence turns $G$, else $0$:
+     $$\text{DCG@10} = \sum_{i=1}^{10} \frac{r_i}{\log_2(i + 1)}, \quad \text{IDCG@10} = \sum_{i=1}^{\min(10, |G|)} \frac{1}{\log_2(i + 1)}, \quad \text{NDCG@10} = \frac{\text{DCG@10}}{\text{IDCG@10}}$$
+   - **Confidence Intervals:** All metrics report paired bootstrap 95% confidence intervals (1,000 resamples, fixed `seed=42`).
+   - **Pre-Declared Primary Comparisons:** Strictly defined as **Turn Recall@1 and Turn Recall@5 (Mesh SDK vs. Mem0 SDK and vs. Basic Memory MCP)** on the paired intersection ($N=470$). All other comparisons are exploratory.
+   - **Sensitivity Analysis:** 99% bootstrap confidence intervals evaluate robustness against multiple testing; differences are reported strictly in percentage points (pp).
 
 ---
 
@@ -260,11 +266,12 @@ Across all 15 GitHub Actions runner jobs, environment diagnostics recorded:
 - **Python Version:** 3.12.15 (GA standard on runner image)
 
 ### 2. Runner vs. Laptop Parity on the 20 Pilot Questions
-Cross-checking the 20 pilot questions evaluated on the laptop (`pilot_20_results.json`) against their corresponding records on the runner (`merged_raw.jsonl`):
-- **Mesh SDK:** **20 / 20 (100.0%) top-5 ranked turn ID matches**. The retrieved candidate lists are bit-identical across hardware environments.
-- **Mem0 SDK:** **20 / 20 (100.0%) retrieval score matches** (turn hit@1, hit@5, and MRR identical across all 20 questions).
-- **Basic Memory MCP:** **20 / 20 (100.0%) retrieval score matches**.
-- **Auxly MCP:** **20 / 20 (100.0%) retrieval score matches**.
+Cross-checking the 20 pilot questions evaluated on the Windows laptop (`pilot_20_results.json`) against their corresponding records on the GitHub Actions Ubuntu runner (`merged_raw.jsonl`) matched by canonical question ID (`0862e8bf`, `0977f2af`, etc.):
+- **Mesh SDK:** **20 / 20 (100.0%) identical ranked candidate turn ID lists**. Every top-5 retrieved turn ID (`raw_results_payload`) is bit-for-bit identical between Windows laptop and Ubuntu cloud runners.
+- **Mem0 SDK:** **20 / 20 (100.0%) identical ranked candidate turn ID lists**. Candidate turn IDs in `raw_results_payload` match identically across all 20 questions.
+- **Basic Memory MCP:** **20 / 20 (100.0%) identical ranked candidate turn ID lists**. All top-5 retrieved note turn IDs match identically across all 20 questions.
+- **Auxly MCP:** **20 / 20 (100.0%) identical ranked candidate turn ID lists**. Candidate results match identically across all 20 questions.
+*Parity Conclusion:* 100.0% candidate ranking parity is established across all tools. Zero near-ties flipped, confirming zero platform drift between environments.
 
 ### 3. Explanation of Runner `raw_ms` (Harness Overhead Audit)
 In the runner logs, `raw_query` reported a median latency of 1,158 ms for Mesh SDK, compared to ~30 ms observed during warm local queries. 
@@ -293,7 +300,7 @@ Process RSS tracked via `ProcessTreePeakTracker`:
 - `auxly-mcp-sub`: peak child RSS averaged **17.65 MB** (max 19.02 MB).
 - `auxly-ollama-1`: peak child RSS averaged **29.54 MB** (max 34.71 MB).
 
-*Root Cause of Exit 137:* The exit code occurred during Python process teardown at the end of the job step. Because `auxly-mcp-sub` did not run Ollama (`needs_ollama: false`), Ollama is ruled out as the common cause. The compiled Go binary `auxly-linux-amd64` does not terminate immediately upon stdin pipe closure (`stdio_client`), causing lingering background goroutines. When the job step shell terminated under `set -eo pipefail`, SIGKILL was delivered to lingering child processes in the process group, bubbling up exit code 137. Zero data was lost.
+*Exit Code 137 Disclosure:* Exit code 137 (killed), cause unconfirmed; all 500 records were written before the kill. Peak child process RSS averaged 17.65 MB (max 19.02 MB) for `auxly-mcp-sub` and 29.54 MB (max 34.71 MB) for `auxly-ollama-1`, confirming that memory stayed well under the 16 GB runner threshold. Raw step console logs could not be retrieved via unauthenticated GitHub API (403 Forbidden). All 500 assigned questions completed evaluation and committed their JSON/JSONL outputs to disk before process termination; zero evaluation records were lost.
 
 ### 3. Draft Bug Report for Auxly Maintainers (Unfiled)
 
@@ -314,3 +321,45 @@ Steps to Reproduce:
 Expected Behavior:
 auxly mcp-server should detect EOF on stdin and exit cleanly.
 ```
+
+---
+
+## 10. Specifications, Limitations & Reproduction
+
+### 1. What Was Measured vs. What Was Not
+- **Measured:** Persistent evidence retrieval accuracy across multi-session dialogues (finding the exact turn and session containing ground-truth evidence), top-$k$ recall ($k=1, 5, 10$), MRR, and NDCG@10.
+- **Not Measured in Pass 1:** Generative answer synthesis, hallucination rates, or LLM-as-a-judge scores. Runner execution timings were collected for harness monitoring but are explicitly excluded from results (Pass 2 bare-metal measurements in `docs/PERFORMANCE.md` are the sole authority on speed).
+- **Dataset Note:** LongMemEval-S (cleaned official corpus, SHA-256 `d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442`) under MIT License. LoCoMo dataset was **NOT** evaluated due to non-commercial license restrictions (CC BY-NC 4.0).
+
+### 2. Tools, Versions, and Non-Default Configurations
+| Tool | Version / Commit | Interface Class | Embedding Model | Non-Default Harness Settings |
+| :--- | :---: | :---: | :--- | :--- |
+| **Mesh SDK** | v0.8.3 (`eff1407`) | Class A (in-process) | `all-MiniLM-L6-v2` (ONNX Runtime) | `MESH_MAX_CONTENT_LENGTH=131072`, `MESH_SYNC_ONNX=1`, `MESH_REQUIRE_MODEL=1` |
+| **Mem0 SDK** | v0.1.37 | Class A (in-process) | `all-MiniLM-L6-v2` (FastEmbed / Qdrant) | `infer=False` (raw turn ingestion without cloud LLM extraction) |
+| **Basic Memory MCP** | v0.8.2 | Class C (stdio MCP) | `bge-small-en-v1.5` (FastEmbed) | Default CLI/MCP configuration |
+| **Auxly MCP (Ollama)**| v1.5.0 (`ec452fc`) | Class C (stdio MCP) | `all-minilm` (Ollama daemon) | `--endpoint http://localhost:11434/v1/embeddings --embed-model all-minilm` |
+| **Auxly MCP (Sub)** | v1.5.0 (`ec452fc`) | Class C (stdio MCP) | None (exact substring scan) | Default configuration |
+
+### 3. Limitations & Where Mesh is Not the Best Choice
+1. **Top-1 Precision Deficit vs. Basic Memory:** On Turn Recall@1, Basic Memory MCP outperforms Mesh SDK by **+10.85 pp** (52.1% vs 41.3%, surviving 99% CI). Applications requiring strict rank-1 precision without reranking should consider Basic Memory.
+2. **Multi-Process Write Lock Serialization:** Under multi-process write contention, Mesh serializes writes through file-level advisory locks. At 10 concurrent processes, write throughput drops to ~8 writes/s with a p95 write latency of 9.7 s.
+3. **Default-Mode Ingestion Vector Deferral:** In default mode (`MESH_SYNC_ONNX` unset), Mesh returns quickly (~13 ms) by using lexical hash vectors and queueing ONNX embedding in the background. Queries executed before the queue drains operate over lower-quality vectors.
+4. **Disk Footprint:** Mesh data stores require ~7.4 MB per 489 turns (~2x larger than Mem0's ~3.3 MB) due to dual SQLite vector indices and content-free audit logging.
+
+### 4. Reproduction Commands
+- **GitHub Actions Workflow:** To reproduce Pass 1 across 15 shards on Ubuntu runners:
+  ```bash
+  gh workflow run bench_pass1.yml --ref feat/ci-evidence
+  ```
+- **Local Analysis from Merged Raw Evidence:**
+  ```bash
+  python benchmarks/run_pilot.py --analyze benchmarks/results/pass1/merged_raw.jsonl
+  ```
+- **Bare-Metal Performance Suite (Pass 2):**
+  ```bash
+  python benchmarks/run_scale_bench_pass2_isolated.py
+  python benchmarks/run_concurrency_pass2.py
+  python benchmarks/profile_b2_ram_timeseries.py
+  python benchmarks/run_b4_like_for_like.py
+  python benchmarks/generate_performance_report.py
+  ```

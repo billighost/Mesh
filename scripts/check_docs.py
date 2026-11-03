@@ -480,45 +480,95 @@ def check_performance_tables_traceability(errors: list[str]) -> None:
                 )
 
 
-def check_no_review_placeholders_in_published_files(errors: list[str] | None = None) -> list[str]:
+def check_review_markers(errors: list[str] | None = None, release_mode: bool = False) -> list[str]:
     """
-    Verify that external review placeholders ([REPORT_LINK], [DATE], etc.)
-    exist only in docs/REVIEWS.md and never appear in published documentation,
-    PyPI metadata, or the landing site.
+    Check for {{EDIT: ...}} markers, 'EXAMPLE ROW', and legacy review placeholders.
+    In normal mode:
+      - {{EDIT...}} is allowed ONLY in docs/REVIEWS.md.
+      - 'EXAMPLE ROW' is allowed ONLY in docs/REVIEWS.md.
+      - Legacy review placeholders are forbidden in all tracked files.
+    In release mode (--release):
+      - {{EDIT...}} is forbidden in ALL tracked files, including docs/REVIEWS.md.
+      - 'EXAMPLE ROW' is forbidden in ALL tracked files.
+      - Legacy review placeholders are forbidden in ALL tracked files.
     """
     if errors is None:
         errors = []
-    placeholders = [
+    legacy_placeholders = [
         "[AFFILIATION_OR_HANDLE]",
         "[DATE]",
         "[SCOPE]",
         "[REPORT_LINK]",
         "[FINDINGS_SUMMARY]",
     ]
-    published_files = [
-        REPO_ROOT / "README.md",
-        REPO_ROOT / "pyproject.toml",
-        REPO_ROOT / "SECURITY.md",
-        REPO_ROOT / "THREAT_MODEL.md",
-        REPO_ROOT / "DOCS.md",
-        REPO_ROOT / "landing" / "site" / "src" / "data" / "content.js",
-    ]
-    for fpath in published_files:
-        if not fpath.exists():
+
+    import subprocess
+    try:
+        tracked_output = subprocess.check_output(
+            ["git", "ls-files"], cwd=REPO_ROOT, text=True, errors="replace"
+        )
+        tracked_rel_paths = [p.strip() for p in tracked_output.splitlines() if p.strip()]
+    except Exception:
+        tracked_rel_paths = [
+            str(p.relative_to(REPO_ROOT))
+            for p in REPO_ROOT.rglob("*")
+            if p.is_file() and not any(part.startswith(".") for part in p.parts)
+        ]
+
+    for rel_str in tracked_rel_paths:
+        norm_rel = rel_str.replace("\\", "/")
+        if norm_rel == "scripts/check_docs.py" or norm_rel.startswith("tests/"):
             continue
-        text = fpath.read_text(encoding="utf-8")
-        rel_path = fpath.relative_to(REPO_ROOT)
-        for ph in placeholders:
-            if ph in text:
+        fpath = REPO_ROOT / rel_str
+        if not fpath.exists() or fpath.is_dir():
+            continue
+        suffix = fpath.suffix.lower()
+        if suffix in {".onnx", ".png", ".jpg", ".jpeg", ".ico", ".tar", ".gz", ".zip", ".db", ".sqlite", ".pyc"}:
+            continue
+        try:
+            content = fpath.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            continue
+
+        is_reviews_md = (rel_str.replace("\\", "/") == "docs/REVIEWS.md")
+
+        # 1. {{EDIT check
+        if "{{EDIT" in content:
+            if not is_reviews_md:
                 errors.append(
-                    f"[{rel_path}] Unfilled review placeholder '{ph}' found in published file. "
-                    "Review placeholders may only exist in docs/REVIEWS.md."
+                    f"[{rel_str}] Unresolved '{{{{EDIT' marker found outside docs/REVIEWS.md."
                 )
+            elif release_mode:
+                errors.append(
+                    "[docs/REVIEWS.md] Release gate failure: unresolved '{{EDIT' marker remains in docs/REVIEWS.md."
+                )
+
+        # 2. EXAMPLE ROW check
+        if "EXAMPLE ROW" in content:
+            if release_mode or not is_reviews_md:
+                errors.append(
+                    f"[{rel_str}] Literal text 'EXAMPLE ROW' found in tracked file."
+                )
+
+        # 3. Legacy placeholders check
+        for ph in legacy_placeholders:
+            if ph in content:
+                if release_mode or not is_reviews_md:
+                    errors.append(
+                        f"[{rel_str}] Legacy review placeholder '{ph}' found in tracked file."
+                    )
+
     return errors
 
 
 def main() -> int:
-    print(f"Checking Mesh Documentation Consistency (Package version: v{VERSION})...")
+    import argparse
+    parser = argparse.ArgumentParser(description="Automated verification of Mesh documentation consistency.")
+    parser.add_argument("--release", action="store_true", help="Enforce release gates (no edit markers or review placeholders anywhere).")
+    args = parser.parse_args()
+
+    mode_label = " (RELEASE MODE)" if args.release else ""
+    print(f"Checking Mesh Documentation Consistency (Package version: v{VERSION}){mode_label}...")
     errors: list[str] = []
 
     check_version_stamps(errors)
@@ -530,7 +580,7 @@ def main() -> int:
     check_field_test_version_labels(errors)
     check_public_manifest(errors)
     check_no_fernet_references(errors)
-    check_no_review_placeholders_in_published_files(errors)
+    check_review_markers(errors, release_mode=args.release)
     check_performance_tables_traceability(errors)
 
     if errors:
