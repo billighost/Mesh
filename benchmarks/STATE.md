@@ -172,10 +172,11 @@ The following architectural and performance improvements are identified from emp
 
 ---
 
-## 6. Checkpoint R2 Status & Release Dry Run Summary
+## 6. Checkpoint R2 / R2b Status & Release Progress
 
 - **Integration Branch:** `feat/ci-evidence` (PR #19, NOT merged to main).
-- **Current Head Commit:** `c46a61b`.
+- **Current Head Commit:** `1fad485` (Checkpoint R2b accepted by user).
+- **Review Template Status:** User is manually filling in `docs/REVIEWS.md`.
 - **Code Freeze Audit:** `git diff benchmark-v1 HEAD -- mesh/` is **empty** (0 lines changed, bit-for-bit identical code freeze maintained).
 - **Proposed Release Version:** `0.9.0` (Proposed because the release removes legacy C core, removes `MESH_DISABLE_NATIVE` and `MESH_C_CORE_PATH` environment variables, standardizes on pure Python wheels, and changes Windsurf project-scope MCP behavior).
 - **Files Carrying Version Stamps (Held at 0.8.3 until R2 user confirmation):**
