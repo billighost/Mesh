@@ -332,6 +332,7 @@ def list_namespaces() -> list[dict[str, Any]]:
             reject_symlink(db_path)
             store = MeshStore(namespace=clean_ns, create=False)
             with store._connect() as conn:
+                conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
                 cols = {r[1] for r in cursor.execute("PRAGMA table_info(memories)").fetchall()}
                 if not cols:
@@ -339,9 +340,11 @@ def list_namespaces() -> list[dict[str, Any]]:
                 cursor.execute("SELECT DISTINCT namespace FROM memories")
                 row_names = [str(r[0]) for r in cursor.fetchall() if r[0] is not None]
                 cursor.execute("SELECT COUNT(*) as count FROM memories")
-                total = int(cursor.fetchone()["count"] or 0)
+                r_tot = cursor.fetchone()
+                total = int(r_tot[0] or 0) if r_tot else 0
                 cursor.execute("SELECT COUNT(*) as count FROM memories WHERE local_only = 1")
-                local_only = int(cursor.fetchone()["count"] or 0)
+                r_loc = cursor.fetchone()
+                local_only = int(r_loc[0] or 0) if r_loc else 0
                 if "updated_at" in cols:
                     cursor.execute(
                         """
@@ -372,7 +375,7 @@ def list_namespaces() -> list[dict[str, Any]]:
                         """,
                     )
                 row = cursor.fetchone()
-                last_updated = row["last"] if row and row["last"] else "never"
+                last_updated = str(row[0]) if row and row[0] else "never"
                 cursor.close()
             entry: dict[str, Any] = {
                 "namespace": clean_ns,
@@ -644,47 +647,53 @@ def namespace_stats(namespace: str) -> dict[str, Any]:
 
     store = MeshStore(namespace=clean_ns, create=False)
     with store._connect() as conn:
+        conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) as c FROM memories WHERE namespace = ?", (clean_ns,))
-        total = int(cursor.fetchone()["c"] or 0)
+        r_tot = cursor.fetchone()
+        total = int(r_tot[0] or 0) if r_tot else 0
 
         cursor.execute(
             "SELECT COUNT(*) as c FROM memories WHERE namespace = ? AND local_only = 1",
             (clean_ns,),
         )
-        local_only = int(cursor.fetchone()["c"] or 0)
+        r_loc = cursor.fetchone()
+        local_only = int(r_loc[0] or 0) if r_loc else 0
 
         cursor.execute(
             "SELECT memory_type, COUNT(*) as c FROM memories WHERE namespace = ? GROUP BY memory_type",
             (clean_ns,),
         )
         type_rows = cursor.fetchall()
-        type_breakdown = {r["memory_type"]: int(r["c"]) for r in type_rows}
+        type_breakdown = {str(r[0]): int(r[1]) for r in type_rows}
 
         cursor.execute("SELECT AVG(confidence) as avg FROM memories WHERE namespace = ?", (clean_ns,))
         avg_conf_row = cursor.fetchone()
-        avg_conf = float(avg_conf_row["avg"] or 0.0)
+        avg_conf = float(avg_conf_row[0] or 0.0) if avg_conf_row else 0.0
 
         cursor.execute(
             "SELECT SUM(access_count) as total FROM memories WHERE namespace = ?", (clean_ns,)
         )
         recall_row = cursor.fetchone()
-        total_recalls = int(recall_row["total"] or 0)
+        total_recalls = int(recall_row[0] or 0) if recall_row else 0
 
         total_searches = 0
         try:
             cursor.execute(
                 "SELECT COUNT(*) as total FROM queries WHERE namespace = ?", (clean_ns,)
             )
-            total_searches = int(cursor.fetchone()["total"] or 0)
+            s_row = cursor.fetchone()
+            total_searches = int(s_row[0] or 0) if s_row else 0
         except sqlite3.OperationalError:
             total_searches = 0
 
         cursor.execute("SELECT MIN(created_at) as oldest FROM memories WHERE namespace = ?", (clean_ns,))
-        oldest = cursor.fetchone()["oldest"] or "none"
+        r_old = cursor.fetchone()
+        oldest = str(r_old[0]) if (r_old and r_old[0]) else "none"
 
         cursor.execute("SELECT MAX(created_at) as newest FROM memories WHERE namespace = ?", (clean_ns,))
-        newest = cursor.fetchone()["newest"] or "none"
+        r_new = cursor.fetchone()
+        newest = str(r_new[0]) if (r_new and r_new[0]) else "none"
 
         cursor.execute(
             """
@@ -696,7 +705,13 @@ def namespace_stats(namespace: str) -> dict[str, Any]:
         )
         stale = 0
         for r in cursor.fetchall():
-            _, is_stale = _compute_row_effective_confidence(dict(r), now=now)
+            row_dict = {
+                "created_at": r[0],
+                "decay_start_at": r[1],
+                "ttl_days": r[2],
+                "confidence": r[3],
+            }
+            _, is_stale = _compute_row_effective_confidence(row_dict, now=now)
             if is_stale:
                 stale += 1
 

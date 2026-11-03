@@ -127,4 +127,4 @@ gh attestation verify mesh_context_layer-0.8.3-py3-none-any.whl --owner billigho
 
 ## 6. Independent Reviews
 
-Independently reviewed by 3 people (Jason, Mark and Adesire). See [docs/REVIEWS.md](docs/REVIEWS.md) for review scopes, findings (F1–F8, S1–S12, N1–N8), and resolutions.
+Independently reviewed by 3 people (Jason, Mark and Adesire); see [docs/REVIEWS.md](docs/REVIEWS.md).

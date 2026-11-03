@@ -20,6 +20,7 @@ Release consolidating pure-Python architecture, multi-format export, embedding-d
 - **Distribution Architecture**: Standardized package distribution exclusively as pure `py3-none-any.whl` without platform-specific binary wheel builds.
 
 ### Fixed
+- **Cold Standalone Namespace Stats & Digest (`mesh/namespaces.py`, `mesh/digest.py`)**: Fixed `TypeError: tuple indices must be integers or slices, not str` when executing `mesh status` or generating digests on a cold standalone execution with unpopulated vector cache by enforcing `sqlite3.Row` row factory and safe positional tuple fallback.
 - **CLI Subprocess Timeout & Daemon Delegation**: Resolved cold ONNX model loading latency during CLI execution by automatically routing queries to resident background daemon over local keep-alive HTTP sockets.
 - **Namespace Connection Pooling & Lock Recovery**: Fixed SQLite database connection pooling under multi-process contention with improved busy-timeout retry handling.
 

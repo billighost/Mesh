@@ -57,6 +57,15 @@ Every change between the freeze tag and the run commit occurred strictly in harn
 | `.github/workflows/bench_pass1.yml` | Configured 15-shard matrix on `ubuntu-24.04` | Runs sharded matrix with Ollama daemon, code-freeze check, and artifact merging. | **No** (CI infrastructure) |
 | `benchmarks/STATE.md` | Version updates (v1.9.0 to v1.14.0) | Tracks directives fulfillment, pre-scan reconciliation, and runner execution state. | **No** (Documentation only) |
 
+### Code Differences Between Benchmark Freeze and Release v0.9.0
+
+The released code differs from the benchmarked code (`benchmark-v1`) only by non-retrieval operational and formatting bug fixes:
+1. `mesh/namespaces.py`: Configured `conn.row_factory = sqlite3.Row` and safe positional tuple indexing fallbacks in `list_namespaces` and `namespace_stats` to prevent unhandled `TypeError` exceptions during cold standalone execution when vector cache is unpopulated.
+2. `mesh/digest.py`: Enforced `conn.row_factory = sqlite3.Row` and safe positional tuple fallbacks in `generate_digest` when reading contradictions and memory tables from cold stores.
+3. `tests/test_daemon_tail.py`: Updated `test_stop_daemon_cleans_up_real_daemon_process` to use platform-aware mocks rather than mutating `os.name`, preventing `pathlib.UnsupportedOperation` failures on POSIX CI runners.
+
+Zero scoring logic, vector similarity formulas, ranking weights, tokenizer parameters, or memory retrieval algorithms were modified. The retrieval engine is bit-for-bit functionally identical to the frozen benchmark code.
+
 ---
 
 ## 3. Evidence Retrieval Results
@@ -67,13 +76,13 @@ The primary benchmark measures top-$k$ evidence retrieval across the 470 ground-
 
 | Tool / Variant | Interface Class | $N$ | Turn Recall@1 (95% CI) | Turn Recall@5 (95% CI) | Turn Recall@10 (95% CI) | Turn Frac Found (95% CI) | Turn MRR (95% CI) | Turn NDCG@10 (95% CI) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Mesh SDK** | Class A (in-process) | 470 | **0.4128** `[0.368, 0.455]` | **0.8319** `[0.798, 0.864]` | **0.8894** `[0.860, 0.917]` | **0.8040** `[0.773, 0.835]` | **0.5814** `[0.546, 0.615]` | **0.6022** `[0.574, 0.633]` |
-| **Mem0 SDK** | Class A (in-process) | 470 | **0.3872** `[0.340, 0.432]` | **0.7872** `[0.751, 0.823]` | **0.8957** `[0.868, 0.921]` | **0.8044** `[0.773, 0.835]` | **0.5622** `[0.527, 0.594]` | **0.5807** `[0.552, 0.611]` |
-| **Basic Memory MCP** | Class C (stdio MCP) | 470 | **0.5213** `[0.474, 0.568]` | **0.8362** `[0.804, 0.868]` | **0.9277** `[0.904, 0.949]` | **0.8409** `[0.812, 0.868]` | **0.6601** `[0.626, 0.696]` | **0.6673** `[0.639, 0.698]` |
-| **Auxly MCP (Ollama)** | Class C (stdio MCP) | 470 | **0.1191** `[0.089, 0.149]` | **0.4596** `[0.413, 0.502]` | **0.5234** `[0.477, 0.566]` | **0.3868** `[0.347, 0.424]` | **0.2596** `[0.227, 0.289]` | **0.2938** `[0.257, 0.329]` |
-| **Auxly MCP (Substring)**| Class C (stdio MCP) | 470 | **0.0000** `[0.000, 0.000]` | **0.0000** `[0.000, 0.000]` | **0.0000** `[0.000, 0.000]` | **0.0000** `[0.000, 0.000]` | **0.0000** `[0.000, 0.000]` | **0.0000** `[0.000, 0.000]` |
-| **Mesh SDK (Default Config)**| Class A (16k guard) | 94 | **0.4362** `[0.340, 0.543]` | **0.8617** `[0.787, 0.925]` | **0.9149** `[0.851, 0.968]` | **0.8147** `[0.749, 0.877]` | **0.6147** `[0.546, 0.686]` | **0.6190** `[0.564, 0.679]` |
-| **Mesh SDK (Hash-384)** | Class A (hash fallback) | 94 | **0.4681** `[0.362, 0.575]` | **0.7553** `[0.660, 0.840]` | **0.8511** `[0.766, 0.915]` | **0.7626** `[0.674, 0.839]` | **0.5919** `[0.507, 0.674]` | **0.6084** `[0.532, 0.677]` |
+| **Mesh SDK (v0.8.3, onnx-minilm-l6-v2)** | Class A (in-process) | 470 | **0.4128** `[0.368, 0.455]` | **0.8319** `[0.798, 0.864]` | **0.8894** `[0.860, 0.917]` | **0.8040** `[0.773, 0.835]` | **0.5814** `[0.546, 0.615]` | **0.6022** `[0.574, 0.633]` |
+| **Mem0 SDK (v2.2.1, fastembed all-MiniLM-L6-v2)** | Class A (in-process) | 470 | **0.3872** `[0.340, 0.432]` | **0.7872** `[0.751, 0.823]` | **0.8957** `[0.868, 0.921]` | **0.8044** `[0.773, 0.835]` | **0.5622** `[0.527, 0.594]` | **0.5807** `[0.552, 0.611]` |
+| **Basic Memory MCP (v0.24.1, fastembed all-MiniLM-L6-v2)** | Class C (stdio MCP) | 470 | **0.5213** `[0.474, 0.568]` | **0.8362** `[0.804, 0.868]` | **0.9277** `[0.904, 0.949]` | **0.8409** `[0.812, 0.868]` | **0.6601** `[0.626, 0.696]` | **0.6673** `[0.639, 0.698]` |
+| **Auxly MCP (Ollama all-minilm, v1.5.0)** | Class C (stdio MCP) | 470 | **0.1191** `[0.089, 0.149]` | **0.4596** `[0.413, 0.502]` | **0.5234** `[0.477, 0.566]` | **0.3868** `[0.347, 0.424]` | **0.2596** `[0.227, 0.289]` | **0.2938** `[0.257, 0.329]` |
+| **Auxly MCP (Substring, v1.5.0)**| Class C (stdio MCP) | 470 | **0.0000** `[0.000, 0.000]` | **0.0000** `[0.000, 0.000]` | **0.0000** `[0.000, 0.000]` | **0.0000** `[0.000, 0.000]` | **0.0000** `[0.000, 0.000]` | **0.0000** `[0.000, 0.000]` |
+| **Mesh SDK (Default Config, v0.8.3)**| Class A (16k guard) | 94 | **0.4362** `[0.340, 0.543]` | **0.8617** `[0.787, 0.925]` | **0.9149** `[0.851, 0.968]` | **0.8147** `[0.749, 0.877]` | **0.6147** `[0.546, 0.686]` | **0.6190** `[0.564, 0.679]` |
+| **Mesh SDK (Hash-384, v0.8.3)** | Class A (hash fallback) | 94 | **0.4681** `[0.362, 0.575]` | **0.7553** `[0.660, 0.840]` | **0.8511** `[0.766, 0.915]` | **0.7626** `[0.674, 0.839]` | **0.5919** `[0.507, 0.674]` | **0.6084** `[0.532, 0.677]` |
 
 #### Session-Level Evidence Retrieval: $N=470$ (Non-Abstention Corpus)
 
@@ -171,7 +180,7 @@ All comparisons represent paired differences calculated on the identical interse
 | Sess Recall@1 | Exploratory | +8.51 pp | `[+1.06, +15.96]` | `[+0.00, +20.21]` | Mesh ONNX higher | No (Touches 0 at 99%) |
 | Sess MRR | Exploratory | +6.69 pp | `[+2.62, +11.68]` | `[+1.59, +14.07]` | Mesh ONNX higher | Yes |
 
-*Implications for Ranking Architecture:* On Turn Recall@1 and MRR, feature hashing (Hash-384) achieves statistical parity with the ONNX embedding model. This indicates that **Mesh's top-1 precision is heavily driven by its BM25/FTS5 lexical matching engine**. True ONNX semantic embeddings primarily provide value in candidate recall (Recall@5: +8.51 pp), lifting relevant turns that lack exact keyword overlap into the top-5 window.
+*Implications for Ranking Architecture:* On Turn Recall@1 and MRR, feature hashing (Hash-384) achieves statistical parity with the ONNX embedding model. Our analysis suggests that **Mesh's top-1 precision is heavily driven by its BM25/FTS5 lexical matching engine**. True ONNX semantic embeddings primarily provide value in candidate recall (Recall@5: +8.51 pp), lifting relevant turns that lack exact keyword overlap into the top-5 window.
 
 ---
 

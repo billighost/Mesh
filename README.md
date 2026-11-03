@@ -69,23 +69,21 @@ Mesh provides a dedicated context coordination layer designed specifically for m
 
 Mesh integrates with AI coding agents through its Model Context Protocol (MCP) server, standard rules blocks, and skill directories. See [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) for complete paths, adapter details, and reproduction steps.
 
-- **Verified live against real running agents:**
-  - **Claude Code:** Verified live with Claude Code 2.1.304 (2026-10-20).
-  - **Claude Desktop:** Verified live with Claude Desktop 0.8.0 (2026-10-20).
-  - **Antigravity IDE:** Verified live with Antigravity IDE 1.15.0 (2026-10-20).
-  - **Cursor:** Verified live with Cursor 0.45.2 (2026-10-20).
-  - **Windsurf (User Scope):** Verified live with Windsurf 1.2.0 (2026-10-20).
-- **Config format confirmed against vendor documentation (not yet verified live):**
-  - **Gemini CLI:** Configuration format confirmed against documentation at https://geminicli.com/docs/tools/mcp-servers/ (`verified=False`).
-  - **Windsurf (Project Scope):** Project-scoped MCP configuration is not supported by Windsurf; rules and skills supported (`verified=False`).
-  - **OpenCode:** Configuration format confirmed against documentation at https://opencode.ai/docs/config (`verified=False`).
-  - **Codex:** Configuration format confirmed against documentation at https://developers.openai.com/codex/mcp (`verified=False`).
+- **Adapter status (all adapters):**
+  - **Claude Code:** Automated tests pass; config format confirmed against docs; not yet verified live.
+  - **Claude Desktop:** Automated tests pass; config format confirmed against docs; not yet verified live.
+  - **Antigravity IDE:** Automated tests pass; config format confirmed against docs; not yet verified live.
+  - **Cursor:** Automated tests pass; config format confirmed against docs; not yet verified live.
+  - **Windsurf:** Automated tests pass; config format confirmed against docs; not yet verified live (user scope supported; project-scoped MCP is not supported by Windsurf).
+  - **Gemini CLI:** Automated tests pass; config format confirmed against docs; not yet verified live.
+  - **OpenCode:** Automated tests pass; config format confirmed against docs; not yet verified live.
+  - **Codex:** Automated tests pass; config format confirmed against docs; not yet verified live.
 
 ---
 
 ## 4. Independent Review
 
-Mesh Context Layer underwent independent external code and security reviews by **Jason**, **Mark**, and **Adesire**. See [docs/REVIEWS.md](docs/REVIEWS.md) for full review scopes, verified findings, and resolutions.
+Independently reviewed by 3 people (Jason, Mark and Adesire); see [docs/REVIEWS.md](docs/REVIEWS.md).
 
 ---
 
@@ -118,7 +116,7 @@ Mesh was evaluated against Mem0, Basic Memory, and Auxly across 470 non-abstenti
 **Accuracy Analysis:**
 - At **Turn Recall@5**, Mesh achieves **0.8319**, slightly exceeding Mem0 (**0.7872**) and closely matching Basic Memory (**0.8362**).
 - At **Session Recall@5**, Mesh achieves **0.9787**, outperforming both Mem0 (**0.9617**) and Basic Memory (**0.9617**).
-- **Where Mesh is behind:** Basic Memory leads Mesh by +10.85 percentage points at **Turn Recall@1** (0.5213 vs. 0.4128) because Mesh's BM25 lexical component overweights exact conversational keywords in broad questions.
+- **Where Mesh is behind:** Basic Memory leads Mesh by +10.85 percentage points at **Turn Recall@1** (0.5213 vs. 0.4128) ; our analysis suggests Mesh's BM25 lexical component overweights exact conversational keywords in broad questions.
 
 ### Performance & Resource Summary
 
@@ -139,19 +137,18 @@ Mesh was evaluated against Mem0, Basic Memory, and Auxly across 470 non-abstenti
 | Dimension | Mesh Context Layer | Basic Memory | Mem0 | Auxly |
 | :--- | :--- | :--- | :--- | :--- |
 | **Repository** | [billighost/mesh](https://github.com/billighost/mesh) | [basicmachines-co/basic-memory](https://github.com/basicmachines-co/basic-memory) | [mem0ai/mem0](https://github.com/mem0ai/mem0) | [Tzamun-Arabia-IT-Co/auxly-memory-cli](https://github.com/Tzamun-Arabia-IT-Co/auxly-memory-cli) |
-| **Package / Version** | PyPI `mesh-context-layer` 0.8.3 | PyPI `basic-memory` 1.0.0 (eval: 0.8.2) | PyPI `mem0ai` 2.2.1 (eval: 0.1.37) | GitHub v1.5.0 (eval: 1.5.0) |
+| **Package / Version** | PyPI `mesh-context-layer` 0.8.3 | PyPI `basic-memory` 1.0.0 (eval: 0.24.1) | PyPI `mem0ai` 2.2.1 (eval: 2.2.1) | GitHub v1.5.0 (eval: 1.5.0) |
 | **License** | MIT | AGPL-3.0 | Apache-2.0 | MIT |
 | **Local-Only Operation** | Yes (default) | Yes | Optional (cloud default; local supported) | Yes |
 | **Search Mechanism** | Hybrid (dense cosine + BM25 + exact) | Hybrid (vector + SQLite FTS) | Vector similarity (Qdrant) | Vector (Ollama) or Substring scan |
 | **Interfaces Offered** | SDK, CLI, MCP Server (17 tools), HTTP | CLI, MCP Server | Python SDK | CLI, MCP Server |
-| **Benchmark Embedding Model** | `all-MiniLM-L6-v2` (ONNX, 384d) | `bge-small-en-v1.5` (FastEmbed, 384d) | `all-MiniLM-L6-v2` (FastEmbed, 384d) | `nomic-embed-text` (Ollama) |
+| **Benchmark Embedding Model** | `all-MiniLM-L6-v2` (ONNX, 384d) | `all-MiniLM-L6-v2` (FastEmbed, 384d) | `all-MiniLM-L6-v2` (FastEmbed, 384d) | `all-minilm` (Ollama) or none (substring) |
 | **Turn Recall@5 ($N=470$)** | **0.8319** [0.798, 0.864] | 0.8362 [0.804, 0.868] | 0.7872 [0.751, 0.823] | 0.4596 [0.413, 0.502] |
 | **Sess Recall@5 ($N=470$)** | **0.9787** [0.966, 0.992] | 0.9617 [0.945, 0.979] | 0.9617 [0.943, 0.979] | 0.7255 [0.687, 0.766] |
 | **Storage Backend** | SQLite WAL (single file per namespace) | Markdown note files + SQLite index | Qdrant embedded + SQLite | Markdown files with YAML frontmatter |
-| **Task / Goal Ledger** | Deterministic task lifecycle (built-in) | Not offered | Not offered | Not offered |
-| **Audit Logging** | Content-free local audit trail | Local database log | Cloud / local logs | File logs |
+| **Task / Goal Ledger** | Deterministic task lifecycle (built-in) | Not offered | Not offered | Task lifecycle tools (`auxly_task_list`, `auxly_task_add`, `auxly_task_done`) |
 
-*Note on competitor evaluations:* Benchmark runs evaluated `basic-memory` v0.8.2 and `mem0ai` v0.1.37 in isolated environments. Upstream minor updates may change third-party performance.
+*Note on competitor evaluations:* Benchmark runs evaluated `basic-memory` v0.24.1, `mem0ai` v2.2.1, and `auxly` v1.5.0 in isolated environments. Upstream updates may change third-party performance.
 
 ---
 
@@ -191,7 +188,7 @@ Mesh is engineered for local, deterministic AI agent collaboration. It is not th
 1. **High-Concurrency Multi-Process Writes:** Writes from separate operating system processes serialize on an advisory file lock (`fcntl` / `msvcrt`). At 10 concurrent writing agents, p95 write latency reaches ~9.7 seconds (~8 writes/s). If your architecture requires hundreds of concurrent write processes, a client-server database like PostgreSQL or a dedicated vector cluster is preferable.
 2. **Default Ingestion Re-embedding Queue:** In default mode (`MESH_SYNC_ONNX` unset), Mesh accepts turns in ~13 ms using fast 384-dimensional lexical hashing while enqueuing background neural re-embedding (`mesh/memory.py`). Searches executed before the queue drains operate over lower-quality hash vectors.
 3. **Standalone CLI Fast Mode:** Standalone `mesh ask` commands run with lexical hash vectors by default to avoid loading the ~86 MB ONNX transformer model into short-lived CLI processes. Use the resident background daemon (`mesh daemon start`) or SDK `mesh.recall()` for full neural semantic precision.
-4. **Top-1 Retrieval Accuracy Deficit:** Mesh's hybrid retrieval gives significant weight to BM25 keyword matching. While this provides high top-5 turn recall (0.8319) and session recall (0.9787), it places Mesh turn Recall@1 (0.4128) behind Basic Memory (0.5213) on broad conversational queries where common words match distractors.
+4. **Top-1 Retrieval Accuracy Deficit:** Our analysis suggests Mesh's hybrid retrieval gives significant weight to BM25 keyword matching. While this provides high top-5 turn recall (0.8319) and session recall (0.9787), it places Mesh turn Recall@1 (0.4128) behind Basic Memory (0.5213) on broad conversational queries where common words match distractors.
 5. **Disk Storage Footprint:** Mesh uses ~7.4 MB per 489 conversational turns compared to Mem0's ~3.3 MB (~2.2x larger) due to separate SQLite vector blobs and audit histories.
 
 ---

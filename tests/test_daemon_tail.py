@@ -406,7 +406,7 @@ def test_start_daemon_records_verified_server_pid_not_shim(monkeypatch):
 
 
 def test_stop_daemon_cleans_up_real_daemon_process(monkeypatch):
-    """stop_daemon terminates the tracked daemon process and removes PID file."""
+    """stop_daemon terminates the tracked daemon process and removes PID file across platforms."""
     pid_file = daemon_mod._pid_file()
     pid_file.write_text("2002", encoding="utf-8")
 
@@ -418,20 +418,42 @@ def test_stop_daemon_cleans_up_real_daemon_process(monkeypatch):
         lambda host, port: {"pid": 2002, "identity_verified": True},
     )
 
-    killed_cmds = []
+    if os.name == "nt":
+        killed_cmds = []
 
-    def fake_run(cmd, **kwargs):
-        killed_cmds.append(cmd)
-        return MagicMock(returncode=0)
+        def fake_run(cmd, **kwargs):
+            killed_cmds.append(cmd)
+            return MagicMock(returncode=0)
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    monkeypatch.setattr(os, "name", "nt")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        monkeypatch.setattr(daemon_mod.subprocess, "run", fake_run)
 
-    res = stop_daemon(host="127.0.0.1", port=7701)
-    assert res["stopped"] is True
-    assert res["pid"] == 2002
-    assert not pid_file.exists()
-    assert any("taskkill" in cmd[0] and "2002" in cmd for cmd in killed_cmds)
+        res = stop_daemon(host="127.0.0.1", port=7701)
+        assert res["stopped"] is True
+        assert res["pid"] == 2002
+        assert not pid_file.exists()
+        assert any("taskkill" in cmd[0] and "2002" in cmd for cmd in killed_cmds)
+    else:
+        killed_signals = []
+
+        def fake_kill(pid, sig):
+            killed_signals.append((pid, sig))
+
+        call_count = [0]
+
+        def fake_alive(pid):
+            call_count[0] += 1
+            return call_count[0] <= 1
+
+        monkeypatch.setattr(daemon_mod, "_is_pid_alive", fake_alive)
+        monkeypatch.setattr(os, "kill", fake_kill)
+
+        res = stop_daemon(host="127.0.0.1", port=7701)
+        assert res["stopped"] is True
+        assert res["pid"] == 2002
+        assert not pid_file.exists()
+        assert len(killed_signals) >= 1
+        assert killed_signals[0][0] == 2002
 
 
 def test_stop_daemon_refuses_to_kill_non_mesh_process(monkeypatch):

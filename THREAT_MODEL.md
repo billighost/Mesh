@@ -179,4 +179,4 @@ If any of these are requirements, add OS-level controls (full-disk encryption, s
 
 ## 6. Independent Reviews
 
-Independently reviewed by 3 people (Jason, Mark and Adesire). Review scopes, findings (F1–F8, S1–S12, N1–N8), and resolutions are documented in [docs/REVIEWS.md](docs/REVIEWS.md).
+Independently reviewed by 3 people (Jason, Mark and Adesire); see [docs/REVIEWS.md](docs/REVIEWS.md).

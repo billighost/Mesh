@@ -103,6 +103,7 @@ def generate_digest(
         try:
             if store is not None and not all_rows:
                 with store._connect() as conn:
+                    conn.row_factory = sqlite3.Row
                     if _has_table(conn, "memories"):
                         cols = {r[1] for r in conn.execute("PRAGMA table_info(memories)").fetchall()}
                         select_cols = (
@@ -123,7 +124,11 @@ def generate_digest(
                             """,
                             (clean_ns,),
                         )
-                        all_rows = [dict(r) for r in cursor.fetchall()]
+                        col_names = [d[0] for d in cursor.description] if cursor.description else []
+                        all_rows = [
+                            dict(r) if isinstance(r, sqlite3.Row) else dict(zip(col_names, r))
+                            for r in cursor.fetchall()
+                        ]
                         cursor.close()
 
             for row in all_rows:
@@ -183,6 +188,7 @@ def generate_digest(
 
             if store is not None:
                 with store._connect() as conn:
+                    conn.row_factory = sqlite3.Row
                     if _has_table(conn, "contradictions"):
                         has_contradictions_table = True
                         c_cur = conn.execute(
@@ -195,19 +201,22 @@ def generate_digest(
                             (clean_ns,),
                         )
                         for cr in c_cur.fetchall():
-                            det_dt = _parse_iso_utc(cr["detected_at"])
+                            c_id = cr[0] if isinstance(cr, tuple) else cr["id"]
+                            c_new_c = cr[1] if isinstance(cr, tuple) else cr["new_content"]
+                            c_det_at = cr[3] if isinstance(cr, tuple) else cr["detected_at"]
+                            det_dt = _parse_iso_utc(c_det_at)
                             if det_dt is not None and det_dt >= since_dt:
-                                new_c = decrypt_text_if_encrypted(cr["new_content"])
+                                new_c = decrypt_text_if_encrypted(c_new_c)
                                 if not include_private and new_c == REDACTED_CONTENT_PLACEHOLDER:
                                     display_c = REDACTED_CONTENT_PLACEHOLDER
                                 else:
                                     display_c = new_c
                                 contradictions.append(
                                     {
-                                        "id": cr["id"],
+                                        "id": c_id,
                                         "content": display_c,
                                         "agent_id": "memory-store",
-                                        "timestamp": cr["detected_at"],
+                                        "timestamp": c_det_at,
                                     }
                                 )
                         c_cur.close()

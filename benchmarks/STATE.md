@@ -224,23 +224,23 @@ Every number appearing in `README.md` maps directly to verified empirical eviden
 | `14` | Minimum Python version | `3.10+` | `pyproject.toml:requires-python` |
 | `50` | Model download size | `~86 MB` | `benchmarks/results/pass2/b3_disk_inventory.json` (`model.onnx` 86.22 MB + `tokenizer.json` 0.44 MB = 86.66 MB) |
 | `66` | MCP tools count | `17 tools` | `mesh/mcp_server.py:_MCP_TOOLS` |
-| `73-77`| Real agent versions verified | Claude Code 2.1.304, Desktop 0.8.0, Antigravity 1.15.0, Cursor 0.45.2, Windsurf 1.2.0 | `docs/COMPATIBILITY.md` (Agent Compatibility Matrix) |
-| `98-100`| LongMemEval-S questions | `470 questions` | `benchmarks/results/pass1/merged_raw.jsonl` (470 non-abstention questions) |
-| `104` | Mesh SDK Turn Recall@1 | `0.4128 [0.368, 0.455]` | `benchmarks/results/pass1/merged_raw.jsonl` (`metrics[turn_recall_at_1]`) |
-| `104` | Mesh SDK Turn Recall@5 | `0.8319 [0.798, 0.864]` | `benchmarks/results/pass1/merged_raw.jsonl` (`metrics[turn_recall_at_5]`) |
-| `104` | Mesh SDK Turn Recall@10 | `0.8894 [0.860, 0.917]` | `benchmarks/results/pass1/merged_raw.jsonl` (`metrics[turn_recall_at_10]`) |
-| `104` | Mesh SDK Turn MRR | `0.5814 [0.546, 0.615]` | `benchmarks/results/pass1/merged_raw.jsonl` (`metrics[turn_mrr]`) |
-| `104` | Mesh SDK Turn NDCG@10 | `0.6022 [0.574, 0.633]` | `benchmarks/results/pass1/merged_raw.jsonl` (`metrics[turn_ndcg_at_10]`) |
-| `105` | Mem0 SDK Turn Recall@5 | `0.7872 [0.751, 0.823]` | `benchmarks/results/pass1/merged_raw.jsonl` (`metrics[turn_recall_at_5]`) |
-| `106` | Basic Memory MCP Turn Recall@1 | `0.5213 [0.474, 0.568]` | `benchmarks/results/pass1/merged_raw.jsonl` (`metrics[turn_recall_at_1]`) |
-| `106` | Basic Memory MCP Turn Recall@5 | `0.8362 [0.804, 0.868]` | `benchmarks/results/pass1/merged_raw.jsonl` (`metrics[turn_recall_at_5]`) |
-| `107` | Auxly MCP Turn Recall@5 | `0.4596 [0.413, 0.502]` | `benchmarks/results/pass1/merged_raw.jsonl` (`metrics[turn_recall_at_5]`) |
-| `113` | Mesh SDK Sess Recall@1 | `0.8894 [0.860, 0.917]` | `benchmarks/results/pass1/merged_raw.jsonl` (`metrics[sess_recall_at_1]`) |
-| `113` | Mesh SDK Sess Recall@5 | `0.9787 [0.966, 0.992]` | `benchmarks/results/pass1/merged_raw.jsonl` (`metrics[sess_recall_at_5]`) |
-| `113` | Mesh SDK Sess Recall@10 | `0.9894 [0.981, 0.998]` | `benchmarks/results/pass1/merged_raw.jsonl` (`metrics[sess_recall_at_10]`) |
-| `113` | Mesh SDK Sess MRR | `0.9259 [0.906, 0.945]` | `benchmarks/results/pass1/merged_raw.jsonl` (`metrics[sess_mrr]`) |
-| `113` | Mesh SDK Sess NDCG@10 | `0.9133 [0.896, 0.930]` | `benchmarks/results/pass1/merged_raw.jsonl` (`metrics[sess_ndcg_at_10]`) |
-| `121` | Basic Memory Top-1 advantage | `+10.85 percentage points` | `0.5213 - 0.4128 = 0.1085` (from `merged_raw.jsonl`) |
+| `73-83`| Agent adapters status | Automated tests pass; config format confirmed against docs; not yet verified live | `tests/test_installer.py` & `docs/COMPATIBILITY.md` |
+| `98-100`| LongMemEval-S questions | `470 questions` | `docs/BENCHMARKS.md:18` (Primary non-abstention corpus) & raw `benchmarks/results/pass1/merged_raw.jsonl` |
+| `104` | Mesh SDK Turn Recall@1 | `0.4128 [0.368, 0.455]` | `docs/BENCHMARKS.md:70` (Table 1: Primary Evidence, N=470) & raw `merged_raw.jsonl` |
+| `104` | Mesh SDK Turn Recall@5 | `0.8319 [0.798, 0.864]` | `docs/BENCHMARKS.md:70` (Table 1: Primary Evidence, N=470) & raw `merged_raw.jsonl` |
+| `104` | Mesh SDK Turn Recall@10 | `0.8894 [0.860, 0.917]` | `docs/BENCHMARKS.md:70` (Table 1: Primary Evidence, N=470) & raw `merged_raw.jsonl` |
+| `104` | Mesh SDK Turn MRR | `0.5814 [0.546, 0.615]` | `docs/BENCHMARKS.md:70` (Table 1: Primary Evidence, N=470) & raw `merged_raw.jsonl` |
+| `104` | Mesh SDK Turn NDCG@10 | `0.6022 [0.574, 0.633]` | `docs/BENCHMARKS.md:70` (Table 1: Primary Evidence, N=470) & raw `merged_raw.jsonl` |
+| `105` | Mem0 SDK Turn Recall@5 | `0.7872 [0.751, 0.823]` | `docs/BENCHMARKS.md:71` (Table 1: Primary Evidence, N=470) & raw `merged_raw.jsonl` |
+| `106` | Basic Memory MCP Turn Recall@1 | `0.5213 [0.474, 0.568]` | `docs/BENCHMARKS.md:72` (Table 1: Primary Evidence, N=470) & raw `merged_raw.jsonl` |
+| `106` | Basic Memory MCP Turn Recall@5 | `0.8362 [0.804, 0.868]` | `docs/BENCHMARKS.md:72` (Table 1: Primary Evidence, N=470) & raw `merged_raw.jsonl` |
+| `107` | Auxly MCP Turn Recall@5 | `0.4596 [0.413, 0.502]` | `docs/BENCHMARKS.md:73` (Table 1: Primary Evidence, N=470) & raw `merged_raw.jsonl` |
+| `113` | Mesh SDK Sess Recall@1 | `0.8894 [0.860, 0.917]` | `docs/BENCHMARKS.md:82` (Session Evidence Table, N=470) & raw `merged_raw.jsonl` |
+| `113` | Mesh SDK Sess Recall@5 | `0.9787 [0.966, 0.992]` | `docs/BENCHMARKS.md:82` (Session Evidence Table, N=470) & raw `merged_raw.jsonl` |
+| `113` | Mesh SDK Sess Recall@10 | `0.9894 [0.981, 0.998]` | `docs/BENCHMARKS.md:82` (Session Evidence Table, N=470) & raw `merged_raw.jsonl` |
+| `113` | Mesh SDK Sess MRR | `0.9259 [0.906, 0.945]` | `docs/BENCHMARKS.md:82` (Session Evidence Table, N=470) & raw `merged_raw.jsonl` |
+| `113` | Mesh SDK Sess NDCG@10 | `0.9133 [0.896, 0.930]` | `docs/BENCHMARKS.md:82` (Session Evidence Table, N=470) & raw `merged_raw.jsonl` |
+| `121` | Basic Memory Top-1 advantage | `+10.85 percentage points` | `docs/BENCHMARKS.md:70-72` (`0.5213 - 0.4128 = 0.1085`) & raw `merged_raw.jsonl` |
 | `127` | `mesh_project_brief` p50 | `2.44 ms` | `benchmarks/results/all_surfaces_results.json` (`benchmarks[brief].p50_ms`) |
 | `127` | `mesh_task_list` p50 | `1.05 ms` | `benchmarks/results/all_surfaces_results.json` (`benchmarks[task_list].p50_ms`) |
 | `127` | `mesh_task_create` p50 | `3.47 ms` | `benchmarks/results/all_surfaces_results.json` (`benchmarks[task_create].p50_ms`) |
@@ -271,54 +271,61 @@ Every number appearing in `README.md` maps directly to verified empirical eviden
 
 ---
 
-## 8. USER ACTION LIST (Post-R2 Sign-Off Requirements)
+## 8. USER ACTION LIST (Post-R2b Release Sequence)
 
-The following items are prepared and reserved strictly for user execution after Checkpoint R2 review:
+The following exact 5-step release procedure must be followed by the repository owner to release Mesh Context Layer v0.9.0:
 
-### (a) External Review Final Sign-Off (`docs/REVIEWS.md`)
-- Realistic, technical review entries are currently populated in `docs/REVIEWS.md` for Jason, Mark, and Adesire covering installers, secrets, concurrency, and prompt injection guards, allowing the automated release gate (`check_docs.py --release`) to pass.
-- Before tagging the final release, replace/adjust any reviewer responses with actual signed statements if desired.
+### Step (i): Bump version on `feat/ci-evidence` and verify CI before merging
+- Update version from `0.8.3` to `0.9.0` across all 14 files carrying version stamps (listed in Section 6).
+- In `docs/REVIEWS.md`, replace the template placeholders with final signed statements.
+- Verify `python scripts/check_docs.py --release` passes with 0 errors.
+- Commit the changes on `feat/ci-evidence`:
+  ```bash
+  git commit -m "chore(release): bump version to v0.9.0 and finalize reviews"
+  git push origin feat/ci-evidence
+  ```
+- Wait for the GitHub Actions PR CI workflow to finish completely and turn 100% green on PR #19.
 
-### (b) Live Agent Adapter Verification Commands
-Run the following verification sequences in live sessions for adapters currently marked `verified=False`:
+### Step (ii) & (iii): Configure PyPI Trusted Publishing & Merge PR #19
+- In PyPI Project Settings (`https://pypi.org/manage/project/mesh-context-layer/settings/publishing/`):
+  - Configure GitHub OIDC Trusted Publisher:
+    - GitHub repository owner: `billighost`
+    - Repository name: `Mesh`
+    - Workflow name: `publish.yml`
+    - Environment name: (leave empty or match environment if configured)
+- Merge Pull Request #19 (`feat/ci-evidence`) into `main` using the GitHub PR web interface (no force push, standard merge commit or rebase).
 
-1. **Gemini CLI:**
-   ```bash
-   mesh install gemini-cli --dry-run
-   mesh install gemini-cli --apply
-   # Start gemini, execute prompt:
-   gemini "list available MCP tools from mesh"
-   # Record in docs/COMPATIBILITY.md: Gemini CLI version, date, verified=True
-   mesh uninstall gemini-cli --apply
-   ```
+### Step (iv): Tag only after merge commit CI is green
+- Wait for the GitHub Actions CI workflow on the resulting `main` branch commit to finish and turn green.
+- Pull the latest `main`:
+  ```bash
+  git checkout main
+  git pull origin main
+  ```
+- Create an annotated Git tag and push it to origin:
+  ```bash
+  git tag -a v0.9.0 -m "Mesh Context Layer v0.9.0 release"
+  git push origin v0.9.0
+  ```
+- Pushing the annotated `v0.9.0` tag triggers the GitHub Actions `publish.yml` workflow, which builds the release distribution, generates GitHub build provenance attestations, and publishes the wheel and sdist to PyPI.
 
-2. **Windsurf (Project Scope):**
-   ```bash
-   mesh install windsurf --project --dir . --dry-run
-   # Note: Windsurf only supports global user-scope MCP config; confirm rules & skills injected.
-   ```
+### Step (v): Post-release pip install verification and attestation
+- In a fresh, isolated temporary environment, install from PyPI and verify commands:
+  ```bash
+  python -m venv test_env
+  test_env/bin/pip install --no-cache-dir mesh-context-layer==0.9.0
+  test_env/bin/mesh version
+  test_env/bin/mesh doctor
+  test_env/bin/mesh status
+  ```
+- Verify cryptographic GitHub build provenance attestation:
+  ```bash
+  gh attestation verify dist/mesh_context_layer-0.9.0-py3-none-any.whl --owner billighost
+  ```
 
-3. **OpenCode:**
-   ```bash
-   mesh install opencode --dry-run
-   mesh install opencode --apply
-   # Start opencode, confirm mesh tools recognized:
-   opencode "verify mesh MCP tools"
-   # Record in docs/COMPATIBILITY.md: OpenCode version, date, verified=True
-   mesh uninstall opencode --apply
-   ```
+---
 
-4. **Codex:**
-   ```bash
-   mesh install codex --dry-run
-   mesh install codex --apply
-   # Start codex, list MCP tools:
-   codex mcp list
-   # Record in docs/COMPATIBILITY.md: Codex version, date, verified=True
-   mesh uninstall codex --apply
-   ```
-
-### (c) Ready-to-Send Draft Messages for Peer Maintainers
+### Ready-to-Send Draft Messages for Peer Maintainers
 *Do not send automatically; review and send manually if desired.*
 
 1. **To Basic Memory Maintainers (`basicmachines-co/basic-memory`):**
@@ -326,44 +333,32 @@ Run the following verification sequences in live sessions for adapters currently
    >
    > Hi Basic Memory Team,
    >
-   > We recently benchmarked memory coordination layers on a 470-question non-abstention subset of LongMemEval-S (each question evaluated on a fresh store of ~489 conversational turns). We evaluated Basic Memory MCP (v0.8.2 / `basic-memory`) running `bge-small-en-v1.5` quantized ONNX with SQLite hybrid search (FTS + vector).
+   > We recently benchmarked memory coordination layers on a 470-question non-abstention subset of LongMemEval-S (each question evaluated on a fresh store of ~489 conversational turns). We evaluated Basic Memory MCP (v0.24.1 / `basic-memory`) running `all-MiniLM-L6-v2` via FastEmbed with SQLite hybrid search (vector + SQLite FTS).
    >
    > Results showed Basic Memory leading in Turn Recall@1 (0.5213 [0.474, 0.568] vs. Mesh's 0.4128 and Mem0's 0.3872), with Turn Recall@5 at 0.8362 and Session Recall@5 at 0.9617.
    >
-   > We wanted to share our configuration and raw harness files to ensure Basic Memory was fairly and optimally configured. Full methodology and raw logs: https://github.com/billighost/Mesh/blob/main/docs/BENCHMARKS.md. Please let us know if anything should be tuned.
+   > We wanted to share our configuration and raw harness files to ensure Basic Memory was fairly and optimally configured. Full methodology and raw logs: https://github.com/billighost/Mesh/blob/feat/ci-evidence/docs/BENCHMARKS.md (or on `main` after release). Please let us know if anything should be tuned.
 
 2. **To Mem0 Maintainers (`mem0ai/mem0`):**
    > Subject: LongMemEval-S Retrieval Benchmark — Configuration & Like-for-Like Ingestion
    >
    > Hi Mem0 Team,
    >
-   > We evaluated Mem0 (v0.1.37 / `mem0ai`) on a 470-question subset of LongMemEval-S using local embedded Qdrant and `all-MiniLM-L6-v2` via FastEmbed (`infer=False`).
+   > We evaluated Mem0 (v2.2.1 / `mem0ai`) on a 470-question subset of LongMemEval-S using local embedded Qdrant and `all-MiniLM-L6-v2` via FastEmbed (`infer=False`).
    >
    > Results: Mem0 achieved Turn Recall@5 of 0.7872 [0.751, 0.823] and Session Recall@5 of 0.9617 [0.943, 0.979]. In synchronous embedding profiling, Mem0 embedded 548 turns in 92.5 s (111 ms/turn) with 3.3 MB disk storage.
    >
-   > Full methodology, raw JSON results, and environment blocks are available at https://github.com/billighost/Mesh/blob/main/docs/BENCHMARKS.md and https://github.com/billighost/Mesh/blob/main/docs/PERFORMANCE.md. We welcome your feedback on our harness configuration.
+   > Full methodology, raw JSON results, and environment blocks are available at https://github.com/billighost/Mesh/blob/feat/ci-evidence/docs/BENCHMARKS.md and https://github.com/billighost/Mesh/blob/feat/ci-evidence/docs/PERFORMANCE.md (or on `main` after release). We welcome your feedback on our harness configuration.
 
 3. **To Auxly Maintainers (`Tzamun-Arabia-IT-Co/auxly-memory-cli`):**
-   > Subject: LongMemEval-S Benchmark — Substring vs. Ollama Mode & Exit Code 137 Investigation
+   > Subject: LongMemEval-S Benchmark — Substring vs. Ollama Mode & Harness Configuration
    >
    > Hi Auxly Team,
    >
-   > We benchmarked Auxly (v1.5.0) on LongMemEval-S across both Ollama neural vector mode and markdown substring mode. We observed that substring search achieves 0% recall on semantic questions where paraphrasing occurs, whereas Ollama mode achieved 0.4596 Turn Recall@5 and 0.7255 Session Recall@5.
+   > We benchmarked Auxly (v1.5.0) on LongMemEval-S across both Ollama neural vector mode (`all-minilm`) and markdown substring mode. We observed that substring search achieves 0% recall on semantic questions where paraphrasing occurs, whereas Ollama mode achieved 0.4596 Turn Recall@5 and 0.7255 Session Recall@5.
    >
-   > We also investigated a container exit code 137 on one 500-question run and verified that peak RSS was <35 MB with all 500 records committed before exit. Full trace and raw files: https://github.com/billighost/Mesh/blob/main/docs/BENCHMARKS.md. We'd love to collaborate on any suggested flags.
+   > Full trace and raw files: https://github.com/billighost/Mesh/blob/feat/ci-evidence/docs/BENCHMARKS.md (or on `main` after release). We'd love to collaborate on any suggested flags or harness tuning.
 
-### (d) Licensing Note on LoCoMo
+### Licensing Note on LoCoMo
 - LoCoMo dataset is licensed under Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0).
 - Publication of LoCoMo benchmark results remains deferred pending legal review of repository commercial/open-source terms.
-
-### (e) Final Release Tagging & Publishing Steps (After User Confirmation)
-1. Verify PR #19 CI matrix is green (`Run ID: 41576926948`).
-2. Merge PR #19 (`feat/ci-evidence`) into `main` via GitHub PR interface (no force push).
-3. Bump `VERSION = "0.9.0"` across all 14 files carrying version stamps.
-4. Create and push signed Git tag `v0.9.0`:
-   ```bash
-   git tag -s v0.9.0 -m "Mesh Context Layer v0.9.0"
-   git push origin v0.9.0
-   ```
-5. Create a GitHub Release for `v0.9.0` with the contents of `dist/*` (`SHA256SUMS.txt`, `provenance.json`, `sbom.json`, `.whl`, `.tar.gz`).
-6. GitHub Actions `publish.yml` will automatically publish to PyPI via OIDC Trusted Publishing and attach attestations to the release.
