@@ -124,6 +124,9 @@ before pytest or plugins import application code. It uses two workers by default
 keeps files together with `loadfile`, disables unrelated user plugins/options,
 and bounds BLAS/OpenMP threads per worker. Select one to four workers explicitly
 when comparing speed or controlling memory use; avoid `-n auto`.
+Temporary paths are canonicalized before setting `TMPDIR`, `TMP`, and `TEMP`.
+Each test case gets fresh homes and configuration roots; managed environment
+settings and the `tempfile` directory cache are restored between cases.
 
 ```bash
 python scripts/run_tests.py --workers 2 -- --cov=mesh --cov-report=term-missing -q

@@ -21,17 +21,37 @@ _HOME_BINDINGS = {
     "CODEX_HOME": "home/.codex", "CLAUDE_CONFIG_DIR": "home/.claude",
     "HYPOTHESIS_STORAGE_DIRECTORY": "hypothesis",
 }
+_TEMP_BINDINGS = {"TMPDIR": "tmp", "TMP": "tmp", "TEMP": "tmp"}
 _NO_CLOUD_KEYS = (
     "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GROQ_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY",
     "AZURE_OPENAI_API_KEY", "COHERE_API_KEY", "MISTRAL_API_KEY", "DEEPSEEK_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_ACCESS_TOKEN", "AZURE_OPENAI_AD_TOKEN",
 )
+_TEST_SETTINGS = frozenset({
+    "MESH_TEST_WORKERS", "MESH_EMBEDDING_BACKEND", "MESH_QUERY_MODE",
+    "MESH_FORCE_HASH_EMBED", "MESH_FORCE_FASTEMBED", "MESH_FORCE_PYTORCH", "MESH_REQUIRE_MODEL",
+    "MESH_BG_ONNX", "MESH_SYNC_ONNX", "MESH_CLI_FORCE_ONNX",
+    "MESH_MODEL_SHA256", "MESH_TOKENIZER_SHA256", "MESH_NO_DAEMON_PROXY", "MESH_NO_OUTBOX_WORKER",
+})
+_THREAD_LIMITS = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS")
+_ISOLATED_ENV_KEYS = frozenset({
+    *_HOME_BINDINGS, *_TEMP_BINDINGS, *_NO_CLOUD_KEYS, *_THREAD_LIMITS,
+    "PYTHONUSERBASE", "PYTHONUTF8", "PYTEST_DISABLE_PLUGIN_AUTOLOAD", "PYTEST_PLUGINS", "PYTEST_ADDOPTS",
+    "HYPOTHESIS_PROFILE",
+})
 
 
 def isolated_environment(root: Path, inherited: dict[str, str] | None = None) -> dict[str, str]:
-    """Set isolation before Python imports pytest, plugins, or any Mesh module."""
-    environment = dict(os.environ if inherited is None else inherited)
+    """Bind a fresh runner-owned root before pytest, plugins, or Mesh imports."""
+    # Only the runner's freshly allocated directory is canonicalized. Nested
+    # tempfile calls must also avoid OS aliases such as macOS's /var symlink.
+    root = root.resolve()
+    environment = {
+        name: value for name, value in (os.environ if inherited is None else inherited).items()
+        if not name.startswith("MESH_") or name in _TEST_SETTINGS
+    }
     environment.setdefault("PYTHONUSERBASE", site.getuserbase())
-    for name, directory in _HOME_BINDINGS.items():
+    for name, directory in {**_HOME_BINDINGS, **_TEMP_BINDINGS}.items():
         path = root / directory
         path.mkdir(parents=True, exist_ok=True)
         environment[name] = str(path)
@@ -49,10 +69,20 @@ def isolated_environment(root: Path, inherited: dict[str, str] | None = None) ->
     # Unrelated user plugins can load config or launch processes before conftest.
     environment.pop("PYTEST_PLUGINS", None)
     environment.pop("PYTEST_ADDOPTS", None)
-    for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+    for name in _THREAD_LIMITS:
         environment[name] = "1"
     environment["PYTHONUTF8"] = "1"
     return environment
+
+
+def apply_isolated_environment(environment: dict[str, str]) -> None:
+    """Replace managed test settings without transiently clearing the process environment."""
+    for name in os.environ.keys() | environment.keys():
+        if name.startswith("MESH_") or name in _ISOLATED_ENV_KEYS:
+            if name in environment:
+                os.environ[name] = environment[name]
+            else:
+                os.environ.pop(name, None)
 
 
 def pytest_command(workers: int, arguments: list[str]) -> list[str]:

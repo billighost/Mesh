@@ -30,6 +30,7 @@ from fastapi.testclient import TestClient
 
 import mesh.mcp_server as mcp_mod
 from mesh import Mesh
+from mesh.crypto import decrypt_text_if_encrypted, is_encrypted_text
 from mesh.dashboard import api as dash_app
 from mesh.dashboard import verify_dashboard_auth
 from mesh.http_server import app as http_app
@@ -78,6 +79,14 @@ def _read_db_row(mesh: Mesh, memory_id: str) -> tuple[int, str]:
     return int(row[0]), str(row[1])
 
 
+def _assert_redacted_storage(stored_content: str) -> None:
+    assert SECRET_CANARY not in stored_content
+    # Encryption must not hide a failure to redact before persistence.
+    decoded_content = decrypt_text_if_encrypted(stored_content)
+    assert SECRET_CANARY not in decoded_content
+    assert "REDACTED" in decoded_content
+
+
 # ==============================================================================
 # SDK contract
 # ==============================================================================
@@ -99,14 +108,21 @@ def test_learn_private_returns_stored_local_only_true(isolated_mesh_env):
     assert stored == 1
 
 
-def test_learn_secret_requested_public_returns_stored_true_and_redacts(isolated_mesh_env):
+@pytest.mark.parametrize("encrypt_at_rest", [False, True])
+def test_learn_secret_requested_public_returns_stored_true_and_redacts(
+    isolated_mesh_env, monkeypatch, encrypt_at_rest
+):
+    for name in ("MESH_ENCRYPT_AT_REST", "MESH_PASSPHRASE", "MESH_ENCRYPTION_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    if encrypt_at_rest:
+        monkeypatch.setenv("MESH_ENCRYPTION_KEY", "42" * 32)  # Obviously fake test key.
     mesh = Mesh(namespace=_ns("c002-secret"), agent_id="test")
     result = mesh.learn(SECRET, local_only=False)
     assert result["local_only"] is True
     stored_flag, stored_content = _read_db_row(mesh, result["memory_id"])
     assert stored_flag == 1
-    assert SECRET_CANARY not in stored_content
-    assert "REDACTED" in stored_content
+    assert is_encrypted_text(stored_content) is encrypt_at_rest
+    _assert_redacted_storage(stored_content)
 
 
 def test_learn_forced_public_after_redaction_returns_stored_false(isolated_mesh_env):
@@ -116,7 +132,7 @@ def test_learn_forced_public_after_redaction_returns_stored_false(isolated_mesh_
     assert result["local_only"] is False
     stored_flag, stored_content = _read_db_row(mesh, result["memory_id"])
     assert stored_flag == 0
-    assert SECRET_CANARY not in stored_content
+    _assert_redacted_storage(stored_content)
 
 
 def test_learn_dedup_returns_stored_local_only_private(isolated_mesh_env):
@@ -165,7 +181,7 @@ def test_http_learn_reports_stored_local_only(isolated_mesh_env):
         Mesh(namespace=namespace, agent_id="checker"), result["memory_id"]
     )
     assert stored_flag == 1
-    assert SECRET_CANARY not in stored_content
+    _assert_redacted_storage(stored_content)
 
 
 def test_dashboard_learn_reports_stored_local_only(isolated_mesh_env):
@@ -183,10 +199,11 @@ def test_dashboard_learn_reports_stored_local_only(isolated_mesh_env):
     assert response.status_code == 200
     result = response.json()["result"]
     assert result["local_only"] is True
-    stored_flag, _ = _read_db_row(
+    stored_flag, stored_content = _read_db_row(
         Mesh(namespace=namespace, agent_id="checker"), result["memory_id"]
     )
     assert stored_flag == 1
+    _assert_redacted_storage(stored_content)
 
 
 def test_mcp_learn_reports_stored_local_only(isolated_mesh_env, monkeypatch):
@@ -203,10 +220,11 @@ def test_mcp_learn_reports_stored_local_only(isolated_mesh_env, monkeypatch):
 
     secret_result = asyncio.run(call(SECRET, False))
     assert secret_result["local_only"] is True
-    stored_flag, _ = _read_db_row(
+    stored_flag, stored_content = _read_db_row(
         Mesh(namespace=namespace, agent_id="checker"), secret_result["memory_id"]
     )
     assert stored_flag == 1
+    _assert_redacted_storage(stored_content)
 
     public_result = asyncio.run(call("An ordinary public MCP fact", False))
     assert public_result["local_only"] is False
@@ -234,4 +252,4 @@ def test_cli_add_reports_stored_local_only(isolated_mesh_env, monkeypatch, capsy
     assert rows[0]["local_only"] is True
     stored_flag, stored_content = _read_db_row(mesh, rows[0]["id"])
     assert stored_flag == 1
-    assert SECRET_CANARY not in stored_content
+    _assert_redacted_storage(stored_content)

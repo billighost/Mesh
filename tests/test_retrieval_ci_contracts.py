@@ -69,16 +69,26 @@ class IsolationContracts(unittest.TestCase):
             path = ancestor / "model.onnx"
             path.write_bytes(b"fake")
             original = Path.lstat
+            original_resolve = Path.resolve
+            rejected_resolve = mock.Mock(side_effect=AssertionError("Reparse path reached resolution"))
 
             def metadata(value):
                 if value == ancestor:
                     return types.SimpleNamespace(st_mode=stat.S_IFDIR, st_file_attributes=0x400)
                 return original(value)
 
-            with mock.patch.object(Path, "lstat", metadata), mock.patch.object(Path, "resolve") as resolve:
+            def resolve_path(value, *args, **kwargs):
+                if value == ancestor or value.is_relative_to(ancestor):
+                    return rejected_resolve(value, *args, **kwargs)
+                # Background workers may resolve unrelated paths during this check.
+                return original_resolve(value, *args, **kwargs)
+
+            with mock.patch.object(Path, "lstat", metadata), mock.patch.object(
+                Path, "resolve", autospec=True, side_effect=resolve_path
+            ):
                 with self.assertRaisesRegex(ValueError, "reparse"):
                     replay.checked_path(path)
-                resolve.assert_not_called()
+                rejected_resolve.assert_not_called()
 
     def test_output_roots_are_confined_to_named_temp_or_repository_work(self):
         with tempfile.TemporaryDirectory(prefix="mesh-other-contract-") as temporary:

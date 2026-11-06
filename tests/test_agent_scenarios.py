@@ -64,7 +64,8 @@ def test_scenario_1_brand_new_project(isolated_mesh_env):
 
     # 1. First session start: call mesh_project_brief on non-existent namespace
     brief1 = _call("mesh_project_brief", {"namespace": ns, "max_tokens": 500})
-    assert brief1["namespace_state"] in ("new", "empty")
+    assert brief1["namespace_state"] == "new_or_empty"
+    assert brief1["namespace_exists"] is False
     assert brief1["total_memories"] == 0
     assert brief1["open_tasks_count"] == 0
     assert "new" in brief1["brief_markdown"].lower() or "empty" in brief1["brief_markdown"].lower()

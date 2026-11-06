@@ -1,9 +1,12 @@
 # Remote qualification for Mesh 0.9.0
 
-The production changes and reviewed measurement utilities are prepared in the
-working tree. Final-source remote qualification has not run. Passing local
-contract checks and the earlier installed-wheel smoke are useful preparation;
-they do not establish final full-suite, retrieval, or performance success.
+The production changes and reviewed measurement utilities are published on
+`ci/mesh-production-run-c4-20261106`. The first remote run at commit `2b69222`
+passed lint, security, packaging, and installed-wheel validation, but failed the
+full suites and workflow validation. Repairs address isolated temporary paths,
+test environment leakage, outdated test contracts, and invalid workflow context
+bindings. Qualification of the repaired source remains pending; local contract
+checks do not establish full-suite, retrieval, or performance success.
 
 The development machine has 8 GiB RAM. Local work uses small isolated checks
 with one test worker and no model or corpus evaluation. Full suites, concurrent
@@ -74,11 +77,10 @@ speed. The narrower `ci/mesh-production-run-c4-*` prefix explicitly requests
 the optional reranker experiment. Manual workflow dispatch exposes equivalent
 controls and can reduce the registered scope.
 
-Repository [AGENTS.md](../AGENTS.md) prohibits pushing. Publishing a new CI
-branch therefore requires the maintainer to override that instruction or
-publish the prepared branch themselves. Existing GitHub access has been
-verified without exposing credentials. No new-source remote result can exist
-until that source is available to Actions.
+The maintainer explicitly authorized publishing this CI branch, overriding the
+repository [AGENTS.md](../AGENTS.md) push restriction for this work. Subsequent
+repairs use ordinary commits and fast-forward pushes to the same branch.
+Scoped GitHub access reads run status and evidence without exposing credentials.
 
 ## Evidence required before completion
 

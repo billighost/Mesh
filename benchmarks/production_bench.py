@@ -1524,7 +1524,7 @@ def run_case(options: argparse.Namespace, agents: int, mode: str, backend: str,
                 "group_commit_requested": group_commit, "status": "unavailable",
                 "reason": "An explicit verified local model directory was not provided."}
     with tempfile.TemporaryDirectory(prefix="mesh-production-bench-") as temporary:
-        root = Path(temporary)
+        root = Path(temporary).resolve(strict=True)
         sampler = ProcessTreeSampler()
         coordinator = Coordinator(root, options.repo_root, backend, options.timeout, getattr(options, "source_manifest", None),
                                   surface=surface, group_commit=group_commit, sampler=sampler)
@@ -1656,7 +1656,7 @@ def crash_probes(options: argparse.Namespace) -> list[dict[str, Any]]:
     probes = []
     for action, code in [("crash-before", 71), ("crash-after", 72)]:
         with tempfile.TemporaryDirectory(prefix="mesh-production-bench-") as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve(strict=True)
             coordinator = Coordinator(root, options.repo_root, "hash", options.timeout, getattr(options, "source_manifest", None))
             probe: dict[str, Any] = {"phase": action, "boundary": "process_death_and_fresh_process_restart"}
             stage = "crash_at_commit_boundary"

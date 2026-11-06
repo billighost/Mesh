@@ -17,6 +17,10 @@ full-suite failures are preserved as failures; focused passing checks and an
 installed-wheel smoke do not replace final CI. The
 [production Actions workflow](../.github/workflows/production-performance.yml)
 records full qualification and runs its measurements against that same source.
+The maintainer authorized publication of `ci/mesh-production-run-c4-20261106`.
+The first remote run passed lint, security, packaging, and wheel validation;
+full-suite failures and workflow validation errors are being repaired before
+qualification and measurement continue on the corrected source.
 
 The reviewed retrieval and optional four-candidate reranker harnesses are now
 integrated as CI utilities. The production workflow calls the five-dataset

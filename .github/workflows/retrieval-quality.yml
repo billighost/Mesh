@@ -50,17 +50,6 @@ jobs:
       RETRIEVAL_DATASET: ${{ matrix.dataset }}
       RETRIEVAL_ROOT: .work/retrieval-ci/${{ github.run_id }}-${{ github.run_attempt }}/${{ matrix.dataset }}
       RETRIEVAL_MODELS: .work/production-models/embedding
-      MESH_HOME: ${{ runner.temp }}/mesh-retrieval-ci-config-${{ matrix.dataset }}/mesh-home
-      HOME: ${{ runner.temp }}/mesh-retrieval-ci-config-${{ matrix.dataset }}/home
-      USERPROFILE: ${{ runner.temp }}/mesh-retrieval-ci-config-${{ matrix.dataset }}/home
-      APPDATA: ${{ runner.temp }}/mesh-retrieval-ci-config-${{ matrix.dataset }}/appdata
-      LOCALAPPDATA: ${{ runner.temp }}/mesh-retrieval-ci-config-${{ matrix.dataset }}/localappdata
-      XDG_CONFIG_HOME: ${{ runner.temp }}/mesh-retrieval-ci-config-${{ matrix.dataset }}/xdg/config
-      XDG_CACHE_HOME: ${{ runner.temp }}/mesh-retrieval-ci-config-${{ matrix.dataset }}/xdg/cache
-      XDG_DATA_HOME: ${{ runner.temp }}/mesh-retrieval-ci-config-${{ matrix.dataset }}/xdg/data
-      CODEX_HOME: ${{ runner.temp }}/mesh-retrieval-ci-config-${{ matrix.dataset }}/codex
-      CLAUDE_CONFIG_DIR: ${{ runner.temp }}/mesh-retrieval-ci-config-${{ matrix.dataset }}/claude
-      CLAUDE_HOME: ${{ runner.temp }}/mesh-retrieval-ci-config-${{ matrix.dataset }}/claude
       MESH_NO_AUTO_DAEMON: "1"
       MESH_NO_MODEL_DOWNLOAD: "1"
       MESH_NO_UPDATE_CHECK: "1"
@@ -79,7 +68,23 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
       - name: Create isolated directories and initial failure-safe artifact
+        env:
+          MESH_HOME: ${{ runner.temp }}/mesh-retrieval-ci-config-${{ matrix.dataset }}/mesh-home
+          HOME: ${{ runner.temp }}/mesh-retrieval-ci-config-${{ matrix.dataset }}/home
+          USERPROFILE: ${{ runner.temp }}/mesh-retrieval-ci-config-${{ matrix.dataset }}/home
+          APPDATA: ${{ runner.temp }}/mesh-retrieval-ci-config-${{ matrix.dataset }}/appdata
+          LOCALAPPDATA: ${{ runner.temp }}/mesh-retrieval-ci-config-${{ matrix.dataset }}/localappdata
+          XDG_CONFIG_HOME: ${{ runner.temp }}/mesh-retrieval-ci-config-${{ matrix.dataset }}/xdg/config
+          XDG_CACHE_HOME: ${{ runner.temp }}/mesh-retrieval-ci-config-${{ matrix.dataset }}/xdg/cache
+          XDG_DATA_HOME: ${{ runner.temp }}/mesh-retrieval-ci-config-${{ matrix.dataset }}/xdg/data
+          CODEX_HOME: ${{ runner.temp }}/mesh-retrieval-ci-config-${{ matrix.dataset }}/codex
+          CLAUDE_CONFIG_DIR: ${{ runner.temp }}/mesh-retrieval-ci-config-${{ matrix.dataset }}/claude
+          CLAUDE_HOME: ${{ runner.temp }}/mesh-retrieval-ci-config-${{ matrix.dataset }}/claude
         run: |
+          foreach ($taskIsolatedEnvName in @("MESH_HOME", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "CLAUDE_HOME")) {
+            $taskIsolatedEnvValue = [Environment]::GetEnvironmentVariable($taskIsolatedEnvName)
+            "$taskIsolatedEnvName=$taskIsolatedEnvValue" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          }
           New-Item -ItemType Directory -Force -Path $env:MESH_HOME,$env:HOME,$env:APPDATA,$env:LOCALAPPDATA,$env:XDG_CONFIG_HOME,$env:XDG_CACHE_HOME,$env:XDG_DATA_HOME,$env:CODEX_HOME,$env:CLAUDE_CONFIG_DIR | Out-Null
           python benchmarks/retrieval_ci.py init $env:RETRIEVAL_DATASET --output-root $env:RETRIEVAL_ROOT
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

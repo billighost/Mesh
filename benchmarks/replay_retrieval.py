@@ -74,7 +74,7 @@ def isolated_artifact_path(value, repository=None, *, must_exist=False):
         work = checked_path(Path(repository) / ".work", directory=True)
         if path.is_relative_to(work) and path != work:
             return path
-    temporary = checked_path(tempfile.gettempdir(), must_exist=True, directory=True)
+    temporary = checked_path(Path(tempfile.gettempdir()).resolve(strict=True), must_exist=True, directory=True)
     if path.is_relative_to(temporary):
         relative = path.relative_to(temporary)
         if relative.parts and relative.parts[0].startswith(ISOLATED_PREFIXES):
@@ -231,7 +231,7 @@ def main() -> None:
     try:
         with contextlib.ExitStack() as cleanup:
             temporary = cleanup.enter_context(tempfile.TemporaryDirectory(prefix="mesh-current-default-quality-"))
-            isolated = Path(temporary)
+            isolated = Path(temporary).resolve(strict=True)
             configure_isolation(isolated)
             implementation = isolated / "implementation"
             manifest["runtime_files"] = freeze_runtime(repository, implementation)

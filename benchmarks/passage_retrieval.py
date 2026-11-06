@@ -439,7 +439,7 @@ def retrieve_parent_query(query, cap, parent_budget, child_mesh, parent_mesh,
 @contextlib.contextmanager
 def owned_runtime_directory():
     owned = tempfile.TemporaryDirectory(prefix="mesh-frozen-quality-passages-")
-    root = Path(owned.name)
+    root = Path(owned.name).resolve(strict=True)
     try:
         yield root
     finally:

@@ -129,17 +129,26 @@ def test_future_schema_version_fails_gracefully(temp_mesh_dir):
     with sqlite3.connect(str(db_path)) as conn:
         conn.execute("PRAGMA user_version = 99")
         conn.execute("CREATE TABLE future_table (id TEXT PRIMARY KEY, payload TEXT)")
+        conn.execute("INSERT INTO future_table VALUES ('future-item', 'future-format-canary')")
         conn.commit()
 
     with pytest.raises(RuntimeError) as exc_info:
         MeshStore(namespace=ns, create=False)
 
-    assert "newer than supported version" in str(exc_info.value).lower() or "99" in str(exc_info.value)
+    error = str(exc_info.value).lower()
+    assert "schema" in error and "newer than supported" in error
+    assert "upgrade mesh" in error
 
     # Ensure future database content was untouched
     with sqlite3.connect(str(db_path)) as conn:
         cur = conn.execute("PRAGMA user_version")
         assert cur.fetchone()[0] == 99
+        assert conn.execute("SELECT id, payload FROM future_table").fetchall() == [
+            ("future-item", "future-format-canary")
+        ]
+        assert conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall() == [
+            ("future_table",)
+        ]
 
 
 # ==============================================================================

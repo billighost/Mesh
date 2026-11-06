@@ -563,10 +563,10 @@ def run_retrieval(args):
     try:
         with contextlib.ExitStack() as cleanup:
             if args.retain_guarded_home:
-                root = Path(tempfile.mkdtemp(prefix="mesh-frozen-quality-"))
+                root = Path(tempfile.mkdtemp(prefix="mesh-frozen-quality-")).resolve(strict=True)
                 metadata["temporary_mesh_home"] = str(root / "mesh-home")
             else:
-                root = Path(cleanup.enter_context(tempfile.TemporaryDirectory(prefix="mesh-frozen-quality-")))
+                root = Path(cleanup.enter_context(tempfile.TemporaryDirectory(prefix="mesh-frozen-quality-"))).resolve(strict=True)
             install_model(root, args.model_directory, protocol, query_only=query_only, repository=repository)
             hashes, audit_module, memory_module, store_module = import_runtime(
                 root, repository, checked_path(args.dependency_directory, must_exist=True, directory=True) if args.dependency_directory else None, cleanup)

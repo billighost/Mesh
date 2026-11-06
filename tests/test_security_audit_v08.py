@@ -49,6 +49,7 @@ from mesh.crypto import (
     disable_encryption_at_rest,
     enable_encryption_at_rest,
     encrypt_namespace_db,
+    is_encryption_enabled,
 )
 from mesh.daemon import get_or_create_auth_token, rotate_auth_token
 from mesh.dashboard import api as dash_app
@@ -219,6 +220,9 @@ def test_n2_url_redaction_does_not_corrupt_json_with_later_email():
 
 def test_s5_encryption_at_rest_and_fts_suppression(tmp_path, monkeypatch):
     monkeypatch.setenv("MESH_HOME", str(tmp_path))
+    for name in ("MESH_ENCRYPT_AT_REST", "MESH_PASSPHRASE", "MESH_ENCRYPTION_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    assert is_encryption_enabled() is False
     ns = "s5_enc_ns"
 
     # 1. Even before full encryption is enabled, `local_only=True` rows must NEVER sit in `memories_fts`

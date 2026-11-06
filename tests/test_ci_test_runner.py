@@ -18,6 +18,10 @@ def test_ci_runner_preserves_early_failure_and_emits_bounded_summary(tmp_path, m
     monkeypatch.setenv("MESH_TEST_WORKERS", "1")
     monkeypatch.setenv("OPENAI_API_KEY", "FAKE_PROVIDER_KEY")
     monkeypatch.setenv("HYPOTHESIS_PROFILE", "ci")
+    monkeypatch.setenv("MESH_FORCE_HASH_EMBED", "1")
+    monkeypatch.setenv("MESH_PASSPHRASE", "FAKE_INHERITED_PASSPHRASE")
+    monkeypatch.setenv("MESH_CONNECTION_PROFILE", "/external-profile.json")
+    monkeypatch.setenv("TMPDIR", "/external-temp-alias")
     observed = {}
 
     class Process:
@@ -29,6 +33,8 @@ def test_ci_runner_preserves_early_failure_and_emits_bounded_summary(tmp_path, m
 
     def launch(command, **kwargs):
         observed.update(command=command, **kwargs)
+        temporary = Path(kwargs["env"]["TMPDIR"])
+        observed["canonical_temp_existed"] = temporary.is_dir() and temporary == temporary.resolve()
         return Process()
 
     class Sampler:
@@ -53,6 +59,12 @@ def test_ci_runner_preserves_early_failure_and_emits_bounded_summary(tmp_path, m
     assert observed["env"]["MESH_AUTO_APPROVE"] == "0"
     assert observed["env"]["MESH_NO_MODEL_DOWNLOAD"] == "1"
     assert "OPENAI_API_KEY" not in observed["env"]
+    assert "MESH_PASSPHRASE" not in observed["env"] and "MESH_CONNECTION_PROFILE" not in observed["env"]
+    assert observed["env"]["MESH_FORCE_HASH_EMBED"] == "1"
+    assert observed["env"]["HYPOTHESIS_PROFILE"] == "ci"
+    assert observed["canonical_temp_existed"]
+    assert all(observed["env"][name] == observed["env"]["TMPDIR"] for name in ("TMP", "TEMP"))
+    assert Path(observed["env"]["TMPDIR"]).parent == Path(observed["env"]["MESH_TEST_RUN_ROOT"])
     assert Path(observed["env"]["MESH_HOME"]).name == "mesh"
     report = json.loads((tmp_path / ".work/ci/test-run.json").read_text(encoding="utf-8"))
     assert report["exit_code"] == exit_code and report["workers"] == 1

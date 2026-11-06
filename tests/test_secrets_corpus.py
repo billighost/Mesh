@@ -247,17 +247,22 @@ def test_hook_markdown_untrusted_banner(isolated_env, capsys):
     assert "<!-- UNTRUSTED REFERENCE DATA: MESH CONTEXT BRIEF -->" in out
 
 
-def test_hook_graceful_error_resilience(capsys):
-    """Verify mesh brief hook handles unexpected errors gracefully without crashing."""
-    from mesh.cli import brief_cmd
+def test_hook_graceful_error_resilience(isolated_env, capsys):
+    """The installed hook reports failure without injecting context or error values."""
+    from mesh.hooks import main
 
-    with patch("mesh.memory.Mesh.__init__", side_effect=RuntimeError("Simulated unexpected failure")):
-        with patch.object(sys, "argv", ["mesh", "--format", "antigravity"]):
-            brief_cmd()
+    failure = RuntimeError("PRIVATE_FAILURE_CANARY_DO_NOT_INJECT")
+    with patch("mesh.client.ConnectionProfile.from_file", return_value=object()):
+        with patch("mesh.client.MeshClient", side_effect=failure):
+            exit_code = main([
+                "brief", "--profile", "profile.json", "--no-private", "--format", "antigravity",
+            ])
 
-    out = capsys.readouterr().out.strip()
-    data = json.loads(out)
-    assert data == {"injectSteps": []}, "Hook must return empty injectSteps on failure, not crash"
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert json.loads(captured.out) == {"injectSteps": []}
+    assert "RuntimeError" in captured.err
+    assert "PRIVATE_FAILURE_CANARY" not in captured.out + captured.err
 
 
 st_non_ascii_char = st.sampled_from([
