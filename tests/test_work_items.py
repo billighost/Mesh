@@ -15,7 +15,7 @@ import pytest
 from mesh.audit import export_content_free_audit, log_audit_event
 from mesh.io import export_namespace, import_namespace
 from mesh.memory import Mesh
-from mesh.store import MeshStore
+from mesh.store import MeshStore, SCHEMA_VERSION
 
 
 @pytest.fixture
@@ -387,8 +387,7 @@ def test_content_free_audit_telemetry(temp_mesh_dir):
 
 def test_schema_migration_v3(temp_mesh_dir):
     """Test backward-compatible migration from schema v2 to v3 with pre-migration backup."""
-    import sqlite3
-
+    from mesh.sqlite_runtime import sqlite3
     ns = "mig_test"
     db_path = temp_mesh_dir / f"mesh_{ns}.db"
 
@@ -432,7 +431,7 @@ def test_schema_migration_v3(temp_mesh_dir):
 
     # Now open with MeshStore, which triggers migration to v3
     store = MeshStore(namespace=ns, create=True)
-    assert store.get_schema_version() == "3"
+    assert store.get_schema_version() == SCHEMA_VERSION
 
     # Verify backup file was created
     backups = list(temp_mesh_dir.glob(f"mesh_{ns}.db.backup-v0.7.2-*"))
@@ -519,7 +518,7 @@ def test_brief_decision_rationale_flagging(temp_mesh_dir):
     md = brief["brief_markdown"]
 
     # Decision without reason should have the hint
-    assert "needs rationale — add 'because <reason>'" in md
+    assert "needs rationale" in md
     # Decision with reason should be present without duplicated hint
     assert "Decided to use SQLite with WAL mode because concurrency requires non-blocking reads" in md
 

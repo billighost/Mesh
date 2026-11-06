@@ -2,6 +2,67 @@
 
 This document provides empirical latency, throughput, memory, and scaling benchmarks for **Mesh** (`mesh-context-layer`). All tests measure real end-to-end execution paths including SQLite WAL transactions, token budgeting, FTS5 lexical matching, and ONNX SIMD cosine vector ranking.
 
+## Mesh 0.9.0 working-tree retrieval investigation (2026-11-06)
+
+[The sanitized aggregate](results/production_retrieval_20261106.json) identifies
+each tested runtime, dataset, model, protocol, and scorer by SHA-256. These are
+development checkpoints. Final-source GitHub Actions qualification and the new
+concurrent performance matrix have not run. There is no new throughput, quiet
+latency, competitor-superiority, or physical power-loss result.
+
+All quality cells used the pinned local MiniLM encoder, patched SQLite 3.54.1,
+WAL/FULL durability, public visibility, and original annotated evidence IDs.
+Hit@k means at least one authorized annotated memory appears in the first k
+results. It does not measure a generated answer or complete multi-source answer
+sufficiency. No-answer candidate emission is reported separately in the aggregate.
+
+| Condition, tested Mesh 0.9.0 checkpoint | Answerable queries | Hit@1 | Hit@5 | Hit@10 |
+| --- | ---: | ---: | ---: | ---: |
+| Frozen schema 4, 512 MiB cache, NFCorpus hybrid | 323 | 49.23% | 66.87% | 74.30% |
+| Same frozen NFCorpus runtime/model, dense ablation | 323 | 44.89% | 61.92% | 69.35% |
+| Frozen schema 4, 512 MiB cache, SciFact hybrid | 300 | 56.00% | 78.33% | 84.67% |
+| Same frozen SciFact runtime/model, dense ablation | 300 | 48.67% | 75.00% | 81.00% |
+| Schema 5 checkpoint, 256 MiB cache, fresh default SDK SciFact | 300 | 56.00% | 78.33% | 84.67% |
+| Same schema 5 checkpoint, direct-fact regression | 16 | 81.25% | 100.00% | 100.00% |
+| Same schema 5 checkpoint, early/middle/late long-text regression | 6 | 0.00% | 0.00% | 100.00% |
+| Same schema 5 checkpoint, inspected LongMemEval exact-turn subset | 6 | 50.00% | 100.00% | 100.00% |
+
+The frozen schema 4 runtime has `mesh/store.py` SHA-256
+`017443afd9faa2f41755b9db0937e87c866f6846098e96b3153bec5efdb784a8`.
+The schema 5 checkpoint has store SHA-256
+`0d2c6bdbaa8b8f8e4bd4f07bf7d4d184b6b3f98a22a85dc16d977e877485e620`.
+Complete module manifests are in the aggregate; later encryption and documentation
+fixes require their own final-source qualification.
+
+Saved-vector replays at that schema 5 checkpoint accounted for all 323 NFCorpus
+and 300 SciFact queries. Every ordered ID matched the frozen runs at C64 and C96
+in raw hybrid candidates, final SDK results, reranker inputs, and dense candidates.
+This validates ranking/storage continuity with the production 256 MiB cache.
+The separate fresh SciFact run verified all 5,183 source revisions/indexes and
+used normal SDK text queries, default candidate settings, and access recording,
+with no precomputed query vectors or document inference.
+
+Canonical lexical strings preserved all 8,816 source documents' lexical values.
+The schema 5 SciFact cache admitted all 5,183 memories within the unchanged
+268,435,456-byte budget, with 221,184,836 bytes conservatively charged. Cache charge
+and a unique Python object graph are distinct from total process RAM.
+
+The long-text misses remain failures: all six correct memories survived ingestion
+and visibility checks, but ranked ninth or tenth. The direct fixture also retained
+three first-result misses involving environment qualifiers or answerless reference
+documents. The tiny inspected fixtures do not support population-level accuracy
+or competitor claims. Paragraph passage scoring and a separate optional C4
+reranker remain experiments with remote quality/resource gates.
+
+The four frozen TinyBERT reranking configurations were worse than their matching
+hybrid result. The MiniLM C64 cross-encoder was stopped for exceeding its declared
+resource gate; its partial export remains unscored. The E5 trial was settled
+during partial indexing and has no quality score. Those outcomes are preserved.
+Reproduction and condition details are in [RETRIEVAL.md](RETRIEVAL.md).
+
+The remaining tables below are historical Mesh 0.8.3 measurements. The legacy MCP
+microbenchmarks call in-process handlers; their timings exclude protocol transport.
+
 ---
 
 ## 1. Test Environment

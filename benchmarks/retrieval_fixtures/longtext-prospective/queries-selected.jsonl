@@ -1,0 +1,9 @@
+{"id": "l01", "query": "How long does Cypress production recovery keep retrying before it escalates?"}
+{"id": "l04", "query": "Cypress production recovery 124 seconds"}
+{"id": "l02", "query": "How long does Juniper production recovery keep retrying before it escalates?"}
+{"id": "l05", "query": "Juniper production recovery 237 seconds"}
+{"id": "l03", "query": "How long does Willow production recovery keep retrying before it escalates?"}
+{"id": "l06", "query": "Willow production recovery 351 seconds"}
+{"id": "lu01", "query": "Who owns Willow's production recovery process?"}
+{"id": "lu02", "query": "What was Juniper's previous production recovery retry limit?"}
+{"id": "lu03", "query": "Which weekday does Cypress exercise the recovery escalation procedure?"}

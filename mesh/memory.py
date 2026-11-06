@@ -25,6 +25,7 @@ from __future__ import annotations
 import contextvars
 import difflib
 import gc
+import functools
 import hashlib
 import json
 import logging
@@ -40,6 +41,7 @@ import threading
 import time
 import uuid
 from collections import OrderedDict
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterator, Optional
@@ -65,6 +67,7 @@ from .audit import (
     REDACTED_CONTENT_PLACEHOLDER,
     ensure_secure_mesh_dir,
     get_mesh_dir,
+    mesh_dir_context,
     log_forget,
     log_learn,
     log_recall,
@@ -74,7 +77,6 @@ from .audit import (
 )
 from .envutil import env_bool, env_float, env_int
 from .secrets import (
-    SecretLocator,
     convert_text_secrets_to_refs,
     is_credential,
     normalize_secret_ref,
@@ -83,15 +85,21 @@ from .secrets import (
 from .store import (
     EMBEDDING_DIM,
     STALE_THRESHOLD,
+    CacheBudgetExceededError,
     MeshStore,
+    StaleStoreError,
+    _content_identity,
     _extract_search_tokens,
     _is_same_known_space,
     _normalize_trust_tier,
     _parse_iso_utc,
     _utc_now,
     _utc_now_iso,
+    _validate_incarnation,
     expand_query_tokens,
     namespace_write_lock,
+    sqlite3,
+    validate_memory_id,
 )
 from .version import VERSION
 
@@ -161,38 +169,44 @@ _PENDING_REEMBED_MAXSIZE = 10000
 _PENDING_REEMBED_LOCK = threading.Lock()
 
 
+@dataclass(frozen=True, slots=True)
+class _ReembedHint:
+    data_root: str
+    namespace: str
+    memory_id: str
+    revision: int
+    target_model: str = "onnx-minilm-l6-v2"
+    attempts: int = 0
+    incarnation: Optional[str] = None
+    store_generation: Optional[str] = None
+
+
 class _BoundedReembedQueue:
-    """
-    Bounded queue of `(namespace, memory_id, content)` items awaiting ONNX re-embedding.
-    Deduplicates by `(namespace, memory_id)` so the newest content wins and drops the
-    oldest entry when capacity exceeds `maxsize` (default 10,000).
-    """
+    """Body-free wakeup hints; required work remains in durable embedding_jobs."""
 
     def __init__(self, maxsize: int = _PENDING_REEMBED_MAXSIZE) -> None:
         self.maxsize = max(1, int(maxsize))
-        self._data: OrderedDict[tuple[str, str], str] = OrderedDict()
+        self._data: OrderedDict[tuple[str, str, str], _ReembedHint] = OrderedDict()
 
-    def put(self, namespace: str, memory_id: str, content: str) -> None:
-        key = (str(namespace), str(memory_id))
-        self._data[key] = str(content)
+    def put(self, namespace: str, memory_id: str, revision: int, *, data_root: Optional[Path] = None, target_model: str = "onnx-minilm-l6-v2", incarnation: Optional[str] = None, store_generation: Optional[str] = None) -> None:
+        root = str(Path(data_root or get_mesh_dir()).absolute())
+        hint = _ReembedHint(root, str(namespace), str(memory_id), int(revision), target_model, incarnation=incarnation, store_generation=store_generation)
+        key = (root, hint.namespace, hint.memory_id)
+        self._data[key] = hint
         self._data.move_to_end(key)
         while len(self._data) > self.maxsize:
             self._data.popitem(last=False)
         _notify_reembed_worker()
 
-    def append(self, item: tuple[str, str, str]) -> None:
-        ns, mid, content = item
-        self.put(ns, mid, content)
-
-    def pop_some(self, count: int) -> list[tuple[str, str, str]]:
-        items: list[tuple[str, str, str]] = []
+    def pop_some(self, count: int) -> list[_ReembedHint]:
+        items = []
         while self._data and len(items) < max(1, int(count)):
-            (ns, mid), text = self._data.popitem(last=False)
-            items.append((ns, mid, text))
+            _, hint = self._data.popitem(last=False)
+            items.append(hint)
         return items
 
-    def pop_all(self) -> list[tuple[str, str, str]]:
-        items = [(ns, mid, text) for (ns, mid), text in self._data.items()]
+    def pop_all(self) -> list[_ReembedHint]:
+        items = list(self._data.values())
         self._data.clear()
         return items
 
@@ -202,12 +216,8 @@ class _BoundedReembedQueue:
     def __len__(self) -> int:
         return len(self._data)
 
-    def __iter__(self) -> Iterator[tuple[str, str, str]]:
-        return iter([(ns, mid, text) for (ns, mid), text in self._data.items()])
-
-    def __getitem__(self, index: Any) -> Any:
-        as_list = [(ns, mid, text) for (ns, mid), text in self._data.items()]
-        return as_list[index]
+    def __iter__(self) -> Iterator[_ReembedHint]:
+        return iter(tuple(self._data.values()))
 
     def __bool__(self) -> bool:
         return bool(self._data)
@@ -233,12 +243,13 @@ def _get_embed_cache_maxsize() -> int:
 
 
 _EMBED_CACHE_MAXSIZE = _get_embed_cache_maxsize()
-_EMBED_CACHE: OrderedDict[str, tuple[np.ndarray, str]] = OrderedDict()
+_EMBED_CACHE: OrderedDict[tuple[Any, ...], tuple[np.ndarray, str]] = OrderedDict()
 _EMBED_CACHE_BYTES: int = 0
 
-_NORM_QUERY_CACHE: OrderedDict[str, tuple[list[float], str]] = OrderedDict()
+_NORM_QUERY_CACHE: OrderedDict[tuple[Any, ...], tuple[np.ndarray, str]] = OrderedDict()
 _NORM_QUERY_CACHE_LOCK = threading.Lock()
-_NORM_QUERY_MAXSIZE = 1024
+_NORM_QUERY_MAXSIZE = 256
+_NORM_QUERY_CACHE_BYTES: int = 0
 
 # Maximum allowed characters in a single memory content string (16 KB)
 MAX_CONTENT_LENGTH = env_int("MESH_MAX_CONTENT_LENGTH", 16384, minimum=1)
@@ -618,8 +629,6 @@ def _split_long_text_windows(text: str, max_words: int = 180, stride: int = 140)
             windows.append(chunk)
         if start + max_words >= len(words):
             break
-        if len(windows) >= 8:
-            break
     return windows or [text]
 
 
@@ -638,6 +647,11 @@ class _DirectOnnxEmbedding:
         self.tokenizer = Tokenizer.from_file(str(tokenizer_path))
         self.tokenizer.enable_truncation(max_length=256)
         self.tokenizer.enable_padding(pad_id=0, pad_token="[PAD]")
+        # An independent, immutable tokenizer avoids toggling shared truncation
+        # settings while foreground queries and background batches run together.
+        self.window_tokenizer = Tokenizer.from_file(str(tokenizer_path))
+        self.window_tokenizer.no_truncation()
+        self.window_tokenizer.no_padding()
 
         sess_options = ort.SessionOptions()
         sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
@@ -693,13 +707,22 @@ class _DirectOnnxEmbedding:
     def encode(self, texts: list[str], batch_size: int = 32) -> np.ndarray:
         if not texts:
             return np.empty((0, EMBEDDING_DIM), dtype=np.float32)
-        if all(len(t) <= 900 for t in texts):
-            return self._encode_raw_batches(texts, batch_size=batch_size)
 
         flat_windows: list[str] = []
         window_ranges: list[tuple[int, int]] = []
         for t in texts:
-            wins = _split_long_text_windows(t)
+            encoding = self.window_tokenizer.encode(t, add_special_tokens=False)
+            if len(encoding.ids) <= 254:
+                wins = [t]
+            else:
+                offsets = encoding.offsets
+                wins = []
+                for start in range(0, len(offsets), 192):
+                    end = min(len(offsets), start + 224)
+                    left, right = offsets[start][0], offsets[end - 1][1]
+                    wins.append(t[left:right])
+                    if end == len(offsets):
+                        break
             start_idx = len(flat_windows)
             flat_windows.extend(wins)
             window_ranges.append((start_idx, len(flat_windows)))
@@ -1285,8 +1308,10 @@ def _start_background_model_download() -> None:
             return
         _download_in_progress = True
         _download_complete_event.clear()
+        download_context = contextvars.copy_context()
         _download_thread = threading.Thread(
-            target=_background_download_worker,
+            target=download_context.run,
+            args=(_background_download_worker,),
             name="mesh-onnx-downloader",
             daemon=True,
         )
@@ -1294,45 +1319,13 @@ def _start_background_model_download() -> None:
 
 
 def _backfill_pending_embeddings() -> None:
-    with _PENDING_REEMBED_LOCK:
-        pending = _PENDING_REEMBED_QUEUE.pop_all()
-
+    global _EMBED_CACHE_BYTES
     with _EMBED_CACHE_LOCK:
         _EMBED_CACHE.clear()
-
-    if not pending:
-        return
-
-    by_ns: dict[str, list[tuple[str, str]]] = {}
-    for ns, mid, text in pending:
-        by_ns.setdefault(ns, []).append((mid, text))
-
-    for ns, items in by_ns.items():
-        try:
-            store = MeshStore(namespace=ns, create=False)
-            valid_items: list[tuple[str, str]] = []
-            for mid, queued_text in items:
-                current_row = store.get(mid)
-                if current_row is not None and current_row.get("content") == queued_text:
-                    valid_items.append((mid, queued_text))
-            if not valid_items:
-                continue
-            texts = [t for _, t in valid_items]
-            vecs, tag = _encode_texts_with_tag(texts)
-            if tag != "onnx-minilm-l6-v2":
-                continue
-            for (mid, text), vec in zip(valid_items, vecs):
-                latest_row = store.get(mid)
-                if latest_row is not None and latest_row.get("content") == text:
-                    store.update(
-                        memory_id=mid,
-                        content=None,
-                        embedding=vec.tolist(),
-                        embedding_model="onnx-minilm-l6-v2",
-                        preserve_accessed_at=True,
-                    )
-        except Exception:
-            pass
+        _EMBED_CACHE_BYTES = 0
+    # Completion wakes the same bounded worker; it recovers persisted jobs after
+    # a restart rather than trusting evictable in-memory text queues.
+    _register_reembed_root(get_mesh_dir())
 
 
 _FG_TS: float = 0.0  # monotonic time of the last FOREGROUND embed (learn / recall / update); the worker yields to it
@@ -1343,7 +1336,14 @@ _REEMBED_WORKER_LOCK = threading.Lock()
 _REEMBED_WORKER: Optional[threading.Thread] = None
 _REEMBED_DRAINING = 0
 _REEMBED_INFLIGHT = 0  # items popped from the queue but not finished yet (guarded by _PENDING_REEMBED_LOCK)
-_REEMBED_STORES: "OrderedDict[str, MeshStore]" = OrderedDict()
+_REEMBED_STORES: OrderedDict[tuple[str, str], MeshStore] = OrderedDict()
+_REEMBED_STORES_LOCK = threading.Lock()
+_REEMBED_ROOTS: OrderedDict[str, float] = OrderedDict()
+_REEMBED_NAMESPACES: OrderedDict[tuple[str, str], None] = OrderedDict()
+_REEMBED_BACKLOG: dict[tuple[str, str], int] = {}
+_REEMBED_PROCESS_LOCK = threading.Lock()
+_REEMBED_LAST_BATCH_AT: float = 0.0
+_REEMBED_BUSY_SINCE: float = 0.0
 _REEMBED_ATEXIT_REGISTERED = False
 
 
@@ -1353,33 +1353,29 @@ def _bg_onnx_enabled() -> bool:
         return False
     if os.environ.get("MESH_FORCE_HASH_EMBED", "").strip().lower() in ("1", "true", "yes"):
         return False
-    if not _should_use_fast_stage1():
-        return False
     return _has_local_onnx_pair() is not None
 
 
 def _reembed_idle_gap() -> float:
-    raw = os.environ.get("MESH_BG_ONNX_IDLE_MS")
-    try:
-        return max(0.0, float(raw) / 1000.0) if raw is not None else 0.15
-    except ValueError:
-        return 0.15
+    return env_float("MESH_BG_ONNX_IDLE_MS", 150.0, minimum=0.0, maximum=5000.0) / 1000.0
 
 
 def _notify_reembed_worker() -> None:
     """Called whenever a hash-384 row is queued: wake (or lazily start) the stage-2 worker. Never blocks."""
-    global _REEMBED_WORKER, _REEMBED_ATEXIT_REGISTERED
+    global _REEMBED_WORKER, _REEMBED_ATEXIT_REGISTERED, _REEMBED_LAST_BATCH_AT, _REEMBED_BUSY_SINCE
     if not _bg_onnx_enabled():
         return
-    _REEMBED_IDLE.clear()
-    _REEMBED_EVENT.set()
-    worker = _REEMBED_WORKER
-    if worker is not None and worker.is_alive():
-        return
     with _REEMBED_WORKER_LOCK:
+        if _REEMBED_IDLE.is_set():
+            _REEMBED_BUSY_SINCE = time.monotonic()
+        _REEMBED_IDLE.clear()
+        _REEMBED_EVENT.set()
         if _REEMBED_WORKER is not None and _REEMBED_WORKER.is_alive():
             return
-        _REEMBED_WORKER = threading.Thread(target=_reembed_worker_loop, name="mesh-onnx-stage2", daemon=True)
+        worker_context = contextvars.copy_context()
+        _REEMBED_LAST_BATCH_AT = time.monotonic()
+        _REEMBED_BUSY_SINCE = _REEMBED_LAST_BATCH_AT
+        _REEMBED_WORKER = threading.Thread(target=worker_context.run, args=(_reembed_worker_loop,), name="mesh-onnx-stage2", daemon=True)
         _REEMBED_WORKER.start()
         if not _REEMBED_ATEXIT_REGISTERED:
             import atexit
@@ -1388,99 +1384,230 @@ def _notify_reembed_worker() -> None:
             _REEMBED_ATEXIT_REGISTERED = True
 
 
-def _reembed_store(ns: str) -> "MeshStore":
-    store = _REEMBED_STORES.get(ns)
-    if store is None:
-        store = MeshStore(namespace=ns, create=False)
-        _REEMBED_STORES[ns] = store
-        while len(_REEMBED_STORES) > 8:
-            _REEMBED_STORES.popitem(last=False)
+def _register_reembed_root(data_root: Path) -> None:
+    with mesh_dir_context(data_root):
+        if not _bg_onnx_enabled():
+            return
+    root = str(Path(data_root).absolute())
+    with _PENDING_REEMBED_LOCK:
+        _REEMBED_ROOTS.setdefault(root, 0.0)
+        _REEMBED_ROOTS.move_to_end(root)
+        while len(_REEMBED_ROOTS) > 8:
+            stale, _ = _REEMBED_ROOTS.popitem(last=False)
+            for key in [key for key in _REEMBED_NAMESPACES if key[0] == stale]:
+                _REEMBED_NAMESPACES.pop(key, None)
+                _REEMBED_BACKLOG.pop(key, None)
+    _notify_reembed_worker()
+
+
+def _register_reembed_namespace(store: "MeshStore") -> None:
+    root = store.db_path.parent
+    with mesh_dir_context(root):
+        if not _bg_onnx_enabled():
+            return
+        _register_reembed_root(root)
+        key = (str(root.absolute()), store.namespace)
+        with _PENDING_REEMBED_LOCK:
+            _REEMBED_NAMESPACES[key] = None
+            _REEMBED_NAMESPACES.move_to_end(key)
+            _REEMBED_BACKLOG[key] = -1
+            while len(_REEMBED_NAMESPACES) > 512:
+                stale, _ = _REEMBED_NAMESPACES.popitem(last=False)
+                _REEMBED_BACKLOG.pop(stale, None)
+        _notify_reembed_worker()
+
+
+def _reembed_store(root: str, namespace: str) -> "MeshStore":
+    key = (root, namespace)
+    with _REEMBED_STORES_LOCK:
+        store = _REEMBED_STORES.get(key)
+    if store is None or not store.db_path.exists():
+        with mesh_dir_context(Path(root)):
+            store = MeshStore(namespace=namespace, create=False)
+        with _REEMBED_STORES_LOCK:
+            _REEMBED_STORES[key] = store
+            _REEMBED_STORES.move_to_end(key)
+            while len(_REEMBED_STORES) > 8:
+                _REEMBED_STORES.popitem(last=False)
     else:
-        _REEMBED_STORES.move_to_end(ns)
+        with _REEMBED_STORES_LOCK:
+            if key in _REEMBED_STORES:
+                _REEMBED_STORES.move_to_end(key)
     return store
 
 
 def evict_memory_namespace_cache(ns: str) -> None:
-    """Drain reembed jobs and release cached stores for `ns`."""
-    try:
-        drain_reembed_worker(timeout=1.0)
-    except Exception:
-        pass
-    _REEMBED_STORES.pop(ns, None)
+    """Release hints/stores for a namespace without dropping persisted jobs."""
+    root = str(get_mesh_dir().absolute())
+    with _PENDING_REEMBED_LOCK:
+        for key in [key for key in _PENDING_REEMBED_QUEUE._data if key[:2] == (root, ns)]:
+            _PENDING_REEMBED_QUEUE._data.pop(key, None)
+        _REEMBED_NAMESPACES.pop((root, ns), None)
+        _REEMBED_BACKLOG.pop((root, ns), None)
+    with _REEMBED_STORES_LOCK:
+        _REEMBED_STORES.pop((root, ns), None)
 
 
-def _process_reembed_batch(items: list[tuple[str, str, str]]) -> None:
-    """Swap the real ONNX vector in for rows that were stored with the fast hash vector.
-
-    Safe against concurrent edits: a row is only rewritten if its content still equals the queued text
-    (checked before AND after the forward pass); `preserve_accessed_at` keeps recall statistics intact.
-    """
-    by_ns: dict[str, list[tuple[str, str]]] = {}
-    for ns, mid, text in items:
-        by_ns.setdefault(ns, []).append((mid, text))
-    for ns, group in by_ns.items():
+def _recover_reembed_hints(limit: int = 32) -> list[_ReembedHint]:
+    now = time.monotonic()
+    with _PENDING_REEMBED_LOCK:
+        roots = tuple(_REEMBED_ROOTS.items())
+    for root, last_scan in roots:
+        if now - last_scan < 30.0:
+            continue
+        discovered = []
+        for path in Path(root).glob("mesh_*.db"):
+            try:
+                namespace = validate_namespace(path.stem[5:])
+            except ValueError:
+                continue
+            discovered.append((root, namespace))
+            if len(discovered) >= 256:
+                break
+        with _PENDING_REEMBED_LOCK:
+            if root in _REEMBED_ROOTS:
+                _REEMBED_ROOTS[root] = now
+            for key in discovered:
+                if key not in _REEMBED_NAMESPACES:
+                    _REEMBED_NAMESPACES[key] = None
+                    _REEMBED_BACKLOG[key] = -1
+            while len(_REEMBED_NAMESPACES) > 512:
+                stale, _ = _REEMBED_NAMESPACES.popitem(last=False)
+                _REEMBED_BACKLOG.pop(stale, None)
+        break
+    with _PENDING_REEMBED_LOCK:
+        keys = list(_REEMBED_NAMESPACES)[:16]
+        for key in keys:
+            _REEMBED_NAMESPACES.move_to_end(key)
+    hints = []
+    for root, namespace in keys:
         try:
-            store = _reembed_store(ns)
+            with mesh_dir_context(Path(root)):
+                store = _reembed_store(root, namespace)
+                stats = store.embedding_job_stats()
+                jobs = store.list_embedding_jobs(limit=min(8, limit - len(hints))) if len(hints) < limit else []
+            with _PENDING_REEMBED_LOCK:
+                _REEMBED_BACKLOG[(root, namespace)] = max(int(stats["pending_count"]), len(jobs))
+            hints.extend(
+                _ReembedHint(root, namespace, job["memory_id"], int(job["revision"]), job["target_model"], int(job["attempts"]), incarnation=job["incarnation"], store_generation=job["store_generation"])
+                for job in jobs
+            )
         except Exception:
-            _REEMBED_STORES.pop(ns, None)
-            continue
-        valid: list[tuple[str, str]] = []
-        for mid, text in group:
-            row = store.get(mid)
-            if row is not None and row.get("content") == text and row.get("embedding_model") == "hash-384":
-                valid.append((mid, text))
-        if not valid:
-            continue
-        vecs, tag = _encode_texts_with_tag([t for _, t in valid])
-        if tag != "onnx-minilm-l6-v2":
-            continue
-        for (mid, text), vec in zip(valid, vecs):
-            latest = store.get(mid)
-            if latest is not None and latest.get("content") == text and latest.get("embedding_model") == "hash-384":
-                store.update(
-                    memory_id=mid,
-                    content=None,
-                    embedding=vec.tolist(),
-                    embedding_model="onnx-minilm-l6-v2",
-                    preserve_accessed_at=True,
-                )
+            if not (Path(root) / f"mesh_{namespace}.db").exists():
+                with _PENDING_REEMBED_LOCK:
+                    _REEMBED_NAMESPACES.pop((root, namespace), None)
+                    _REEMBED_BACKLOG.pop((root, namespace), None)
+    return hints
+
+
+def _process_reembed_batch(items: list[_ReembedHint]) -> None:
+    """Publish only matching revisions/model targets; failed jobs remain durable."""
+    with _REEMBED_PROCESS_LOCK:
+        by_store: dict[tuple[str, str], dict[str, _ReembedHint]] = {}
+        for hint in items:
+            group = by_store.setdefault((hint.data_root, hint.namespace), {})
+            previous = group.get(hint.memory_id)
+            if previous is None or (hint.incarnation, hint.store_generation) != (previous.incarnation, previous.store_generation) or hint.revision >= previous.revision:
+                group[hint.memory_id] = hint
+        for (root, namespace), hint_map in by_store.items():
+            hints = tuple(hint_map.values())
+            with mesh_dir_context(Path(root)):
+                try:
+                    store = _reembed_store(root, namespace)
+                    valid = []
+                    total_bytes = 0
+                    byte_limit = env_int("MESH_BG_ONNX_BATCH_BYTES", 32768, minimum=16384, maximum=262144)
+                    for hint in hints:
+                        row = store.get(hint.memory_id)
+                        if row is None or int(row["revision"]) != hint.revision:
+                            continue
+                        if hint.incarnation is not None and hint.incarnation != row["incarnation"]:
+                            continue
+                        if hint.store_generation is not None and hint.store_generation != row["store_generation"]:
+                            continue
+                        size = len(row["content"].encode("utf-8"))
+                        if valid and total_bytes + size > byte_limit:
+                            with _PENDING_REEMBED_LOCK:
+                                _PENDING_REEMBED_QUEUE.put(namespace, hint.memory_id, hint.revision, data_root=Path(root), target_model=hint.target_model, incarnation=row["incarnation"], store_generation=row["store_generation"])
+                            continue
+                        total_bytes += size
+                        valid.append((hint, row["content"], row["embedding_model"], row["incarnation"], row["store_generation"]))
+                    if valid:
+                        try:
+                            vectors, model_tag = _encode_texts_with_tag([text for _, text, _, _, _ in valid])
+                            if len(vectors) != len(valid):
+                                raise RuntimeError("Embedding worker returned an invalid row count")
+                            with store.atomic_write():
+                                for (hint, _, old_model, incarnation, store_generation), vector in zip(valid, vectors):
+                                    if model_tag != hint.target_model:
+                                        store.retry_embedding_job(hint.memory_id, expected_revision=hint.revision, expected_incarnation=incarnation, expected_store_generation=store_generation, expected_target_model=hint.target_model, error_code="model_space_unavailable", delay_seconds=min(60.0, 2.0 ** min(hint.attempts, 6)))
+                                        continue
+                                    store.publish_embedding(
+                                        hint.memory_id, vector.tolist(), expected_revision=hint.revision,
+                                        embedding_model=model_tag, expected_model=old_model,
+                                        expected_incarnation=incarnation, expected_store_generation=store_generation,
+                                    )
+                        except Exception:
+                            with store.atomic_write():
+                                for hint, _, _, incarnation, store_generation in valid:
+                                    store.retry_embedding_job(hint.memory_id, expected_revision=hint.revision, expected_incarnation=incarnation, expected_store_generation=store_generation, expected_target_model=hint.target_model, error_code="embedding_failed", delay_seconds=min(60.0, 2.0 ** min(hint.attempts, 6)))
+                    count = int(store.embedding_job_stats()["pending_count"])
+                    with _PENDING_REEMBED_LOCK:
+                        if (root, namespace) in _REEMBED_NAMESPACES:
+                            _REEMBED_BACKLOG[(root, namespace)] = count
+                except Exception as exc:
+                    logging.getLogger(__name__).warning("Embedding job processing deferred (%s).", type(exc).__name__)
 
 
 def _reembed_worker_loop() -> None:
-    global _REEMBED_INFLIGHT
-    while True:
-        _REEMBED_EVENT.wait(timeout=60.0)
-        with _PENDING_REEMBED_LOCK:
-            backlog = len(_PENDING_REEMBED_QUEUE)
-        if backlog == 0:
-            _REEMBED_EVENT.clear()
-            with _PENDING_REEMBED_LOCK:
-                if len(_PENDING_REEMBED_QUEUE) == 0 and _REEMBED_INFLIGHT == 0:
-                    _REEMBED_IDLE.set()
-                else:
-                    _REEMBED_EVENT.set()
-            if len(_PENDING_REEMBED_QUEUE) == 0 and not _REEMBED_IDLE.is_set():
-                time.sleep(0.005)  # another worker is mid-batch: do not spin, do not declare idle
-            continue
-        if not _bg_onnx_enabled():
-            _REEMBED_EVENT.clear()
+    global _REEMBED_INFLIGHT, _REEMBED_LAST_BATCH_AT
+    worker = threading.current_thread()
+    last_recovery = 0.0
+    while _REEMBED_WORKER is worker:
+        _REEMBED_EVENT.wait(timeout=1.0)
+        if _REEMBED_WORKER is not worker:
+            return
+        _REEMBED_EVENT.clear()
+        if not env_bool("MESH_BG_ONNX", True) or env_bool("MESH_FORCE_HASH_EMBED", False):
             _REEMBED_IDLE.set()
             continue
         if not _REEMBED_DRAINING:
-            gap = _reembed_idle_gap() - (time.monotonic() - _FG_TS)
-            if gap > 0.0:
-                time.sleep(min(gap, 0.25))  # a foreground call just ran: stay out of its way
+            now = time.monotonic()
+            idle_gap = _reembed_idle_gap()
+            gap = idle_gap - (now - max(_FG_TS, _REEMBED_BUSY_SINCE))
+            max_wait = env_float("MESH_BG_ONNX_MAX_WAIT_MS", 250.0, minimum=0.0, maximum=5000.0) / 1000.0
+            # A new workload gets its own coalescing window. An explicitly longer
+            # idle interval must not be defeated by a previous workload's age.
+            max_wait = max(max_wait, idle_gap)
+            waited = now - max(_REEMBED_LAST_BATCH_AT, _REEMBED_BUSY_SINCE)
+            if gap > 0.0 and waited < max_wait:
+                time.sleep(min(gap, max_wait - waited, 0.05))
+                _REEMBED_EVENT.set()
                 continue
+        batch = []
+        if time.monotonic() - last_recovery >= 1.0:
+            batch = _recover_reembed_hints(limit=4)
+            last_recovery = time.monotonic()
         with _PENDING_REEMBED_LOCK:
-            batch = _PENDING_REEMBED_QUEUE.pop_some(8)
+            batch.extend(_PENDING_REEMBED_QUEUE.pop_some(8 - len(batch)))
+        if not batch:
+            batch = _recover_reembed_hints(limit=8)
+            last_recovery = time.monotonic()
+        with _PENDING_REEMBED_LOCK:
             _REEMBED_INFLIGHT += len(batch)
         try:
-            _process_reembed_batch(batch)
-        except Exception:
-            time.sleep(0.25)  # transient (locked db, model warming): rows stay hash-tagged and are healed later
+            if batch:
+                _process_reembed_batch(batch)
+                _REEMBED_LAST_BATCH_AT = time.monotonic()
         finally:
             with _PENDING_REEMBED_LOCK:
                 _REEMBED_INFLIGHT -= len(batch)
+                if _PENDING_REEMBED_QUEUE:
+                    _REEMBED_EVENT.set()
+                elif any(count != 0 for key, count in _REEMBED_BACKLOG.items() if key in _REEMBED_NAMESPACES):
+                    _REEMBED_IDLE.clear()
+                elif _REEMBED_INFLIGHT == 0:
+                    _REEMBED_IDLE.set()
 
 
 def drain_reembed_worker(timeout: float = 10.0) -> bool:
@@ -1500,10 +1627,11 @@ def drain_reembed_worker(timeout: float = 10.0) -> bool:
 
 
 def _drain_policy_allows() -> bool:
-    """close()/exit drain: always when forced (MESH_BG_ONNX_DRAIN_ON_EXIT=1); by default only if the model is
-    already resident, so a one-shot CLI call never pays a model load just to upgrade a vector on its way out."""
+    """Drain only when indexing can progress; default to an already resident model."""
     mode = os.environ.get("MESH_BG_ONNX_DRAIN_ON_EXIT", "auto").strip().lower()
     if mode in ("0", "false", "no", "off"):
+        return False
+    if not _bg_onnx_enabled():
         return False
     if mode in ("1", "true", "yes", "on"):
         return True
@@ -1550,12 +1678,13 @@ def set_idle_unload_seconds(seconds: float) -> None:
 
 
 def unload_model() -> bool:
-    global _model, _torch, _model_backend, _EMBED_CACHE_BYTES
+    global _model, _torch, _model_backend, _EMBED_CACHE_BYTES, _NORM_QUERY_CACHE_BYTES
     with _EMBED_CACHE_LOCK:
         _EMBED_CACHE.clear()
         _EMBED_CACHE_BYTES = 0
     with _NORM_QUERY_CACHE_LOCK:
         _NORM_QUERY_CACHE.clear()
+        _NORM_QUERY_CACHE_BYTES = 0
     with _MODEL_LOCK:
         if _model is None:
             return False
@@ -1668,6 +1797,10 @@ def _warn_hash_fallback_once(reason: str = "") -> None:
 def _get_model() -> tuple[Any, str]:
     global _model, _torch, _model_backend, _last_model_use_ts
     _last_model_use_ts = time.monotonic()
+    if env_bool("MESH_FORCE_HASH_EMBED", False):
+        if env_bool("MESH_REQUIRE_MODEL", False):
+            raise RuntimeError("MESH_REQUIRE_MODEL=1 conflicts with MESH_FORCE_HASH_EMBED=1")
+        return _hash_embed_384, "hash-fallback"
 
     if _model is not None and _model_backend is not None:
         if _model_backend not in ("onnx-warming", "hash-fallback"):
@@ -1771,6 +1904,9 @@ def _get_model() -> tuple[Any, str]:
 def _backend_to_model_tag(backend: Optional[str], model_obj: Any) -> str:
     if backend in ("onnx-warming", "hash-fallback", None) or model_obj is _hash_embed_384:
         return "hash-384"
+    explicit_tag = getattr(model_obj, "model_tag", None)
+    if isinstance(explicit_tag, str) and explicit_tag.strip():
+        return explicit_tag.strip()
     return "onnx-minilm-l6-v2"
 
 
@@ -1779,23 +1915,68 @@ def _current_embedding_model_tag() -> str:
     return _backend_to_model_tag(backend, model)
 
 
-def _encode_uncached_texts_with_tag(texts: list[str]) -> tuple[np.ndarray, str]:
+def _embedding_identity(model: Any, backend: Optional[str], model_tag: str) -> tuple[Any, ...]:
+    return (
+        model_tag,
+        backend,
+        id(model) if model_tag != "hash-384" else None,
+        getattr(model, "model_revision", _HF_MODEL_REVISION),
+        str(getattr(model, "model_path", "")),
+        str(getattr(model, "tokenizer_path", "")),
+        "token-windows-v2",
+    )
+
+
+def _embedding_cache_key(
+    text: str,
+    role: str,
+    model: Any,
+    backend: Optional[str],
+    model_tag: str,
+) -> tuple[Any, ...]:
+    # Cache vector values, not private memory/query bodies. The root remains part
+    # of the identity so profile switches cannot reuse another store's state.
+    digest = hashlib.sha256(text.encode("utf-8")).digest()
+    return (digest, role, str(get_mesh_dir()), _embedding_identity(model, backend, model_tag))
+
+
+def _query_encoding_mode() -> str:
+    mode = os.environ.get("MESH_QUERY_MODE", "auto").strip().lower()
+    if mode not in ("auto", "neural", "hash"):
+        raise ValueError("MESH_QUERY_MODE must be auto, neural, or hash")
+    return mode
+
+
+def _validated_embedding_rows(vectors: Any, count: int) -> np.ndarray:
+    arr = np.asarray(vectors, dtype=np.float32)
+    if arr.ndim == 1 and count == 1:
+        arr = arr.reshape(1, -1)
+    if arr.shape != (count, EMBEDDING_DIM) or not np.isfinite(arr).all():
+        raise RuntimeError("Embedding backend returned an invalid shape or nonfinite vector")
+    return _normalize_rows(arr)
+
+
+def _encode_uncached_texts_with_tag(
+    texts: list[str],
+    *,
+    model_context: Optional[tuple[Any, Optional[str]]] = None,
+) -> tuple[np.ndarray, str]:
     global _last_model_use_ts
-    model, backend = _get_model()
+    model, backend = model_context if model_context is not None else _get_model()
     _last_model_use_ts = time.monotonic()
     tag = _backend_to_model_tag(backend, model)
 
     if isinstance(model, _DirectOnnxEmbedding):
-        return model.encode(texts, batch_size=min(32, max(1, len(texts)))), "onnx-minilm-l6-v2"
+        return _validated_embedding_rows(model.encode(texts, batch_size=min(32, max(1, len(texts)))), len(texts)), tag
 
     if tag == "hash-384":
         vecs = np.vstack([_hash_embed_384(t) for t in texts])
-        return _normalize_rows(vecs), "hash-384"
+        return _validated_embedding_rows(vecs, len(texts)), "hash-384"
 
     if backend == "fastembed":
         gen = model.embed(texts, batch_size=min(32, max(1, len(texts))))
         vecs = np.asarray(list(gen), dtype=np.float32)
-        return _normalize_rows(vecs), "onnx-minilm-l6-v2"
+        return _validated_embedding_rows(vecs, len(texts)), tag
 
     try:
         if _torch is not None:
@@ -1820,29 +2001,29 @@ def _encode_uncached_texts_with_tag(texts: list[str]) -> tuple[np.ndarray, str]:
             texts if len(texts) > 1 else texts[0],
             show_progress_bar=False,
         )
-    arr = np.asarray(vecs, dtype=np.float32)
-    if arr.ndim == 1:
-        arr = arr.reshape(1, -1)
-    return _normalize_rows(arr), "onnx-minilm-l6-v2"
+    return _validated_embedding_rows(vecs, len(texts)), tag
 
 
-def _store_in_embed_cache_locked(cleaned_text: str, vec: np.ndarray, model_tag: str) -> np.ndarray:
+def _store_in_embed_cache_locked(cache_key: tuple[Any, ...], vec: np.ndarray, model_tag: str) -> np.ndarray:
     global _EMBED_CACHE_BYTES
     maxsize = _get_embed_cache_maxsize()
+    maxbytes = env_int("MESH_EMBED_CACHE_BYTES", 8 * 1024 * 1024, minimum=0)
     arr_ro = _make_readonly_f32(vec)
-    if maxsize <= 0:
+    if not _EMBED_CACHE:
+        _EMBED_CACHE_BYTES = 0
+    if maxsize <= 0 or maxbytes <= 0:
         _EMBED_CACHE.clear()
         _EMBED_CACHE_BYTES = 0
         return arr_ro
-    old_entry = _EMBED_CACHE.pop(cleaned_text, None)
+    old_entry = _EMBED_CACHE.pop(cache_key, None)
     if old_entry is not None:
-        _EMBED_CACHE_BYTES -= int(old_entry[0].nbytes) + sys.getsizeof(cleaned_text) + 64
-    _EMBED_CACHE[cleaned_text] = (arr_ro, model_tag)
-    _EMBED_CACHE_BYTES += int(arr_ro.nbytes) + sys.getsizeof(cleaned_text) + 64
-    _EMBED_CACHE.move_to_end(cleaned_text)
-    while len(_EMBED_CACHE) > maxsize:
+        _EMBED_CACHE_BYTES -= int(old_entry[0].nbytes) + sys.getsizeof(cache_key[0]) + 128
+    _EMBED_CACHE[cache_key] = (arr_ro, model_tag)
+    _EMBED_CACHE_BYTES += int(arr_ro.nbytes) + sys.getsizeof(cache_key[0]) + 128
+    _EMBED_CACHE.move_to_end(cache_key)
+    while _EMBED_CACHE and (len(_EMBED_CACHE) > maxsize or _EMBED_CACHE_BYTES > maxbytes):
         k, (old_arr, _) = _EMBED_CACHE.popitem(last=False)
-        _EMBED_CACHE_BYTES -= int(old_arr.nbytes) + sys.getsizeof(k) + 64
+        _EMBED_CACHE_BYTES -= int(old_arr.nbytes) + sys.getsizeof(k[0]) + 128
     if _EMBED_CACHE_BYTES < 0:
         _EMBED_CACHE_BYTES = 0
     return arr_ro
@@ -1852,35 +2033,37 @@ def _encode_texts_with_tag(texts: list[str]) -> tuple[np.ndarray, str]:
     if not texts:
         return np.empty((0, EMBEDDING_DIM), dtype=np.float32), _current_embedding_model_tag()
 
-    active_tag = _current_embedding_model_tag()
+    model, backend = _get_model()
+    active_tag = _backend_to_model_tag(backend, model)
     cleaned_list = [" ".join(str(t).strip().split()) for t in texts]
     results: list[Optional[np.ndarray]] = [None] * len(cleaned_list)
-    tags_seen: list[str] = []
     missing_by_text: dict[str, list[int]] = {}
 
     with _EMBED_CACHE_LOCK:
         for idx, ctext in enumerate(cleaned_list):
-            cached = _EMBED_CACHE.get(ctext)
-            if cached is not None and (cached[1] == active_tag or active_tag == "hash-384"):
-                _EMBED_CACHE.move_to_end(ctext)
+            key = _embedding_cache_key(ctext, "document", model, backend, active_tag)
+            cached = _EMBED_CACHE.get(key)
+            if cached is not None and cached[1] == active_tag:
+                _EMBED_CACHE.move_to_end(key)
                 results[idx] = cached[0]
-                tags_seen.append(cached[1])
             else:
                 missing_by_text.setdefault(ctext, []).append(idx)
 
     if missing_by_text:
         unique_misses = list(missing_by_text.keys())
-        vecs, miss_tag = _encode_uncached_texts_with_tag(unique_misses)
-        tags_seen.append(miss_tag)
+        vecs, miss_tag = _encode_uncached_texts_with_tag(unique_misses, model_context=(model, backend))
+        if miss_tag != active_tag or len(vecs) != len(unique_misses):
+            raise RuntimeError("Embedding batch changed model space or returned an invalid row count")
         with _EMBED_CACHE_LOCK:
             for ctext, vec in zip(unique_misses, vecs):
-                arr_ro = _store_in_embed_cache_locked(ctext, vec, miss_tag)
+                key = _embedding_cache_key(ctext, "document", model, backend, active_tag)
+                arr_ro = _store_in_embed_cache_locked(key, vec, miss_tag)
                 for target_idx in missing_by_text[ctext]:
                     results[target_idx] = arr_ro
 
-    final_tag = "hash-384" if "hash-384" in tags_seen else (tags_seen[0] if tags_seen else active_tag)
-    clean_results = [r for r in results if r is not None]
-    return np.vstack(clean_results).astype(np.float32, copy=False), final_tag
+    if any(r is None for r in results):
+        raise RuntimeError("Embedding batch did not produce every input row")
+    return np.vstack(results).astype(np.float32, copy=False), active_tag
 
 
 def _encode_texts(texts: list[str]) -> np.ndarray:
@@ -1902,7 +2085,10 @@ def warmup_model(
         db_file = ensure_secure_mesh_dir().resolve() / f"mesh_{ns}.db"
         if db_file.exists():
             mesh = Mesh(namespace=ns, agent_id="warmup", create=False)
-            mesh.store._get_vector_cache()
+            try:
+                mesh.store._get_vector_cache()
+            except CacheBudgetExceededError:
+                pass
             mesh._heal_namespace_embeddings_if_needed()
             return {"status": "ok", "namespace": ns, "namespace_exists": True, "error": None}
         return {"status": "ok", "namespace": ns, "namespace_exists": False, "error": None}
@@ -1914,39 +2100,45 @@ def _should_use_fast_stage1() -> bool:
     return os.environ.get("MESH_SYNC_ONNX", "").strip().lower() not in ("1", "true", "yes")
 
 
-def _embed_cached_with_tag(cleaned_text: str) -> tuple[np.ndarray, str]:
+def _embed_cached_with_tag(
+    cleaned_text: str,
+    *,
+    role: str = "document",
+    model_context: Optional[tuple[Any, Optional[str]]] = None,
+) -> tuple[np.ndarray, str]:
     global _last_model_use_ts, _FG_TS
     _FG_TS = time.monotonic()
+    mode = _query_encoding_mode() if role == "query" else "auto"
+    forced_hash = env_bool("MESH_FORCE_HASH_EMBED", False)
+    if forced_hash and env_bool("MESH_REQUIRE_MODEL", False):
+        raise RuntimeError("MESH_REQUIRE_MODEL=1 conflicts with MESH_FORCE_HASH_EMBED=1")
+    if mode == "hash" or forced_hash:
+        model, backend = _hash_embed_384, "hash-fallback"
+    else:
+        model, backend = model_context if model_context is not None else _get_model()
+    active_tag = _backend_to_model_tag(backend, model)
+    if role == "query" and mode == "neural" and active_tag == "hash-384":
+        raise RuntimeError("MESH_QUERY_MODE=neural requires an available verified local embedding model")
+    target_tag = "hash-384" if role != "query" and _should_use_fast_stage1() else active_tag
+    key = _embedding_cache_key(cleaned_text, role, model, backend, target_tag)
     with _EMBED_CACHE_LOCK:
-        cached = _EMBED_CACHE.get(cleaned_text)
-        if cached is not None:
-            force_hash = os.environ.get("MESH_FORCE_HASH_EMBED", "").strip().lower() in ("1", "true", "yes")
-            if force_hash:
-                if cached[1] != "hash-384":
-                    cached = None
-            elif _model is not None:
-                tag = _backend_to_model_tag(_model_backend, _model)
-                if cached[1] != tag:
-                    cached = None
-            elif cached[1] == "hash-384":
-                cached = None
-            if cached is not None:
-                _EMBED_CACHE.move_to_end(cleaned_text)
-                return cached
-
-    # Keep model alive and responsive for idle-watchdog and engine status checks
-    _get_model()
+        cached = _EMBED_CACHE.get(key)
+        if cached is not None and cached[1] == target_tag:
+            _EMBED_CACHE.move_to_end(key)
+            return cached
     _last_model_use_ts = time.monotonic()
 
-    if _should_use_fast_stage1():
+    if target_tag == "hash-384":
         vec_arr = _hash_embed_384(cleaned_text)
         with _EMBED_CACHE_LOCK:
-            arr_ro = _store_in_embed_cache_locked(cleaned_text, vec_arr, "hash-384")
+            arr_ro = _store_in_embed_cache_locked(key, vec_arr, "hash-384")
         return arr_ro, "hash-384"
 
-    arr, model_tag = _encode_uncached_texts_with_tag([cleaned_text])
+    arr, model_tag = _encode_uncached_texts_with_tag([cleaned_text], model_context=(model, backend))
+    if model_tag != target_tag:
+        raise RuntimeError("Embedding model changed while encoding a request")
     with _EMBED_CACHE_LOCK:
-        arr_ro = _store_in_embed_cache_locked(cleaned_text, arr[0], model_tag)
+        arr_ro = _store_in_embed_cache_locked(key, arr[0], model_tag)
     return arr_ro, model_tag
 
 
@@ -1967,58 +2159,55 @@ def _embed(text: str) -> list[float]:
 
 
 def _embed_query_with_tag(query_text: str) -> tuple[list[float], str]:
+    global _NORM_QUERY_CACHE_BYTES
     cleaned = " ".join(query_text.strip().split())
+    mode = _query_encoding_mode()
+    forced_hash = env_bool("MESH_FORCE_HASH_EMBED", False)
+    if forced_hash and env_bool("MESH_REQUIRE_MODEL", False):
+        raise RuntimeError("MESH_REQUIRE_MODEL=1 conflicts with MESH_FORCE_HASH_EMBED=1")
+    if mode == "hash" or forced_hash:
+        model, backend = _hash_embed_384, "hash-fallback"
+    else:
+        model, backend = _get_model()
+    tag = _backend_to_model_tag(backend, model)
+    if mode == "neural" and tag == "hash-384":
+        raise RuntimeError("MESH_QUERY_MODE=neural requires an available verified local embedding model")
+    key = (*_embedding_cache_key(cleaned, "query", model, backend, tag), mode, "synonyms-v2")
     with _NORM_QUERY_CACHE_LOCK:
-        cached = _NORM_QUERY_CACHE.get(cleaned)
+        cached = _NORM_QUERY_CACHE.get(key)
         if cached is not None:
-            _NORM_QUERY_CACHE.move_to_end(cleaned)
-            return list(cached[0]), cached[1]
+            _NORM_QUERY_CACHE.move_to_end(key)
+            return cached[0].tolist(), cached[1]
 
-    base_arr, tag = _embed_cached_with_tag(cleaned)
+    base_arr, tag = _embed_cached_with_tag(cleaned, role="query", model_context=(model, backend))
     base_vec = np.asarray(base_arr, dtype=np.float32)
-
-    if tag == "onnx-minilm-l6-v2":
-        res_list = base_vec.tolist()
-        with _NORM_QUERY_CACHE_LOCK:
-            _NORM_QUERY_CACHE[cleaned] = (res_list, tag)
-            if len(_NORM_QUERY_CACHE) > _NORM_QUERY_MAXSIZE:
-                _NORM_QUERY_CACHE.popitem(last=False)
-        return res_list, tag
-
-    _, content_tokens, _ = _extract_search_tokens(cleaned)
-    if not content_tokens or len(content_tokens) > 5:
-        res_list = base_vec.tolist()
-        with _NORM_QUERY_CACHE_LOCK:
-            _NORM_QUERY_CACHE[cleaned] = (res_list, tag)
-            if len(_NORM_QUERY_CACHE) > _NORM_QUERY_MAXSIZE:
-                _NORM_QUERY_CACHE.popitem(last=False)
-        return res_list, tag
-
-    syn_map = expand_query_tokens(content_tokens)
-    added_syns: list[str] = []
-    for tok in content_tokens:
-        for s in sorted(syn_map.get(tok, set()))[:3]:
-            if s not in added_syns:
-                added_syns.append(s)
-
-    if not added_syns:
-        res_list = base_vec.tolist()
-        with _NORM_QUERY_CACHE_LOCK:
-            _NORM_QUERY_CACHE[cleaned] = (res_list, tag)
-            if len(_NORM_QUERY_CACHE) > _NORM_QUERY_MAXSIZE:
-                _NORM_QUERY_CACHE.popitem(last=False)
-        return res_list, tag
-
-    expanded_text = f"{cleaned} {' '.join(added_syns[:8])}"
-    exp_arr, _ = _embed_cached_with_tag(expanded_text)
-    exp_vec = np.asarray(exp_arr, dtype=np.float32)
-    blended = _normalize_rows(0.85 * base_vec + 0.15 * exp_vec)
-    res_list = blended.tolist()
+    if tag == "hash-384":
+        _, content_tokens, _ = _extract_search_tokens(cleaned)
+        if content_tokens and len(content_tokens) <= 5:
+            syn_map = expand_query_tokens(content_tokens)
+            added_syns = list(dict.fromkeys(
+                syn for tok in content_tokens for syn in sorted(syn_map.get(tok, set()))[:3]
+            ))[:8]
+            if added_syns:
+                expanded = _hash_embed_384(f"{cleaned} {' '.join(added_syns)}")
+                base_vec = _normalize_rows(0.85 * base_vec + 0.15 * expanded)
+    cached_vec = _make_readonly_f32(base_vec)
     with _NORM_QUERY_CACHE_LOCK:
-        _NORM_QUERY_CACHE[cleaned] = (res_list, tag)
-        if len(_NORM_QUERY_CACHE) > _NORM_QUERY_MAXSIZE:
-            _NORM_QUERY_CACHE.popitem(last=False)
-    return res_list, tag
+        if not _NORM_QUERY_CACHE:
+            _NORM_QUERY_CACHE_BYTES = 0
+        maxsize = env_int("MESH_QUERY_CACHE_SIZE", _NORM_QUERY_MAXSIZE, minimum=0)
+        maxbytes = env_int("MESH_QUERY_CACHE_BYTES", 4 * 1024 * 1024, minimum=0)
+        old_entry = _NORM_QUERY_CACHE.pop(key, None)
+        if old_entry is not None:
+            _NORM_QUERY_CACHE_BYTES -= int(old_entry[0].nbytes) + sys.getsizeof(key[0]) + 128
+        if maxsize > 0 and maxbytes > 0:
+            _NORM_QUERY_CACHE[key] = (cached_vec, tag)
+            _NORM_QUERY_CACHE_BYTES += int(cached_vec.nbytes) + sys.getsizeof(key[0]) + 128
+        while _NORM_QUERY_CACHE and (len(_NORM_QUERY_CACHE) > maxsize or _NORM_QUERY_CACHE_BYTES > maxbytes):
+            old_key, (old_vec, _) = _NORM_QUERY_CACHE.popitem(last=False)
+            _NORM_QUERY_CACHE_BYTES -= int(old_vec.nbytes) + sys.getsizeof(old_key[0]) + 128
+        _NORM_QUERY_CACHE_BYTES = max(0, _NORM_QUERY_CACHE_BYTES)
+    return cached_vec.tolist(), tag
 
 
 def _embed_query(query_text: str) -> list[float]:
@@ -2032,6 +2221,10 @@ def _embed_batch_with_tag(texts: list[str]) -> tuple[list[list[float]], str]:
     if len(texts) == 1:
         vec, tag = _embed_with_tag(texts[0])
         return [vec], tag
+    if _should_use_fast_stage1() or env_bool("MESH_FORCE_HASH_EMBED", False):
+        if env_bool("MESH_FORCE_HASH_EMBED", False) and env_bool("MESH_REQUIRE_MODEL", False):
+            raise RuntimeError("MESH_REQUIRE_MODEL=1 conflicts with MESH_FORCE_HASH_EMBED=1")
+        return [_hash_embed_384(" ".join(text.strip().split())).tolist() for text in texts], "hash-384"
     arr, tag = _encode_texts_with_tag(texts)
     return [row.tolist() for row in arr], tag
 
@@ -2353,13 +2546,20 @@ def _is_true_contradiction(new_text: str, existing_text: str, similarity: float)
     return False
 
 
+_PRIVATE_ACCESS_OVERRIDE: contextvars.ContextVar[Optional[bool]] = contextvars.ContextVar(
+    "mesh_private_access_override", default=None
+)
+
+
 def _resolve_sdk_include_private(include_private: Optional[bool]) -> bool:
+    if include_private is not None and not isinstance(include_private, bool):
+        raise ValueError("include_private must be a boolean")
     if include_private is not None:
-        return bool(include_private)
-    env_val = os.environ.get("MESH_INCLUDE_PRIVATE", "").strip().lower()
-    if env_val in ("0", "false", "no"):
-        return False
-    return True
+        requested = include_private
+    else:
+        env_val = os.environ.get("MESH_INCLUDE_PRIVATE", "").strip().lower()
+        requested = env_val not in ("0", "false", "no")
+    return bool(requested and _PRIVATE_ACCESS_OVERRIDE.get() is not False)
 
 
 _OWNERSHIP_ENFORCEMENT_OVERRIDE: contextvars.ContextVar[Optional[bool]] = contextvars.ContextVar(
@@ -2426,22 +2626,34 @@ def _check_agent_scope(
     except Exception:
         raise ValueError("Malformed MESH_AGENT_SCOPES configuration; expected valid JSON object.")
     if not isinstance(scopes_map, dict):
+        raise ValueError("Malformed MESH_AGENT_SCOPES configuration; expected valid JSON object.")
+    read_modes = {"ro", "read", "readonly", "read-only", "read_only"}
+    write_modes = {"rw", "write", "readwrite", "read-write", "read_write"}
+    for configured_rule in scopes_map.values():
+        if not isinstance(configured_rule, dict) or set(configured_rule) - {"namespaces", "mode"}:
+            raise ValueError("Malformed MESH_AGENT_SCOPES rule; expected namespaces and/or mode.")
+        if "namespaces" in configured_rule:
+            configured_namespaces = configured_rule["namespaces"]
+            if not isinstance(configured_namespaces, list) or any(not isinstance(item, str) for item in configured_namespaces):
+                raise ValueError("Malformed MESH_AGENT_SCOPES namespaces; expected a list of namespace names.")
+            for item in configured_namespaces:
+                validate_namespace(item)
+        configured_mode = configured_rule.get("mode", "rw")
+        if not isinstance(configured_mode, str) or configured_mode.strip().lower() not in read_modes | write_modes:
+            raise ValueError("Malformed MESH_AGENT_SCOPES mode; expected rw or ro.")
+    rule = scopes_map.get(agent_id, scopes_map.get("*"))
+    if rule is None:
         return
-    rule = scopes_map.get(agent_id) or scopes_map.get("*")
-    if not isinstance(rule, dict):
-        return
-
     allowed_ns = rule.get("namespaces")
-    if isinstance(allowed_ns, list) and namespace not in [str(x).strip() for x in allowed_ns]:
+    if allowed_ns is not None and namespace not in allowed_ns:
         raise ValueError(
             f"Agent '{agent_id}' is not authorized to access namespace '{namespace}' (restricted by MESH_AGENT_SCOPES)."
         )
-    if write:
-        mode = str(rule.get("mode") or "rw").strip().lower()
-        if mode in ("ro", "read", "readonly", "read-only", "read_only"):
-            raise ValueError(
-                f"Agent '{agent_id}' has read-only scope in MESH_AGENT_SCOPES and is not authorized to modify memories."
-            )
+    if write and rule.get("mode", "rw").strip().lower() in read_modes:
+        raise ValueError(
+            f"Agent '{agent_id}' has read-only scope in MESH_AGENT_SCOPES and is not authorized to modify memories."
+        )
+
 
 
 def _clamp_confidence(value: Any, *, field: str = "confidence") -> float:
@@ -2452,6 +2664,79 @@ def _clamp_confidence(value: Any, *, field: str = "confidence") -> float:
     if not math.isfinite(parsed):
         raise ValueError(f"{field} must be a finite number, got {value!r}")
     return max(0.0, min(1.0, parsed))
+
+
+def _validate_index_wait(wait_for_indexed: bool, index_timeout: float) -> float:
+    if not isinstance(wait_for_indexed, bool):
+        raise ValueError("wait_for_indexed must be a boolean")
+    try:
+        timeout = float(index_timeout)
+    except (TypeError, ValueError):
+        raise ValueError("index_timeout must be finite and between zero and 60 seconds") from None
+    if not math.isfinite(timeout) or not 0.0 <= timeout <= 60.0:
+        raise ValueError("index_timeout must be finite and between zero and 60 seconds")
+    return timeout
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedMemory:
+    content: str
+    memory_type: str
+    confidence: float
+    tags: tuple[str, ...]
+    ttl_days: Optional[float]
+    local_only: bool
+    requested_local_only: bool
+    secret_ref: Optional[dict[str, Any]]
+    trust_tier: str
+    quarantined: bool
+    allow_redacted_public: bool
+    warnings: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _LearnOperation:
+    identity: tuple[str, str, str, bool]
+    prepared: _PreparedMemory
+    embedding: list[float]
+    model_tag: str
+    candidates: list[dict[str, Any]]
+    deduplicate: bool
+    was_new_namespace: bool
+    similar_existing: list[str]
+    wait_for_indexed: bool = False
+    index_timeout: float = 5.0
+
+
+@dataclass(frozen=True, slots=True)
+class _LearnManyOperation:
+    identity: tuple[str, str, str, bool]
+    prepared_items: list[tuple[int, _PreparedMemory, bool]]
+    initial_results: list[Optional[dict[str, Any]]]
+    embeddings: list[list[float]]
+    model_tag: str
+    candidates: list[list[dict[str, Any]]]
+    prior_similarity: Optional[np.ndarray]
+    atomic: bool
+    wait_for_indexed: bool = False
+    index_timeout: float = 5.0
+
+
+@dataclass(frozen=True, slots=True)
+class _UpdateOperation:
+    identity: tuple[str, str, str, bool]
+    memory_id: str
+    arguments: dict[str, Any]
+    old_content: str
+    include_private: bool
+
+
+def _mesh_data_root(method):
+    @functools.wraps(method)
+    def run(self, *args, **kwargs):
+        with mesh_dir_context(self.store.db_path.parent):
+            return method(self, *args, **kwargs)
+    return run
 
 
 class Mesh:
@@ -2485,331 +2770,553 @@ class Mesh:
         self._ns_existed_before = db_file.exists()
         self.store = MeshStore(self.namespace, create=create)
         _trigger_background_bootstrap()
+        _register_reembed_namespace(self.store)
 
+    @_mesh_data_root
     def _heal_namespace_embeddings_if_needed(self, max_batch: int = 0) -> None:
-        if os.environ.get("MESH_AUTO_HEAL_ON_CALL", "").strip().lower() not in ("1", "true", "yes") and max_batch <= 0:
+        if not env_bool("MESH_AUTO_HEAL_ON_CALL", False) and max_batch <= 0:
             return
         if not self.store.db_path.exists():
             return
-        with _HEALING_IN_FLIGHT_LOCK:
-            if self.namespace in _HEALING_IN_FLIGHT:
-                return
-
-        model_obj, backend = _get_model()
-        if _backend_to_model_tag(backend, model_obj) != "onnx-minilm-l6-v2":
+        model, backend = _get_model()
+        target_model = _backend_to_model_tag(backend, model)
+        if target_model == "hash-384":
             return
+        limit = min(128, max(32, int(max_batch)))
+        with self.store._read_connect() as conn:
+            ids = [row[0] for row in conn.execute(
+                "SELECT id FROM memories WHERE namespace=? "
+                "AND (embedding_model IN ('hash-384','needs-reembed','unknown') OR embedding IS NULL) "
+                "ORDER BY id LIMIT ?", (self.namespace, limit),
+            )]
+        hints = []
+        for memory_id in ids:
+            row = self.store.get(memory_id)
+            if row is not None:
+                hints.append(_ReembedHint(
+                    str(self.store.db_path.parent), self.namespace, memory_id,
+                    int(row["revision"]), target_model, incarnation=row["incarnation"],
+                    store_generation=row["store_generation"],
+                ))
+        with self.store.atomic_write():
+            for hint in hints:
+                self.store.enqueue_embedding_job(hint.memory_id, expected_revision=hint.revision, expected_incarnation=hint.incarnation, expected_store_generation=hint.store_generation, target_model=target_model)
+        if max_batch > 0:
+            _process_reembed_batch(hints[:max_batch])
+        _register_reembed_namespace(self.store)
+        with mesh_dir_context(self.store.db_path.parent):
+            if _bg_onnx_enabled():
+                with _PENDING_REEMBED_LOCK:
+                    for hint in hints[max(0, int(max_batch)):]:
+                        _PENDING_REEMBED_QUEUE.put(self.namespace, hint.memory_id, hint.revision, data_root=self.store.db_path.parent, target_model=target_model, incarnation=hint.incarnation, store_generation=hint.store_generation)
 
-        try:
-            cache = self.store._get_vector_cache()
-            if not cache.needs_healing_ids:
-                return
-            stale_ids = list(cache.needs_healing_ids)
-            sync_ids = stale_ids[: max(0, int(max_batch))]
-            remaining_ids = stale_ids[max(0, int(max_batch)) :]
-
-            def _reembed_ids(id_list: list[str]) -> None:
-                to_reembed_ids: list[str] = []
-                to_reembed_texts: list[str] = []
-                for mid in id_list:
-                    row = self.store.get(mid)
-                    if row and row.get("content"):
-                        to_reembed_ids.append(mid)
-                        to_reembed_texts.append(row["content"])
-                if not to_reembed_texts:
-                    return
-                new_vecs, tag = _encode_texts_with_tag(to_reembed_texts)
-                if tag != "onnx-minilm-l6-v2":
-                    return
-                for mid, text, vec in zip(to_reembed_ids, to_reembed_texts, new_vecs):
-                    latest = self.store.get(mid)
-                    if latest and latest.get("content") == text:
-                        self.store.update(
-                            memory_id=mid,
-                            content=None,
-                            embedding=vec.tolist(),
-                            embedding_model="onnx-minilm-l6-v2",
-                            preserve_accessed_at=True,
-                        )
-
-            if sync_ids:
-                _reembed_ids(sync_ids)
-            if remaining_ids:
-                with _HEALING_IN_FLIGHT_LOCK:
-                    if self.namespace in _HEALING_IN_FLIGHT:
-                        return
-                    _HEALING_IN_FLIGHT.add(self.namespace)
-
-                def _bg_heal_worker(ids_to_heal: list[str], ns_name: str) -> None:
-                    try:
-                        _reembed_ids(ids_to_heal)
-                    except Exception:
-                        pass
-                    finally:
-                        with _HEALING_IN_FLIGHT_LOCK:
-                            _HEALING_IN_FLIGHT.discard(ns_name)
-
-                threading.Thread(
-                    target=_bg_heal_worker,
-                    args=(remaining_ids, self.namespace),
-                    name=f"mesh-healing-{self.namespace}",
-                    daemon=True,
-                ).start()
-        except Exception:
-            pass
-
-    def learn(
-        self,
-        content: str,
-        memory_type: str = "fact",
-        confidence: float = 1.0,
-        tags: Optional[list[str]] = None,
-        ttl_days: Optional[float] = None,
-        local_only: bool = False,
-        deduplicate: bool = True,
-        secret_ref: Optional[Any] = None,
-        trust_tier: Optional[str] = None,
-        quarantined: bool = False,
-        vault_secrets: bool = False,
-        allow_redacted_public: bool = False,
-    ) -> dict[str, Any]:
+    def _prepare_learn(
+        self, content: str, memory_type: str = "fact", confidence: float = 1.0,
+        tags: Optional[list[str]] = None, ttl_days: Optional[float] = None,
+        local_only: bool = False, secret_ref: Optional[Any] = None,
+        trust_tier: Optional[str] = None, quarantined: bool = False,
+        vault_secrets: bool = False, allow_redacted_public: bool = False,
+    ) -> _PreparedMemory:
         _check_agent_scope(self.agent_id, self.namespace, write=True, trusted_local=self.trusted_local)
-        if not content or not content.strip():
-            raise ValueError("content cannot be empty")
-
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("content must be a nonempty string")
+        if len(content) > MAX_CONTENT_LENGTH:
+            raise ValueError(f"content length exceeds maximum allowed length ({MAX_CONTENT_LENGTH} chars)")
+        for name, flag in (("local_only", local_only), ("quarantined", quarantined), ("vault_secrets", vault_secrets), ("allow_redacted_public", allow_redacted_public)):
+            if not isinstance(flag, bool):
+                raise ValueError(f"{name} must be a boolean")
         from .guards import guard_ingest, guard_tags
 
-        requested_local_only = bool(local_only)
-
-        # Finding S1 / 2b: Convert-instead-of-destroy flow when vault_secrets=True or MESH_VAULT_SECRETS=1
-        auto_vault = bool(vault_secrets or env_bool("MESH_VAULT_SECRETS", False))
-        vaulted_locators: list[SecretLocator] = []
-        if auto_vault and is_credential(content):
+        requested_local_only = local_only
+        if (vault_secrets or env_bool("MESH_VAULT_SECRETS", False)) and is_credential(content):
             content, vaulted_locators = convert_text_secrets_to_refs(content, namespace=self.namespace)
             if vaulted_locators and secret_ref is None:
                 secret_ref = vaulted_locators[0].to_dict()
                 memory_type = "secret_ref"
-
         guarded = guard_ingest(content, local_only=requested_local_only)
         if guarded.rejected:
             raise ValueError(guarded.reason or "Memory content rejected by ingestion guard.")
-        content = guarded.content
-        clean_tags, tags_private, tag_warnings = guard_tags(
-            _parse_tags(tags),
-            local_only=guarded.local_only,
-        )
-
-        # Finding S11: Support explicit `--force-public` on interactive human CLI after redaction
+        clean_tags, tags_private, tag_warnings = guard_tags(_parse_tags(tags), local_only=guarded.local_only)
         if allow_redacted_public and self.trusted_local:
-            local_only = requested_local_only
+            final_local = requested_local_only
         else:
-            local_only = bool(guarded.local_only or tags_private)
-
-        clean_content = content.strip()
-        if len(clean_content) > MAX_CONTENT_LENGTH:
-            raise ValueError(
-                f"content length ({len(clean_content)} chars) exceeds maximum allowed length ({MAX_CONTENT_LENGTH} chars)."
-            )
-
+            final_local = bool(guarded.local_only or tags_private)
+        clean_content = guarded.content.strip()
+        if not clean_content or len(clean_content) > MAX_CONTENT_LENGTH:
+            raise ValueError(f"guarded content must contain 1 to {MAX_CONTENT_LENGTH} characters")
         norm_ref = normalize_secret_ref(secret_ref, default_namespace=self.namespace)
         if norm_ref is not None and (not memory_type or memory_type == "fact"):
             memory_type = "secret_ref"
+        if memory_type is not None and not isinstance(memory_type, str):
+            raise ValueError("memory_type must be a string")
+        clean_type = (memory_type or "fact").strip().lower()
+        if clean_type not in VALID_MEMORY_TYPES:
+            raise ValueError(f"memory_type must be one of {sorted(VALID_MEMORY_TYPES)}")
+        tier = _normalize_trust_tier(trust_tier, default="user" if self.trusted_local else "agent")
+        if tier == "user" and not self.trusted_local and trust_tier is not None:
+            tier = "agent"
+        ttl_val = None
+        if ttl_days is not None:
+            try:
+                parsed_ttl = float(ttl_days)
+            except (TypeError, ValueError):
+                raise ValueError("ttl_days must be finite") from None
+            if not math.isfinite(parsed_ttl):
+                raise ValueError("ttl_days must be finite")
+            if parsed_ttl > 0.0:
+                ttl_val = parsed_ttl
+        return _PreparedMemory(
+            clean_content, clean_type, _clamp_confidence(confidence), tuple(clean_tags),
+            ttl_val, final_local, requested_local_only, norm_ref, tier, quarantined,
+            bool(allow_redacted_public and self.trusted_local), tuple([*guarded.warnings, *tag_warnings]),
+        )
 
-        memory_type = (memory_type or "fact").strip().lower()
-        if memory_type not in VALID_MEMORY_TYPES:
-            raise ValueError(
-                f"memory_type must be one of {sorted(VALID_MEMORY_TYPES)}, got '{memory_type}'"
-            )
+    def _learning_candidates(self, prepared: _PreparedMemory, embedding: list[float], model_tag: str) -> list[dict[str, Any]]:
+        if not self.store.db_path.exists():
+            return []
+        return self.store.hybrid_query(
+            query_text="", embedding=embedding, query_embedding_model=model_tag, n=3,
+            include_private=bool(prepared.requested_local_only and _resolve_sdk_include_private(None)),
+            include_quarantined=prepared.quarantined,
+        )
 
-        default_tier = "user" if self.trusted_local else "agent"
-        resolved_trust_tier = _normalize_trust_tier(trust_tier, default=default_tier)
-        if resolved_trust_tier == "user" and not self.trusted_local and trust_tier is not None:
-            resolved_trust_tier = "agent"
-
-        confidence = _clamp_confidence(confidence)
-        ttl_val = float(ttl_days) if ttl_days is not None and float(ttl_days) > 0 else None
+    def _learn_prepared(
+        self, prepared: _PreparedMemory, embedding: list[float], model_tag: str,
+        candidates: list[dict[str, Any]], *, deduplicate: bool,
+        exact_ids: Optional[list[str]] = None,
+    ) -> dict[str, Any]:
+        """Recheck a bounded prepared shortlist, then commit authoritative effects."""
         now = _utc_now_iso()
+        actual_private = _resolve_sdk_include_private(None)
+        owner = self.agent_id if _ownership_enforced() and not self.trusted_local else None
+        content_key = _content_identity(prepared.content)
+        with namespace_write_lock(self.namespace), self.store.atomic_write():
+            if exact_ids is None:
+                exact_ids = self.store.exact_content_ids(
+                    prepared.content, include_private=bool(actual_private and prepared.requested_local_only),
+                    include_quarantined=prepared.quarantined, source_agent=owner,
+                ) if deduplicate else []
+            by_id = {str(row["id"]): row for row in candidates}
+            checked = []
+            for memory_id in dict.fromkeys([*exact_ids, *by_id]):
+                row = self.store.get(memory_id)
+                if row is None or (row.get("local_only") and not (actual_private and prepared.requested_local_only)):
+                    continue
+                if row.get("quarantined") and not prepared.quarantined:
+                    continue
+                exact = _content_identity(row["content"]) == content_key
+                prior = by_id.get(memory_id)
+                if exact:
+                    score = 1.0
+                elif prior is None or int(prior.get("revision", 1)) != int(row.get("revision", 1)) or not _is_same_known_space(row.get("embedding_model"), model_tag):
+                    continue
+                else:
+                    score = float(prior.get("semantic_similarity", prior.get("similarity", 0.0)))
+                checked.append((row, score, exact))
 
-        self._heal_namespace_embeddings_if_needed()
-        embedding, emb_model_tag = _embed_with_tag(clean_content)
-        _, active_backend = _get_model()
-        is_degraded = emb_model_tag != "onnx-minilm-l6-v2"
-        memory_id = str(uuid.uuid4())
-
-        was_new_namespace = not self._ns_existed_before and self.store.count() == 0
-        similar_existing = (
-            find_similar_namespaces(self.namespace, max_distance=2)
-            if was_new_namespace
-            else []
-        )
-
-        conflict: Optional[dict[str, Any]] = None
-        with namespace_write_lock(self.namespace):
-            self.store._get_vector_cache()
-            if self.store.count() > 0:
-                raw = self.store.query(embedding, n=3, query_embedding_model=emb_model_tag)
-                docs = raw.get("documents", [[]])[0]
-                distances = raw.get("distances", [[]])[0]
-                ids = raw.get("ids", [[]])[0]
-                metadatas = raw.get("metadatas", [[]])[0]
-
-                if deduplicate:
-                    for i, doc in enumerate(docs):
-                        meta = metadatas[i] if metadatas and i < len(metadatas) else {}
-                        if not _is_same_known_space(meta.get("embedding_model"), emb_model_tag):
-                            continue
-                        similarity = round(1.0 - float(distances[i]), 4)
-                        existing_id = ids[i] if ids and i < len(ids) else None
-                        existing_is_priv = bool(meta.get("local_only"))
-                        if existing_is_priv and not requested_local_only:
-                            continue
-                        if existing_id and not _can_modify_agent_memory(
-                            self.agent_id, meta.get("source_agent"), self.trusted_local
-                        ):
-                            continue
-                        if existing_id and _is_true_duplicate(clean_content, doc, similarity):
-                            existing_tags = _parse_tags(meta.get("tags"))
-                            merged_tags = list(dict.fromkeys([*existing_tags, *clean_tags]))
-                            updated_conf = max(confidence, float(meta.get("confidence", 1.0)))
-                            content_changed = clean_content != doc
-                            is_priv = bool(local_only or meta.get("local_only"))
-                            updated = self.store.update(
-                                memory_id=existing_id,
-                                content=clean_content if content_changed else None,
-                                embedding=embedding if content_changed else None,
-                                memory_type=None,
-                                confidence=updated_conf,
-                                tags=merged_tags,
-                                ttl_days=ttl_val,
-                                reset_ttl=ttl_val is not None,
-                                local_only=is_priv,
-                                source_agent=None,
-                                embedding_model=emb_model_tag if content_changed else None,
-                                secret_ref=norm_ref if norm_ref is not None else None,
-                            )
-                            stored_local_only = (
-                                bool(updated.get("local_only")) if updated else is_priv
-                            )
-                            if content_changed and emb_model_tag == "hash-384":
-                                with _PENDING_REEMBED_LOCK:
-                                    _PENDING_REEMBED_QUEUE.put(self.namespace, existing_id, clean_content)
-                            dedup_res: dict[str, Any] = {
-                                "memory_id": existing_id,
-                                "status": "stored",
-                                "deduplicated": True,
-                                "local_only": stored_local_only,
-                                "conflict": None,
-                                "embedding_backend": active_backend or "hash-fallback",
-                                "embedding_degraded": is_degraded,
-                                "trust_tier": meta.get("trust_tier", resolved_trust_tier),
-                                "quarantined": bool(meta.get("quarantined", quarantined)),
-                            }
-                            if norm_ref is not None:
-                                dedup_res["secret_ref"] = norm_ref
-                            log_learn(
-                                content=clean_content,
-                                namespace=self.namespace,
-                                agent_id=self.agent_id,
-                                result=dedup_res,
-                                local_only=stored_local_only,
-                            )
-                            return dedup_res
-
-                for i, doc in enumerate(docs):
-                    meta = metadatas[i] if metadatas and i < len(metadatas) else {}
-                    if not _is_same_known_space(meta.get("embedding_model"), emb_model_tag):
+            if deduplicate:
+                for row, similarity, exact in checked:
+                    if not exact and not _is_same_known_space(row.get("embedding_model"), model_tag):
                         continue
-                    similarity = round(1.0 - float(distances[i]), 4)
-                    existing_is_private = bool(meta.get("local_only"))
-                    if existing_is_private and not local_only:
+                    if not _can_modify_agent_memory(self.agent_id, row.get("source_agent"), self.trusted_local):
                         continue
-                    if _is_true_contradiction(clean_content, doc, similarity):
-                        existing_id = ids[i] if ids and i < len(ids) else None
-                        safe_existing_doc = (
-                            REDACTED_CONTENT_PLACEHOLDER if existing_is_private else doc
-                        )
-                        contradiction_id = self.store.log_contradiction(
-                            new_memory_id=memory_id,
-                            new_content=clean_content,
-                            existing_memory_id=existing_id or "",
-                            existing_content=doc,
-                            similarity=similarity,
-                            local_only=bool(local_only),
-                            existing_local_only=existing_is_private,
-                        )
-                        conflict = {
-                            "existing_memory_id": existing_id,
-                            "existing_content": safe_existing_doc,
-                            "existing_memory": safe_existing_doc,
-                            "existing_local_only": existing_is_private,
-                            "similarity": similarity,
-                            "stored_by": meta.get("source_agent", "unknown"),
-                            "stored_at": meta.get("created_at", ""),
-                            "contradiction_id": contradiction_id,
-                        }
-                        break
+                    if not _is_true_duplicate(prepared.content, row["content"], similarity):
+                        continue
+                    merged_tags = list(dict.fromkeys([*_parse_tags(row.get("tags")), *prepared.tags]))
+                    content_changed = prepared.content != row["content"]
+                    promote_vector = model_tag != "hash-384" and row.get("embedding_model") in ("hash-384", "needs-reembed", "unknown", None)
+                    updated = self.store.update(
+                        memory_id=row["id"], content=prepared.content if content_changed else None,
+                        embedding=embedding if content_changed or promote_vector else None,
+                        confidence=max(prepared.confidence, float(row.get("confidence", 1.0))),
+                        tags=merged_tags, ttl_days=prepared.ttl_days, reset_ttl=prepared.ttl_days is not None,
+                        local_only=bool(prepared.local_only or row.get("local_only")),
+                        embedding_model=model_tag if content_changed or promote_vector else None,
+                        secret_ref=prepared.secret_ref, include_private=actual_private,
+                        expected_source_agent=owner,
+                    )
+                    if updated is None:
+                        raise ValueError("Duplicate candidate changed; no memory was committed.")
+                    return self._learn_result(row["id"], updated, deduplicated=True, conflict=None, prepared=prepared)
 
-            decay_start_at = now if ttl_val is not None else None
-            stored_local_only = bool(
-                self.store.upsert(
-                    memory_id=memory_id,
-                    content=clean_content,
-                    embedding=embedding,
-                    metadata={
-                        "memory_type": memory_type,
-                        "confidence": confidence,
-                        "source_agent": self.agent_id,
-                        "tags": clean_tags,
-                        "created_at": now,
-                        "updated_at": now,
-                        "accessed_at": now,
-                        "access_count": 0,
-                        "ttl_days": ttl_val,
-                        "decay_start_at": decay_start_at,
-                        "embedding_model": emb_model_tag,
-                        "trust_tier": resolved_trust_tier,
-                        "quarantined": bool(quarantined),
-                        "secret_ref": norm_ref,
-                    },
-                    local_only=bool(local_only),
-                    embedding_model=emb_model_tag,
-                    allow_redacted_public=bool(allow_redacted_public and self.trusted_local),
-                )
+            memory_id = str(uuid.uuid4())
+            conflict = None
+            for row, similarity, _ in checked:
+                if not _is_same_known_space(row.get("embedding_model"), model_tag):
+                    continue
+                if _is_true_contradiction(prepared.content, row["content"], similarity):
+                    conflict = {
+                        "existing_memory_id": row["id"],
+                        "existing_revision": int(row.get("revision", 1)),
+                        "existing_incarnation": row["incarnation"],
+                        "existing_content": row["content"], "existing_memory": row["content"],
+                        "existing_local_only": bool(row.get("local_only")),
+                        "similarity": similarity, "stored_by": row.get("source_agent", "unknown"),
+                        "stored_at": row.get("created_at", ""), "contradiction_id": str(uuid.uuid4()),
+                    }
+                    if row.get("local_only"):
+                        conflict["existing_content"] = conflict["existing_memory"] = REDACTED_CONTENT_PLACEHOLDER
+                    break
+            effective_local = self.store.upsert(
+                memory_id=memory_id, content=prepared.content, embedding=embedding,
+                metadata={
+                    "memory_type": prepared.memory_type, "confidence": prepared.confidence,
+                    "source_agent": self.agent_id, "tags": list(prepared.tags),
+                    "created_at": now, "updated_at": now, "accessed_at": now, "access_count": 0,
+                    "ttl_days": prepared.ttl_days, "decay_start_at": now if prepared.ttl_days is not None else None,
+                    "embedding_model": model_tag, "trust_tier": prepared.trust_tier,
+                    "quarantined": prepared.quarantined, "secret_ref": prepared.secret_ref,
+                },
+                local_only=prepared.local_only, embedding_model=model_tag,
+                allow_redacted_public=prepared.allow_redacted_public, conflict=conflict,
+                include_private=actual_private, expected_source_agent=owner,
             )
-            self._ns_existed_before = True
+            stored = self.store.get(memory_id)
+            if stored is None:
+                raise RuntimeError("Committed memory was not readable from its transaction.")
+            stored["local_only"] = effective_local
+            return self._learn_result(memory_id, stored, deduplicated=False, conflict=conflict, prepared=prepared)
 
-        if emb_model_tag == "hash-384":
-            with _PENDING_REEMBED_LOCK:
-                _PENDING_REEMBED_QUEUE.put(self.namespace, memory_id, clean_content)
-
-        all_warnings = tuple([*guarded.warnings, *tag_warnings])
-        result: dict[str, Any] = {
-            "memory_id": memory_id,
-            "status": "stored_with_conflict" if conflict else "stored",
-            "deduplicated": False,
-            "local_only": stored_local_only,
-            "conflict": conflict,
-            "embedding_backend": active_backend or "hash-fallback",
-            "embedding_degraded": is_degraded,
-            "trust_tier": resolved_trust_tier,
-            "quarantined": bool(quarantined),
+    @staticmethod
+    def _learn_result(memory_id, stored, *, deduplicated, conflict, prepared):
+        stored_model = str(stored.get("embedding_model") or "unknown")
+        pending = stored_model in ("hash-384", "needs-reembed", "unknown")
+        result = {
+            "memory_id": memory_id, "status": "stored_with_conflict" if conflict else "stored",
+            "disposition": "deduplicated" if deduplicated else "inserted",
+            "deduplicated": deduplicated, "local_only": bool(stored.get("local_only")),
+            "conflict": conflict, "revision": int(stored.get("revision", 1)),
+            "incarnation": stored["incarnation"], "store_generation": stored["store_generation"],
+            "embedding_model": stored_model,
+            "embedding_backend": "hash-fallback" if pending else "onnx",
+            "embedding_degraded": pending, "indexing_state": "pending" if pending else "indexed",
+            "trust_tier": stored.get("trust_tier", prepared.trust_tier),
+            "quarantined": bool(stored.get("quarantined", prepared.quarantined)),
         }
-        if norm_ref is not None:
-            result["secret_ref"] = norm_ref
-        if all_warnings:
-            result["warnings"] = all_warnings
-        if was_new_namespace:
-            result["namespace_created"] = True
-            result["similar_existing"] = similar_existing
-
-        log_learn(
-            content=clean_content,
-            namespace=self.namespace,
-            agent_id=self.agent_id,
-            result=result,
-            local_only=stored_local_only,
-        )
+        if prepared.secret_ref is not None:
+            result["secret_ref"] = prepared.secret_ref
+        if prepared.warnings:
+            result["warnings"] = prepared.warnings
         return result
 
+    @_mesh_data_root
+    def _finish_learn(self, prepared: _PreparedMemory, result: dict[str, Any]) -> None:
+        self._ns_existed_before = True
+        if result["indexing_state"] == "pending" and _bg_onnx_enabled():
+            _register_reembed_namespace(self.store)
+            with _PENDING_REEMBED_LOCK:
+                _PENDING_REEMBED_QUEUE.put(
+                    self.namespace, result["memory_id"], result["revision"], data_root=self.store.db_path.parent,
+                    incarnation=result["incarnation"], store_generation=result["store_generation"],
+                )
+        log_learn(
+            content=prepared.content, namespace=self.namespace, agent_id=self.agent_id,
+            result=result, local_only=result["local_only"],
+        )
+
+    @_mesh_data_root
+    def prepare_learn(
+        self, content: str, memory_type: str = "fact", confidence: float = 1.0,
+        tags: Optional[list[str]] = None, ttl_days: Optional[float] = None,
+        local_only: bool = False, deduplicate: bool = True, secret_ref: Optional[Any] = None,
+        trust_tier: Optional[str] = None, quarantined: bool = False,
+        vault_secrets: bool = False, allow_redacted_public: bool = False,
+        *, wait_for_indexed: bool = False, index_timeout: float = 5.0,
+    ) -> _LearnOperation:
+        index_timeout = _validate_index_wait(wait_for_indexed, index_timeout)
+        if not isinstance(deduplicate, bool):
+            raise ValueError("deduplicate must be a boolean")
+        prepared = self._prepare_learn(
+            content, memory_type, confidence, tags, ttl_days, local_only,
+            secret_ref, trust_tier, quarantined, vault_secrets, allow_redacted_public,
+        )
+        embedding, model_tag = _embed_with_tag(prepared.content)
+        candidates = self._learning_candidates(prepared, embedding, model_tag)
+        was_new = not self._ns_existed_before and self.store.count() == 0
+        similar = find_similar_namespaces(self.namespace, max_distance=2) if was_new else []
+        return _LearnOperation(
+            self._operation_identity(), prepared, embedding, model_tag, candidates,
+            deduplicate, was_new, similar, wait_for_indexed, index_timeout,
+        )
+
+    def _operation_identity(self) -> tuple[str, str, str, bool]:
+        return (str(self.store.db_path), self.namespace, self.agent_id, self.trusted_local)
+
+    @_mesh_data_root
+    def commit_prepared_learn(self, operation: _LearnOperation) -> dict[str, Any]:
+        if not isinstance(operation, _LearnOperation) or operation.identity != self._operation_identity():
+            raise ValueError("Prepared learn operation does not belong to this Mesh instance")
+        _check_agent_scope(self.agent_id, self.namespace, write=True, trusted_local=self.trusted_local)
+        result = self._learn_prepared(
+            operation.prepared, operation.embedding, operation.model_tag, operation.candidates,
+            deduplicate=operation.deduplicate,
+        )
+        if operation.was_new_namespace:
+            result.update({"namespace_created": True, "similar_existing": operation.similar_existing})
+        def finish():
+            self._finish_learn(operation.prepared, result)
+            if operation.wait_for_indexed:
+                waited = self.wait_for_indexed(result["memory_id"], timeout=operation.index_timeout, expected_revisions={result["memory_id"]: result["revision"]}, expected_incarnations={result["memory_id"]: result["incarnation"]}, expected_store_generation=result["store_generation"])
+                result["indexing_wait"] = waited
+                self._apply_indexed_status(result, waited)
+        self.store.after_commit(finish)
+        return result
+
+    @_mesh_data_root
+    def learn(
+        self, content: str, memory_type: str = "fact", confidence: float = 1.0,
+        tags: Optional[list[str]] = None, ttl_days: Optional[float] = None,
+        local_only: bool = False, deduplicate: bool = True, secret_ref: Optional[Any] = None,
+        trust_tier: Optional[str] = None, quarantined: bool = False,
+        vault_secrets: bool = False, allow_redacted_public: bool = False,
+        *, wait_for_indexed: bool = False, index_timeout: float = 5.0,
+    ) -> dict[str, Any]:
+        operation = self.prepare_learn(
+            content, memory_type, confidence, tags, ttl_days, local_only, deduplicate,
+            secret_ref, trust_tier, quarantined, vault_secrets, allow_redacted_public,
+            wait_for_indexed=wait_for_indexed, index_timeout=index_timeout,
+        )
+        return self.commit_prepared_learn(operation)
+
+    @_mesh_data_root
+    def prepare_learn_many(
+        self, items: list[str | dict[str, Any]], *, atomic: bool = True,
+        deduplicate: bool = True, wait_for_indexed: bool = False, index_timeout: float = 5.0,
+    ) -> _LearnManyOperation:
+        """Guarded ordered ingestion, bounded to 128 items and 1 MiB of input text.
+
+        Atomic mode commits every accepted memory effect together or raises.
+        Partial mode commits each accepted item independently and returns rejected
+        entries in their original positions. External vault writes require prior
+        conversion to secret_ref because keyring effects cannot be rolled back.
+        """
+        _check_agent_scope(self.agent_id, self.namespace, write=True, trusted_local=self.trusted_local)
+        if not isinstance(items, (list, tuple)) or len(items) > 128:
+            raise ValueError("learn_many accepts at most 128 items")
+        if not isinstance(atomic, bool) or not isinstance(deduplicate, bool):
+            raise ValueError("atomic and deduplicate must be booleans")
+        if not items:
+            return _LearnManyOperation(self._operation_identity(), [], [], [], "unknown", [], None, atomic)
+        index_timeout = _validate_index_wait(wait_for_indexed, index_timeout)
+        prepared_items = []
+        dispositions = [None] * len(items)
+        total_bytes = 0
+        fields = {"content", "memory_type", "confidence", "tags", "ttl_days", "local_only", "secret_ref", "trust_tier", "quarantined", "allow_redacted_public", "deduplicate", "vault_secrets"}
+        for index, item in enumerate(items):
+            try:
+                values = {"content": item} if isinstance(item, str) else dict(item) if isinstance(item, dict) else None
+                if values is None or set(values) - fields:
+                    raise ValueError("Each item must be text or a learn parameter object")
+                content = values.get("content")
+                if isinstance(content, str):
+                    total_bytes += len(content.encode("utf-8"))
+                if values.pop("vault_secrets", False) or env_bool("MESH_VAULT_SECRETS", False):
+                    raise ValueError("Convert vault secrets to secret_ref before batching")
+                item_deduplicate = values.pop("deduplicate", deduplicate)
+                if not isinstance(item_deduplicate, bool):
+                    raise ValueError("deduplicate must be a boolean")
+                prepared = self._prepare_learn(**values)
+                prepared_items.append((index, prepared, item_deduplicate))
+            except (ValueError, TypeError):
+                if atomic:
+                    raise
+                dispositions[index] = {"status": "rejected", "disposition": "rejected", "error_code": "invalid_memory"}
+        if total_bytes > 1024 * 1024:
+            raise ValueError("learn_many input text exceeds 1 MiB")
+        if not prepared_items:
+            return _LearnManyOperation(self._operation_identity(), [], dispositions, [], "unknown", [], None, atomic)
+        embeddings, model_tag = _embed_batch_with_tag([prepared.content for _, prepared, _ in prepared_items])
+        candidates = [self._learning_candidates(prepared, vector, model_tag) for (_, prepared, _), vector in zip(prepared_items, embeddings)]
+        matrix = np.asarray(embeddings, dtype=np.float32)
+        prior_similarity = matrix @ matrix.T
+        return _LearnManyOperation(
+            self._operation_identity(), prepared_items, dispositions, embeddings,
+            model_tag, candidates, prior_similarity, atomic, wait_for_indexed, index_timeout,
+        )
+
+    @_mesh_data_root
+    def commit_prepared_learn_many(self, operation: _LearnManyOperation) -> list[dict[str, Any]]:
+        if not isinstance(operation, _LearnManyOperation) or operation.identity != self._operation_identity():
+            raise ValueError("Prepared batch does not belong to this Mesh instance")
+        _check_agent_scope(self.agent_id, self.namespace, write=True, trusted_local=self.trusted_local)
+        prepared_items, embeddings = operation.prepared_items, operation.embeddings
+        dispositions = list(operation.initial_results)
+        model_tag, candidates = operation.model_tag, operation.candidates
+        prior_similarity, atomic = operation.prior_similarity, operation.atomic
+        if not prepared_items:
+            return dispositions
+        prior_results = []
+        exact_keys: dict[tuple[bytes, bool, bool], list[str]] = {}
+        batch_exact: dict[bytes, list[str]] = {}
+
+        def commit_items():
+            # One fresh equality snapshot accounts for writers that completed while
+            # preparation ran, without rebuilding the cache after each batch item.
+            for _, prepared, item_deduplicate in prepared_items:
+                if not item_deduplicate:
+                    continue
+                key = (_content_identity(prepared.content), prepared.requested_local_only, prepared.quarantined)
+                if key not in exact_keys:
+                    exact_keys[key] = self.store.exact_content_ids(
+                        prepared.content,
+                        include_private=bool(_resolve_sdk_include_private(None) and prepared.requested_local_only),
+                        include_quarantined=prepared.quarantined,
+                        source_agent=self.agent_id if _ownership_enforced() and not self.trusted_local else None,
+                    )
+            for position, ((index, prepared, item_deduplicate), vector) in enumerate(zip(prepared_items, embeddings)):
+                item_candidates = list(candidates[position])
+                if position:
+                    closest = sorted(range(position), key=lambda prior: (-float(prior_similarity[position, prior]), prior))[:3]
+                    for prior in closest:
+                        previous = prior_results[prior]
+                        if previous is not None:
+                            item_candidates.append({
+                                "id": previous["memory_id"], "revision": previous["revision"],
+                                "incarnation": previous["incarnation"], "store_generation": previous["store_generation"],
+                                "semantic_similarity": float(prior_similarity[position, prior]),
+                                "embedding_model": model_tag,
+                            })
+                try:
+                    result = self._learn_prepared(
+                        prepared, vector, model_tag, item_candidates, deduplicate=item_deduplicate,
+                        exact_ids=[*exact_keys.get((_content_identity(prepared.content), prepared.requested_local_only, prepared.quarantined), []), *batch_exact.get(_content_identity(prepared.content), [])] if item_deduplicate else [],
+                    )
+                    dispositions[index] = result
+                    prior_results.append(result)
+                    key = _content_identity(prepared.content)
+                    if result["memory_id"] not in batch_exact.setdefault(key, []):
+                        batch_exact[key].append(result["memory_id"])
+                except (ValueError, RuntimeError, sqlite3.DatabaseError, OSError):
+                    if atomic:
+                        raise
+                    dispositions[index] = {"status": "rejected", "disposition": "rejected", "error_code": "storage_rejected"}
+                    prior_results.append(None)
+
+        if atomic:
+            with self.store.atomic_write():
+                commit_items()
+        else:
+            commit_items()
+        def finish_batch():
+            accepted = []
+            for index, prepared, _ in prepared_items:
+                result = dispositions[index]
+                if result is not None and result.get("status") != "rejected":
+                    self._finish_learn(prepared, result)
+                    accepted.append(result)
+            if operation.wait_for_indexed and accepted:
+                expected = {result["memory_id"]: result["revision"] for result in accepted}
+                waited = self.wait_for_indexed(list(expected), timeout=operation.index_timeout, expected_revisions=expected, expected_incarnations={result["memory_id"]: result["incarnation"] for result in accepted}, expected_store_generation=accepted[0]["store_generation"])
+                for result in accepted:
+                    result["indexing_wait"] = {"status": "indexed" if result["memory_id"] in waited["indexed"] else waited["status"], "revision": waited["revisions"].get(result["memory_id"])}
+                    self._apply_indexed_status(result, waited)
+        self.store.after_commit(finish_batch)
+        return dispositions
+
+    @_mesh_data_root
+    def learn_many(
+        self, items: list[str | dict[str, Any]], *, atomic: bool = True,
+        deduplicate: bool = True, wait_for_indexed: bool = False, index_timeout: float = 5.0,
+    ) -> list[dict[str, Any]]:
+        """Guarded ordered ingestion; atomic=True commits the accepted batch together."""
+        operation = self.prepare_learn_many(items, atomic=atomic, deduplicate=deduplicate, wait_for_indexed=wait_for_indexed, index_timeout=index_timeout)
+        return self.commit_prepared_learn_many(operation)
+
+    @staticmethod
+    def _apply_indexed_status(result: dict[str, Any], waited: dict[str, Any]) -> None:
+        mid = result["memory_id"]
+        if mid in waited["indexed"]:
+            result["indexing_state"] = "indexed"
+            result["embedding_degraded"] = False
+            result["embedding_model"] = waited["embedding_models"][mid]
+            result["embedding_backend"] = "onnx"
+
+    @_mesh_data_root
+    def wait_for_indexed(
+        self, memory_ids: str | list[str], *, timeout: float = 5.0,
+        expected_revisions: Optional[dict[str, int]] = None,
+        include_private: Optional[bool] = None, target_model: Optional[str] = None,
+        expected_incarnations: Optional[dict[str, str]] = None,
+        expected_store_generation: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Wait for semantic readiness of specified revisions without replaying writes."""
+        global _REEMBED_DRAINING
+        _check_agent_scope(self.agent_id, self.namespace, write=False, trusted_local=self.trusted_local)
+        timeout = _validate_index_wait(True, timeout)
+        ids = [memory_ids] if isinstance(memory_ids, str) else memory_ids
+        if not isinstance(ids, (list, tuple)) or len(ids) > 128:
+            raise ValueError("wait_for_indexed accepts at most 128 memory IDs")
+        ids = list(dict.fromkeys(validate_memory_id(mid) for mid in ids))
+        if expected_revisions is not None and (not isinstance(expected_revisions, dict) or len(expected_revisions) > 128 or any(mid not in ids or type(revision) is not int or revision < 1 for mid, revision in expected_revisions.items())):
+            raise ValueError("expected_revisions must contain positive integer revisions")
+        if expected_incarnations is not None:
+            if not isinstance(expected_incarnations, dict) or len(expected_incarnations) > 128 or any(mid not in ids for mid in expected_incarnations):
+                raise ValueError("expected_incarnations must describe requested memory IDs")
+            for incarnation in expected_incarnations.values():
+                _validate_incarnation(incarnation, "expected_incarnation")
+        if expected_store_generation is not None:
+            _validate_incarnation(expected_store_generation, "expected_store_generation")
+        if target_model is not None:
+            target_model = self.store._validate_model_id(target_model)
+        actual_private = _resolve_sdk_include_private(include_private)
+        def stale_outcome():
+            changed = self.store.db_path.exists()
+            return {"status": "superseded" if changed else "unavailable", "indexed": [], "pending": [],
+                    "superseded": ids if changed else [], "unavailable": [] if changed else ids,
+                    "revisions": {}, "incarnations": {}, "embedding_models": {}, "store_generation": self.store.store_generation}
+        try:
+            first = self.store.get_indexing_status(ids, include_private=actual_private)
+        except StaleStoreError:
+            return stale_outcome()
+        expected = {mid: row["revision"] for mid, row in first.items()}
+        incarnations = {mid: row["incarnation"] for mid, row in first.items()}
+        generation = expected_store_generation or self.store.store_generation
+        if expected_revisions:
+            expected.update(expected_revisions)
+        if expected_incarnations:
+            incarnations.update(expected_incarnations)
+        deadline = time.monotonic() + timeout
+        draining = False
+        try:
+            while True:
+                try:
+                    rows = self.store.get_indexing_status(ids, include_private=bool(actual_private and _resolve_sdk_include_private(include_private)))
+                except StaleStoreError:
+                    return stale_outcome()
+                indexed, pending, superseded, unavailable = [], [], [], []
+                for mid in dict.fromkeys(ids):
+                    row = rows.get(mid)
+                    if row is None:
+                        unavailable.append(mid)
+                    elif row["revision"] != expected.get(mid, row["revision"]) or row["incarnation"] != incarnations.get(mid, row["incarnation"]) or row["store_generation"] != generation:
+                        superseded.append(mid)
+                    elif row["indexing_state"] == "indexed" and (target_model is None or row["embedding_model"] == target_model):
+                        indexed.append(mid)
+                    else:
+                        pending.append(mid)
+                outcome = {"status": "indexed", "indexed": indexed, "pending": pending, "superseded": superseded, "unavailable": unavailable, "revisions": {mid: row["revision"] for mid, row in rows.items()}, "incarnations": {mid: row["incarnation"] for mid, row in rows.items()}, "store_generation": generation, "embedding_models": {mid: row["embedding_model"] for mid, row in rows.items()}}
+                if unavailable or superseded:
+                    outcome["status"] = "superseded" if superseded else "unavailable"
+                    return outcome
+                if not pending:
+                    return outcome
+                if time.monotonic() >= deadline:
+                    outcome["status"] = "timed_out"
+                    return outcome
+                if not _bg_onnx_enabled():
+                    outcome["status"] = "disabled" if not env_bool("MESH_BG_ONNX", True) else "model_unavailable"
+                    return outcome
+                if not draining:
+                    _REEMBED_DRAINING += 1
+                    draining = True
+                    _register_reembed_namespace(self.store)
+                _REEMBED_EVENT.set()
+                time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+        finally:
+            if draining:
+                _REEMBED_DRAINING -= 1
+
+    @_mesh_data_root
     def recall(
         self,
         query: str,
@@ -2830,9 +3337,21 @@ class Mesh:
         if record_telemetry is not None:
             record_access = record_telemetry
         _check_agent_scope(self.agent_id, self.namespace, write=False, trusted_local=self.trusted_local)
-        if not query or not query.strip():
+        if not isinstance(query, str) or not query.strip():
             raise ValueError("query cannot be empty")
         clean_query = query.strip()
+        if len(clean_query) > MAX_CONTENT_LENGTH:
+            raise ValueError(f"query length exceeds maximum allowed length ({MAX_CONTENT_LENGTH} chars)")
+        if isinstance(n, bool) or not isinstance(n, int) or not 1 <= n <= 1000:
+            raise ValueError("n must be an integer between 1 and 1000")
+        for field, value in (("min_similarity", min_similarity), ("min_confidence", min_confidence)):
+            try:
+                threshold = float(value)
+            except (TypeError, ValueError):
+                raise ValueError(f"{field} must be a finite number between 0 and 1") from None
+            if not math.isfinite(threshold) or not 0.0 <= threshold <= 1.0:
+                raise ValueError(f"{field} must be a finite number between 0 and 1")
+        min_similarity, min_confidence = float(min_similarity), float(min_confidence)
         actual_include_private = _resolve_sdk_include_private(include_private)
 
         self._heal_namespace_embeddings_if_needed()
@@ -2843,7 +3362,7 @@ class Mesh:
         else:
             embedding, query_model_tag = _embed_query_with_tag(clean_query)
         now = _utc_now()
-        candidate_limit = max(n * 4, 25)
+        candidate_limit = max(n, min(256, max(n * 2, 32)))
         candidates = self.store.hybrid_query(
             query_text=clean_query,
             embedding=embedding,
@@ -2942,6 +3461,13 @@ class Mesh:
                 "semantic_similarity": sem_sim,
                 "lexical_score": lex_score,
                 "composite_score": composite_score,
+                "rank_score": float(row.get("rank_score", similarity)),
+                "ranking_mode": row.get("ranking_mode", "calibrated"),
+                "retrieval_mode": row.get("retrieval_mode", "cached"),
+                "retrieval_degradation_reason": row.get("retrieval_degradation_reason"),
+                "bm25_score": float(row.get("bm25_score", 0.0)),
+                "candidate_count": int(row.get("candidate_count", len(candidates))),
+                "supporting_spans": row.get("supporting_spans", []),
                 "source_agent": row.get("source_agent", "unknown"),
                 "memory_type": row.get("memory_type", "fact"),
                 "tags": mem_tags,
@@ -2957,6 +3483,9 @@ class Mesh:
                 "quarantined": bool(row.get("quarantined", False)),
                 "embedding_model": row.get("embedding_model") or "unknown",
                 "embedding_backend": query_model_tag,
+                "revision": int(row.get("revision", 1)),
+                "incarnation": row["incarnation"],
+                "store_generation": row["store_generation"],
                 "created_at": row.get("created_at", ""),
                 "accessed_at": row.get("accessed_at", ""),
             }
@@ -2964,15 +3493,13 @@ class Mesh:
                 mem_entry["secret_ref"] = row.get("secret_ref")
             memories.append(mem_entry)
 
-        memories.sort(
-            key=lambda x: (
-                x["composite_score"],
-                x["similarity"],
-                x["effective_confidence"],
-                x["access_count"],
-            ),
-            reverse=True,
+        memories = self.store.revalidate_query_results(
+            memories, include_private=bool(actual_include_private and _resolve_sdk_include_private(include_private)),
+            include_quarantined=include_quarantined, include_stale=include_stale,
+            min_confidence=min_confidence, memory_type=memory_type,
+            tags=_parse_tags(tags) if tags else None, source_agent=source_agent,
         )
+        memories.sort(key=lambda x: (-x["rank_score"], -x["similarity"], x["id"]))
         memories = memories[:n]
 
         # Finding S12: Redact credential queries and mark private_query=True even on 0 results
@@ -2993,6 +3520,7 @@ class Mesh:
                     best_similarity=best_similarity,
                     result_count=len(memories),
                     private_query=is_priv_query,
+                    expected_incarnations={m["id"]: m["incarnation"] for m in memories if m.get("id")},
                 )
             except Exception:
                 pass
@@ -3004,6 +3532,7 @@ class Mesh:
             )
         return memories
 
+    @_mesh_data_root
     def recall_with_context(
         self,
         query: str,
@@ -3030,7 +3559,7 @@ class Mesh:
 
         actual_include_private = _resolve_sdk_include_private(include_private)
         # Finding N8: Peripheral "other possible" snippets only include private rows if explicitly requested
-        other_include_private = bool(include_private is True)
+        other_include_private = bool(include_private is True and actual_include_private)
         query_embedding, query_model_tag = _embed_query_with_tag(clean_query)
         _, active_backend = _get_model()
 
@@ -3092,7 +3621,8 @@ class Mesh:
             "embedding_degraded": query_model_tag != "onnx-minilm-l6-v2",
         }
 
-    def update(
+    @_mesh_data_root
+    def prepare_update(
         self,
         memory_id: str,
         content: Optional[str] = None,
@@ -3107,8 +3637,18 @@ class Mesh:
         trust_tier: Optional[str] = None,
         quarantined: Optional[bool] = None,
         secret_ref: Optional[Any] = None,
-    ) -> dict[str, Any]:
+        *,
+        include_private: Optional[bool] = None,
+        expected_revision: Optional[int] = None,
+        expected_incarnation: Optional[str] = None,
+        expected_store_generation: Optional[str] = None,
+    ) -> _UpdateOperation:
         _check_agent_scope(self.agent_id, self.namespace, write=True, trusted_local=self.trusted_local)
+        if expected_revision is not None and (type(expected_revision) is not int or expected_revision < 1):
+            raise ValueError("expected_revision must be a positive integer.")
+        for name, value in (("reset_ttl", reset_ttl), ("clear_ttl", clear_ttl), ("local_only", local_only), ("quarantined", quarantined)):
+            if value is not None and not isinstance(value, bool):
+                raise ValueError(f"{name} must be a boolean")
         if not memory_id or not memory_id.strip():
             raise ValueError("memory_id cannot be empty")
 
@@ -3120,6 +3660,16 @@ class Mesh:
         if not existing:
             raise ValueError(f"Memory '{resolved_id}' not found in namespace '{self.namespace}'")
         _check_agent_ownership(self.agent_id, existing.get("source_agent"), self.trusted_local)
+        actual_include_private = _resolve_sdk_include_private(include_private)
+        if existing.get("local_only") and not actual_include_private:
+            raise ValueError("Requested object is unavailable or mutation is not permitted.")
+        if expected_revision is not None and int(existing["revision"]) != expected_revision:
+            raise ValueError("Memory revision changed; no mutation was committed.")
+        for name, requested, actual in (("expected_incarnation", expected_incarnation, existing["incarnation"]), ("expected_store_generation", expected_store_generation, existing["store_generation"])):
+            if requested is not None:
+                _validate_incarnation(requested, name)
+                if requested != actual:
+                    raise ValueError("Memory incarnation or store generation changed; no mutation was committed.")
         old_content = str(existing.get("content", ""))
 
         from .guards import guard_ingest, guard_tags
@@ -3128,7 +3678,7 @@ class Mesh:
         emb_model_tag: Optional[str] = None
         clean_content: Optional[str] = None
         if content is not None:
-            if not content.strip():
+            if not isinstance(content, str) or not content.strip():
                 raise ValueError("content cannot be empty")
             guarded = guard_ingest(content, local_only=bool(local_only))
             if guarded.rejected:
@@ -3141,8 +3691,6 @@ class Mesh:
                 raise ValueError(
                     f"content length ({len(clean_content)} chars) exceeds maximum allowed length ({MAX_CONTENT_LENGTH} chars)."
                 )
-            if clean_content != old_content:
-                new_embedding, emb_model_tag = _embed_with_tag(clean_content)
         elif local_only is False:
             # Finding S11: Re-guard existing content when attempting to flip a private memory to public
             guarded_existing = guard_ingest(old_content, local_only=False)
@@ -3163,6 +3711,8 @@ class Mesh:
 
         clean_type: Optional[str] = None
         if memory_type is not None:
+            if not isinstance(memory_type, str):
+                raise ValueError("memory_type must be a string")
             clean_type = memory_type.strip().lower()
             if clean_type not in VALID_MEMORY_TYPES:
                 raise ValueError(
@@ -3173,53 +3723,108 @@ class Mesh:
         if confidence is not None:
             clean_conf = _clamp_confidence(confidence)
 
-        should_clear_ttl = bool(clear_ttl) or (ttl_days is not None and float(ttl_days) <= 0)
+        parsed_ttl = None
+        if ttl_days is not None:
+            try:
+                parsed_ttl = float(ttl_days)
+            except (ValueError, TypeError):
+                raise ValueError("ttl_days must be finite") from None
+            if not math.isfinite(parsed_ttl):
+                raise ValueError("ttl_days must be finite")
+        should_clear_ttl = clear_ttl or (parsed_ttl is not None and parsed_ttl <= 0)
         ttl_val = (
             None
             if should_clear_ttl
-            else (float(ttl_days) if ttl_days is not None and float(ttl_days) > 0 else None)
+            else parsed_ttl
+        )
+        clean_tier = _normalize_trust_tier(trust_tier) if trust_tier is not None else None
+        if clean_tier == "user" and not self.trusted_local:
+            clean_tier = "agent"
+        clean_ref = normalize_secret_ref(secret_ref, default_namespace=self.namespace) if secret_ref is not None else None
+        if clean_content is not None and clean_content != old_content:
+            new_embedding, emb_model_tag = _embed_with_tag(clean_content)
+
+        return _UpdateOperation(
+            self._operation_identity(), resolved_id,
+            {
+                "content": clean_content, "embedding": new_embedding,
+                "memory_type": clean_type, "confidence": clean_conf,
+                "tags": clean_tags, "ttl_days": ttl_val,
+                "reset_ttl": reset_ttl or ttl_val is not None, "clear_ttl": should_clear_ttl,
+                "local_only": local_only, "source_agent": source_agent,
+                "embedding_model": emb_model_tag, "trust_tier": clean_tier,
+                "quarantined": quarantined, "secret_ref": clean_ref,
+                "expected_revision": int(existing["revision"]),
+                "expected_incarnation": existing["incarnation"],
+                "expected_store_generation": existing["store_generation"],
+            },
+            old_content, actual_include_private,
         )
 
+    @_mesh_data_root
+    def commit_prepared_update(self, operation: _UpdateOperation) -> dict[str, Any]:
+        if not isinstance(operation, _UpdateOperation) or operation.identity != self._operation_identity():
+            raise ValueError("Prepared update operation does not belong to this Mesh instance")
+        _check_agent_scope(self.agent_id, self.namespace, write=True, trusted_local=self.trusted_local)
+        actual_private = _resolve_sdk_include_private(operation.include_private)
+        resolved_id = operation.memory_id
         updated = self.store.update(
-            memory_id=resolved_id,
-            content=clean_content,
-            embedding=new_embedding,
-            memory_type=clean_type,
-            confidence=clean_conf,
-            tags=clean_tags,
-            ttl_days=ttl_val,
-            reset_ttl=reset_ttl or (ttl_val is not None),
-            clear_ttl=should_clear_ttl,
-            local_only=local_only,
-            source_agent=source_agent,
-            embedding_model=emb_model_tag,
-            trust_tier=trust_tier,
-            quarantined=quarantined,
-            secret_ref=secret_ref,
+            memory_id=resolved_id, **operation.arguments,
+            include_private=actual_private,
+            expected_source_agent=self.agent_id if _ownership_enforced() and not self.trusted_local else None,
         )
         if not updated:
             raise ValueError(f"Failed to update memory '{resolved_id}'")
 
-        if clean_content and emb_model_tag == "hash-384":
-            with _PENDING_REEMBED_LOCK:
-                _PENDING_REEMBED_QUEUE.put(self.namespace, resolved_id, clean_content)
-
         is_priv = bool(updated.get("local_only", False))
-        log_update(
-            memory_id=resolved_id,
-            content=clean_content,
-            namespace=self.namespace,
-            agent_id=self.agent_id,
-            local_only=is_priv,
-            old_content=old_content,
-        )
+        def finish():
+            with mesh_dir_context(self.store.db_path.parent):
+                if updated.get("embedding_model") in ("hash-384", "needs-reembed", "unknown") and _bg_onnx_enabled():
+                    _register_reembed_namespace(self.store)
+                    with _PENDING_REEMBED_LOCK:
+                        _PENDING_REEMBED_QUEUE.put(self.namespace, resolved_id, int(updated["revision"]), data_root=self.store.db_path.parent, incarnation=updated["incarnation"], store_generation=updated["store_generation"])
+                log_update(
+                    memory_id=resolved_id, content=operation.arguments["content"],
+                    namespace=self.namespace, agent_id=self.agent_id, local_only=is_priv,
+                    old_content=operation.old_content,
+                )
+        self.store.after_commit(finish)
+        memory = self._enrich_memory_row(updated) if actual_private or not is_priv else {
+            "id": resolved_id, "revision": int(updated["revision"]), "local_only": True,
+        }
         return {
             "memory_id": resolved_id,
             "status": "updated",
-            "memory": self._enrich_memory_row(updated),
+            "revision": int(updated["revision"]),
+            "incarnation": updated["incarnation"], "store_generation": updated["store_generation"],
+            "memory": memory,
         }
 
-    def approve(self, memory_id: str) -> dict[str, Any]:
+    @_mesh_data_root
+    def update(
+        self, memory_id: str, content: Optional[str] = None,
+        memory_type: Optional[str] = None, confidence: Optional[float] = None,
+        tags: Optional[list[str]] = None, ttl_days: Optional[float] = None,
+        reset_ttl: bool = False, clear_ttl: bool = False,
+        local_only: Optional[bool] = None, source_agent: Optional[str] = None,
+        trust_tier: Optional[str] = None, quarantined: Optional[bool] = None,
+        secret_ref: Optional[Any] = None, *, include_private: Optional[bool] = None,
+        expected_revision: Optional[int] = None,
+        expected_incarnation: Optional[str] = None,
+        expected_store_generation: Optional[str] = None,
+    ) -> dict[str, Any]:
+        operation = self.prepare_update(
+            memory_id, content, memory_type, confidence, tags, ttl_days,
+            reset_ttl, clear_ttl, local_only, source_agent, trust_tier,
+            quarantined, secret_ref, include_private=include_private,
+            expected_revision=expected_revision,
+            expected_incarnation=expected_incarnation,
+            expected_store_generation=expected_store_generation,
+        )
+        return self.commit_prepared_update(operation)
+
+    @_mesh_data_root
+    def approve(self, memory_id: str, *, include_private: Optional[bool] = None, expected_revision: Optional[int] = None, expected_incarnation: Optional[str] = None, expected_store_generation: Optional[str] = None) -> dict[str, Any]:
         """
         Approve a quarantined memory (`quarantined=False`), making it eligible for
         agent recalls and context blocks (Finding S8).
@@ -3230,20 +3835,30 @@ class Mesh:
         resolved_id = self.store.resolve_id_prefix(memory_id)
         if not resolved_id:
             raise ValueError(f"Memory ID '{memory_id}' not found in namespace '{self.namespace}'")
-        updated = self.store.approve(resolved_id)
+        existing = self.store.get(resolved_id)
+        updated = self.store.approve(
+            resolved_id, include_private=_resolve_sdk_include_private(include_private),
+            expected_revision=expected_revision,
+            expected_incarnation=expected_incarnation if expected_incarnation is not None else existing["incarnation"] if existing else None,
+            expected_store_generation=expected_store_generation if expected_store_generation is not None else self.store.store_generation,
+            expected_source_agent=self.agent_id if _ownership_enforced() and not self.trusted_local else None,
+        )
         if not updated:
             raise ValueError(f"Memory '{resolved_id}' not found in namespace '{self.namespace}'")
         return {
             "memory_id": resolved_id,
+            "revision": int(updated["revision"]),
+            "incarnation": updated["incarnation"], "store_generation": updated["store_generation"],
             "status": "approved",
             "memory": self._enrich_memory_row(updated),
         }
 
-    def get(self, memory_id: str) -> Optional[dict[str, Any]]:
+    @_mesh_data_root
+    def get(self, memory_id: str, include_private: Optional[bool] = None) -> Optional[dict[str, Any]]:
         _check_agent_scope(self.agent_id, self.namespace, write=False, trusted_local=self.trusted_local)
         resolved_id = self.store.resolve_id_prefix(memory_id) or memory_id
         row = self.store.get(resolved_id)
-        if not row:
+        if not row or (row.get("local_only") and not _resolve_sdk_include_private(include_private)):
             return None
         return self._enrich_memory_row(row)
 
@@ -3278,31 +3893,42 @@ class Mesh:
         )
         return enriched
 
-    def forget(self, memory_id: str) -> bool:
+    @_mesh_data_root
+    def forget(self, memory_id: str, *, include_private: Optional[bool] = None, expected_revision: Optional[int] = None, expected_incarnation: Optional[str] = None, expected_store_generation: Optional[str] = None) -> bool:
         _check_agent_scope(self.agent_id, self.namespace, write=True, trusted_local=self.trusted_local)
         resolved_id = self.store.resolve_id_prefix(memory_id) or memory_id
         existing = self.store.get(resolved_id)
         if existing:
             _check_agent_ownership(self.agent_id, existing.get("source_agent"), self.trusted_local)
         purged_content = existing.get("content") if existing else None
-        deleted = self.store.delete(resolved_id)
+        deleted = self.store.delete(
+            resolved_id, include_private=_resolve_sdk_include_private(include_private),
+            expected_revision=expected_revision if expected_revision is not None else int(existing["revision"]) if existing else None,
+            expected_incarnation=expected_incarnation if expected_incarnation is not None else existing["incarnation"] if existing else None,
+            expected_store_generation=expected_store_generation if expected_store_generation is not None else self.store.store_generation,
+            expected_source_agent=self.agent_id if _ownership_enforced() and not self.trusted_local else None,
+        )
         if deleted:
-            log_forget(
-                memory_id=resolved_id,
-                namespace=self.namespace,
-                agent_id=self.agent_id,
-                purged_content=purged_content,
-            )
+            def finish():
+                with mesh_dir_context(self.store.db_path.parent):
+                    log_forget(
+                        memory_id=resolved_id, namespace=self.namespace,
+                        agent_id=self.agent_id, purged_content=purged_content,
+                    )
+            self.store.after_commit(finish)
         return deleted
 
+    @_mesh_data_root
     def patterns(self, include_private: bool = False) -> dict[str, Any]:
         _check_agent_scope(self.agent_id, self.namespace, write=False, trusted_local=self.trusted_local)
-        return self.store.get_patterns(include_private=include_private)
+        return self.store.get_patterns(include_private=_resolve_sdk_include_private(include_private))
 
+    @_mesh_data_root
     def contradictions(self, resolved: bool = False) -> list[dict[str, Any]]:
         _check_agent_scope(self.agent_id, self.namespace, write=False, trusted_local=self.trusted_local)
         return self.store.get_contradictions(resolved=resolved)
 
+    @_mesh_data_root
     def resolve_contradiction(self, contradiction_id: str) -> bool:
         _check_agent_scope(self.agent_id, self.namespace, write=True, trusted_local=self.trusted_local)
         clean_pref = (contradiction_id or "").strip().lower()
@@ -3346,6 +3972,7 @@ class Mesh:
                     )
         return self.store.resolve_contradiction(contradiction_id)
 
+    @_mesh_data_root
     def inspect(
         self,
         limit: int = 20,
@@ -3376,6 +4003,7 @@ class Mesh:
         now = _utc_now()
         return [self._enrich_memory_row(r, now=now) for r in rows]
 
+    @_mesh_data_root
     def count_matching(
         self,
         memory_type: Optional[str] = None,
@@ -3396,13 +4024,17 @@ class Mesh:
             include_quarantined=include_quarantined,
         )
 
+    @_mesh_data_root
     def clear(self) -> None:
         _check_agent_scope(self.agent_id, self.namespace, write=True, trusted_local=self.trusted_local)
         self.store.clear_namespace()
 
+    @_mesh_data_root
     def count(self) -> int:
-        return self.store.count()
+        _check_agent_scope(self.agent_id, self.namespace, write=False, trusted_local=self.trusted_local)
+        return self.store.count_matching(include_private=_resolve_sdk_include_private(None))
 
+    @_mesh_data_root
     def create_work_item(
         self,
         title: str,
@@ -3412,6 +4044,8 @@ class Mesh:
         priority: str = "medium",
         tags: Optional[list[str]] = None,
         local_only: bool = False,
+        *,
+        include_private: Optional[bool] = None,
     ) -> dict[str, Any]:
         _check_agent_scope(self.agent_id, self.namespace, write=True, trusted_local=self.trusted_local)
         return self.store.create_work_item(
@@ -3423,8 +4057,11 @@ class Mesh:
             tags=tags,
             created_by=self.agent_id,
             local_only=local_only,
+            include_private=_resolve_sdk_include_private(include_private),
+            expected_source_agent=self.agent_id if _ownership_enforced() and not self.trusted_local else None,
         )
 
+    @_mesh_data_root
     def update_work_item(
         self,
         item_id: str,
@@ -3433,6 +4070,8 @@ class Mesh:
         title: Optional[str] = None,
         description: Optional[str] = None,
         note: Optional[str] = None,
+        *,
+        include_private: Optional[bool] = None,
     ) -> dict[str, Any]:
         _check_agent_scope(self.agent_id, self.namespace, write=True, trusted_local=self.trusted_local)
         return self.store.update_work_item(
@@ -3443,14 +4082,19 @@ class Mesh:
             description=description,
             note=note,
             agent_id=self.agent_id,
+            include_private=_resolve_sdk_include_private(include_private),
+            expected_source_agent=self.agent_id if _ownership_enforced() and not self.trusted_local else None,
         )
 
+    @_mesh_data_root
     def complete_work_item(
         self,
         item_id: str,
         summary: str,
         evidence: Optional[list[str]] = None,
         note: Optional[str] = None,
+        *,
+        include_private: Optional[bool] = None,
     ) -> dict[str, Any]:
         _check_agent_scope(self.agent_id, self.namespace, write=True, trusted_local=self.trusted_local)
         return self.store.complete_work_item(
@@ -3459,13 +4103,17 @@ class Mesh:
             evidence=evidence,
             note=note,
             agent_id=self.agent_id,
+            include_private=_resolve_sdk_include_private(include_private),
+            expected_source_agent=self.agent_id if _ownership_enforced() and not self.trusted_local else None,
         )
 
+    @_mesh_data_root
     def get_work_item(self, item_id: str, include_private: Optional[bool] = None) -> Optional[dict[str, Any]]:
         _check_agent_scope(self.agent_id, self.namespace, write=False, trusted_local=self.trusted_local)
         inc_priv = _resolve_sdk_include_private(include_private)
         return self.store.get_work_item(item_id, include_private=inc_priv)
 
+    @_mesh_data_root
     def list_work_items(
         self,
         status: Optional[str] = None,
@@ -3484,15 +4132,20 @@ class Mesh:
             limit=limit,
         )
 
-    def get_work_events(self, item_id: Optional[str] = None, limit: int = 50) -> list[dict[str, Any]]:
+    @_mesh_data_root
+    def get_work_events(self, item_id: Optional[str] = None, limit: int = 50, *, include_private: Optional[bool] = None) -> list[dict[str, Any]]:
         _check_agent_scope(self.agent_id, self.namespace, write=False, trusted_local=self.trusted_local)
-        return self.store.get_work_events(item_id=item_id, limit=limit)
+        return self.store.get_work_events(item_id=item_id, limit=limit, include_private=_resolve_sdk_include_private(include_private))
 
+    @_mesh_data_root
     def project_brief(
         self,
         max_tokens: int = 500,
         include_work_items: bool = True,
         include_private: Optional[bool] = None,
+        *,
+        max_facts: int = 20,
+        fact_offset: int = 0,
     ) -> dict[str, Any]:
         _check_agent_scope(self.agent_id, self.namespace, write=False, trusted_local=self.trusted_local)
         inc_priv = _resolve_sdk_include_private(include_private)
@@ -3500,8 +4153,11 @@ class Mesh:
             max_tokens=max_tokens,
             include_work_items=include_work_items,
             include_private=inc_priv,
+            max_facts=max_facts,
+            fact_offset=fact_offset,
         )
 
+    @_mesh_data_root
     def changelog(
         self,
         since: str = "7d",
@@ -3524,6 +4180,7 @@ class Mesh:
     task_get = get_work_item
     log = changelog
 
+    @_mesh_data_root
     def close(self) -> None:
         if hasattr(self, "store") and self.store is not None:
             self.store.flush_access_tracking()

@@ -14,10 +14,12 @@ Addresses Findings:
 from __future__ import annotations
 
 import json
+import contextlib
 import math
 import os
 import re
-import sqlite3
+import stat
+from .sqlite_runtime import sqlite3
 import sys
 import uuid
 from datetime import datetime, timezone
@@ -32,14 +34,14 @@ from .audit import (
 )
 from .crypto import decrypt_export_payload, encrypt_export_payload
 from .guards import guard_ingest, guard_tags
+from .envutil import env_int
 from .memory import (
     MAX_CONTENT_LENGTH,
     VALID_MEMORY_TYPES,
-    _PENDING_REEMBED_LOCK,
-    _PENDING_REEMBED_QUEUE,
     _embed_batch_with_tag,
     _hash_embed_384,
     _parse_tags,
+    _register_reembed_namespace,
 )
 from .passive import _normalize_memory_type
 from .secrets import normalize_secret_ref
@@ -55,7 +57,6 @@ from .version import VERSION, is_version_compatible
 
 _KNOWN_FILE_EMBEDDING_MODELS = {"onnx-minilm-l6-v2", "hash-384"}
 _VALID_MERGE_STRATEGIES = {"skip_existing", "overwrite"}
-_EXPORT_FILE_CACHE: dict[tuple[str, int, int], Any] = {}
 
 
 def _is_valid_file_vector(raw_emb: Any, file_model_tag: str) -> bool:
@@ -104,19 +105,13 @@ def _load_existing_id_privacy_map(namespace: str) -> dict[str, bool]:
     if not db_path.exists():
         return {}
     reject_symlink(db_path)
-    try:
-        from .store import _CACHE_LOCK, _VECTOR_CACHE
-
-        with _CACHE_LOCK:
-            cached = _VECTOR_CACHE.get((db_path, namespace))
-            if cached is not None and cached.rows_by_id:
-                return {mid: bool(rm.get("local_only")) for mid, rm in cached.rows_by_id.items()}
-    except Exception:
-        pass
     out: dict[str, bool] = {}
     try:
-        conn = sqlite3.connect(db_path, timeout=5.0)
+        conn = sqlite3.connect(db_path.as_uri() + "?mode=ro", uri=True, timeout=5.0)
         try:
+            from .store import _check_namespace_binding
+
+            _check_namespace_binding(conn, namespace)
             columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(memories)")}
             if not columns:
                 return {}
@@ -124,7 +119,7 @@ def _load_existing_id_privacy_map(namespace: str) -> dict[str, bool]:
                 rows = conn.execute(
                     "SELECT id, local_only FROM memories WHERE namespace = ?",
                     (namespace,),
-                ).fetchall()
+                )
             else:
                 # Pre-privacy schema: `local_only` did not exist, so no row can be private.
                 rows = [
@@ -132,7 +127,7 @@ def _load_existing_id_privacy_map(namespace: str) -> dict[str, bool]:
                     for (mid,) in conn.execute(
                         "SELECT id FROM memories WHERE namespace = ?",
                         (namespace,),
-                    ).fetchall()
+                    )
                 ]
             for mid, lo in rows:
                 out[str(mid)] = bool(lo)
@@ -144,6 +139,207 @@ def _load_existing_id_privacy_map(namespace: str) -> dict[str, bool]:
             f"refusing to merge without the private-memory guard ({exc})."
         ) from exc
     return out
+
+
+@contextlib.contextmanager
+def _atomic_export_file(path: Path):
+    """Publish a complete private file; a failed export preserves the old backup."""
+    reject_symlink(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    reject_symlink(path.parent)
+    temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
+    reject_symlink(temporary)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(temporary, flags, 0o600)
+    try:
+        secure_file_permissions(temporary)
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as handle:
+            descriptor = -1
+            yield handle
+            handle.flush()
+            os.fsync(handle.fileno())
+        reject_symlink(path.parent)
+        os.replace(temporary, path)
+    finally:
+        if descriptor != -1:
+            os.close(descriptor)
+        if temporary.exists():
+            temporary.unlink()
+
+
+def _export_memory(mem: dict[str, Any], include_embeddings: bool) -> dict[str, Any]:
+    entry = {
+        "id": mem["id"], "content": mem["content"],
+        "memory_type": mem.get("memory_type", "general"),
+        "confidence": float(mem.get("confidence", 1.0)),
+        "source_agent": mem.get("source_agent", "unknown"),
+        "tags": _parse_tags(mem.get("tags", "[]")), "local_only": False,
+        "trust_tier": _normalize_trust_tier(mem.get("trust_tier"), default="user"),
+        "quarantined": bool(mem.get("quarantined", False)),
+        "created_at": mem.get("created_at", ""), "ttl_days": mem.get("ttl_days"),
+        "decay_start_at": mem.get("decay_start_at"),
+        "access_count": max(0, int(mem.get("access_count") or 0)),
+        "embedding_model": mem.get("embedding_model", "needs-reembed"),
+    }
+    if mem.get("secret_ref"):
+        entry["secret_ref"] = mem["secret_ref"]
+    if include_embeddings:
+        entry["embedding"] = mem.get("embedding")
+    return entry
+
+
+def _stream_json_export(store: MeshStore, path: Path, include_embeddings: bool, include_quarantined: bool) -> dict[str, Any]:
+    records = store.iter_export_records(include_embeddings, include_quarantined)
+    try:
+        kind, counts = next(records)
+        if kind != "counts":
+            raise RuntimeError("Invalid export snapshot.")
+        header = {
+            "mesh_version": VERSION, "exported_at": datetime.now(timezone.utc).isoformat(),
+            "namespace": store.namespace, **counts,
+        }
+        encoder = json.JSONEncoder(ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+        pending = next(records, None)
+        with _atomic_export_file(path) as handle:
+            handle.write(encoder.encode(header)[:-1])
+            for record_kind, field in (("memory", "memories"), ("work_item", "work_items"), ("work_event", "work_events")):
+                handle.write(',"' + field + '":[')
+                first = True
+                while pending is not None and pending[0] == record_kind:
+                    if not first:
+                        handle.write(",")
+                    value = _export_memory(pending[1], include_embeddings) if record_kind == "memory" else pending[1]
+                    for fragment in encoder.iterencode(value):
+                        handle.write(fragment)
+                    first = False
+                    pending = next(records, None)
+                handle.write("]")
+            if pending is not None:
+                raise RuntimeError("Invalid export record order.")
+            handle.write("}\n")
+        return {**header, "streamed": True}
+    finally:
+        records.close()
+
+
+class ImportWriteError(RuntimeError):
+    """Import stopped without replaying an unconfirmed transaction."""
+
+    def __init__(self, confirmed_imported: int, memory_ids: tuple[str, ...]):
+        self.confirmed_imported = confirmed_imported
+        self.unknown_outcome_ids = memory_ids
+        super().__init__(
+            f"Import stopped after {confirmed_imported} confirmed memories; "
+            f"inspect the {len(memory_ids)} last-batch IDs before retrying an overwrite."
+        )
+
+
+def _import_metadata(mem: dict[str, Any], namespace: str, now: str, model: str) -> dict[str, Any]:
+    raw_type = str(mem.get("memory_type", "general")).strip().lower()
+    memory_type = raw_type if raw_type in VALID_MEMORY_TYPES else _normalize_memory_type(raw_type)
+    try:
+        confidence = float(mem.get("confidence", 1.0))
+        if not math.isfinite(confidence):
+            confidence = 1.0
+    except (ValueError, TypeError):
+        confidence = 1.0
+    try:
+        access_count = max(0, int(float(mem.get("access_count", 0))))
+    except (ValueError, TypeError, OverflowError):
+        access_count = 0
+    raw_agent = str(mem.get("source_agent", "mesh-import") or "mesh-import")
+    agent = re.sub(r"[\x00-\x1f\x7f]+", "", raw_agent).strip()[:64] or "mesh-import"
+    created = _parse_iso_utc(mem.get("created_at")) if mem.get("created_at") else None
+    created_at = created.isoformat() if created else now
+    ttl = mem.get("ttl_days")
+    if ttl is not None:
+        try:
+            ttl = float(ttl)
+            if not math.isfinite(ttl) or ttl <= 0:
+                ttl = None
+        except (ValueError, TypeError):
+            ttl = None
+    decay = _parse_iso_utc(mem.get("decay_start_at")) if mem.get("decay_start_at") else None
+    return {
+        "memory_type": memory_type, "confidence": max(0.0, min(1.0, confidence)),
+        "source_agent": agent, "tags": _parse_tags(mem.get("tags", [])),
+        "created_at": created_at, "updated_at": now, "accessed_at": now,
+        "access_count": access_count, "ttl_days": ttl,
+        "decay_start_at": decay.isoformat() if decay else created_at if ttl is not None else None,
+        "embedding_model": model, "trust_tier": _normalize_trust_tier(mem.get("trust_tier"), default="user"),
+        "quarantined": bool(mem.get("quarantined", False)),
+        "secret_ref": normalize_secret_ref(mem.get("secret_ref"), default_namespace=namespace),
+    }
+
+
+def _commit_import_records(store: MeshStore, records: list[tuple[str, dict[str, Any], Optional[list[float]], Optional[str]]], strategy: str, stats: dict[str, Any]) -> None:
+    batch_limit = min(
+        env_int("MESH_IMPORT_BATCH_SIZE", 32, minimum=1, maximum=128),
+        env_int("MESH_MAX_BULK_ITEMS", 1000, minimum=1),
+    )
+    byte_limit = env_int("MESH_IMPORT_BATCH_BYTES", 256 * 1024, minimum=65536, maximum=4 * 1024 * 1024)
+    offset = 0
+    while offset < len(records):
+        batch = []
+        batch_bytes = 0
+        while offset < len(records) and len(batch) < batch_limit:
+            record = records[offset]
+            charge = len(record[1]["content"].encode("utf-8")) + 16384
+            if batch and batch_bytes + charge > byte_limit:
+                break
+            batch.append(record)
+            batch_bytes += charge
+            offset += 1
+        missing = [index for index, (_, _, vector, model) in enumerate(batch) if vector is None or model is None]
+        computed = {}
+        if missing:
+            try:
+                vectors, model = _embed_batch_with_tag([batch[index][1]["content"] for index in missing])
+                if len(vectors) != len(missing):
+                    raise ValueError("Embedding batch returned an incomplete result.")
+                for index, vector in zip(missing, vectors):
+                    if len(vector) == EMBEDDING_DIM and all(math.isfinite(value) for value in vector):
+                        computed[index] = (vector, model)
+            except Exception:
+                # Encoding has no database effects; a coherent degraded batch is safe.
+                computed.clear()
+        now = datetime.now(timezone.utc).isoformat()
+        items = []
+        for index, (memory_id, mem, vector, model) in enumerate(batch):
+            try:
+                if vector is None or model is None:
+                    vector, model = computed.get(index, (None, None))
+                if vector is None or model is None:
+                    vector, model = _hash_embed_384(mem["content"]).tolist(), "hash-384"
+                metadata = _import_metadata(mem, store.namespace, now, model)
+                items.append((memory_id, mem["content"], vector, metadata, bool(mem["local_only"])))
+            except (ValueError, TypeError, OverflowError):
+                stats["errors"] += 1
+        if not items:
+            continue
+        admitted = items
+        skipped = 0
+        try:
+            with store.write_transaction():
+                # Preparation may race another writer. Repeat equality/privacy
+                # preconditions inside the transaction that applies the records.
+                with store._connect() as conn:
+                    placeholders = ",".join("?" for _ in items)
+                    existing = dict(conn.execute(
+                        f"SELECT id,local_only FROM memories WHERE namespace=? AND id IN ({placeholders})",
+                        (store.namespace, *(item[0] for item in items)),
+                    ))
+                admitted = [item for item in items if item[0] not in existing or strategy == "overwrite" and not existing[item[0]]]
+                skipped = len(items) - len(admitted)
+                if admitted:
+                    store.upsert_batch(admitted, include_private=False)
+                    store.after_commit(lambda: _register_reembed_namespace(store))
+        except Exception as exc:
+            raise ImportWriteError(stats["imported"], tuple(item[0] for item in admitted)) from exc
+        stats["imported"] += len(admitted)
+        stats["skipped"] += skipped
 
 
 def sanitize_csv_cell(value: Any) -> Any:
@@ -307,6 +503,8 @@ def export_namespace(
     encrypt: bool = False,
     passphrase: Optional[str] = None,
     include_quarantined: bool = False,
+    *,
+    materialize: bool = True,
 ) -> dict[str, Any]:
     """
     Export all non-private (and by default non-quarantined) memories from an existing
@@ -345,10 +543,17 @@ def export_namespace(
     else:
         incl_emb = bool(include_embeddings)
 
+    if type(materialize) is not bool:
+        raise ValueError("materialize must be a boolean.")
+    if not materialize and (not output_path or clean_fmt != "json" or encrypt or passphrase is not None and passphrase.strip()):
+        raise ValueError("Streaming export requires an output path and unencrypted JSON.")
+
     flush_all_access_tracking()
     store = MeshStore(namespace=clean_ns, create=False)
+    if not materialize:
+        return _stream_json_export(store, Path(output_path), incl_emb, include_quarantined)
     total_count = store.count()
-    raw_exportable = store.get_exportable_memories(
+    raw_exportable = store.iter_exportable_memories(
         include_embeddings=incl_emb,
         include_quarantined=include_quarantined,
     )
@@ -359,28 +564,7 @@ def export_namespace(
             continue
         if not include_quarantined and mem.get("quarantined"):
             continue
-        mid = mem["id"]
-        entry: dict[str, Any] = {
-            "id": mid,
-            "content": mem["content"],
-            "memory_type": mem.get("memory_type", "general"),
-            "confidence": float(mem.get("confidence", 1.0)),
-            "source_agent": mem.get("source_agent", "unknown"),
-            "tags": _parse_tags(mem.get("tags", "[]")),
-            "local_only": False,
-            "trust_tier": _normalize_trust_tier(mem.get("trust_tier"), default="user"),
-            "quarantined": bool(mem.get("quarantined", False)),
-            "created_at": mem.get("created_at", ""),
-            "ttl_days": mem.get("ttl_days"),
-            "decay_start_at": mem.get("decay_start_at"),
-            "access_count": max(0, int(mem.get("access_count") or 0)),
-            "embedding_model": mem.get("embedding_model", "onnx-minilm-l6-v2"),
-        }
-        if mem.get("secret_ref"):
-            entry["secret_ref"] = mem["secret_ref"]
-        if incl_emb:
-            entry["embedding"] = mem.get("embedding")
-        exportable.append(entry)
+        exportable.append(_export_memory(mem, incl_emb))
 
     exportable_work_items, exportable_work_events, total_work_items, skipped_private_work_items = (
         store.get_exportable_work_items(include_private=False)
@@ -408,32 +592,16 @@ def export_namespace(
 
     if output_path:
         path = Path(output_path)
-        # Finding N6: Refuse to write to a symlinked output file or symlinked parent directory
-        reject_symlink(path)
-        if path.parent.exists():
-            reject_symlink(path.parent)
-        path.parent.mkdir(parents=True, exist_ok=True)
-
-        if clean_fmt == "markdown":
-            content_str = export_to_markdown(export_data)
-        elif clean_fmt == "csv":
-            content_str = export_to_csv(export_data)
-        else:
-            content_str = json.dumps(payload_to_write, indent=2, ensure_ascii=False)
-            if not content_str.endswith("\n"):
-                content_str += "\n"
-
-        if os.name == "nt":
-            with open(path, "w", encoding="utf-8", newline="") as f:
-                f.write(content_str)
-        else:
-            flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
-            if hasattr(os, "O_NOFOLLOW"):
-                flags |= os.O_NOFOLLOW
-            fd = os.open(str(path), flags, 0o600)
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(content_str)
-        secure_file_permissions(path)
+        with _atomic_export_file(path) as handle:
+            if clean_fmt == "markdown":
+                handle.write(export_to_markdown(export_data))
+            elif clean_fmt == "csv":
+                handle.write(export_to_csv(export_data))
+            else:
+                encoder = json.JSONEncoder(indent=2, ensure_ascii=False, allow_nan=False)
+                for fragment in encoder.iterencode(payload_to_write):
+                    handle.write(fragment)
+                handle.write("\n")
         if hasattr(sys.stderr, "isatty") and sys.stderr.isatty() and not os.environ.get("MESH_QUIET"):
             from . import ui
 
@@ -476,27 +644,25 @@ def import_namespace(
             f"Invalid merge_strategy '{merge_strategy}'. Must be one of {sorted(_VALID_MERGE_STRATEGIES)}."
         )
 
-    path = Path(input_path).resolve()
+    path = Path(input_path).expanduser()
     reject_symlink(path)
     if not path.exists():
         raise FileNotFoundError(f"Export file not found: {input_path}")
-
-    st = path.stat()
-    cache_key = (str(path), int(st.st_mtime_ns), int(st.st_size))
-    cached_payload = _EXPORT_FILE_CACHE.get(cache_key)
-    if cached_payload is not None:
-        data = cached_payload
-    else:
-        with open(path, "r", encoding="utf-8") as f:
-            raw_data = json.load(f)
-
-        if isinstance(raw_data, dict) and raw_data.get("mesh_encrypted_export"):
-            data = decrypt_export_payload(raw_data, passphrase=passphrase)
-        else:
-            data = raw_data
-        if len(_EXPORT_FILE_CACHE) >= 8:
-            _EXPORT_FILE_CACHE.clear()
-        _EXPORT_FILE_CACHE[cache_key] = data
+    if not stat.S_ISREG(path.stat().st_mode):
+        raise ValueError("Import requires a regular JSON file.")
+    maximum = env_int("MESH_MAX_IMPORT_BYTES", 128 * 1024 * 1024, minimum=65536)
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    with os.fdopen(descriptor, "rb") as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            raise ValueError("Import requires a regular JSON file.")
+        raw = handle.read(maximum + 1)
+    if len(raw) > maximum:
+        raise ValueError("Import exceeds MESH_MAX_IMPORT_BYTES; split the file or set an explicit larger limit.")
+    # Never cache plaintext from encrypted exports or bypass a new passphrase.
+    raw_data = json.loads(raw)
+    del raw
+    data = decrypt_export_payload(raw_data, passphrase=passphrase) if isinstance(raw_data, dict) and raw_data.get("mesh_encrypted_export") else raw_data
 
     if not isinstance(data, dict) or "memories" not in data or not isinstance(data["memories"], list):
         raise ValueError("Invalid Mesh export file format.")
@@ -525,8 +691,6 @@ def import_namespace(
     }
 
     to_import: list[tuple[str, dict[str, Any], Optional[list[float]], Optional[str]]] = []
-    texts_to_embed: list[str] = []
-    embed_owner_indices: list[int] = []
 
     for mem in memories:
         if not isinstance(mem, dict):
@@ -606,15 +770,11 @@ def import_namespace(
             raw_emb = mem_copy.get("embedding")
             valid_vec: Optional[list[float]] = None
             valid_tag: Optional[str] = None
-            if raw_emb is not None and _is_valid_file_vector(raw_emb, file_model_tag):
+            if raw_emb is not None and content == raw_content and _is_valid_file_vector(raw_emb, file_model_tag):
                 valid_vec = [float(x) for x in raw_emb]
                 valid_tag = file_model_tag
 
-            idx = len(to_import)
             to_import.append((mem_id, mem_copy, valid_vec, valid_tag))
-            if valid_vec is None and not dry_run:
-                embed_owner_indices.append(idx)
-                texts_to_embed.append(content)
         except Exception as e:
             stats["errors"] += 1
             from . import ui
@@ -640,173 +800,14 @@ def import_namespace(
 
     store = MeshStore(namespace=namespace, create=True)
 
-    computed_embeddings: dict[int, tuple[list[float], str]] = {}
-    if texts_to_embed:
-        try:
-            vecs, actual_batch_tag = _embed_batch_with_tag(texts_to_embed)
-            for item_idx, vec in zip(embed_owner_indices, vecs):
-                if len(vec) == EMBEDDING_DIM and all(math.isfinite(x) for x in vec):
-                    computed_embeddings[item_idx] = (vec, actual_batch_tag)
-        except Exception as e:
-            from . import ui
-
-            ui.warn(f"Couldn't embed the imported memories ({e})", "They'll be imported with hash-384 fallback embeddings and fixed up later.")
-
-        for item_idx in embed_owner_indices:
-            if item_idx not in computed_embeddings:
-                fallback_text = str(to_import[item_idx][1]["content"])
-                computed_embeddings[item_idx] = (
-                    _hash_embed_384(fallback_text).tolist(),
-                    "hash-384",
-                )
-
-    now_iso = datetime.now(timezone.utc).isoformat()
-    batch_items: list[tuple[str, str, list[float], dict[str, Any], bool]] = []
-    hash_queued_items: list[tuple[str, str]] = []
-
-    for idx, (mem_id, mem, pre_vec, pre_tag) in enumerate(to_import):
-        try:
-            content = str(mem["content"]).strip()
-            embedding: Optional[list[float]] = pre_vec
-            emb_tag: Optional[str] = pre_tag
-            if embedding is None or emb_tag is None:
-                comp = computed_embeddings.get(idx)
-                if comp is not None:
-                    embedding, emb_tag = comp
-            if not embedding or len(embedding) != EMBEDDING_DIM or not emb_tag:
-                raise ValueError("Missing or invalid 384-dim embedding vector")
-
-            raw_type = str(mem.get("memory_type", "general")).strip().lower()
-            mem_type = (
-                raw_type
-                if raw_type in VALID_MEMORY_TYPES
-                else _normalize_memory_type(raw_type)
-            )
-            tags = _parse_tags(mem.get("tags", []))
-
-            raw_conf = mem.get("confidence", 1.0)
-            try:
-                conf_val = float(raw_conf)
-                if not math.isfinite(conf_val):
-                    conf_val = 1.0
-            except (ValueError, TypeError):
-                conf_val = 1.0
-            confidence = max(0.0, min(1.0, conf_val))
-
-            raw_access = mem.get("access_count", 0)
-            try:
-                access_val = int(float(raw_access))
-            except (ValueError, TypeError, OverflowError):
-                access_val = 0
-            access_count = max(0, access_val)
-
-            raw_agent = str(mem.get("source_agent", "mesh-import") or "mesh-import")
-            clean_agent = re.sub(r"[\x00-\x1f\x7f]+", "", raw_agent).strip()[:64] or "mesh-import"
-
-            raw_created = mem.get("created_at")
-            parsed_created = _parse_iso_utc(raw_created) if raw_created else None
-            created_at = parsed_created.isoformat() if parsed_created else now_iso
-
-            ttl_days = mem.get("ttl_days")
-            if ttl_days is not None:
-                try:
-                    ttl_days = float(ttl_days)
-                    if not math.isfinite(ttl_days) or ttl_days <= 0:
-                        ttl_days = None
-                except (ValueError, TypeError):
-                    ttl_days = None
-
-            raw_decay = mem.get("decay_start_at")
-            parsed_decay = _parse_iso_utc(raw_decay) if raw_decay else None
-            decay_start_at = (
-                parsed_decay.isoformat()
-                if parsed_decay
-                else (created_at if ttl_days is not None else None)
-            )
-
-            trust_tier = _normalize_trust_tier(mem.get("trust_tier"), default="user")
-            quarantined_bool = bool(mem.get("quarantined", False))
-            norm_ref = normalize_secret_ref(mem.get("secret_ref"), default_namespace=namespace)
-
-            metadata = {
-                "memory_type": mem_type,
-                "confidence": confidence,
-                "source_agent": clean_agent,
-                "tags": tags,
-                "created_at": created_at,
-                "updated_at": now_iso,
-                "accessed_at": now_iso,
-                "access_count": access_count,
-                "ttl_days": ttl_days,
-                "decay_start_at": decay_start_at,
-                "embedding_model": emb_tag,
-                "trust_tier": trust_tier,
-                "quarantined": quarantined_bool,
-                "secret_ref": norm_ref,
-            }
-            batch_items.append(
-                (mem_id, content, embedding, metadata, bool(mem.get("local_only", False)))
-            )
-            if emb_tag == "hash-384":
-                hash_queued_items.append((mem_id, content))
-        except Exception as e:
-            stats["errors"] += 1
-            from . import ui
-
-            if mem.get("local_only"):
-                label = "a private memory"
-            else:
-                label = f'"{ui.truncate(str(mem.get("content", "")), 50)}"'
-            ui.warn(f"Couldn't import {label}: {e}")
-
-    if batch_items:
-        try:
-            store.upsert_batch(batch_items)
-            stats["imported"] += len(batch_items)
-        except Exception:
-            for mem_id, content, embedding, metadata, local_only in batch_items:
-                try:
-                    store.upsert(
-                        memory_id=mem_id,
-                        content=content,
-                        embedding=embedding,
-                        metadata=metadata,
-                        local_only=local_only,
-                        embedding_model=str(metadata["embedding_model"]) if metadata.get("embedding_model") is not None else None,
-                    )
-                    stats["imported"] += 1
-                except Exception as e:
-                    stats["errors"] += 1
-                    from . import ui
-
-                    ui.warn(f"Couldn't import a memory: {e}")
-
-    if hash_queued_items:
-        with _PENDING_REEMBED_LOCK:
-            for mid, text in hash_queued_items:
-                _PENDING_REEMBED_QUEUE.put(namespace, mid, text)
+    _commit_import_records(store, to_import, clean_strategy, stats)
 
     if file_work_items:
-        if clean_strategy == "skip_existing" and not to_import:
-            existing_wis = store.list_work_items(include_private=True, limit=10000)
-            existing_wi_ids = {w["id"] for w in existing_wis}
-            file_wi_ids = {w.get("id") for w in file_work_items if w.get("id")}
-            if file_wi_ids and file_wi_ids.issubset(existing_wi_ids):
-                stats["imported_work_items"] = 0
-                stats["skipped_work_items"] = len(file_work_items)
-                stats["imported_work_events"] = 0
-            else:
-                w_stats = store.import_work_items(file_work_items, file_work_events, merge_strategy=clean_strategy)
-                stats["imported_work_items"] = w_stats["imported_items"]
-                stats["skipped_work_items"] = w_stats["skipped_items"]
-                stats["imported_work_events"] = w_stats["imported_events"]
-                stats["errors"] += w_stats["errors"]
-        else:
-            w_stats = store.import_work_items(file_work_items, file_work_events, merge_strategy=clean_strategy)
-            stats["imported_work_items"] = w_stats["imported_items"]
-            stats["skipped_work_items"] = w_stats["skipped_items"]
-            stats["imported_work_events"] = w_stats["imported_events"]
-            stats["errors"] += w_stats["errors"]
+        w_stats = store.import_work_items(file_work_items, file_work_events, merge_strategy=clean_strategy)
+        stats["imported_work_items"] = w_stats["imported_items"]
+        stats["skipped_work_items"] = w_stats["skipped_items"]
+        stats["imported_work_events"] = w_stats["imported_events"]
+        stats["errors"] += w_stats["errors"]
 
     if hasattr(sys.stderr, "isatty") and sys.stderr.isatty() and not os.environ.get("MESH_QUIET"):
         from . import ui

@@ -7,7 +7,7 @@ Mesh surface and operation:
   1. Core SDK (learn across all types/secrets/conflicts, recall cached/uncached, update, forget, inspect)
   2. Work Items, Session Brief & Project Changelog (task CRUD, brief at scale, changelog)
   3. Auxiliary Subsystems (context_builder, digest, namespaces, io export/import, crypto, audit)
-  4. MCP Server (call_tool across all MCP tools)
+  4. MCP handler in process (call_tool; excludes MCP framing, pipes, and client latency)
   5. HTTP Server (ASGI TestClient + Live Loopback TCP Socket with daemon identity verification)
   6. Dashboard API (Session/CSRF handshake + all /api/* routes)
   7. CLI (In-process dispatch vs. OS Subprocess cold start)
@@ -20,18 +20,15 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
-import gc
 import io
 import json
 import os
 import platform
-import shutil
 import socket
-import sqlite3
+from mesh.sqlite_runtime import sqlite3
 import statistics
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import uuid
@@ -39,6 +36,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 import numpy as np
+
+from benchmarks.isolation import isolated_benchmark_home
 
 
 def _percentile(sorted_vals: list[float], pct: float) -> float:
@@ -67,19 +66,25 @@ class BenchmarkRecorder:
         warmup: int = 2,
         notes: str = "",
     ) -> dict[str, Any]:
+        warmup_errors: list[str] = []
         for w in range(warmup):
-            fn(-1 - w)
+            try:
+                _validate_benchmark_result(fn(-1 - w))
+            except Exception as exc:
+                warmup_errors.append(type(exc).__name__)
 
         timings_ms: list[float] = []
         errors: list[str] = []
         for i in range(iterations):
             t0 = time.perf_counter_ns()
             try:
-                fn(i)
+                result = fn(i)
+                t1 = time.perf_counter_ns()
+                _validate_benchmark_result(result)
             except Exception as exc:
-                errors.append(f"{type(exc).__name__}: {exc}")
-            t1 = time.perf_counter_ns()
-            timings_ms.append((t1 - t0) / 1_000_000.0)
+                errors.append(type(exc).__name__)
+            else:
+                timings_ms.append((t1 - t0) / 1_000_000.0)
 
         s = sorted(timings_ms)
         under_target = sum(1 for x in s if x <= self.target_ms)
@@ -87,6 +92,9 @@ class BenchmarkRecorder:
             "surface": surface,
             "operation": operation,
             "iterations": iterations,
+            "successful_iterations": len(timings_ms),
+            "error_count": len(errors),
+            "warmup_error_count": len(warmup_errors),
             "p50_ms": round(_percentile(s, 50), 3),
             "p95_ms": round(_percentile(s, 95), 3),
             "p99_ms": round(_percentile(s, 99), 3),
@@ -94,13 +102,15 @@ class BenchmarkRecorder:
             "min_ms": round(s[0], 3) if s else 0.0,
             "max_ms": round(s[-1], 3) if s else 0.0,
             "pct_under_5ms": round((under_target / len(s)) * 100.0, 1) if s else 0.0,
-            "meets_5ms_p50": _percentile(s, 50) <= self.target_ms,
-            "meets_5ms_p95": _percentile(s, 95) <= self.target_ms,
+            "meets_5ms_p50": bool(s) and not errors and not warmup_errors and _percentile(s, 50) <= self.target_ms,
+            "meets_5ms_p95": bool(s) and not errors and not warmup_errors and _percentile(s, 95) <= self.target_ms,
             "errors": errors[:3],
+            "warmup_errors": warmup_errors[:3],
             "notes": notes,
+            "measurement_boundary": "in_process_handler" if surface == "mcp_handler_inproc" else surface,
         }
         self.records.append(entry)
-        status_tag = "PASS" if entry["meets_5ms_p50"] else "SLOW"
+        status_tag = "ERROR" if errors or warmup_errors else "PASS" if entry["meets_5ms_p50"] else "SLOW"
         err_tag = f" [ERR: {len(errors)}]" if errors else ""
         print(
             f"  [{status_tag:4s}] {surface:14s} | {operation:44s} | "
@@ -108,6 +118,28 @@ class BenchmarkRecorder:
             f"min: {entry['min_ms']:7.3f} ms{err_tag}"
         )
         return entry
+
+
+def _validate_benchmark_result(result: Any) -> None:
+    """Do not count rejected calls or failing subprocesses as fast successful operations."""
+    if isinstance(result, subprocess.CompletedProcess) and result.returncode != 0:
+        raise RuntimeError("Benchmark subprocess failed.")
+    if isinstance(result, (tuple, list)):
+        for value in result:
+            _validate_benchmark_result(value)
+    if isinstance(result, dict) and (result.get("status") in ("error", "rejected") or result.get("error") or result.get("isError") is True):
+        raise RuntimeError("Benchmark operation was rejected.")
+    if getattr(result, "isError", False) is True:
+        raise RuntimeError("Benchmark MCP operation was rejected.")
+    status = getattr(result, "status_code", None)
+    if isinstance(status, int) and status >= 400:
+        raise RuntimeError("Benchmark HTTP operation was rejected.")
+    if isinstance(status, int):
+        try:
+            payload = result.json()
+        except (ValueError, AttributeError):
+            return
+        _validate_benchmark_result(payload)
 
 
 def _free_port() -> int:
@@ -120,7 +152,7 @@ _PERSISTENT_ASGI = False  # --persistent-asgi
 _SEPARATE_SERVER = False  # --separate-server
 
 
-def _make_client(asgi_app, base_url):
+def _make_client(asgi_app, base_url, stack):
     """ASGI test client. Starlette's TestClient starts a new anyio portal THREAD for every request unless it
     is used as a context manager; --persistent-asgi keeps one portal for the whole run so the numbers measure
     the server, not the harness."""
@@ -128,37 +160,64 @@ def _make_client(asgi_app, base_url):
 
     client = TestClient(asgi_app, base_url=base_url)
     if _PERSISTENT_ASGI:
-        client.__enter__()
+        stack.enter_context(client)
+    else:
+        stack.callback(client.close)
     return client
 
 
-def _copy_existing_onnx_models_if_present(real_home: Path, temp_mesh_home: Path) -> bool:
-    """
-    If the user already has ~/.mesh/models downloaded, symlink or copy it into the
-    isolated benchmark MESH_HOME so we benchmark real ONNX inference without network calls.
-    """
-    candidates = [
-        real_home / ".mesh" / "models",
-    ]
-    env_override = os.environ.get("MESH_HOME") or os.environ.get("MESH_DIR")
-    if env_override:
-        candidates.insert(0, Path(env_override).expanduser() / "models")
+@contextlib.contextmanager
+def _live_http_server(http_app, port):
+    """Always stop the server, including failed warmups and partial startup."""
+    import uvicorn
 
-    for src in candidates:
-        if src.is_dir() and any(src.iterdir()):
-            dst = temp_mesh_home / "models"
+    process = None
+    server = None
+    server_thread = None
+    original_proxy = os.environ.get("MESH_NO_DAEMON_PROXY")
+    try:
+        if _SEPARATE_SERVER:
+            process = subprocess.Popen(
+                [sys.executable, "-m", "uvicorn", "mesh.http_server:app", "--host", "127.0.0.1", "--port", str(port), "--log-level", "error"],
+                env=dict(os.environ), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        else:
+            server = uvicorn.Server(uvicorn.Config(http_app, host="127.0.0.1", port=port, log_level="error"))
+            server_thread = threading.Thread(target=server.run, daemon=True)
+            server_thread.start()
+        ready = False
+        for _ in range(50):
+            if process is not None and process.poll() is not None:
+                break
             try:
-                if os.name != "nt":
-                    dst.symlink_to(src, target_is_directory=True)
-                else:
-                    shutil.copytree(src, dst, dirs_exist_ok=True)
-                status_src = src.parent / "model_status.json"
-                if status_src.is_file():
-                    shutil.copy2(status_src, temp_mesh_home / "model_status.json")
-                return True
-            except Exception:
-                pass
-    return False
+                with socket.create_connection(("127.0.0.1", port), timeout=0.1):
+                    ready = True
+                    break
+            except OSError:
+                time.sleep(0.05)
+        if not ready:
+            raise RuntimeError("Benchmark HTTP server did not start.")
+        os.environ["MESH_NO_DAEMON_PROXY"] = "0"
+        yield
+    finally:
+        if server is not None:
+            server.should_exit = True
+        if server_thread is not None:
+            server_thread.join(timeout=5)
+            if server_thread.is_alive():
+                server.force_exit = True
+                server_thread.join(timeout=2)
+        if process is not None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+        if original_proxy is None:
+            os.environ.pop("MESH_NO_DAEMON_PROXY", None)
+        else:
+            os.environ["MESH_NO_DAEMON_PROXY"] = original_proxy
 
 
 def _seed_bulk_memories(mesh_inst: Any, count: int) -> None:
@@ -230,15 +289,12 @@ def _seed_bulk_memories(mesh_inst: Any, count: int) -> None:
         store._invalidate_cache()
 
 
-def run_all_benchmarks(iters: int = 25) -> dict[str, Any]:
-    real_home = Path.home()
-    temp_root = Path(tempfile.mkdtemp(prefix="mesh_bench_all_"))
-    mesh_home = temp_root / ".mesh"
-    mesh_home.mkdir(parents=True, exist_ok=True)
+def run_all_benchmarks(iters: int = 25, model_dir: Path | None = None) -> dict[str, Any]:
+    with isolated_benchmark_home(model_dir) as (temporary_root, models_copied), contextlib.ExitStack() as stack:
+        return _run_all_benchmarks(iters, models_copied, stack, temporary_root)
 
-    models_copied = _copy_existing_onnx_models_if_present(real_home, mesh_home)
 
-    os.environ["MESH_HOME"] = str(mesh_home)
+def _run_all_benchmarks(iters: int, models_copied: bool, stack: contextlib.ExitStack, temp_root: Path) -> dict[str, Any]:
     os.environ["MESH_NO_AUTO_DAEMON"] = "1"
     os.environ["MESH_NO_DAEMON_PROXY"] = "1"
     os.environ["MESH_AUTO_APPROVE"] = "0"
@@ -760,21 +816,22 @@ def run_all_benchmarks(iters: int = 25) -> dict[str, Any]:
     )
 
     # =========================================================================
-    # 5. MCP SERVER SURFACE (call_tool across all MCP tools)
+    # 5. IN-PROCESS MCP HANDLERS (does not measure MCP framing or pipe latency)
     # =========================================================================
-    print("\n--- [5/7] MCP Server Surface (mesh.mcp_server) ---")
+    print("\n--- [5/7] In-process MCP handlers (excludes transport latency) ---")
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
+    stack.callback(loop.close)
 
     rec.measure(
-        "mcp_server",
+        "mcp_handler_inproc",
         "list_tools()",
         lambda i: loop.run_until_complete(list_tools()),
         iterations=iters,
     )
     rec.measure(
-        "mcp_server",
+        "mcp_handler_inproc",
         "call_tool('mesh_project_brief')",
         lambda i: loop.run_until_complete(
             call_tool("mesh_project_brief", {"namespace": "bench_sdk", "max_tokens": 500})
@@ -782,7 +839,7 @@ def run_all_benchmarks(iters: int = 25) -> dict[str, Any]:
         iterations=iters,
     )
     rec.measure(
-        "mcp_server",
+        "mcp_handler_inproc",
         "call_tool('mesh_learn')",
         lambda i: loop.run_until_complete(
             call_tool(
@@ -798,7 +855,7 @@ def run_all_benchmarks(iters: int = 25) -> dict[str, Any]:
         iterations=max(10, iters // 2),
     )
     rec.measure(
-        "mcp_server",
+        "mcp_handler_inproc",
         "call_tool('mesh_recall')",
         lambda i: loop.run_until_complete(
             call_tool("mesh_recall", {"query": "Redis port", "n": 5, "namespace": "bench_sdk"})
@@ -806,7 +863,7 @@ def run_all_benchmarks(iters: int = 25) -> dict[str, Any]:
         iterations=iters,
     )
     rec.measure(
-        "mcp_server",
+        "mcp_handler_inproc",
         "call_tool('mesh_inspect')",
         lambda i: loop.run_until_complete(
             call_tool("mesh_inspect", {"limit": 20, "namespace": "bench_sdk"})
@@ -814,7 +871,7 @@ def run_all_benchmarks(iters: int = 25) -> dict[str, Any]:
         iterations=iters,
     )
     rec.measure(
-        "mcp_server",
+        "mcp_handler_inproc",
         "call_tool('mesh_context')",
         lambda i: loop.run_until_complete(
             call_tool("mesh_context", {"count": 10, "format": "markdown", "namespace": "bench_sdk"})
@@ -822,7 +879,7 @@ def run_all_benchmarks(iters: int = 25) -> dict[str, Any]:
         iterations=iters,
     )
     rec.measure(
-        "mcp_server",
+        "mcp_handler_inproc",
         "call_tool('mesh_task_create')",
         lambda i: loop.run_until_complete(
             call_tool(
@@ -833,7 +890,7 @@ def run_all_benchmarks(iters: int = 25) -> dict[str, Any]:
         iterations=max(10, iters // 2),
     )
     rec.measure(
-        "mcp_server",
+        "mcp_handler_inproc",
         "call_tool('mesh_task_list')",
         lambda i: loop.run_until_complete(
             call_tool("mesh_task_list", {"status": "open", "namespace": "bench_sdk"})
@@ -841,7 +898,7 @@ def run_all_benchmarks(iters: int = 25) -> dict[str, Any]:
         iterations=iters,
     )
     rec.measure(
-        "mcp_server",
+        "mcp_handler_inproc",
         "call_tool('mesh_log')",
         lambda i: loop.run_until_complete(
             call_tool("mesh_log", {"since": "7d", "format": "markdown", "namespace": "bench_sdk"})
@@ -849,7 +906,7 @@ def run_all_benchmarks(iters: int = 25) -> dict[str, Any]:
         iterations=iters,
     )
     rec.measure(
-        "mcp_server",
+        "mcp_handler_inproc",
         "call_tool('mesh_patterns')",
         lambda i: loop.run_until_complete(
             call_tool("mesh_patterns", {"namespace": "bench_sdk"})
@@ -857,7 +914,7 @@ def run_all_benchmarks(iters: int = 25) -> dict[str, Any]:
         iterations=iters,
     )
     rec.measure(
-        "mcp_server",
+        "mcp_handler_inproc",
         "call_tool('mesh_contradictions')",
         lambda i: loop.run_until_complete(
             call_tool("mesh_contradictions", {"namespace": "bench_sdk"})
@@ -873,7 +930,7 @@ def run_all_benchmarks(iters: int = 25) -> dict[str, Any]:
 
     token = get_or_create_auth_token()
     auth_headers = {"Authorization": f"Bearer {token}", "X-Mesh-Token": token}
-    http_client = _make_client(http_app, "http://127.0.0.1:7701")
+    http_client = _make_client(http_app, "http://127.0.0.1:7701", stack)
 
     rec.measure(
         "http_asgi",
@@ -957,7 +1014,7 @@ def run_all_benchmarks(iters: int = 25) -> dict[str, Any]:
     )
 
     # Dashboard ASGI
-    dash_client = _make_client(dash_app, "http://127.0.0.1:7433")
+    dash_client = _make_client(dash_app, "http://127.0.0.1:7433", stack)
     rec.measure(
         "dashboard_asgi",
         "GET / (HTML + session handshake)",
@@ -1020,81 +1077,36 @@ def run_all_benchmarks(iters: int = 25) -> dict[str, Any]:
         iterations=iters,
     )
 
-    # Live Uvicorn Loopback TCP Server Test (measures real socket + cli._daemon_request overhead)
-    import uvicorn
-
+    # Live loopback TCP includes socket and authenticated client identity work.
     live_port = _free_port()
     os.environ["MESH_HTTP_PORT"] = str(live_port)
-    server = None
-    server_thread = None
-    server_proc = None
-    if _SEPARATE_SERVER:
-        # real daemon in its own process: no shared GIL / timer granularity with the measuring client
-        _srv_env = dict(os.environ)
-        _srv_env["PYTHONPATH"] = str(Path(__file__).resolve().parent) + (
-            os.pathsep + _srv_env["PYTHONPATH"] if _srv_env.get("PYTHONPATH") else ""
-        )
-        server_proc = subprocess.Popen(
-            [sys.executable, "-m", "mesh.http_server", "--port", str(live_port), "--no-warmup", "--yes"],
-            env=_srv_env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    else:
-        config = uvicorn.Config(http_app, host="127.0.0.1", port=live_port, log_level="error")
-        server = uvicorn.Server(config)
-        server_thread = threading.Thread(target=server.run, daemon=True)
-        server_thread.start()
-
-    # Wait for live server to accept connections
-    for _ in range(50):
-        try:
-            with socket.create_connection(("127.0.0.1", live_port), timeout=0.1):
-                break
-        except OSError:
-            time.sleep(0.05)
-
-    os.environ["MESH_NO_DAEMON_PROXY"] = "0"
     from mesh.cli import _daemon_request
     from mesh.daemon import invalidate_daemon_identity_cache
 
-    rec.measure(
-        "http_live_tcp",
-        "cli._daemon_request (cold identity cache)",
-        lambda i: (
-            invalidate_daemon_identity_cache("127.0.0.1", live_port),
-            _daemon_request(
+    with _live_http_server(http_app, live_port):
+        rec.measure(
+            "http_live_tcp",
+            "cli._daemon_request (cold identity cache)",
+            lambda i: (
+                invalidate_daemon_identity_cache("127.0.0.1", live_port),
+                _daemon_request(
+                    "/recall",
+                    payload={"query": "Redis port", "n": 5, "namespace": "bench_sdk"},
+                    host="127.0.0.1", port=live_port,
+                ),
+            ),
+            iterations=max(10, iters // 2),
+        )
+        rec.measure(
+            "http_live_tcp",
+            "cli._daemon_request (warm identity cache)",
+            lambda i: _daemon_request(
                 "/recall",
                 payload={"query": "Redis port", "n": 5, "namespace": "bench_sdk"},
-                host="127.0.0.1",
-                port=live_port,
+                host="127.0.0.1", port=live_port,
             ),
-        ),
-        iterations=max(10, iters // 2),
-    )
-    rec.measure(
-        "http_live_tcp",
-        "cli._daemon_request (warm identity cache)",
-        lambda i: _daemon_request(
-            "/recall",
-            payload={"query": "Redis port", "n": 5, "namespace": "bench_sdk"},
-            host="127.0.0.1",
-            port=live_port,
-        ),
-        iterations=iters,
-    )
-
-    if server is not None:
-        server.should_exit = True
-    if server_thread is not None:
-        server_thread.join(timeout=3.0)
-    if server_proc is not None:
-        server_proc.terminate()
-        try:
-            server_proc.wait(timeout=5.0)
-        except subprocess.TimeoutExpired:
-            server_proc.kill()
-    os.environ["MESH_NO_DAEMON_PROXY"] = "1"
+            iterations=iters,
+        )
 
     # =========================================================================
     # 7. CLI SURFACE (In-Process CLI Dispatch vs. OS Subprocess Cold Start)
@@ -1112,8 +1124,9 @@ def run_all_benchmarks(iters: int = 25) -> dict[str, Any]:
             with contextlib.redirect_stdout(buf_out), contextlib.redirect_stderr(buf_err):
                 try:
                     cli_mod.main()
-                except SystemExit:
-                    pass
+                except SystemExit as exc:
+                    if exc.code not in (None, 0):
+                        raise RuntimeError("Benchmark CLI operation failed.") from exc
         finally:
             sys.argv = old_argv
 
@@ -1207,10 +1220,6 @@ def run_all_benchmarks(iters: int = 25) -> dict[str, Any]:
         warmup=1,
     )
 
-    # Cleanup
-    gc.collect()
-    shutil.rmtree(temp_root, ignore_errors=True)
-
     # Summary stats
     total_ops = len(rec.records)
     passing_p50 = sum(1 for r in rec.records if r["meets_5ms_p50"])
@@ -1259,10 +1268,11 @@ def run_all_benchmarks(iters: int = 25) -> dict[str, Any]:
     }
 
 
-def main() -> None:
+def main() -> int:
     parser = argparse.ArgumentParser(description="Run full Mesh baseline latency profiler.")
     parser.add_argument("--iterations", "-n", type=int, default=25, help="Iterations per operation (default: 25)")
     parser.add_argument("--output", "-o", default="mesh_baseline_report.json", help="Output JSON report path")
+    parser.add_argument("--model-dir", type=Path, help="Explicit regular local model directory to copy into the temporary benchmark home.")
     parser.add_argument(
         "--persistent-asgi",
         action="store_true",
@@ -1277,11 +1287,12 @@ def main() -> None:
     globals()["_PERSISTENT_ASGI"] = bool(args.persistent_asgi)
     globals()["_SEPARATE_SERVER"] = bool(args.separate_server)
 
-    report = run_all_benchmarks(iters=max(5, args.iterations))
+    report = run_all_benchmarks(iters=max(5, args.iterations), model_dir=args.model_dir)
     out_path = Path(args.output).resolve()
     out_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(f"\nSaved full baseline report to: {out_path}")
+    return 1 if any(item["error_count"] or item["warmup_error_count"] for item in report["benchmarks"]) else 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

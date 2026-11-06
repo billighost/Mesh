@@ -1,238 +1,308 @@
-"""
-benchmarks/concurrency_stress.py — High-concurrency stress test for Mesh.
-Validates multi-threading and multi-processing thread/process safety,
-lock serialization (BEGIN IMMEDIATE + cross-process file locks), and zero duplicate
-records under race conditions.
+"""Concurrent guarded SDK writes with verified counts and full-home isolation.
 
-Run:
-    python benchmarks/concurrency_stress.py
+Run: python benchmarks/concurrency_stress.py --output concurrency.json
 """
 from __future__ import annotations
 
+import argparse
 import concurrent.futures
 import json
 import multiprocessing as mp
-import os
+import platform
 import sys
+import threading
 import time
 import uuid
-from typing import Any, Dict, List
+from collections import Counter
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Callable
 
-# Console UTF-8 handling on Windows
-if hasattr(sys.stdout, "reconfigure"):
-    try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-    except Exception:
-        pass
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from benchmarks.isolation import isolated_benchmark_home
 
 
-def _worker_process_learn(ns: str, worker_id: int, items_per_worker: int) -> int:
-    """Worker process function executed across separate OS processes."""
-    # Ensure worker has isolated env
-    os.environ["MESH_NO_AUTO_DAEMON"] = "1"
-    os.environ["MESH_AUTO_APPROVE"] = "0"
+@dataclass
+class _WriteTally:
+    attempted: int = 0
+    inserted: int = 0
+    deduplicated: int = 0
+    failed: int = 0
+    error_classes: Counter[str] = field(default_factory=Counter)
 
+    def record(self, result: Any) -> None:
+        if not isinstance(result, dict) or result.get("error") or result.get("status") not in ("stored", "stored_with_conflict"):
+            self.failed += 1
+            self.error_classes["RejectedOrInvalidResult"] += 1
+            return
+        disposition = result.get("disposition")
+        if disposition is None:
+            disposition = "deduplicated" if result.get("deduplicated") is True else "inserted"
+        if disposition == "deduplicated" and result.get("memory_id"):
+            self.deduplicated += 1
+        elif disposition == "inserted" and result.get("memory_id"):
+            self.inserted += 1
+        else:
+            self.failed += 1
+            self.error_classes["UnknownDisposition"] += 1
+
+    def merge(self, other: "_WriteTally") -> None:
+        self.attempted += other.attempted
+        self.inserted += other.inserted
+        self.deduplicated += other.deduplicated
+        self.failed += other.failed
+        self.error_classes.update(other.error_classes)
+
+    def report(self, submitted: int | None = None) -> dict[str, Any]:
+        return {
+            "submitted": self.attempted if submitted is None else submitted,
+            "attempted": self.attempted,
+            "committed_operations": self.inserted + self.deduplicated,
+            "inserted": self.inserted,
+            "deduplicated": self.deduplicated,
+            "failed": self.failed,
+            "unattempted": 0 if submitted is None else submitted - self.attempted,
+            "error_classes": dict(self.error_classes),
+        }
+
+
+def _collect_futures(futures: list[Any]) -> tuple[list[Any], Counter[str]]:
+    """Observe every completed task, even when an earlier future failed."""
+    results = []
+    errors: Counter[str] = Counter()
+    for future in concurrent.futures.as_completed(futures):
+        try:
+            results.append(future.result())
+        except Exception as exc:
+            errors[type(exc).__name__] += 1
+    return results, errors
+
+
+def _learn_items(namespace: str, worker_id: str, count: int, content: Callable[[int], str]) -> _WriteTally:
     from mesh.memory import Mesh
 
-    mesh = Mesh(namespace=ns, agent_id=f"mp-worker-{worker_id}")
-    stored = 0
-    for i in range(items_per_worker):
-        res = mesh.learn(
-            content=f"Fact from worker {worker_id} item {i}: system parameter is {worker_id * 1000 + i}",
-            memory_type="fact",
-            tags=[f"worker-{worker_id}", "concurrency-test"],
-        )
-        if res.get("status") in ("stored", "updated", "reinforced"):
-            stored += 1
-    return stored
+    tally = _WriteTally()
+    with Mesh(namespace=namespace, agent_id=worker_id) as mesh:
+        for index in range(count):
+            tally.attempted += 1
+            try:
+                tally.record(mesh.learn(content(index), memory_type="fact", tags=["concurrency-test", worker_id]))
+            except Exception as exc:
+                tally.failed += 1
+                tally.error_classes[type(exc).__name__] += 1
+    return tally
 
 
-def run_concurrency_stress() -> Dict[str, Any]:
+def _worker_process_learn(namespace: str, worker_id: int, count: int) -> _WriteTally:
+    # Spawned workers inherit the coordinator's temporary homes and no-cloud flags.
+    return _learn_items(
+        namespace, f"process-{worker_id}", count,
+        lambda index: f"Process benchmark fact process-{worker_id}-item-{index}: key=mp-{worker_id}-{index}",
+    )
+
+
+def _write_phase(
+    mesh: Any, submitted: int, before: int, worker_results: list[_WriteTally],
+    worker_errors: Counter[str], elapsed: float, expected_new: int | None = None,
+) -> dict[str, Any]:
+    tally = _WriteTally()
+    for result in worker_results:
+        tally.merge(result)
+    report = tally.report(submitted)
+    new_records = mesh.count() - before
+    integrity_ok = new_records == tally.inserted
+    if expected_new is not None:
+        integrity_ok = integrity_ok and new_records == expected_new
+    passed = (
+        not worker_errors and report["failed"] == 0 and report["unattempted"] == 0
+        and report["committed_operations"] == submitted and integrity_ok
+    )
+    report.update({
+        "elapsed_seconds": round(elapsed, 6),
+        "verified_new_records": new_records,
+        "count_integrity_ok": integrity_ok,
+        "worker_errors": dict(worker_errors),
+        "new_records_per_second": round(new_records / elapsed, 3) if elapsed > 0 else 0,
+        "committed_operations_per_second": round(report["committed_operations"] / elapsed, 3) if elapsed > 0 else 0,
+        "status": "PASSED" if passed else "FAILED",
+    })
+    return report
+
+
+def _interleaved(
+    mesh: Any, namespace: str, readers: int, writers: int, duration: float,
+) -> dict[str, Any]:
     from mesh.memory import Mesh
-    from mesh.namespaces import delete_namespace
 
-    ns = f"stress-{uuid.uuid4().hex[:8]}"
-    mesh = Mesh(namespace=ns, agent_id="stress-coordinator")
+    stop = threading.Event()
+    before = mesh.count()
 
-    print("\n" + "=" * 80)
-    print("  MESH CONCURRENCY STRESS & INTEGRITY SUITE")
-    print(f"  Target Namespace: {ns}")
-    print("=" * 80)
+    def reader(worker_id: int) -> dict[str, Any]:
+        attempted = completed = failed = 0
+        error_classes: Counter[str] = Counter()
+        with Mesh(namespace=namespace, agent_id=f"reader-{worker_id}") as client:
+            while not stop.is_set():
+                attempted += 1
+                try:
+                    client.recall("primary cluster gateway interface", n=5)
+                    completed += 1
+                except Exception as exc:
+                    failed += 1
+                    error_classes[type(exc).__name__] += 1
+                    stop.set()
+        return {"kind": "reader", "attempted": attempted, "completed": completed, "failed": failed, "errors": dict(error_classes)}
 
-    results: Dict[str, Any] = {}
+    def writer(worker_id: int) -> dict[str, Any]:
+        tally = _WriteTally()
+        with Mesh(namespace=namespace, agent_id=f"stream-{worker_id}") as client:
+            while not stop.is_set():
+                index = tally.attempted
+                tally.attempted += 1
+                try:
+                    tally.record(client.learn(
+                        f"Streaming benchmark key=stream-{worker_id}-{index}: sequence={index}",
+                        memory_type="fact", tags=["stream", "concurrency-test"],
+                    ))
+                    if tally.failed:
+                        stop.set()
+                except Exception as exc:
+                    tally.failed += 1
+                    tally.error_classes[type(exc).__name__] += 1
+                    stop.set()
+        return {"kind": "writer", "tally": tally}
 
-    try:
-        # ── Test 1: Deduplication Race Condition ──────────────────────────────
-        print("\n[ 1/4 ] DEDUPLICATION RACE: 16 parallel threads learning identical fact simultaneously...")
-        dup_content = "Critical config: primary cluster gateway is 10.0.0.1 on interface eth0"
-        num_threads = 16
+    started = time.perf_counter()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=readers + writers) as executor:
+        futures = [executor.submit(reader, worker) for worker in range(readers)]
+        futures += [executor.submit(writer, worker) for worker in range(writers)]
+        try:
+            stop.wait(duration)
+        finally:
+            stop.set()
+        collected, worker_errors = _collect_futures(futures)
+    elapsed = time.perf_counter() - started
+    read_results = [result for result in collected if result["kind"] == "reader"]
+    write_results = [result["tally"] for result in collected if result["kind"] == "writer"]
+    read_attempted = sum(result["attempted"] for result in read_results)
+    read_completed = sum(result["completed"] for result in read_results)
+    read_failed = sum(result["failed"] for result in read_results)
+    write_report = _write_phase(
+        mesh, sum(result.attempted for result in write_results), before,
+        write_results, worker_errors, elapsed,
+    )
+    passed = write_report["status"] == "PASSED" and read_failed == 0 and read_completed > 0 and write_report["attempted"] > 0
+    return {
+        "readers": readers, "writers": writers, "requested_duration_seconds": duration,
+        "elapsed_seconds": round(elapsed, 6),
+        "reads": {"attempted": read_attempted, "completed": read_completed, "failed": read_failed},
+        "writes": write_report,
+        "completed_reads_per_second": round(read_completed / elapsed, 3),
+        "worker_errors": dict(worker_errors), "status": "PASSED" if passed else "FAILED",
+    }
 
-        def _dup_worker(tid: int):
-            m = Mesh(namespace=ns, agent_id=f"thread-{tid}")
-            return m.learn(
-                content=dup_content,
-                memory_type="fact",
-                tags=["critical", f"t-{tid}"],
+
+def run_concurrency_stress(
+    *, threads: int = 16, writes_per_thread: int = 20, processes: int = 4,
+    items_per_process: int = 25, interleaved_seconds: float = 2.0,
+    model_dir: Path | None = None,
+) -> dict[str, Any]:
+    if not 2 <= threads <= 64 or not 1 <= processes <= 16:
+        raise ValueError("Use 2–64 threads and 1–16 processes.")
+    if writes_per_thread < 1 or items_per_process < 1 or not 0 < interleaved_seconds <= 60:
+        raise ValueError("Item counts and the bounded interleaved duration must be positive.")
+
+    with isolated_benchmark_home(model_dir) as (temporary_root, models_copied):
+        from mesh.memory import Mesh, get_engine_status
+        from mesh.version import VERSION
+
+        namespace = f"stress-{uuid.uuid4().hex[:8]}"
+        with Mesh(namespace=namespace, agent_id="stress-coordinator") as mesh:
+            results: dict[str, Any] = {
+                "mesh_version": VERSION,
+                "python_version": platform.python_version(),
+                "platform": platform.platform(),
+                "surface": "guarded_sdk",
+                "isolation": "temporary Mesh, home, and agent configuration directories",
+                "explicit_models_copied": models_copied,
+            }
+            duplicate = "Critical config: primary cluster gateway is 10.0.0.1 on interface eth0"
+            before = mesh.count()
+            started = time.perf_counter()
+            with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
+                futures = [
+                    executor.submit(_learn_items, namespace, f"duplicate-{worker}", 1, lambda index: duplicate)
+                    for worker in range(threads)
+                ]
+                collected, errors = _collect_futures(futures)
+            results["dedup_race"] = _write_phase(mesh, threads, before, collected, errors, time.perf_counter() - started, expected_new=1)
+
+            before = mesh.count()
+            started = time.perf_counter()
+            with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
+                futures = [
+                    executor.submit(
+                        _learn_items, namespace, f"writer-{worker}", writes_per_thread,
+                        lambda index, worker=worker: f"Distinct benchmark key=thread-{worker}-{index}: value={worker * 1000 + index}",
+                    )
+                    for worker in range(threads)
+                ]
+                collected, errors = _collect_futures(futures)
+            results["multi_writer"] = _write_phase(
+                mesh, threads * writes_per_thread, before, collected, errors,
+                time.perf_counter() - started, expected_new=threads * writes_per_thread,
             )
 
-        t0 = time.perf_counter()
-        with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
-            list(executor.map(_dup_worker, range(num_threads)))
-        elapsed_dup = time.perf_counter() - t0
+            readers = max(1, threads // 2)
+            results["interleaved"] = _interleaved(mesh, namespace, readers, threads - readers, interleaved_seconds)
 
-        all_memories = mesh.inspect(limit=100)
-        stored_count = len(all_memories)
+            before = mesh.count()
+            started = time.perf_counter()
+            with concurrent.futures.ProcessPoolExecutor(max_workers=processes, mp_context=mp.get_context("spawn")) as executor:
+                futures = [
+                    executor.submit(_worker_process_learn, namespace, worker, items_per_process)
+                    for worker in range(processes)
+                ]
+                collected, errors = _collect_futures(futures)
+            results["multi_process"] = _write_phase(
+                mesh, processes * items_per_process, before, collected, errors,
+                time.perf_counter() - started, expected_new=processes * items_per_process,
+            )
+            results["embedding_engine"] = get_engine_status()
+            results["final_verified_records"] = mesh.count()
+            phases = ("dedup_race", "multi_writer", "interleaved", "multi_process")
+            results["status"] = "PASSED" if all(results[phase]["status"] == "PASSED" for phase in phases) else "FAILED"
+            for phase in phases:
+                print(f"{phase}: {results[phase]['status']}")
+            print(f"Verified stored records: {results['final_verified_records']}; run: {results['status']}")
+            return results
 
-        assert stored_count == 1, f"Expected exactly 1 memory stored, got {stored_count}!"
-        print(
-            f"  ✅ PASSED: 16 simultaneous writes converged to exactly 1 memory in {elapsed_dup * 1000.0:.2f}ms. "
-            f"Zero duplicates created."
-        )
-        results["dedup_race"] = {
-            "threads": num_threads,
-            "elapsed_ms": round(elapsed_dup * 1000.0, 2),
-            "final_count": stored_count,
-            "status": "PASSED",
-        }
 
-        # ── Test 2: Highly Contended Simultaneous Multi-Writer ────────────────
-        print("\n[ 2/4 ] MULTI-WRITER CONTENTION: 16 threads each writing 20 distinct memories (320 writes)...")
-        writes_per_thread = 20
-        total_distinct = num_threads * writes_per_thread
-
-        def _distinct_worker(tid: int):
-            m = Mesh(namespace=ns, agent_id=f"writer-{tid}")
-            for i in range(writes_per_thread):
-                m.learn(
-                    content=f"Distinct fact from thread {tid} index {i}: value is {tid * 100 + i}",
-                    memory_type="fact",
-                    tags=[f"thread-{tid}", "distinct"],
-                )
-
-        t0 = time.perf_counter()
-        with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
-            list(executor.map(_distinct_worker, range(num_threads)))
-        elapsed_distinct = time.perf_counter() - t0
-
-        final_memories = mesh.inspect(limit=total_distinct + 50)
-        # 1 from test 1 + 320 from test 2 = 321
-        expected_total = 1 + total_distinct
-        actual_total = len(final_memories)
-        assert actual_total == expected_total, (
-            f"Expected {expected_total} memories, found {actual_total}!"
-        )
-        throughput = total_distinct / elapsed_distinct
-        print(
-            f"  ✅ PASSED: 320 concurrent writes completed in {elapsed_distinct:.2f}s "
-            f"({throughput:.1f} writes/sec). Zero database locks or corruptions."
-        )
-        results["multi_writer"] = {
-            "threads": num_threads,
-            "total_writes": total_distinct,
-            "elapsed_seconds": round(elapsed_distinct, 2),
-            "throughput_wps": round(throughput, 1),
-            "status": "PASSED",
-        }
-
-        # ── Test 3: Interleaved Concurrent Readers and Writers ─────────────────
-        print("\n[ 3/4 ] INTERLEAVED READERS & WRITERS: 8 readers + 8 writers running concurrently...")
-        stop_flag = False
-        read_ops = [0]
-        write_ops = [0]
-
-        def _reader_loop(rid: int):
-            m = Mesh(namespace=ns, agent_id=f"reader-{rid}")
-            while not stop_flag:
-                m.recall("primary cluster gateway interface", n=5)
-                read_ops[0] += 1
-                time.sleep(0.005)
-
-        def _writer_loop(wid: int):
-            m = Mesh(namespace=ns, agent_id=f"stream-writer-{wid}")
-            ctr = 0
-            while not stop_flag:
-                m.learn(
-                    content=f"Streaming event from writer {wid} #{ctr}: code={ctr * 7}",
-                    tags=["stream"],
-                )
-                write_ops[0] += 1
-                ctr += 1
-                time.sleep(0.01)
-
-        t0 = time.perf_counter()
-        with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
-            # Launch 8 readers and 8 writers
-            futures = [executor.submit(_reader_loop, i) for i in range(8)]
-            futures += [executor.submit(_writer_loop, i) for i in range(8)]
-            # Run for 2.0 seconds
-            time.sleep(2.0)
-            stop_flag = True
-            concurrent.futures.wait(futures, timeout=5.0)
-        elapsed_interleaved = time.perf_counter() - t0
-
-        print(
-            f"  ✅ PASSED: Completed {read_ops[0]} reads and {write_ops[0]} writes in {elapsed_interleaved:.2f}s. "
-            f"Zero deadlocks or cache inconsistencies."
-        )
-        results["interleaved"] = {
-            "read_ops": read_ops[0],
-            "write_ops": write_ops[0],
-            "duration_seconds": round(elapsed_interleaved, 2),
-            "status": "PASSED",
-        }
-
-        # ── Test 4: Multi-Process Isolation & Advisory File Locking ───────────
-        print("\n[ 4/4 ] MULTI-PROCESS ISOLATION: 4 separate OS processes accessing the same WAL file...")
-        mp_context = mp.get_context("spawn")
-        num_procs = 4
-        items_per_proc = 25
-
-        t0 = time.perf_counter()
-        with concurrent.futures.ProcessPoolExecutor(
-            max_workers=num_procs, mp_context=mp_context
-        ) as p_executor:
-            futures = [
-                p_executor.submit(_worker_process_learn, ns, i, items_per_proc)
-                for i in range(num_procs)
-            ]
-            mp_stored = sum(f.result() for f in futures)
-        elapsed_mp = time.perf_counter() - t0
-
-        print(
-            f"  ✅ PASSED: 4 OS processes wrote {mp_stored} memories across cross-process file locks "
-            f"in {elapsed_mp:.2f}s. Verified cross-process serialization."
-        )
-        results["multi_process"] = {
-            "processes": num_procs,
-            "items_per_process": items_per_proc,
-            "total_stored": mp_stored,
-            "elapsed_seconds": round(elapsed_mp, 2),
-            "status": "PASSED",
-        }
-
-        print("\n" + "=" * 80)
-        print("  ALL CONCURRENCY & INTEGRITY STRESS TESTS PASSED SUCCESSFULLY! 🎯")
-        print("=" * 80 + "\n")
-
-    finally:
-        try:
-            delete_namespace(ns)
-        except Exception:
-            pass
-
-    return results
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--json", action="store_true", help="Print the complete report as JSON.")
+    parser.add_argument("--output", type=Path, help="Write the complete report, including failures.")
+    parser.add_argument("--threads", type=int, default=16)
+    parser.add_argument("--writes-per-thread", type=int, default=20)
+    parser.add_argument("--processes", type=int, default=4)
+    parser.add_argument("--items-per-process", type=int, default=25)
+    parser.add_argument("--interleaved-seconds", type=float, default=2.0)
+    parser.add_argument("--model-dir", type=Path, help="Explicit local model directory to copy; never read the real Mesh home.")
+    arguments = parser.parse_args()
+    report = run_concurrency_stress(
+        threads=arguments.threads, writes_per_thread=arguments.writes_per_thread,
+        processes=arguments.processes, items_per_process=arguments.items_per_process,
+        interleaved_seconds=arguments.interleaved_seconds, model_dir=arguments.model_dir,
+    )
+    if arguments.output is not None:
+        arguments.output.parent.mkdir(parents=True, exist_ok=True)
+        arguments.output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    if arguments.json:
+        print(json.dumps(report, indent=2))
+    return 0 if report["status"] == "PASSED" else 1
 
 
 if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--json", action="store_true")
-    parser.add_argument("--output", type=str, default="")
-    args = parser.parse_args()
-    res = run_concurrency_stress()
-    if args.output:
-        with open(args.output, "w", encoding="utf-8") as f:
-            json.dump(res, f, indent=2)
-    if args.json:
-        print(json.dumps(res, indent=2))
+    raise SystemExit(main())

@@ -8,96 +8,114 @@ Asserts that:
 """
 import json
 import os
+import socket
 import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
 
 
-def test_daemon_cli_delegation_and_no_inprocess_model():
-    """Verify CLI ask with daemon running delegates over HTTP and does not load model in CLI."""
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        test_port = "17799"
-        env = os.environ.copy()
-        env["MESH_HOME"] = tmp_dir
-        env["MESH_PORT"] = test_port
-        env["MESH_HTTP_PORT"] = test_port
-        env["MESH_NO_UPDATE_CHECK"] = "1"
-        env["MESH_NO_MODEL_DOWNLOAD"] = "1"
-        env["MESH_NON_INTERACTIVE"] = "1"
+def _script_json(script, environment, *, timeout=45):
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    assert result.returncode == 0, f"Child process failed: {result.stderr}"
+    payloads = [line.removeprefix("TEST_RESULT=") for line in result.stdout.splitlines() if line.startswith("TEST_RESULT=")]
+    assert len(payloads) == 1, f"Expected one child result: {result.stdout}"
+    return json.loads(payloads[0])
 
-        # 1. Seed database via python script with env
-        seed_script = f"""
-import os
-os.environ['MESH_HOME'] = r'{tmp_dir}'
+
+def test_daemon_cli_delegation_and_no_inprocess_model(tmp_path: Path, record_property):
+    """Verify CLI ask with daemon running delegates over HTTP and does not load model in CLI."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        test_port = str(probe.getsockname()[1])
+    mesh_home = tmp_path / "mesh"
+    mesh_home.mkdir()
+    env = os.environ.copy()
+    env.update({
+        "MESH_HOME": str(mesh_home),
+        "MESH_DIR": str(mesh_home),
+        "MESH_PORT": test_port,
+        "MESH_HTTP_HOST": "127.0.0.1",
+        "MESH_HTTP_PORT": test_port,
+        "MESH_NO_AUTO_DAEMON": "1",
+        "MESH_NO_UPDATE_CHECK": "1",
+        "MESH_NO_MODEL_DOWNLOAD": "1",
+        "MESH_NO_IMPLICIT_CLOUD": "1",
+        "MESH_NO_DAEMON_PROXY": "0",
+        "MESH_AUTO_APPROVE": "0",
+        "MESH_ALLOW_DAEMON_DOWNLOAD": "0",
+        "MESH_ENABLE_AUTO_SYNC": "0",
+        "MESH_NON_INTERACTIVE": "1",
+    })
+
+    seed_script = """
 from mesh.memory import Mesh
 mesh = Mesh(namespace='daemon_test_ns', agent_id='eval_agent')
 mesh.learn('The cobalt telescope discovered forty-two exoplanets on sector nine.', tags=['test-fact'])
 """
-        subprocess.run([sys.executable, "-c", seed_script], env=env, check=True)
+    subprocess.run([sys.executable, "-c", seed_script], env=env, check=True, timeout=45)
 
-        # 2. Start background daemon on test_port via subprocess with explicit env
-        p_start = subprocess.run(
-            [sys.executable, "-m", "mesh", "daemon", "start", "--port", test_port, "--yes"],
+    try:
+        # The API waits for authenticated identity and readiness; no fixed delay or download approval.
+        startup = _script_json("""
+import os, sys, json
+from mesh.daemon import start_daemon
+result = start_daemon(host='127.0.0.1', port=int(os.environ['MESH_HTTP_PORT']), wait=True, wait_for_ready=True)
+print('TEST_RESULT=' + json.dumps(result))
+""", env)
+        assert startup["running"] is True, f"Daemon start failed: {startup}"
+        assert startup["ready"] is True, f"Daemon was not ready: {startup}"
+        assert startup["health"]["identity_verified"] is True
+
+        t0 = time.perf_counter()
+        result = subprocess.run(
+            [sys.executable, "-m", "mesh.cli", "ask", "forty-two exoplanets", "--namespace", "daemon_test_ns", "--json"],
             env=env,
             capture_output=True,
             text=True,
+            timeout=30,
         )
-        assert p_start.returncode == 0, f"Daemon start failed: {p_start.stderr}"
-        time.sleep(1.0)
+        record_property("cli_recall_ms", (time.perf_counter() - t0) * 1000.0)
+        assert result.returncode == 0, f"CLI command failed: {result.stderr}"
+        assert "exoplanets" in result.stdout.lower()
 
-        try:
-            # 3. Run python -m mesh.cli ask and verify output
-            t0 = time.perf_counter()
-            p = subprocess.run(
-                [sys.executable, "-m", "mesh.cli", "ask", "forty-two exoplanets", "--namespace", "daemon_test_ns", "--json"],
-                env=env,
-                capture_output=True,
-                text=True,
-            )
-            t_total = (time.perf_counter() - t0) * 1000.0
-
-            assert p.returncode == 0, f"CLI command failed: {p.stderr}"
-            assert "exoplanets" in p.stdout.lower()
-
-            # 4. Assert CLI script importing and executing did not load model in a fresh child process
-            verify_script = f"""
-import os, sys, json
-os.environ['MESH_HOME'] = r'{tmp_dir}'
-os.environ['MESH_PORT'] = '{test_port}'
-os.environ['MESH_HTTP_PORT'] = '{test_port}'
-os.environ['MESH_NO_UPDATE_CHECK'] = '1'
-
+        check_data = _script_json("""
+import sys, json
 from mesh.memory import get_engine_status
 status_before = get_engine_status()
+from mesh import cli
+daemon_calls = []
+original_request = cli._daemon_request
+def tracked_request(path, *args, **kwargs):
+    result = original_request(path, *args, **kwargs)
+    daemon_calls.append({'path': path, 'success': isinstance(result, dict) and result.get('status') == 'ok'})
+    return result
+cli._daemon_request = tracked_request
 
-# Execute ask_cmd with daemon running (sys.argv[0] is command name, sys.argv[1] is query)
 sys.argv = ['mesh', 'forty-two exoplanets', '--namespace', 'daemon_test_ns', '--json']
-from mesh.cli import ask_cmd
-ask_cmd()
-
+cli.ask_cmd()
 status_after = get_engine_status()
-print(json.dumps({{'model_loaded_before': status_before['model_loaded'], 'model_loaded_after': status_after['model_loaded']}}))
-"""
-            p_verify = subprocess.run(
-                [sys.executable, "-c", verify_script],
-                env=env,
-                capture_output=True,
-                text=True,
-            )
-            assert p_verify.returncode == 0, f"Verification failed: {p_verify.stderr}"
-
-            last_line = [ln for ln in p_verify.stdout.strip().splitlines() if ln.startswith("{")][-1]
-            check_data = json.loads(last_line)
-            assert check_data["model_loaded_after"] is False, (
-                f"Model was loaded in CLI process! {check_data}"
-            )
-
-        finally:
-            subprocess.run(
-                [sys.executable, "-m", "mesh", "daemon", "stop", "--port", test_port],
-                env=env,
-                capture_output=True,
-                text=True,
-            )
+print('TEST_RESULT=' + json.dumps({'model_loaded_before': status_before['model_loaded'], 'model_loaded_after': status_after['model_loaded'], 'daemon_calls': daemon_calls}))
+""", env)
+        assert check_data["daemon_calls"] == [{"path": "/recall", "success": True}]
+        assert check_data["model_loaded_before"] is False
+        assert check_data["model_loaded_after"] is False, f"Model was loaded in CLI process: {check_data}"
+    finally:
+        stopped = _script_json("""
+import os, json, time
+from mesh.daemon import stop_daemon, _is_pid_alive, _is_mesh_daemon_process
+result = stop_daemon(host='127.0.0.1', port=int(os.environ['MESH_HTTP_PORT']))
+pid = result.get('pid')
+deadline = time.monotonic() + 5.0
+while pid and _is_pid_alive(pid) and _is_mesh_daemon_process(pid) and time.monotonic() < deadline:
+    time.sleep(0.05)
+result['still_running'] = bool(pid and _is_pid_alive(pid) and _is_mesh_daemon_process(pid))
+print('TEST_RESULT=' + json.dumps(result))
+""", env, timeout=30)
+        assert stopped["still_running"] is False, f"Daemon cleanup failed: {stopped}"

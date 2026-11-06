@@ -1,0 +1,50 @@
+{"id": "cedar-port", "content": "Cedar production's HTTP listener binds TCP port 4317."}
+{"id": "cedar-guide", "content": "The Cedar production port guide describes listeners, network rules, and deployment checks."}
+{"id": "cedar-stage-port", "content": "Cedar staging's HTTP listener binds TCP port 4318."}
+{"id": "birch-port", "content": "Birch production's HTTP listener binds TCP port 5417."}
+{"id": "cedar-local-port", "content": "Cedar development's HTTP listener binds TCP port 8317."}
+{"id": "cedar-database", "content": "Cedar's operational database is PostgreSQL, hosted on the north cluster."}
+{"id": "cedar-database-guide", "content": "The Cedar database setup guide explains choosing an operational database and migrations."}
+{"id": "birch-database", "content": "Birch's operational database is MariaDB, hosted on the south cluster."}
+{"id": "cedar-cache", "content": "Cedar caches computed page fragments in Redis; this cache is not the operational database."}
+{"id": "cedar-doc-search", "content": "Cedar indexes customer documentation in OpenSearch."}
+{"id": "cedar-retry", "content": "The Cedar payment gateway gives each outbound request a total retry budget of ninety seconds."}
+{"id": "cedar-retry-guide", "content": "Cedar payment gateway documentation describes request timeouts, retry budgets, and error handling."}
+{"id": "birch-retry", "content": "The Birch payment gateway gives each outbound request a total retry budget of thirty seconds."}
+{"id": "cedar-attempt", "content": "An individual Cedar gateway attempt has a twelve-second timeout."}
+{"id": "cedar-download", "content": "The Cedar download service has a retry budget of forty-five seconds."}
+{"id": "cedar-snapshot", "content": "Cedar takes nightly database snapshots at 02:30 UTC."}
+{"id": "cedar-snapshot-guide", "content": "Cedar's database snapshot checklist covers nightly backups, schedules, and retention."}
+{"id": "birch-snapshot", "content": "Birch takes nightly database snapshots at 03:15 UTC."}
+{"id": "cedar-metrics", "content": "Cedar exports daily database metrics at 04:00 UTC."}
+{"id": "cedar-retention", "content": "Cedar retains nightly database snapshots for fourteen days."}
+{"id": "cedar-format", "content": "For Cedar Python code, the team uses Ruff to format source files."}
+{"id": "cedar-format-guide", "content": "The Cedar Python style guide includes source formatting, linting, and naming conventions."}
+{"id": "cedar-type", "content": "Cedar Python code is checked with mypy for static type errors."}
+{"id": "birch-format", "content": "For Birch Python code, the team uses Black to format source files."}
+{"id": "cedar-test", "content": "Cedar Python unit tests run with pytest."}
+{"id": "sana-preference", "content": "Sana prefers short written release notes that lead with the customer-visible behavior."}
+{"id": "sana-preference-guide", "content": "The release-note handbook includes a section on Sana's writing preferences."}
+{"id": "theo-preference", "content": "Theo prefers detailed release notes that include the design rationale and validation evidence."}
+{"id": "sana-alert", "content": "Sana receives build alerts in the engineering dashboard."}
+{"id": "sana-zone", "content": "Sana works in the UTC+1 time zone."}
+{"id": "cedar-secret-ref", "content": "Cedar's deployment credential is referenced through env://CEDAR_DEPLOY_CREDENTIAL."}
+{"id": "cedar-secret-guide", "content": "Cedar deployment documentation explains where credential references are recorded."}
+{"id": "birch-secret-ref", "content": "Birch's deployment credential is referenced through env://BIRCH_RELEASE_CREDENTIAL."}
+{"id": "cedar-config", "content": "Cedar stores non-secret deployment settings in config/production.toml."}
+{"id": "cedar-runbook", "content": "Cedar's deployment runbook is docs/deploy/runbook.md."}
+{"id": "cedar-feature", "content": "Cedar production keeps automatic invoice emailing disabled."}
+{"id": "cedar-feature-guide", "content": "Cedar's production feature guide describes automatic invoice emailing and its configuration."}
+{"id": "birch-feature", "content": "Birch production keeps automatic invoice emailing enabled."}
+{"id": "cedar-staging-feature", "content": "Cedar staging keeps automatic invoice emailing enabled."}
+{"id": "cedar-pdf", "content": "Cedar production enables invoice PDF generation."}
+{"id": "cedar-region", "content": "Cedar's primary deployment region is eu-west-2, with the backup region eu-central-1."}
+{"id": "cedar-region-guide", "content": "Cedar's deployment-region guide covers choosing primary and backup regions."}
+{"id": "birch-region", "content": "Birch's primary deployment region is us-east-2."}
+{"id": "cedar-tenant", "content": "Cedar's European tenant support office is in Málaga."}
+{"id": "cedar-tenant-guide", "content": "The Cedar tenant-support directory lists European support offices and their addresses."}
+{"id": "cedar-error", "content": "Cedar's transient queue failure uses the diagnostic identifier QUEUE_RETRY_4821."}
+{"id": "cedar-error-guide", "content": "The Cedar queue failure guide describes transient retry conditions and diagnostic identifiers."}
+{"id": "birch-error", "content": "Birch's transient queue failure uses the diagnostic identifier QUEUE_RETRY_4822."}
+{"id": "cedar-worker", "content": "Cedar's queue starts four worker processes in production."}
+{"id": "cedar-worker-guide", "content": "The Cedar worker-process guide explains queue concurrency and production process counts."}

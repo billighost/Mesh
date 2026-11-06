@@ -395,7 +395,8 @@ def _health_url(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, nonce: Optio
     return base
 
 
-_VERIFIED_DAEMON_CACHE: dict[tuple[str, int], tuple[float, dict[str, Any]]] = {}
+_VERIFIED_DAEMON_CACHE: dict[tuple[str, int, str, bytes], tuple[float, dict[str, Any]]] = {}
+_VERIFIED_DAEMON_CACHE_LIMIT = 64
 _VERIFIED_DAEMON_LOCK = threading.Lock()
 
 
@@ -406,7 +407,9 @@ def invalidate_daemon_identity_cache(
     h = host or DEFAULT_HOST
     p = int(port or DEFAULT_PORT)
     with _VERIFIED_DAEMON_LOCK:
-        _VERIFIED_DAEMON_CACHE.pop((h, p), None)
+        for key in list(_VERIFIED_DAEMON_CACHE):
+            if key[:2] == (h, p):
+                _VERIFIED_DAEMON_CACHE.pop(key, None)
 
 
 def get_daemon_health(
@@ -467,9 +470,18 @@ def verify_daemon_identity(
         if timeout is None
         else float(timeout)
     )
-    key = (host, int(port))
+    from .audit import get_mesh_dir
+    from .client import store_identity
+
+    token = get_or_create_auth_token()
+    expected_store = store_identity(get_mesh_dir())
+    # Token digests remain private cache keys and are never returned or logged.
+    key = (host, int(port), expected_store, hashlib.sha256(token.encode("utf-8")).digest())
     now = time.monotonic()
     with _VERIFIED_DAEMON_LOCK:
+        for cached_key, (expires_at, _) in list(_VERIFIED_DAEMON_CACHE.items()):
+            if now >= expires_at:
+                _VERIFIED_DAEMON_CACHE.pop(cached_key, None)
         cached = _VERIFIED_DAEMON_CACHE.get(key)
         if cached is not None:
             expires_at, data = cached
@@ -477,7 +489,6 @@ def verify_daemon_identity(
                 return data
             _VERIFIED_DAEMON_CACHE.pop(key, None)
 
-    token = get_or_create_auth_token()
     nonce = secrets.token_hex(32)
     nonce_bytes = bytes.fromhex(nonce)
     expected_proof = hmac.new(token.encode("utf-8"), nonce_bytes, hashlib.sha256).hexdigest()
@@ -497,18 +508,28 @@ def verify_daemon_identity(
         )
         resp = conn.getresponse()
         if resp.status == 200:
-            body = resp.read().decode("utf-8")
+            raw = resp.read(16385)
+            if len(raw) > 16384:
+                return None
+            body = raw.decode("utf-8")
             data = json.loads(body)
             if isinstance(data, dict) and data.get("proof"):
                 actual_proof = str(data["proof"]).strip()
                 if hmac.compare_digest(actual_proof, expected_proof):
+                    from .operation_contract import supports_operation_receipts
+
                     result = {
                         "status": "ok",
                         "pid": data.get("pid"),
                         "version": data.get("version"),
                         "identity_verified": True,
+                        "operation_receipts_verified": supports_operation_receipts(
+                            data, token, nonce, expected_store,
+                        ),
                     }
                     with _VERIFIED_DAEMON_LOCK:
+                        if key not in _VERIFIED_DAEMON_CACHE and len(_VERIFIED_DAEMON_CACHE) >= _VERIFIED_DAEMON_CACHE_LIMIT:
+                            _VERIFIED_DAEMON_CACHE.pop(next(iter(_VERIFIED_DAEMON_CACHE)))
                         _VERIFIED_DAEMON_CACHE[key] = (time.monotonic() + 30.0, result)
                     return result
                 else:

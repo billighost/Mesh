@@ -1,6 +1,6 @@
 """
 mesh/audit.py — High-speed, fault-isolated audit trail for all memory reads and writes.
-Logs recall(), learn(), update(), and forget() calls with timestamp, agent, query/content, and result.
+Current events contain operation identities, counts, status, timing, and agent labels; memory bodies are excluded.
 Protects `local_only` memories via automatic redaction, scrubs historical content (including substrings)
 on `update()`, purges deleted memories on `forget()` and `clear_audit_log()`, supports at-rest
 encryption, and enforces bounded table, namespace, symlink, and POSIX/Windows file permission controls.
@@ -16,11 +16,14 @@ Addresses Findings:
 from __future__ import annotations
 
 import atexit
+import contextlib
+import contextvars
 import os
 import re
-import sqlite3
+from .sqlite_runtime import sqlite3
 import stat
 import subprocess
+import sys
 import threading
 import time
 from collections import OrderedDict
@@ -30,9 +33,26 @@ from typing import Any, Literal, Optional
 
 from .envutil import env_int
 
+AUDIT_SCHEMA_VERSION = 2
+
+_MESH_DIR_OVERRIDE: contextvars.ContextVar[Optional[Path]] = contextvars.ContextVar("mesh_data_root", default=None)
+
+
+@contextlib.contextmanager
+def mesh_dir_context(path: Path) -> Any:
+    """Bind one caller's data root without changing other requests' environment."""
+    token = _MESH_DIR_OVERRIDE.set(Path(path).expanduser().absolute())
+    try:
+        yield
+    finally:
+        _MESH_DIR_OVERRIDE.reset(token)
+
 
 def get_mesh_dir() -> Path:
     """Return the active Mesh data directory, respecting MESH_HOME / MESH_DIR env overrides dynamically."""
+    bound = _MESH_DIR_OVERRIDE.get()
+    if bound is not None:
+        return bound
     override = (os.environ.get("MESH_HOME") or os.environ.get("MESH_DIR") or "").strip()
     if override:
         return Path(override).expanduser()
@@ -62,13 +82,19 @@ _SECURED_LOCK = threading.Lock()
 # never waits on a SQLite commit. scrub_* and purge_* remain synchronous.
 # ---------------------------------------------------------------------------
 
-_AUDIT_PENDING: dict[str, list[tuple[str, tuple[Any, ...]]]] = {}
+_AUDIT_PENDING: dict[tuple[Path, str], list[tuple[str, tuple[Any, ...], int, tuple[int, int]]]] = {}
+_AUDIT_PENDING_COUNT = 0
+_AUDIT_PENDING_BYTES = 0
+_AUDIT_DROPPED_COUNT = 0
+_AUDIT_RETRY_COUNT = 0
+_AUDIT_LAST_ERROR: Optional[str] = None
 _AUDIT_KNOWN_DB_PATHS: set[Path] = set()
 _AUDIT_QUEUE_LOCK = threading.Lock()
 _AUDIT_FLUSH_LOCK = threading.Lock()
 _AUDIT_WAKE_EVENT = threading.Event()
 _AUDIT_DRAIN_THREAD: Optional[threading.Thread] = None
 _AUDIT_DRAIN_LOCK = threading.Lock()
+_AUDIT_DRAIN_STOP = threading.Event()
 
 _VALID_NAMESPACE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
@@ -105,7 +131,10 @@ CREATE TABLE IF NOT EXISTS audit_events (
     duration_ms REAL NOT NULL,
     status_code TEXT NOT NULL,      -- 'ok', 'error', 'rejected', etc.
     payload_size_bytes INTEGER DEFAULT 0,
-    result_count INTEGER DEFAULT 0
+    result_count INTEGER DEFAULT 0,
+    event_id TEXT,
+    object_id TEXT,
+    revision INTEGER
 )
 """
 
@@ -411,11 +440,61 @@ def validate_namespace(namespace: str) -> str:
     return clean
 
 
+class AuditIdentityChangedError(RuntimeError):
+    """A retired audit database cannot accept an old queued event or native lease."""
+
+
+def _audit_file_identity(path: Path) -> Optional[tuple[int, int]]:
+    reject_symlink(path)
+    try:
+        status = path.stat()
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    return (status.st_dev, status.st_ino) if stat.S_ISREG(status.st_mode) else None
+
+
+@contextlib.contextmanager
+def _audit_namespace_lock(db_path: Path) -> Any:
+    from .store import namespace_write_lock
+
+    namespace = validate_namespace(db_path.stem[6:]) if db_path.name.startswith("audit_") and db_path.suffix == ".db" else None
+    if namespace is None:
+        raise ValueError("Invalid audit database namespace path.")
+    reject_symlink(db_path)
+    root = db_path.parent.resolve()
+    if db_path.resolve().parent != root:
+        raise ValueError("Audit database path escapes its data root.")
+    with namespace_write_lock(namespace, data_root=root):
+        yield
+
+
+def _audit_entry_identity(entry: tuple[Any, ...]) -> Optional[tuple[int, int]]:
+    return entry[3] if len(entry) == 4 else None
+
+
+
 class _ManagedAuditConnection(sqlite3.Connection):
     """
     Persistent SQLite WAL connection that commits/rolls back when exiting a `with` block
     without closing the file handle until explicitly evicted.
     """
+
+    def _assert_current(self) -> None:
+        path = getattr(self, "_audit_db_path", None)
+        if path is not None and _audit_file_identity(path) != self._audit_db_identity:
+            raise AuditIdentityChangedError("Audit native handle belongs to a retired database.")
+
+    def __enter__(self) -> Any:
+        self._assert_current()
+        return super().__enter__()
+
+    def cursor(self, factory: Any = None) -> Any:
+        self._assert_current()
+        return super().cursor(factory=factory)
+
+    def commit(self) -> None:
+        self._assert_current()
+        super().commit()
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> Literal[False]:
         super().__exit__(exc_type, exc_val, exc_tb)
@@ -431,48 +510,121 @@ class _ManagedAuditConnection(sqlite3.Connection):
             pass
 
 
+def _persist_audit_entries(
+    db_path: Path, entries: list[tuple[str, tuple[Any, ...]]],
+    expected_identity: Optional[tuple[int, int]] = None,
+) -> None:
+    # Never wait for namespace maintenance while holding a global audit lock.
+    with _audit_namespace_lock(db_path):
+        if expected_identity is not None and _audit_file_identity(db_path) != expected_identity:
+            raise AuditIdentityChangedError("The admitted audit database was retired.")
+        with _AUDIT_LOCK:
+            write_count = _AUDIT_WRITE_COUNTS.get(db_path, 0) + len(entries)
+            with _connect_audit(db_path, create=expected_identity is None) as conn:
+                if expected_identity is not None and conn._audit_db_identity != expected_identity:
+                    raise AuditIdentityChangedError("The audit checkout belongs to a different database.")
+                conn.execute("BEGIN IMMEDIATE")
+                for sql, params in entries:
+                    conn.execute(sql, params)
+                if write_count % 100 < len(entries):
+                    _prune_audit_log_locked(conn, _max_audit_rows())
+                conn.commit()
+            _AUDIT_WRITE_COUNTS[db_path] = write_count
+            secure_file_permissions(db_path)
+            stamp = _get_audit_db_stamp(db_path)
+            if stamp is not None:
+                _INITIALIZED_AUDIT_DBS[db_path] = stamp
+
 def flush_audit_log(namespace: Optional[str] = None) -> None:
-    """Synchronously drain pending audit queue entries for `namespace` (or all namespaces)."""
+    """Drain unique admitted snapshots; retired read events are dropped and counted."""
+    global _AUDIT_PENDING_COUNT, _AUDIT_PENDING_BYTES, _AUDIT_RETRY_COUNT, _AUDIT_LAST_ERROR, _AUDIT_DROPPED_COUNT
+    # This lock only protects snapshot handoff. A maintenance caller already
+    # owning a namespace must be able to drain without waiting on a blocked worker.
     with _AUDIT_FLUSH_LOCK:
         with _AUDIT_QUEUE_LOCK:
             if namespace is not None:
                 try:
                     clean_ns = validate_namespace(namespace)
-                    items = _AUDIT_PENDING.pop(clean_ns, [])
-                    work = [(clean_ns, items)] if items else []
+                    key = (_get_audit_db_path(clean_ns), clean_ns)
                 except ValueError:
                     return
+                items = _AUDIT_PENDING.pop(key, [])
+                work = [(key, items)] if items else []
             else:
                 work = list(_AUDIT_PENDING.items())
                 _AUDIT_PENDING.clear()
-
-        if not work:
-            return
-
-        for ns, items in work:
-            if not items:
-                continue
+    batch_limit = env_int("MESH_AUDIT_BATCH_SIZE", 256, minimum=1, maximum=1000)
+    for key, items in work:
+        db_path, _ = key
+        offset = 0
+        while offset < len(items):
+            identity = _audit_entry_identity(items[offset])
+            end = offset + 1
+            while end < len(items) and end - offset < batch_limit and _audit_entry_identity(items[end]) == identity:
+                end += 1
+            batch = items[offset:end]
             try:
-                db_path = _get_audit_db_path(ns)
-                with _AUDIT_LOCK:
-                    stamp = _get_audit_db_stamp(db_path)
-                    needs_init = stamp is None or _INITIALIZED_AUDIT_DBS.get(db_path) != stamp
-                    write_count = _AUDIT_WRITE_COUNTS.get(db_path, 0) + len(items)
-                    _AUDIT_WRITE_COUNTS[db_path] = write_count
-                    with _connect_audit(db_path) as conn:
-                        if needs_init:
-                            _apply_audit_schema(conn)
-                        for sql, params in items:
-                            conn.execute(sql, params)
-                        if needs_init or (write_count % 100 < len(items)):
-                            _prune_audit_log_locked(conn, _max_audit_rows())
-                        conn.commit()
-                    secure_file_permissions(db_path)
-                    new_stamp = _get_audit_db_stamp(db_path)
-                    if new_stamp is not None:
-                        _INITIALIZED_AUDIT_DBS[db_path] = new_stamp
-            except Exception:
-                pass
+                if identity is None:
+                    raise AuditIdentityChangedError("An audit event has no admitted database identity.")
+                _persist_audit_entries(db_path, [(entry[0], entry[1]) for entry in batch], identity)
+            except AuditIdentityChangedError:
+                with _AUDIT_QUEUE_LOCK:
+                    _AUDIT_PENDING_COUNT -= len(batch)
+                    _AUDIT_PENDING_BYTES -= sum(entry[2] for entry in batch)
+                    _AUDIT_DROPPED_COUNT += len(batch)
+                    _AUDIT_LAST_ERROR = "AuditIdentityChangedError"
+            except Exception as exc:
+                with _AUDIT_QUEUE_LOCK:
+                    _AUDIT_PENDING[key] = items[offset:] + _AUDIT_PENDING.get(key, [])
+                    _AUDIT_RETRY_COUNT += len(batch)
+                    _AUDIT_LAST_ERROR = type(exc).__name__
+                break
+            else:
+                with _AUDIT_QUEUE_LOCK:
+                    _AUDIT_PENDING_COUNT -= len(batch)
+                    _AUDIT_PENDING_BYTES -= sum(entry[2] for entry in batch)
+                    _AUDIT_LAST_ERROR = None
+            offset = end
+
+def get_audit_queue_stats() -> dict[str, Any]:
+    """Content-free best-effort telemetry health, including admission drops and retries."""
+    with _AUDIT_QUEUE_LOCK:
+        return {
+            "pending_events": _AUDIT_PENDING_COUNT, "pending_bytes": _AUDIT_PENDING_BYTES,
+            "dropped_events": _AUDIT_DROPPED_COUNT, "retried_events": _AUDIT_RETRY_COUNT,
+            "last_error_code": _AUDIT_LAST_ERROR,
+        }
+
+
+def deliver_mutation_events(store: Any, *, limit: int = 256) -> int:
+    """Commit deduplicated content-free events before acknowledging their durable outbox."""
+    if type(limit) is not int or not 1 <= limit <= 1000:
+        raise ValueError("Mutation delivery limit must be an integer between 1 and 1000.")
+    from .store import namespace_write_lock
+
+    with namespace_write_lock(store.namespace, data_root=store.db_path.parent), store._cache_lock:
+        with store._connect() as source:
+            if source.in_transaction:
+                raise RuntimeError("Mutation events can only be delivered after the store transaction commits.")
+        events = store.list_mutation_events(limit=limit)
+        if not events:
+            return 0
+        db_path = store.db_path.parent / f"audit_{validate_namespace(store.namespace)}.db"
+        reject_symlink(db_path)
+        entries = []
+        for event in events:
+            entries.append((
+                "INSERT INTO audit_events(timestamp,surface,tool_or_command,agent_id,namespace,duration_ms,"
+                "status_code,payload_size_bytes,result_count,event_id,object_id,revision) "
+                "VALUES(?,?,?,?,?,0.0,'committed',0,0,?,?,?) "
+                "ON CONFLICT(event_id) WHERE event_id IS NOT NULL DO NOTHING",
+                (event["created_at"], "store", event["operation"], "unknown", store.namespace,
+                 event["event_id"], event["object_id"], event["revision"]),
+            ))
+        with mesh_dir_context(store.db_path.parent):
+            _persist_audit_entries(db_path, entries)
+        store.acknowledge_mutation_events([event["event_id"] for event in events])
+        return len(events)
 
 
 flush_pending_audit_writes = flush_audit_log
@@ -480,11 +632,15 @@ flush_pending_audit_writes = flush_audit_log
 
 def _audit_drain_worker() -> None:
     """Background daemon thread: drain _AUDIT_PENDING in batches with debounce."""
-    while True:
+    while not _AUDIT_DRAIN_STOP.is_set():
         _AUDIT_WAKE_EVENT.wait(timeout=0.5)
         _AUDIT_WAKE_EVENT.clear()
-        time.sleep(0.030)
+        if _AUDIT_DRAIN_STOP.wait(timeout=0.030):
+            break
         flush_audit_log(None)
+        from .mutation_delivery import drain_mutation_delivery
+
+        drain_mutation_delivery()
 
 
 def _ensure_audit_drain_thread() -> None:
@@ -492,8 +648,9 @@ def _ensure_audit_drain_thread() -> None:
     with _AUDIT_DRAIN_LOCK:
         if _AUDIT_DRAIN_THREAD is not None and _AUDIT_DRAIN_THREAD.is_alive():
             return
+        _AUDIT_DRAIN_STOP.clear()
         t = threading.Thread(
-            target=_audit_drain_worker,
+            target=lambda: contextvars.Context().run(_audit_drain_worker),
             name="mesh-audit-drain",
             daemon=True,
         )
@@ -501,10 +658,27 @@ def _ensure_audit_drain_thread() -> None:
         _AUDIT_DRAIN_THREAD = t
 
 
+def stop_audit_worker() -> None:
+    global _AUDIT_DRAIN_THREAD
+    with _AUDIT_DRAIN_LOCK:
+        thread = _AUDIT_DRAIN_THREAD
+        _AUDIT_DRAIN_STOP.set()
+        _AUDIT_WAKE_EVENT.set()
+    if thread is not None and thread is not threading.current_thread():
+        thread.join(timeout=5.0)
+    with _AUDIT_DRAIN_LOCK:
+        if thread is None or not thread.is_alive():
+            _AUDIT_DRAIN_THREAD = None
+
+
 @atexit.register
 def _close_all_audit_connections() -> None:
     try:
+        stop_audit_worker()
         flush_audit_log(None)
+        from .mutation_delivery import drain_mutation_delivery
+
+        drain_mutation_delivery(max_stores=256)
     except Exception:
         pass
     with _AUDIT_LOCK:
@@ -595,28 +769,48 @@ def evict_audit_cache(namespace: str) -> None:
 
 
 def _apply_audit_schema(conn: sqlite3.Connection) -> None:
-    """Create the audit_log and audit_events tables and indexes on an open connection."""
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute(_AUDIT_SCHEMA_SQL)
-    conn.execute(_AUDIT_EVENTS_SCHEMA_SQL)
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_timestamp ON audit_log(timestamp DESC)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_action ON audit_log(action)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_agent ON audit_log(agent_id)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_id ON audit_log(memory_id)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_events_ts ON audit_events(timestamp DESC)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_events_ns ON audit_events(namespace, timestamp DESC)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_events_surface ON audit_events(surface)")
+    """Upgrade content-free event metadata in one transaction."""
+    if int(conn.execute("PRAGMA user_version").fetchone()[0]) > AUDIT_SCHEMA_VERSION:
+        raise RuntimeError("Audit database schema is newer than supported; upgrade Mesh before opening it.")
+    conn.execute("PRAGMA journal_mode=WAL").fetchall()
+    owns_transaction = not conn.in_transaction
+    if owns_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute(_AUDIT_SCHEMA_SQL)
+        conn.execute(_AUDIT_EVENTS_SCHEMA_SQL)
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(audit_events)").fetchall()}
+        for name, declaration in (("event_id", "TEXT"), ("object_id", "TEXT"), ("revision", "INTEGER")):
+            if name not in columns:
+                conn.execute(f"ALTER TABLE audit_events ADD COLUMN {name} {declaration}")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_timestamp ON audit_log(timestamp DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_action ON audit_log(action)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_agent ON audit_log(agent_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_id ON audit_log(memory_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_events_ts ON audit_events(timestamp DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_events_ns ON audit_events(namespace, timestamp DESC)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_events_surface ON audit_events(surface)")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_events_event_id ON audit_events(event_id) WHERE event_id IS NOT NULL")
+        conn.execute(f"PRAGMA user_version={AUDIT_SCHEMA_VERSION}")
+        if owns_transaction:
+            conn.commit()
+    except BaseException:
+        if owns_transaction:
+            conn.rollback()
+        raise
 
 
-def _connect_audit(db_path: Path) -> _ManagedAuditConnection:
+def _connect_audit(db_path: Path, *, create: bool = True) -> _ManagedAuditConnection:
     reject_symlink(db_path)
     with _AUDIT_LOCK:
+        identity = _audit_file_identity(db_path)
         conn = _AUDIT_CONNECTION_POOL.get(db_path)
-        if conn is not None and db_path.exists():
+        if conn is not None and identity is not None and conn._audit_db_identity == identity and not conn._closed:
             _AUDIT_CONNECTION_POOL.move_to_end(db_path)
             stamp = _get_audit_db_stamp(db_path)
-            if stamp is None or _INITIALIZED_AUDIT_DBS.get(db_path) != stamp:
+            if stamp is None or db_path not in _AUDIT_INITIALIZED_FILES:
                 _apply_audit_schema(conn)
+                _AUDIT_INITIALIZED_FILES.add(db_path)
                 new_stamp = _get_audit_db_stamp(db_path)
                 if new_stamp is not None:
                     _INITIALIZED_AUDIT_DBS[db_path] = new_stamp
@@ -624,43 +818,59 @@ def _connect_audit(db_path: Path) -> _ManagedAuditConnection:
         if conn is not None:
             conn.close_pooled()
             _AUDIT_CONNECTION_POOL.pop(db_path, None)
+            _INITIALIZED_AUDIT_DBS.pop(db_path, None)
+            _AUDIT_INITIALIZED_FILES.discard(db_path)
+            _AUDIT_WRITE_COUNTS.pop(db_path, None)
+        if identity is None and not create:
+            raise AuditIdentityChangedError("The admitted audit database no longer exists.")
 
         ensure_secure_mesh_dir(db_path.parent)
         _check_audit_namespace_limit(db_path.parent, db_path)
         conn = sqlite3.connect(
-            db_path,
-            timeout=5.0,
-            check_same_thread=False,
+            db_path.as_uri() + "?mode=rw" if identity is not None else db_path,
+            uri=identity is not None, timeout=5.0, check_same_thread=False,
             factory=_ManagedAuditConnection,
         )
-        conn.execute("PRAGMA journal_mode=WAL")
-        sync_mode = "NORMAL" if os.environ.get("MESH_STRICT_FSYNC") == "1" else "OFF"
-        conn.execute(f"PRAGMA synchronous={sync_mode}")
         try:
-            conn.execute("PRAGMA mmap_size=67108864")
-        except sqlite3.OperationalError:
-            pass
-        conn.execute("PRAGMA temp_store=MEMORY")
-        conn.execute("PRAGMA busy_timeout=3000")
-        conn.execute("PRAGMA secure_delete=ON")
-        try:
-            conn.execute("PRAGMA cache_size=-8000")
-        except sqlite3.OperationalError:
-            pass
-        _apply_audit_schema(conn)
-        secure_file_permissions(db_path)
-        _AUDIT_CONNECTION_POOL[db_path] = conn
-        _AUDIT_CONNECTION_POOL.move_to_end(db_path)
-        while len(_AUDIT_CONNECTION_POOL) > _MAX_AUDIT_POOL_SIZE:
-            evicted_path, evicted_conn = _AUDIT_CONNECTION_POOL.popitem(last=False)
-            _INITIALIZED_AUDIT_DBS.pop(evicted_path, None)
-            _AUDIT_WRITE_COUNTS.pop(evicted_path, None)
-            evicted_conn.close_pooled()
-        new_stamp = _get_audit_db_stamp(db_path)
-        if new_stamp is not None:
-            _INITIALIZED_AUDIT_DBS[db_path] = new_stamp
-        return conn
-
+            conn._audit_db_path = db_path
+            conn._audit_db_identity = _audit_file_identity(db_path)
+            if conn._audit_db_identity is None or identity is not None and conn._audit_db_identity != identity:
+                raise AuditIdentityChangedError("Audit database was replaced while opening it.")
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=FULL")
+            if sys.platform == "darwin":
+                conn.execute("PRAGMA fullfsync=ON")
+                conn.execute("PRAGMA checkpoint_fullfsync=ON")
+            try:
+                conn.execute("PRAGMA mmap_size=67108864")
+            except sqlite3.OperationalError:
+                pass
+            conn.execute("PRAGMA temp_store=MEMORY")
+            conn.execute("PRAGMA busy_timeout=3000")
+            conn.execute("PRAGMA secure_delete=ON")
+            try:
+                cache_kib = env_int("MESH_AUDIT_SQLITE_CACHE_KIB", 2048, minimum=256, maximum=65536)
+                conn.execute(f"PRAGMA cache_size=-{cache_kib}")
+            except sqlite3.OperationalError:
+                pass
+            _apply_audit_schema(conn)
+            _AUDIT_INITIALIZED_FILES.add(db_path)
+            secure_file_permissions(db_path)
+            _AUDIT_CONNECTION_POOL[db_path] = conn
+            _AUDIT_CONNECTION_POOL.move_to_end(db_path)
+            while len(_AUDIT_CONNECTION_POOL) > _MAX_AUDIT_POOL_SIZE:
+                evicted_path, evicted_conn = _AUDIT_CONNECTION_POOL.popitem(last=False)
+                _INITIALIZED_AUDIT_DBS.pop(evicted_path, None)
+                _AUDIT_INITIALIZED_FILES.discard(evicted_path)
+                _AUDIT_WRITE_COUNTS.pop(evicted_path, None)
+                evicted_conn.close_pooled()
+            new_stamp = _get_audit_db_stamp(db_path)
+            if new_stamp is not None:
+                _INITIALIZED_AUDIT_DBS[db_path] = new_stamp
+            return conn
+        except BaseException:
+            conn.close_pooled()
+            raise
 
 def _max_audit_rows() -> int:
     try:
@@ -742,61 +952,44 @@ def _sanitize_audit_text(text: Optional[str]) -> Optional[str]:
 
 
 def _write_audit_entry_sync(namespace: str, sql: str, params: tuple[Any, ...]) -> None:
-    """
-    Execute an audit log statement synchronously on the pooled connection.
-    Called by the background drain thread or by flush_pending_audit_writes().
-    """
     namespace = validate_namespace(namespace)
-    db_path = _get_audit_db_path(namespace)
-    with _AUDIT_LOCK:
-        stamp = _get_audit_db_stamp(db_path)
-        needs_init = stamp is None or _INITIALIZED_AUDIT_DBS.get(db_path) != stamp
-        write_count = _AUDIT_WRITE_COUNTS.get(db_path, 0) + 1
-        _AUDIT_WRITE_COUNTS[db_path] = write_count
-        with _connect_audit(db_path) as conn:
-            if needs_init:
-                _apply_audit_schema(conn)
-            conn.execute(sql, params)
-            if needs_init or write_count % 100 == 0:
-                _prune_audit_log_locked(conn, _max_audit_rows())
-            conn.commit()
-        secure_file_permissions(db_path)
-        new_stamp = _get_audit_db_stamp(db_path)
-        if new_stamp is not None:
-            _INITIALIZED_AUDIT_DBS[db_path] = new_stamp
+    _persist_audit_entries(_get_audit_db_path(namespace), [(sql, params)])
 
 
 def _write_audit_entry(namespace: str, sql: str, params: tuple[Any, ...]) -> None:
-    """
-    Enqueue an audit log entry for asynchronous write by the background drain thread.
-    Returns immediately; the caller's hot path is never blocked on a SQLite commit.
-    First row for a new DB is committed synchronously so audit_<ns>.db is guaranteed to exist.
-    """
-    _AUDIT_ENQUEUE_SEQ[0] += 1
+    """Admit bounded inode-bound telemetry; durable mutations retain their store outbox."""
+    global _AUDIT_PENDING_COUNT, _AUDIT_PENDING_BYTES, _AUDIT_DROPPED_COUNT
     try:
         clean_ns = validate_namespace(namespace)
         db_path = _get_audit_db_path(clean_ns)
+        identity = _audit_file_identity(db_path)
+        if identity is None:
+            with _audit_namespace_lock(db_path), _AUDIT_LOCK:
+                _connect_audit(db_path)
+                identity = _audit_file_identity(db_path)
+        if identity is None:
+            raise AuditIdentityChangedError("Audit admission could not bind its database.")
     except Exception:
+        with _AUDIT_QUEUE_LOCK:
+            _AUDIT_DROPPED_COUNT += 1
         return
-
-    if db_path not in _AUDIT_KNOWN_DB_PATHS:
-        if not db_path.exists():
-            try:
-                with _AUDIT_LOCK:
-                    _connect_audit(db_path)
-            except Exception:
-                pass
-        _AUDIT_KNOWN_DB_PATHS.add(db_path)
-
-    if _AUDIT_DRAIN_THREAD is None or not _AUDIT_DRAIN_THREAD.is_alive():
-        _ensure_audit_drain_thread()
-
+    size = len(sql.encode("utf-8")) + sum(
+        len(value.encode("utf-8")) if isinstance(value, str) else len(value) if isinstance(value, bytes) else 32
+        for value in params
+    ) + 256
+    max_events = env_int("MESH_MAX_AUDIT_QUEUE_EVENTS", 10000, minimum=1)
+    max_bytes = env_int("MESH_MAX_AUDIT_QUEUE_BYTES", 8 * 1024 * 1024, minimum=1024)
     with _AUDIT_QUEUE_LOCK:
-        if clean_ns not in _AUDIT_PENDING:
-            _AUDIT_PENDING[clean_ns] = []
-        _AUDIT_PENDING[clean_ns].append((sql, params))
+        _AUDIT_ENQUEUE_SEQ[0] += 1
+        if _AUDIT_PENDING_COUNT >= max_events or _AUDIT_PENDING_BYTES + size > max_bytes:
+            _AUDIT_DROPPED_COUNT += 1
+            return
+        key = (db_path, clean_ns)
+        _AUDIT_PENDING.setdefault(key, []).append((sql, params, size, identity))
+        _AUDIT_PENDING_COUNT += 1
+        _AUDIT_PENDING_BYTES += size
+    _ensure_audit_drain_thread()
     _AUDIT_WAKE_EVENT.set()
-
 
 def log_recall(
     query: str,
@@ -814,19 +1007,7 @@ def log_recall(
         if results:
             first = results[0]
             top_similarity = float(first.get("similarity", 0.0))
-            if first.get("local_only"):
-                top_result = REDACTED_CONTENT_PLACEHOLDER
-            else:
-                top_result = _sanitize_audit_text(first.get("content"))
-
-        # Finding S12: Redact the query if any returned memory is private OR if the query itself
-        # contains a secret/credential (e.g. searching for a leaked key that returned 0 results).
-        from .secrets import is_credential
-
-        if any(r.get("local_only") for r in results) or is_credential(query):
-            logged_query = REDACTED_CONTENT_PLACEHOLDER
-        else:
-            logged_query = query
+        logged_query = None
 
         _write_audit_entry(
             namespace=namespace,
@@ -859,12 +1040,7 @@ def log_learn(
     """Log a learn event to the audit trail, redacting local_only content."""
     try:
         mem_id = result.get("memory_id")
-        is_private = bool(local_only or result.get("local_only"))
-        logged_content = (
-            REDACTED_CONTENT_PLACEHOLDER
-            if is_private
-            else (_sanitize_audit_text(content) or content)
-        )
+        logged_content = None
         had_conflict = 1 if result.get("conflict") else 0
         now_ts = datetime.now(timezone.utc).isoformat()
 
@@ -970,8 +1146,8 @@ def scrub_memory_update_from_audit(
         if not db_path.exists() or _get_audit_db_stamp(db_path) is None:
             return
         placeholder = REDACTED_CONTENT_PLACEHOLDER if local_only else UPDATED_CONTENT_PLACEHOLDER
-        with _AUDIT_LOCK:
-            with _connect_audit(db_path) as conn:
+        with _audit_namespace_lock(db_path), _AUDIT_LOCK:
+            with _connect_audit(db_path, create=False) as conn:
                 if local_only or (old_content is not None and old_content.strip()):
                     _scrub_audit_columns_locked(
                         conn=conn,
@@ -1009,10 +1185,7 @@ def log_update(
                 old_content=old_content,
                 local_only=local_only,
             )
-        if local_only:
-            logged_content = REDACTED_CONTENT_PLACEHOLDER
-        else:
-            logged_content = _sanitize_audit_text(content) or f"[updated metadata for {memory_id}]"
+        logged_content = None
         _write_audit_entry(
             namespace=namespace,
             sql="""
@@ -1038,14 +1211,18 @@ _AUDIT_ENQUEUE_SEQ = [0]
 
 def _scrub_recently_done(kind: str, namespace: str, memory_id: str, text: Optional[str]) -> bool:
     """True when the identical scrub finished <2 s ago and nothing was logged since."""
-    ent = _SCRUB_DEDUP.get((kind, namespace, memory_id, hash(text or "")))
+    db_path = _get_audit_db_path(namespace)
+    key = (kind, db_path, _audit_file_identity(db_path), memory_id, hash(text or ""))
+    ent = _SCRUB_DEDUP.get(key)
     return ent is not None and (time.monotonic() - ent[0]) < 2.0 and ent[1] == _AUDIT_ENQUEUE_SEQ[0]
 
 
 def _scrub_mark_done(kind: str, namespace: str, memory_id: str, text: Optional[str]) -> None:
     if len(_SCRUB_DEDUP) > 512:
         _SCRUB_DEDUP.clear()
-    _SCRUB_DEDUP[(kind, namespace, memory_id, hash(text or ""))] = (time.monotonic(), _AUDIT_ENQUEUE_SEQ[0])
+    db_path = _get_audit_db_path(namespace)
+    key = (kind, db_path, _audit_file_identity(db_path), memory_id, hash(text or ""))
+    _SCRUB_DEDUP[key] = (time.monotonic(), _AUDIT_ENQUEUE_SEQ[0])
 
 
 def purge_memory_from_audit(
@@ -1065,8 +1242,8 @@ def purge_memory_from_audit(
         db_path = _get_audit_db_path(namespace)
         if not db_path.exists() or _get_audit_db_stamp(db_path) is None:
             return
-        with _AUDIT_LOCK:
-            with _connect_audit(db_path) as conn:
+        with _audit_namespace_lock(db_path), _AUDIT_LOCK:
+            with _connect_audit(db_path, create=False) as conn:
                 _scrub_audit_columns_locked(
                     conn=conn,
                     namespace=namespace,
@@ -1095,8 +1272,8 @@ def clear_audit_log(namespace: str) -> None:
         _AUDIT_INITIALIZED_FILES.discard(db_path)
         if not db_path.exists():
             return
-        with _AUDIT_LOCK:
-            with _connect_audit(db_path) as conn:
+        with _audit_namespace_lock(db_path), _AUDIT_LOCK:
+            with _connect_audit(db_path, create=False) as conn:
                 conn.execute("DELETE FROM audit_log WHERE namespace = ?", (clean_ns,))
                 conn.commit()
                 try:
@@ -1156,12 +1333,14 @@ def get_audit_log(
         raise ValueError(
             f"Invalid action_filter '{action_filter}'. Must be one of {valid_filters}."
         )
-    safe_limit = max(1, int(limit or 50))
+    safe_limit = max(1, min(10000, int(limit or 50)))
     if not db_path.exists() or _get_audit_db_stamp(db_path) is None:
         return []
     action_sql = _ACTION_FILTER_MAP.get(clean_filter) if clean_filter != "all" else None
-    with _AUDIT_LOCK:
-        with _connect_audit(db_path) as conn:
+    with _audit_namespace_lock(db_path), _AUDIT_LOCK:
+        if not db_path.exists():
+            return []
+        with _connect_audit(db_path, create=False) as conn:
             conn.row_factory = sqlite3.Row
             if action_sql:
                 cur = conn.execute(
@@ -1187,12 +1366,9 @@ def get_audit_log(
             cur.close()
 
     for r in rows:
-        if r.get("query") is not None:
-            r["query"] = _maybe_decrypt_audit_field(r["query"])
-        if r.get("content") is not None:
-            r["content"] = _maybe_decrypt_audit_field(r["content"])
-        if r.get("top_result") is not None:
-            r["top_result"] = _maybe_decrypt_audit_field(r["top_result"])
+        r["query"] = None
+        r["content"] = None
+        r["top_result"] = None
     return rows
 
 
@@ -1211,8 +1387,18 @@ def get_audit_stats(namespace: str) -> dict[str, Any]:
             "conflicts_detected": 0,
             "last_activity": None,
         }
-    with _AUDIT_LOCK:
-        with _connect_audit(db_path) as conn:
+    with _audit_namespace_lock(db_path), _AUDIT_LOCK:
+        if not db_path.exists():
+            return {
+                "total_recalls": 0,
+                "total_learns": 0,
+                "total_updates": 0,
+                "total_forgets": 0,
+                "agents": [],
+                "conflicts_detected": 0,
+                "last_activity": None,
+            }
+        with _connect_audit(db_path, create=False) as conn:
             conn.row_factory = sqlite3.Row
             cur_agg = conn.execute(
                 """
@@ -1333,15 +1519,17 @@ def export_content_free_audit(
         try:
             if not db_path.exists() or _get_audit_db_stamp(db_path) is None:
                 continue
-            with _AUDIT_LOCK:
-                with _connect_audit(db_path) as conn:
+            with _audit_namespace_lock(db_path), _AUDIT_LOCK:
+                if not db_path.exists():
+                    continue
+                with _connect_audit(db_path, create=False) as conn:
                     has_table = conn.execute(
                         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='audit_events'"
                     ).fetchone()
                     if not has_table:
                         continue
                     conn.row_factory = sqlite3.Row
-                    query = "SELECT id, timestamp, surface, tool_or_command, agent_id, namespace, duration_ms, status_code, payload_size_bytes, result_count FROM audit_events WHERE 1=1"
+                    query = "SELECT id, timestamp, surface, tool_or_command, agent_id, namespace, duration_ms, status_code, payload_size_bytes, result_count, event_id, object_id, revision FROM audit_events WHERE 1=1"
                     params: list[Any] = []
                     if since_iso:
                         query += " AND timestamp >= ?"

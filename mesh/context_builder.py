@@ -20,14 +20,14 @@ from collections import OrderedDict
 from typing import Any, Optional
 from xml.sax.saxutils import escape as xml_escape
 
-from .audit import validate_namespace
+from .audit import get_mesh_dir, validate_namespace
 from .guards import INVISIBLE_CHAR_CLASS
 from .memory import Mesh, _parse_tags, suggest_did_you_mean_namespaces
 from .store import NamespaceNotFoundError
 
 _CONTEXT_MESH_LOCK = threading.Lock()
 _CONTEXT_MESH_CACHE_MAXSIZE = 64
-_CONTEXT_MESH_CACHE: OrderedDict[tuple[str, str], Mesh] = OrderedDict()
+_CONTEXT_MESH_CACHE: OrderedDict[tuple[str, str, str], Mesh] = OrderedDict()
 
 # Matches complete or incomplete `<mesh_context...` / `</mesh_context...` sequences (case-insensitive)
 _BREAKOUT_TAG_RE = re.compile(r"</?\s*mesh_context\b[^>]*>?", re.IGNORECASE)
@@ -69,14 +69,14 @@ def evict_context_mesh_cache(namespace: Optional[str] = None) -> None:
         if namespace is None:
             _CONTEXT_MESH_CACHE.clear()
             return
-        stale_keys = [k for k in _CONTEXT_MESH_CACHE if k[0] == namespace]
+        stale_keys = [k for k in _CONTEXT_MESH_CACHE if k[1] == namespace]
         for k in stale_keys:
             _CONTEXT_MESH_CACHE.pop(k, None)
 
 
 def _get_cached_mesh(namespace: str, agent_id: str) -> Mesh:
     clean_ns = validate_namespace(namespace)
-    key = (clean_ns, agent_id)
+    key = (str(get_mesh_dir().resolve()), clean_ns, agent_id)
     with _CONTEXT_MESH_LOCK:
         mesh = _CONTEXT_MESH_CACHE.get(key)
         if mesh is not None and mesh.store.db_path.exists():

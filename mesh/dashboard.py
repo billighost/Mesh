@@ -27,7 +27,7 @@ import logging
 import os
 import re
 import secrets
-import sqlite3
+from .sqlite_runtime import sqlite3
 import sys
 import threading
 import time

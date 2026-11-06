@@ -22,8 +22,9 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from mesh.mcp_server import _MCP_TOOLS
-from mesh.version import VERSION
+from scripts.schema_sources import read_cli_commands, read_http_routes, read_mcp_tool_schemas, read_version
+
+VERSION = read_version(REPO_ROOT)
 
 SKILL_DIR = REPO_ROOT / "mesh" / "skills" / "mesh-context-layer"
 SKILL_MD = SKILL_DIR / "SKILL.md"
@@ -33,11 +34,7 @@ REFERENCES_DIR = SKILL_DIR / "references"
 
 def get_mcp_tool_schemas() -> dict[str, set[str]]:
     """Extract tool names and valid argument names from MCP tool schemas."""
-    schemas: dict[str, set[str]] = {}
-    for tool in _MCP_TOOLS:
-        props = tool.inputSchema.get("properties", {})
-        schemas[tool.name] = set(props.keys())
-    return schemas
+    return read_mcp_tool_schemas(REPO_ROOT)
 
 
 def check_version_stamp(content: str, filename: str, errors: list[str]) -> None:
@@ -158,6 +155,23 @@ def check_tool_references(
                 pass
 
 
+def check_transport_references(errors: list[str]) -> None:
+    """Check literal command/route examples against source without importing servers."""
+    commands = read_cli_commands(REPO_ROOT)
+    routes = read_http_routes(REPO_ROOT)
+    for md_file in [SKILL_MD, RULES_BLOCK_MD, *REFERENCES_DIR.glob("*.md")]:
+        if not md_file.exists():
+            continue
+        content = md_file.read_text(encoding="utf-8")
+        rel_path = md_file.relative_to(REPO_ROOT)
+        for command in re.findall(r"`mesh\s+([a-z][a-z0-9-]*)\b[^`]*`", content):
+            if command not in commands:
+                errors.append(f"[{rel_path}] Unknown CLI command: mesh {command}.")
+        for route in re.findall(r"\b(?:GET|POST|PATCH|DELETE|PUT)\s+(/[^\s?`]+)", content):
+            if route not in routes:
+                errors.append(f"[{rel_path}] Unknown HTTP route: {route}.")
+
+
 def main() -> int:
     print(f"Checking Mesh Skill, Rules, and References (Package version: v{VERSION})...")
     schemas = get_mcp_tool_schemas()
@@ -166,6 +180,7 @@ def main() -> int:
     errors: list[str] = []
     check_line_and_desc_limits(errors)
     check_tool_references(schemas, errors)
+    check_transport_references(errors)
 
     if errors:
         print("\n[FAIL] Skill verification failed:")

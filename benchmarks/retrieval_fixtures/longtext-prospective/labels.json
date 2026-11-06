@@ -1,0 +1,27 @@
+{
+  "qrels": {
+    "l01": {
+      "cypress-recovery": 1
+    },
+    "l04": {
+      "cypress-recovery": 1
+    },
+    "l02": {
+      "juniper-recovery": 1
+    },
+    "l05": {
+      "juniper-recovery": 1
+    },
+    "l03": {
+      "willow-recovery": 1
+    },
+    "l06": {
+      "willow-recovery": 1
+    }
+  },
+  "unanswered_query_ids": [
+    "lu01",
+    "lu02",
+    "lu03"
+  ]
+}

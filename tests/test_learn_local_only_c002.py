@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
-import sqlite3
+from mesh.sqlite_runtime import sqlite3
 import sys
 import tempfile
 import uuid

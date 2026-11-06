@@ -35,7 +35,7 @@ import re
 import shlex
 import shutil
 import socket
-import sqlite3
+from .sqlite_runtime import sqlite3
 import stat
 import sys
 import threading
@@ -149,7 +149,7 @@ class _FastHTTPConnection(http.client.HTTPConnection):
 _CLI_HTTP_POOL: dict[tuple[str, int], http.client.HTTPConnection] = {}
 _CLI_HTTP_POOL_LOCK = threading.Lock()
 
-_CLI_MESH_CACHE: dict[tuple[str, str, bool], Any] = {}
+_CLI_MESH_CACHE: dict[tuple[Path, str, str, bool], Any] = {}
 _CLI_MESH_CACHE_LOCK = threading.Lock()
 
 
@@ -159,7 +159,8 @@ def _get_cli_mesh(
     create: bool = False,
     trusted_local: bool = True,
 ) -> Any:
-    key = (namespace, agent_id, trusted_local)
+    from .audit import get_mesh_dir
+    key = (get_mesh_dir().resolve(), namespace, agent_id, trusted_local)
     with _CLI_MESH_CACHE_LOCK:
         m = _CLI_MESH_CACHE.get(key)
         if m is not None:
@@ -176,7 +177,7 @@ def evict_cli_mesh_cache(namespace: Optional[str] = None) -> None:
         if namespace is None:
             _CLI_MESH_CACHE.clear()
         else:
-            to_del = [k for k in _CLI_MESH_CACHE if k[0] == namespace]
+            to_del = [k for k in _CLI_MESH_CACHE if k[1] == namespace]
             for k in to_del:
                 _CLI_MESH_CACHE.pop(k, None)
 
@@ -289,12 +290,21 @@ def _daemon_request(
         try:
             conn.request(method, path, body=data, headers=headers)
             resp = conn.getresponse()
-            raw_body = resp.read().decode("utf-8")
+            raw_bytes = resp.read(2097153)
+            if len(raw_bytes) > 2097152:
+                _close_pooled_conn(req_host, req_port)
+                return {"_daemon_lost": True, "detail": "Daemon response exceeded the size limit; confirm the outcome before retrying."}
+            raw_body = raw_bytes.decode("utf-8")
             if 200 <= int(resp.status) < 300:
                 if not raw_body.strip():
+                    if method.upper() not in {"GET", "HEAD", "OPTIONS"}:
+                        return {"_daemon_lost": True, "detail": "Daemon returned no confirmation; the mutation outcome is unknown.", "operation_id": (payload or {}).get("operation_id")}
                     return {}
                 try:
-                    return json.loads(raw_body)
+                    result = json.loads(raw_body)
+                    if not isinstance(result, dict) or not result and method.upper() not in {"GET", "HEAD", "OPTIONS"}:
+                        return {"_daemon_lost": True, "detail": "Daemon returned no valid mutation confirmation; the outcome is unknown.", "operation_id": (payload or {}).get("operation_id")}
+                    return result
                 except ValueError:
                     return {
                         "_daemon_lost": True,
@@ -313,7 +323,7 @@ def _daemon_request(
             }
         except (http.client.RemoteDisconnected, BrokenPipeError, ConnectionResetError) as e:
             _close_pooled_conn(req_host, req_port)
-            if attempt == 0:
+            if attempt == 0 and method.upper() in {"GET", "HEAD", "OPTIONS"}:
                 continue
             invalidate_daemon_identity_cache(req_host, req_port)
             return {
@@ -915,6 +925,16 @@ def install_cmd() -> None:
                                 print(f"{ui.IND}    {line}")
                     else:
                         print(f"{ui.IND}  {comp.upper()}: {ui.style('Already configured / up to date', 'muted')}")
+                for profile in item.get("profiles", []):
+                    if profile.get("error"):
+                        print(f"{ui.IND}  PROFILE: {ui.style('ERROR: ' + str(profile['error']), 'error')}")
+                    elif profile.get("changed"):
+                        print(f"{ui.IND}  PROFILE: {ui.style('Would update ' + str(profile['path']), 'info')}")
+                        if profile.get("diff"):
+                            for line in profile["diff"].splitlines():
+                                print(f"{ui.IND}    {line}")
+                    else:
+                        print(f"{ui.IND}  PROFILE: {ui.style('Reviewed binding already configured', 'muted')}")
                 print()
             ui.note("Dry run complete. No files were modified. Re-run with --apply to execute.")
             return
@@ -924,7 +944,8 @@ def install_cmd() -> None:
         (r.get("mcp") and r["mcp"].get("error")) or
         (r.get("skill") and r["skill"].get("error")) or
         (r.get("rules") and r["rules"].get("error")) or
-        (r.get("hooks") and r["hooks"].get("error"))
+        (r.get("hooks") and r["hooks"].get("error")) or
+        any(profile.get("error") for profile in r.get("profiles", []))
         for r in results
     )
 
@@ -951,6 +972,12 @@ def install_cmd() -> None:
                 print(f"{ui.IND}  {comp.upper()}: {ui.style(info.get('status', 'updated') + bak_msg + mig_msg, 'brand')}")
             else:
                 print(f"{ui.IND}  {comp.upper()}: {ui.style(info.get('status', 'unchanged'), 'muted')}")
+        for profile in r.get("profiles", []):
+            if profile.get("error"):
+                print(f"{ui.IND}  PROFILE: {ui.style('FAIL: ' + str(profile['error']), 'error')}")
+            else:
+                backup_note = f" (backup: {profile['backup']})" if profile.get("backup") else ""
+                print(f"{ui.IND}  PROFILE: {ui.style(str(profile.get('status', 'unchanged')) + backup_note, 'brand')}")
         print()
 
     if has_errors:
@@ -1691,7 +1718,7 @@ def encrypt_db_cmd() -> None:
     parser.add_argument("--namespace", default=None, metavar="NAME", help="Namespace to encrypt (default: $MESH_NAMESPACE or 'shared')")
     parser.add_argument("--all", action="store_true", help="Encrypt all existing namespaces")
     parser.add_argument("--passphrase", default=None, help="Optional passphrase (or set MESH_PASSPHRASE)")
-    parser.add_argument("--no-backup", action="store_true", help="Remove the backup copy immediately after verification")
+    parser.add_argument("--no-backup", action="store_true", help="Remove the pre-encryption backup after successful encryption and cleanup")
     args = parser.parse_args()
 
     targets: list[str] = []
@@ -2456,12 +2483,14 @@ def export_cmd() -> None:
                 include_embeddings=incl_emb,
                 encrypt=bool(args.encrypt),
                 passphrase=args.passphrase,
+                materialize=fmt != "json" or bool(args.encrypt or args.passphrase and args.passphrase.strip()),
             )
     except NamespaceNotFoundError:
         _handle_missing_namespace_cli(ns)
         sys.exit(1)
     except (OSError, ValueError) as e:
         ui.fail(str(e))
+        sys.exit(1)
 
 
 def import_cmd() -> None:
@@ -2488,8 +2517,9 @@ def import_cmd() -> None:
                 dry_run=args.dry_run,
                 passphrase=args.passphrase,
             )
-    except (FileNotFoundError, ValueError) as e:
+    except (OSError, ValueError, RuntimeError) as e:
         ui.fail(str(e))
+        sys.exit(1)
 
 
 def reembed_cmd(argv: Optional[list[str]] = None) -> None:
@@ -2635,7 +2665,7 @@ def reembed_cmd(argv: Optional[list[str]] = None) -> None:
 def namespaces_cmd() -> None:
     parser = _parser(
         "namespaces",
-        "List, inspect, rename or delete namespaces.",
+        "List, inspect, rename or delete namespaces. Interrupted renames are recovered from durable journals.",
         [
             ("mesh namespaces", "list all"),
             ("mesh namespaces stats work", "details for one"),
@@ -3110,9 +3140,13 @@ def _lazy_capture_cmd() -> None:
 
 def brief_cmd() -> None:
     """Print the project brief (session-start context within a token budget)."""
+    from .brief import empty_project_brief, validate_brief_options
+
     parser = _parser("brief", "Session-start brief: health, open goals and tasks, and key facts within a token budget.")
     parser.add_argument("--namespace", default=None, metavar="NAME", help="Namespace to use (default: $MESH_NAMESPACE or 'shared')")
-    parser.add_argument("--max-tokens", type=int, default=500, help="Maximum token budget (default 500)")
+    parser.add_argument("--max-tokens", type=int, default=500, help="Estimated Markdown budget, 1-32768 tokens (default 500; JSON/framing estimated separately)")
+    parser.add_argument("--max-facts", type=int, default=20, help="Maximum selected current facts, 0-100 (default 20; token budget still applies)")
+    parser.add_argument("--fact-offset", type=int, default=0, help="Nonnegative fact continuation offset from a previous brief")
     parser.add_argument("--format", choices=["plain", "markdown", "json", "antigravity"], default="markdown", help="Output format")
     parser.add_argument("--no-private", action="store_true", help="Exclude private memories and tasks")
     args = parser.parse_args()
@@ -3123,37 +3157,26 @@ def brief_cmd() -> None:
     from .store import NamespaceNotFoundError
 
     try:
+        validate_brief_options(args.max_tokens, args.max_facts, args.fact_offset)
         mesh = _get_cli_mesh(namespace=ns, agent_id="cli", create=False, trusted_local=True)
         brief = mesh.project_brief(
             max_tokens=args.max_tokens,
+            max_facts=args.max_facts,
+            fact_offset=args.fact_offset,
             include_work_items=True,
             include_private=not args.no_private,
         )
     except NamespaceNotFoundError:
-        brief = {
-            "namespace": ns,
-            "namespace_state": "new",
-            "total_memories": 0,
-            "open_tasks_count": 0,
-            "completed_recent_count": 0,
-            "pending_contradictions": 0,
-            "brief_markdown": (
-                f"# Project Brief: {ns}\n\n"
-                f"*Namespace state:* `new` (empty)\n"
-                f"No memories, goals, or tasks exist yet in this namespace. "
-                f"Use `mesh add` or `mesh learn` to record facts and `mesh task add` to track tasks."
-            ),
-            "estimated_tokens": 25,
-        }
+        brief = empty_project_brief(ns, args.max_tokens, args.max_facts, args.fact_offset)
     except Exception as exc:
         if args.format == "antigravity":
             ui.json_out({"injectSteps": []})
-            return
+            raise SystemExit(1) from exc
         elif args.format == "json":
             ui.json_out({"error": str(exc), "brief_markdown": ""})
-            return
+            raise SystemExit(1) from exc
         else:
-            return
+            ui.fail(str(exc))
 
     dur_ms = (time.perf_counter() - t0) * 1000.0
     payload_len = len(json.dumps(brief))
@@ -3437,6 +3460,71 @@ def log_cmd() -> None:
         print(changelog_res.get("changelog_markdown", ""))
 
 
+def call_cmd() -> None:
+    """Structured tool calls using an explicit reviewed connection profile."""
+    from .client import ConnectionProfile, MeshClient, TransportUnavailable, UnknownOutcome
+    from .audit import reject_symlink
+    parser = _parser("call", "Call a Mesh tool with a reviewed profile; arguments are JSON from stdin or --args-file.")
+    parser.add_argument("tool", help="Tool name, for example mesh_recall or mesh_task_create")
+    parser.add_argument("--profile", required=True, help="Path to the project's reviewed connection.json")
+    parser.add_argument("--namespace", default=None, help="Namespace; must satisfy the profile and server locks")
+    parser.add_argument("--args-file", default=None, help="Read a JSON argument object from this file instead of stdin")
+    parser.add_argument("--operation-id", default=None, help="Stable ID for a mutation or its retry; never change it after a timeout")
+    parser.add_argument("--transport", choices=["auto", "sdk", "http"], default="auto", help="Local SDK, then configured existing HTTP endpoint (default: auto)")
+    args = parser.parse_args()
+    operation_id = args.operation_id
+
+    def emit(payload: dict[str, Any]) -> None:
+        rendered = json.dumps(payload, ensure_ascii=True, allow_nan=False)
+        try:
+            print(rendered)
+        except (OSError, ValueError):
+            print(rendered, file=sys.stderr)
+
+    try:
+        if args.args_file:
+            path = Path(args.args_file)
+            reject_symlink(path)
+            if path.stat().st_size > 262144:
+                raise ValueError("Argument file exceeds 256 KiB.")
+            raw = path.read_text(encoding="utf-8")
+        elif sys.stdin.isatty():
+            raw = "{}"
+        else:
+            raw = sys.stdin.read(262145)
+            if len(raw.encode("utf-8")) > 262144:
+                raise ValueError("JSON arguments exceed 256 KiB.")
+        arguments = json.loads(raw) if raw.strip() else {}
+        if not isinstance(arguments, dict):
+            raise ValueError("Tool arguments must be a JSON object.")
+        if operation_id is None:
+            operation_id = arguments.get("operation_id")
+        if args.namespace is not None:
+            if "namespace" in arguments and arguments["namespace"] != args.namespace:
+                raise ValueError("Conflicting namespace arguments.")
+            arguments["namespace"] = args.namespace
+        profile = ConnectionProfile.from_file(args.profile)
+        result = MeshClient(profile, transport=args.transport).call(args.tool, arguments, args.operation_id)
+        operation_id = result.get("operation_id", operation_id)
+        try:
+            print(json.dumps(result, ensure_ascii=True, allow_nan=False))
+        except (ValueError, TypeError, OSError) as exc:
+            if isinstance(result.get("receipt"), dict):
+                raise UnknownOutcome(operation_id) from exc
+            raise
+        if result.get("status") in {"rejected", "error", "unknown", "busy"}:
+            raise SystemExit(3 if result.get("status") == "unknown" else 1)
+    except UnknownOutcome as exc:
+        emit({"status": "unknown", "operation_id": exc.operation_id, "error": str(exc)})
+        raise SystemExit(3)
+    except TransportUnavailable as exc:
+        emit({"status": "unavailable", "operation_id": getattr(exc, "operation_id", operation_id), "error": str(exc)})
+        raise SystemExit(2)
+    except (ValueError, OSError, RuntimeError, TypeError) as exc:
+        emit({"status": "error", "operation_id": getattr(exc, "operation_id", operation_id), "error": str(exc)})
+        raise SystemExit(1)
+
+
 def audit_cmd() -> None:
     """Inspect and export content-free operational audit events."""
     parser = _parser("audit", "Content-free operational metrics and audit events (timing, tool names, NEVER memory text).")
@@ -3481,6 +3569,7 @@ def _get_command_mapping() -> dict[str, Callable[[], None]]:
         "why": why_cmd,
         "context": context_cmd,
         "brief": brief_cmd,
+        "call": call_cmd,
         "task": task_cmd,
         "tasks": task_cmd,
         "log": log_cmd,
@@ -3509,7 +3598,7 @@ def _get_command_mapping() -> dict[str, Callable[[], None]]:
 
 
 # Commands whose stdout is data (or a long-running server): never add decorative spacing.
-_RAW_OUTPUT_CMDS = {"context", "completion", "server", "mcp", "http", "dashboard", "shell", "run", "brief", "log"}
+_RAW_OUTPUT_CMDS = {"context", "completion", "server", "mcp", "http", "dashboard", "shell", "run", "brief", "log", "call"}
 
 
 def _silence_broken_pipe() -> None:

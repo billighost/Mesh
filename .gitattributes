@@ -1,0 +1,2 @@
+# Fixed regression fingerprints must survive Windows checkout unchanged.
+benchmarks/retrieval_fixtures/** -text whitespace=cr-at-eol

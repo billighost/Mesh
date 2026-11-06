@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import sqlite3
+from mesh.sqlite_runtime import sqlite3
 import tempfile
 import time
 from pathlib import Path
@@ -194,7 +194,7 @@ def test_interrupted_write_rollback_safety(temp_mesh_dir):
                 conn.isolation_level = "DEFERRED"
                 with conn:
                     conn.execute(
-                        "INSERT INTO memories (id, namespace, content, created_at, accessed_at) VALUES (?, ?, ?, ?, ?)",
+                        "INSERT INTO memories (id, namespace, content, created_at, accessed_at, incarnation) VALUES (?, ?, ?, ?, ?, lower(hex(randomblob(16))))",
                         (
                             "temp-half-write",
                             mesh.store.namespace,
@@ -399,7 +399,9 @@ def test_ingestion_guard_fuzzing(text):
     assert isinstance(res.local_only, bool)
 
 
-@settings(max_examples=30, deadline=1000)
+# Disk synchronization has variable wall time; performance budgets have their
+# own smoke test. Keep the state-transition property independent of disk load.
+@settings(max_examples=30, deadline=None)
 @given(
     status=st.sampled_from(["todo", "in_progress", "blocked", "done", "cancelled", "invalid_status", ""]),
     priority=st.sampled_from(["low", "medium", "high", "critical", "none"]),

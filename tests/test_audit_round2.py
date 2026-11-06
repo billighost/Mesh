@@ -358,6 +358,7 @@ def test_m5_mesh_sync_reports_captured_stored_deduplicated_and_error(tmp_path, m
     monkeypatch.setenv("MESH_HOME", str(tmp_path))
     monkeypatch.setenv("MESH_ALLOW_LOG_SYNC", "1")
     monkeypatch.setenv("MESH_NO_DAEMON_PROXY", "1")
+    monkeypatch.setenv("MESH_MCP_INCLUDE_PRIVATE", "1")
 
     with mcp_mod._LOG_WATERMARKS_LOCK:
         mcp_mod._LOG_WATERMARKS.clear()
@@ -680,10 +681,17 @@ def test_dd1_dd2_dd3_dd4_dd5_deep_dive_regressions(tmp_path, monkeypatch):
     bundle_priv = mesh.recall_with_context("deploy", include_private=True)
     assert bundle_priv["total_in_namespace"] == 3
 
-    # DD-3: clear_namespace scopes FTS deletion to namespace
+    # DD-3: clear_namespace scopes FTS deletion to namespace. Case-insensitive
+    # filesystems must first refuse names which address the same database.
     m_upper = Mesh(namespace="CaseFTS", agent_id="agent")
-    m_lower = Mesh(namespace="casefts", agent_id="agent")
     m_upper.learn("UniqueIdentifierToken998877 in upper namespace")
+    lower_path = m_upper.store.db_path.with_name("mesh_casefts.db")
+    if lower_path.exists() and lower_path.samefile(m_upper.store.db_path):
+        with pytest.raises(ValueError, match="namespace|spelling"):
+            Mesh(namespace="casefts", agent_id="agent")
+        m_lower = Mesh(namespace="casefts-independent", agent_id="agent")
+    else:
+        m_lower = Mesh(namespace="casefts", agent_id="agent")
     m_lower.learn("Other token in lower namespace")
     m_lower.clear()
     assert len(m_upper.recall("UniqueIdentifierToken998877")) == 1

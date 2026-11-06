@@ -2,12 +2,26 @@ name: CI
 
 on:
   push:
-    branches: [ main, "chore/*", "feat/*", "fix/*", "docs/*" ]
+    branches: [ main, "chore/*", "feat/*", "fix/*", "docs/*", "ci/mesh-production-*" ]
   pull_request:
     branches: [ main ]
   schedule:
     - cron: '0 4 * * 1'
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  MESH_NO_AUTO_DAEMON: "1"
+  MESH_NO_MODEL_DOWNLOAD: "1"
+  MESH_NO_UPDATE_CHECK: "1"
+  MESH_NO_IMPLICIT_CLOUD: "1"
+  MESH_AUTO_APPROVE: "0"
+  MESH_ENABLE_AUTO_SYNC: "0"
+  HF_HUB_OFFLINE: "1"
+  TRANSFORMERS_OFFLINE: "1"
+  PYTHONUTF8: "1"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -17,8 +31,11 @@ jobs:
   lint-and-security:
     name: Code Quality & Security Scan
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
@@ -57,6 +74,7 @@ jobs:
     name: Test (${{ matrix.os }}, py${{ matrix.python-version }})
     needs: [lint-and-security]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -70,6 +88,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
@@ -80,19 +100,31 @@ jobs:
       - name: Install Package & Test Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install .[test,secrets]
+          pip install .[test,secrets] psutil
 
       - name: Run Pytest Suite with Coverage
         env:
           MESH_HOME: ${{ runner.temp }}/.mesh_ci
         run: python scripts/run_ci_tests.py
 
+      - name: Preserve test and coverage evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tests-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: .work/ci/
+          if-no-files-found: warn
+          retention-days: 7
+
   dist-check:
     name: Packaging & Cleanliness Verification
     needs: [lint-and-security]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
@@ -175,12 +207,11 @@ jobs:
     name: Built Wheel Smoke Test
     needs: [dist-check]
     runs-on: ubuntu-latest
-    env:
-      MESH_NO_AUTO_DAEMON: "1"
-      MESH_AUTO_APPROVE: "0"
+    timeout-minutes: 15
     steps:
-      - name: Configure Isolated Environment
-        run: echo "MESH_HOME=${{ runner.temp }}/.mesh_smoke" >> $GITHUB_ENV
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Download Build Artifacts
         uses: actions/download-artifact@v4
@@ -196,16 +227,16 @@ jobs:
       - name: Install Wheel in Isolated Environment
         run: |
           python -m pip install --upgrade pip
-          pip install dist/*.whl
+          pip install dist/*.whl pytest pytest-xdist pytest-asyncio pytest-cov hypothesis keyring psutil
 
-      - name: Verify CLI Doctor Command
-        run: mesh doctor
+      - name: Validate the installed wheel and collect the extracted source archive
+        run: python scripts/validate_production_package.py dist --collect-sdist
 
-      - name: Verify CLI Install Dry-Run
-        run: mesh install --dry-run
-
-      - name: Verify Smoke Memory Lifecycle
-        run: |
-          mesh add "Smoke test architectural decision for release" --type decision --tags smoke,ci
-          mesh ask "architectural decision"
-          mesh brief --max-tokens 500
+      - name: Preserve installed-wheel smoke evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: installed-wheel-smoke
+          path: .work/package-final-validation.json
+          if-no-files-found: warn
+          retention-days: 7

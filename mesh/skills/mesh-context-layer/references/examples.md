@@ -1,4 +1,4 @@
-# Mesh Usage Examples (v0.8.3)
+# Mesh Usage Examples (v0.9.0)
 
 Practical patterns for AI coding agents interacting with Mesh.
 
@@ -9,7 +9,7 @@ Practical patterns for AI coding agents interacting with Mesh.
 ### Architecture Decisions
 ```json
 {
-  "content": "API routing migrated from Flask to FastAPI; all new endpoints must use Pydantic models in app/schemas.py.",
+  "content": "Decision: use FastAPI for API routing because typed validation and streaming responses are required; request models live in app/schemas.py.",
   "memory_type": "decision",
   "tags": ["api", "architecture", "fastapi"],
   "confidence": 1.0
@@ -29,7 +29,7 @@ Practical patterns for AI coding agents interacting with Mesh.
 ### Gotchas & Bug Fixes
 ```json
 {
-  "content": "Pytest fails with StarletteDeprecationWarning if httpx2 is not installed; do not pin starlette directly.",
+  "content": "Tests use temporary Mesh and agent homes because installer checks must never modify real user configuration.",
   "memory_type": "error",
   "tags": ["testing", "pytest", "dependencies"],
   "confidence": 0.95
@@ -54,7 +54,7 @@ Practical patterns for AI coding agents interacting with Mesh.
 When information changes (e.g., port changed from 5433 to 5434):
 1. **Search existing memory:**
    `mesh_recall(query="Postgres port")`
-   Result: `[{"id": "mem-a1b2", "content": "Local Postgres runs on port 5433..."}]`
+   Result includes: `{"results": [{"id": "mem-a1b2", "content": "Local Postgres runs on port 5433..."}]}`
 2. **Update in-place:**
    ```json
    {
@@ -63,27 +63,30 @@ When information changes (e.g., port changed from 5433 to 5434):
      "tags": ["database", "postgres", "ports"]
    }
    ```
-   *Result:* Memory `mem-a1b2` is updated. No duplicate is created, access counts are preserved, and contradiction detection is avoided.
+   *Result:* Memory `mem-a1b2` is updated. No duplicate is created, access counts are preserved, and subsequent recall sees the corrected value.
 
 ---
 
-## 3. Work Items Lifecycle (`task_create` -> `task_complete`)
+## 3. Work Items Lifecycle (`mesh_task_create` -> `mesh_task_complete`)
 
 ### Step 1: Create Goal
+Call `mesh_task_create`:
+
 ```json
-// mesh_task_create
 {
   "title": "Migrate database schema to v3 with SQLite WAL mode",
   "kind": "goal",
   "priority": "high",
   "tags": ["database", "schema", "wal"]
 }
-// Returns: {"short_id": "goal-1"}
 ```
 
+Example returned `short_id`: `goal-1`; use the actual returned ID.
+
 ### Step 2: Break into Actionable Tasks
+Call `mesh_task_create`:
+
 ```json
-// mesh_task_create
 {
   "title": "Add work_items and work_events tables in store.py",
   "kind": "task",
@@ -91,12 +94,14 @@ When information changes (e.g., port changed from 5433 to 5434):
   "priority": "high",
   "tags": ["database", "schema"]
 }
-// Returns: {"short_id": "task-2"}
 ```
 
+Example returned `short_id`: `task-2`; use the actual returned ID.
+
 ### Step 3: Transition Status as Work Starts
+Call `mesh_task_update`:
+
 ```json
-// mesh_task_update
 {
   "item_id": "task-2",
   "status": "in_progress",
@@ -105,8 +110,9 @@ When information changes (e.g., port changed from 5433 to 5434):
 ```
 
 ### Step 4: Complete with Mandatory Summary & Evidence
+Call `mesh_task_complete`:
+
 ```json
-// mesh_task_complete
 {
   "item_id": "task-2",
   "summary": "Implemented schema v3 migration with automatic backup. Added work_items and work_events tables with indices.",
@@ -119,8 +125,9 @@ When information changes (e.g., port changed from 5433 to 5434):
 ## 4. Generating Project Changelog (`mesh_log`)
 
 When the user asks *"What did we do today?"* or *"Summarize recent work"*:
+Call `mesh_log`:
+
 ```json
-// mesh_log
 {
   "since": "24h",
   "format": "markdown"
@@ -145,8 +152,9 @@ When the user asks *"What did we do today?"* or *"Summarize recent work"*:
 ## 5. End-of-Session Handoff
 
 Before closing a session, write a checkpoint so the next agent (or session) resumes immediately:
+Call `mesh_learn`:
+
 ```json
-// mesh_learn
 {
   "content": "Handoff: Completed schema v3 migration and work items data layer. Next agent should implement installer and check_skill.py validation script.",
   "memory_type": "context",

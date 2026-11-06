@@ -24,7 +24,7 @@ import json
 import multiprocessing as mp
 import os
 import shutil
-import sqlite3
+from mesh.sqlite_runtime import sqlite3
 import statistics
 import subprocess
 import sys

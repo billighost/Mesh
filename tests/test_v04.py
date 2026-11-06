@@ -3,7 +3,9 @@
 import asyncio
 import json
 import os
-import sqlite3
+import subprocess
+import sys
+from mesh.sqlite_runtime import sqlite3
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -69,7 +71,9 @@ def test_audit_log_recall():
         entries = get_audit_log(namespace=ns, limit=10)
         recall_entries = [e for e in entries if e["action"] == "recall"]
         assert len(recall_entries) > 0
-        assert recall_entries[0]["query"] == "audit test"
+        assert recall_entries[0]["query"] is None
+        assert recall_entries[0]["top_result"] is None
+        assert recall_entries[0]["result_count"] == len(results)
         assert recall_entries[0]["agent_id"] == "test-agent"
     finally:
         _cleanup_ns(ns)
@@ -101,7 +105,8 @@ def test_audit_log_learn_update_forget():
         update_entries = [e for e in entries if e["action"] == "update"]
         forget_entries = [e for e in entries if e["action"] == "forget"]
         assert len(learn_entries) > 0
-        assert learn_entries[0]["content"] in ("test learn event", "[PURGED]")
+        assert learn_entries[0]["content"] in (None, "[PURGED]")
+        assert all("test learn event" not in str(entry) for entry in entries)
         assert len(update_entries) == 1
         assert len(forget_entries) == 1
     finally:
@@ -161,14 +166,23 @@ def test_namespace_delete_and_rename_cleans_audit_db():
     try:
         mesh = Mesh(namespace=ns_old, agent_id="test")
         res = mesh.learn("fact inside old namespace")
+        from mesh.audit import deliver_mutation_events, export_content_free_audit
+
+        deliver_mutation_events(mesh.store)
         assert _get_audit_db_path(ns_old).exists()
+        before = [event for event in export_content_free_audit(namespace=ns_old)
+                  if event.get("status_code") == "committed" and event.get("object_id") == res["memory_id"]]
+        assert len(before) == 1
 
         rename_namespace(ns_old, ns_new)
         assert not _get_audit_db_path(ns_old).exists()
         assert _get_audit_db_path(ns_new).exists()
-        entries = get_audit_log(ns_new)
+        entries = [event for event in export_content_free_audit(namespace=ns_new)
+                   if event.get("event_id") == before[0]["event_id"]]
         assert len(entries) == 1
         assert entries[0]["namespace"] == ns_new
+        assert entries[0]["object_id"] == res["memory_id"]
+        assert entries[0]["revision"] == before[0]["revision"]
 
         delete_namespace(ns_new)
         assert not _get_audit_db_path(ns_new).exists()
@@ -180,38 +194,36 @@ def test_namespace_delete_and_rename_cleans_audit_db():
 # --- Cross-Process SQLite WAL Synchronization Tests ---
 
 
-def test_wal_cross_process_cache_sync():
-    """MeshStore vector cache should detect external SQLite WAL writes immediately."""
+def test_wal_cross_process_cache_sync(monkeypatch):
+    """A second Mesh process updates the content generation before the first process reads."""
+    monkeypatch.setenv("MESH_FORCE_HASH_EMBED", "1")
+    monkeypatch.setenv("MESH_BG_ONNX", "0")
     ns = "test_wal_sync"
     try:
         mesh = Mesh(namespace=ns, agent_id="proc-1")
-        mesh.learn("Initial memory from process 1")
+        initial = mesh.learn("Initial memory from process 1")
         assert mesh.count() == 1
-
-        # Simulate a second external process writing directly to SQLite WAL
-        vec = list(_embed_cached("External memory written via WAL"))
-        blob = _vector_to_blob(vec)
-        conn = sqlite3.connect(mesh.store.db_path, timeout=5.0)
-        try:
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute(
-                """
-                INSERT INTO memories
-                (id, namespace, content, confidence, memory_type, source_agent,
-                 tags, created_at, accessed_at, access_count, local_only, embedding)
-                VALUES (?, ?, ?, 1.0, 'fact', 'proc-2', '[]',
-                        '2026-10-15T00:00:00+00:00', '2026-10-15T00:00:00+00:00', 0, 0, ?)
-                """,
-                ("ext-wal-id-1", ns, "External memory written via WAL", blob),
-            )
-            conn.commit()
-        finally:
-            conn.close()
-
-        # Process 1 should detect the WAL change immediately without stale cache count
+        assert mesh.recall("Initial memory from process 1")
+        # Raw SQL omits the content-generation, FTS and durable-event protocol.
+        # Exercise an actual supported writer, including a metadata commit which
+        # must not bless the first process's old cached generation.
+        worker = (
+            "import json, sys; from mesh import Mesh; "
+            "m=Mesh(namespace=sys.argv[1], agent_id='proc-2'); "
+            "r=m.learn('External memory written via WAL', deduplicate=False); "
+            "m.update(sys.argv[2], content='Initial memory replaced by process 2'); "
+            "print(json.dumps(r))"
+        )
+        completed = subprocess.run([sys.executable, "-c", worker, ns, initial["memory_id"]],
+                                   capture_output=True, text=True, check=True, timeout=30)
+        external = json.loads(completed.stdout)
+        mesh.create_work_item(title="Verify the external write", kind="task")
         assert mesh.count() == 2
         recalled = mesh.recall("External memory written via WAL", n=2)
-        assert any(r["id"] == "ext-wal-id-1" for r in recalled)
+        assert any(r["id"] == external["memory_id"] for r in recalled)
+        replaced = mesh.recall("Initial memory replaced by process 2", n=2)
+        assert any(r["id"] == initial["memory_id"] and r["content"] == "Initial memory replaced by process 2"
+                   for r in replaced)
     finally:
         _cleanup_ns(ns)
 
@@ -636,7 +648,7 @@ def test_detect_provider_anthropic_key():
     """Should detect Anthropic when ANTHROPIC_API_KEY is set."""
     with patch.dict(
         "os.environ",
-        {"ANTHROPIC_API_KEY": "sk-ant-test", "MESH_AI_PROVIDER": ""},
+        {"ANTHROPIC_API_KEY": "sk-ant-test", "MESH_AI_PROVIDER": "", "MESH_NO_IMPLICIT_CLOUD": "0"},
         clear=False,
     ):
         config = detect_provider()
@@ -646,7 +658,7 @@ def test_detect_provider_anthropic_key():
 
 def test_detect_provider_openai_key():
     """Should detect OpenAI when OPENAI_API_KEY is set and no Anthropic key."""
-    env = {"OPENAI_API_KEY": "sk-openai-test", "ANTHROPIC_API_KEY": "", "MESH_AI_PROVIDER": ""}
+    env = {"OPENAI_API_KEY": "sk-openai-test", "ANTHROPIC_API_KEY": "", "MESH_AI_PROVIDER": "", "MESH_NO_IMPLICIT_CLOUD": "0"}
     with patch.dict("os.environ", env, clear=False):
         config = detect_provider()
         assert config["provider"] == "openai-compatible"
@@ -684,6 +696,7 @@ def test_detect_provider_no_keys_returns_local():
 def test_detect_provider_ollama_fallback():
     """Should detect Ollama when it's running and no API keys are set."""
     env = {
+        "MESH_NO_IMPLICIT_CLOUD": "0",
         "ANTHROPIC_API_KEY": "",
         "OPENAI_API_KEY": "",
         "GROQ_API_KEY": "",

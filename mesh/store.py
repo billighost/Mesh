@@ -1,5 +1,5 @@
 """
-mesh/store.py — High-performance unified persistence & hybrid search engine for Mesh.
+mesh/store.py â€” High-performance unified persistence & hybrid search engine for Mesh.
 
 Storage architecture:
   - SQLite (WAL mode) single-source-of-truth per namespace (`~/.mesh/mesh_<namespace>.db`)
@@ -16,22 +16,30 @@ from __future__ import annotations
 
 import atexit
 import contextlib
+import contextvars
 import json
 import logging
 import functools
+import heapq
+import hashlib
+import itertools
+import math
 import os
 import re
-import sqlite3
+from .sqlite_runtime import sqlite3
 import stat
 import sys
 import threading
 import time
 import uuid
+import unicodedata
 import warnings
-from collections import OrderedDict
+import weakref
+from collections import Counter, OrderedDict
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Iterator, Literal, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Iterator, Literal, Optional, Sequence
 
 if TYPE_CHECKING:
     import numpy as np
@@ -56,6 +64,7 @@ from .audit import (
     ensure_secure_mesh_dir,
     evict_audit_cache,
     get_mesh_dir,
+    mesh_dir_context,
     purge_memory_from_audit,
     reject_symlink,
     scrub_memory_update_from_audit,
@@ -82,6 +91,7 @@ GAP_MIN_QUERIES = 2
 DEFAULT_MAX_QUERY_ROWS = 10000
 DEFAULT_MAX_POOL_SIZE = 64
 DEFAULT_MAX_VECTOR_CACHE_SIZE = 64
+DEFAULT_MAX_VECTOR_CACHE_BYTES = 256 * 1024 * 1024
 DEFAULT_MAX_NAMESPACES = 256
 
 _MAX_POOL_SIZE = DEFAULT_MAX_POOL_SIZE
@@ -107,7 +117,8 @@ VALID_TRUST_TIERS: frozenset[str] = frozenset({"user", "agent", "log_captured"})
 _MEMORY_COLUMNS = (
     "id, namespace, content, confidence, memory_type, source_agent, "
     "tags, created_at, updated_at, accessed_at, access_count, ttl_days, "
-    "decay_start_at, local_only, embedding_model, trust_tier, quarantined, secret_ref"
+    "decay_start_at, local_only, embedding_model, trust_tier, quarantined, secret_ref, revision, incarnation, "
+    "(SELECT value FROM mesh_meta WHERE key='store_generation') AS store_generation"
 )
 
 # Whitelisted fields returned in `get_patterns()` for `unused_memories` and `stale_memories` (Phase 1.1)
@@ -126,16 +137,16 @@ _PATTERNS_MEMORY_WHITELIST: tuple[str, ...] = (
     "ttl_days",
 )
 
-_TOKEN_RE = re.compile(r"[a-zA-Z0-9_./:-]{2,}")
-SCHEMA_VERSION: str = "3"
-_WORD_RE = re.compile(r"[a-z0-9]+")
-_PUNCT_SPLIT_RE = re.compile(r"[^a-z0-9]+")
+_TOKEN_RE = re.compile(r"[\w./:\\-]+", re.UNICODE)
+SCHEMA_VERSION: str = "5"
+_WORD_RE = re.compile(r"[^\W_]+", re.UNICODE)
+_PUNCT_SPLIT_RE = re.compile(r"[\W_]+", re.UNICODE)
 
 _LEXICAL_STOPWORDS = {
     "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
     "in", "on", "at", "to", "for", "of", "with", "by", "from", "about",
-    "as", "into", "like", "through", "after", "over", "between", "out",
-    "against", "during", "without", "before", "under", "around", "among",
+    "as", "into", "like", "through", "over", "out",
+    "against", "under", "around", "among",
     "what", "where", "when", "who", "whom", "which", "how", "why",
     "do", "does", "did", "have", "has", "had", "having", "can", "could",
     "should", "would", "may", "might", "must", "shall", "will", "that",
@@ -160,10 +171,44 @@ class NamespaceNotFoundError(ValueError):
 
 
 class NamespaceLimitExceededError(ValueError):
-    """
-    Raised when creating a new namespace would exceed the configured namespace cap
-    (`MESH_MAX_NAMESPACES`, default 256).
-    """
+    """The configured maximum number of namespace databases would be exceeded."""
+
+
+class StaleStoreError(RuntimeError):
+    """The bound database was deleted or replaced; open a new store deliberately."""
+
+
+def _file_identity(path: Path) -> Optional[tuple[int, int]]:
+    try:
+        status = path.stat()
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    return (status.st_dev, status.st_ino) if stat.S_ISREG(status.st_mode) else None
+
+
+def _validate_incarnation(value: str, name: str) -> str:
+    if not isinstance(value, str) or not re.fullmatch(r"[a-f0-9]{32}", value):
+        raise ValueError(f"{name} must be a lowercase 128-bit identity.")
+    return value
+
+
+def _check_connection_file_identity(conn: sqlite3.Connection) -> None:
+    path = getattr(conn, "_mesh_db_path", None)
+    if path is not None and _file_identity(path) != conn._mesh_db_identity:
+        raise StaleStoreError("The namespace database was deleted or replaced; open a new store.")
+
+
+def _check_store_generation(conn: sqlite3.Connection, expected: Optional[str]) -> None:
+    if expected is None or conn.in_transaction and getattr(conn, "_mesh_active_store_generation", None) == expected:
+        return
+    try:
+        row = conn.execute("SELECT value,(SELECT value FROM mesh_meta WHERE key='namespace_rename_pending') FROM mesh_meta WHERE key='store_generation'").fetchone()
+    except sqlite3.OperationalError as exc:
+        raise StaleStoreError("The namespace database identity is unavailable; open a new store.") from exc
+    if row is None or row[0] != expected:
+        raise StaleStoreError("The namespace database was replaced; open a new store.")
+    if row[1] is not None:
+        raise StaleStoreError("Namespace rename is pending; reopen the store to recover maintenance.")
 
 
 def _normalize_trust_tier(raw_tier: Optional[str], default: str = "user") -> str:
@@ -267,26 +312,25 @@ def _evict_external_namespace_caches(namespace: str) -> None:
 def _finalize_evicted_resources(
     evicted: list[tuple[Path, Optional["_PooledConnection"], Optional[str]]]
 ) -> None:
-    """
-    Flush telemetry, close pooled connections, and evict upper-layer caches for
-    LRU-evicted namespaces AFTER releasing `_CACHE_LOCK`.
+    """Retire LRU database resources without waiting for another namespace.
+
+    Audit and application caches enforce their own bounds. Namespace
+    maintenance explicitly invalidates those caches; a writer or vector
+    eviction must not flush another namespace while retaining a live lease.
     """
     for db_path, conn, ns in evicted:
-        try:
-            _flush_telemetry_for_db_path(db_path)
-        except Exception:
-            pass
         if conn is not None:
             conn.close_pooled()
         with _CACHE_LOCK:
-            _QUERY_WRITE_COUNTS.pop(db_path, None)
-            dict.pop(_INITIALIZED_DBS, db_path, None)
-            extra_conn = _CONNECTION_POOL.pop(db_path, None)
-            if extra_conn is not None:
-                extra_conn.close_pooled()
-            _evict_vector_cache_for_db_path(db_path)
+            extra_conn = _CONNECTION_POOL.get(db_path)
+            if (extra_conn is None or extra_conn._mesh_users == 0) and not any(key[0] == db_path for key in _VECTOR_CACHE):
+                _QUERY_WRITE_COUNTS.pop(db_path, None)
+                dict.pop(_INITIALIZED_DBS, db_path, None)
+                extra_conn = _CONNECTION_POOL.pop(db_path, None)
+                if extra_conn is not None:
+                    extra_conn.close_pooled()
         if ns:
-            _evict_external_namespace_caches(ns)
+            evict_namespace_write_lock(ns, data_root=db_path.parent)
 
 
 def validate_memory_id(memory_id: str) -> str:
@@ -336,6 +380,7 @@ class _NamespaceLockState:
         self.namespace = namespace
         self.rlock = threading.RLock()
         self.depth = 0
+        self.users = 0
         self.fd: Optional[int] = None
         self.lock_path: Optional[Path] = None
 
@@ -346,10 +391,10 @@ _OPEN_LOCK_FDS: dict[Path, int] = {}
 _OPEN_LOCK_FDS_MUTEX = threading.Lock()
 
 
-def _get_ns_lock_path(namespace: str) -> Path:
+def _get_ns_lock_path(namespace: str, data_root: Optional[Path] = None) -> Path:
     clean_ns = validate_namespace(namespace)
-    ensure_secure_mesh_dir()
-    base_dir = cached_resolved_mesh_dir()
+    ensure_secure_mesh_dir(data_root)
+    base_dir = data_root.resolve() if data_root is not None else cached_resolved_mesh_dir()
     lock_path = base_dir / f".mesh_{clean_ns}.lock"
     reject_symlink(lock_path)
     return lock_path
@@ -384,7 +429,7 @@ def _acquire_os_file_lock(lock_path: Path, timeout: float) -> int:
                     pass
             _OPEN_LOCK_FDS[lock_path] = fd
 
-    deadline = time.monotonic() + max(0.05, float(timeout))
+    deadline = time.monotonic() + max(0.0, float(timeout))
     sleep_s = 0.002
     while True:
         try:
@@ -440,58 +485,65 @@ def _release_os_file_lock(fd: int, close_fd: bool = False) -> None:
 
 
 @contextlib.contextmanager
-def namespace_write_lock(namespace: str, timeout: float = 15.0) -> Iterator[None]:
-    """
-    Combined per-namespace in-process `threading.RLock` + cross-process advisory file lock
-    on `~/.mesh/.mesh_<ns>.lock` (mode 0600 on POSIX).
-    """
+def namespace_write_lock(
+    namespace: str, timeout: float = 15.0, *, data_root: Optional[Path] = None,
+) -> Iterator[None]:
+    """Pin the namespace coordinator before waiting for its thread and process locks."""
     clean_ns = validate_namespace(namespace)
-    mesh_dir = cached_resolved_mesh_dir()
-    key = (mesh_dir, clean_ns)
+    wait_timeout = float(timeout)
+    if not math.isfinite(wait_timeout) or wait_timeout < 0.0:
+        raise ValueError("Namespace lock timeout must be finite and nonnegative.")
+    mesh_dir = data_root.resolve() if data_root is not None else cached_resolved_mesh_dir()
+    key = (mesh_dir, clean_ns.casefold() if os.name == "nt" else clean_ns)
     with _NS_LOCK_REGISTRY_MUTEX:
         state = _NS_LOCK_REGISTRY.get(key)
         if state is None:
             state = _NamespaceLockState(clean_ns)
             _NS_LOCK_REGISTRY[key] = state
+        # A waiter owns the reference before acquiring its RLock. Eviction must
+        # not split coordinators or close the descriptor while that reference lives.
+        state.users += 1
 
-    wait_timeout = max(0.05, float(timeout))
     deadline = time.monotonic() + wait_timeout
-    if not state.rlock.acquire(timeout=wait_timeout):
-        raise TimeoutError(
-            f"Timed out after {timeout:.1f}s waiting for in-process namespace write lock '{clean_ns}'."
-        )
     try:
-        if state.depth == 0:
-            remaining = max(0.05, deadline - time.monotonic())
-            lock_path = _get_ns_lock_path(clean_ns)
-            state.fd = _acquire_os_file_lock(lock_path, timeout=remaining)
-            state.lock_path = lock_path
-        state.depth += 1
+        if not state.rlock.acquire(timeout=wait_timeout):
+            raise TimeoutError(
+                f"Timed out after {timeout:.1f}s waiting for in-process namespace write lock '{clean_ns}'."
+            )
         try:
-            yield
+            if state.depth == 0:
+                remaining = max(0.0, deadline - time.monotonic())
+                lock_path = _get_ns_lock_path(clean_ns, data_root=mesh_dir)
+                state.lock_path = lock_path
+                state.fd = _acquire_os_file_lock(lock_path, timeout=remaining)
+            state.depth += 1
+            try:
+                yield
+            finally:
+                state.depth -= 1
+                if state.depth == 0 and state.fd is not None:
+                    fd_to_release = state.fd
+                    state.fd = None
+                    _release_os_file_lock(fd_to_release, close_fd=False)
         finally:
-            state.depth -= 1
-            if state.depth == 0 and state.fd is not None:
-                fd_to_release = state.fd
-                state.fd = None
-                _release_os_file_lock(fd_to_release, close_fd=False)
+            state.rlock.release()
     finally:
-        state.rlock.release()
+        with _NS_LOCK_REGISTRY_MUTEX:
+            state.users -= 1
 
-
-def evict_namespace_write_lock(namespace: str) -> None:
+def evict_namespace_write_lock(namespace: str, *, data_root: Optional[Path] = None) -> None:
     """Evict the in-process lock registry entry for a namespace."""
     try:
         clean_ns = validate_namespace(namespace)
     except ValueError:
         return
-    mesh_dir = get_mesh_dir().resolve()
-    key = (mesh_dir, clean_ns)
+    mesh_dir = data_root.resolve() if data_root is not None else get_mesh_dir().resolve()
+    key = (mesh_dir, clean_ns.casefold() if os.name == "nt" else clean_ns)
     with _NS_LOCK_REGISTRY_MUTEX:
         state = _NS_LOCK_REGISTRY.get(key)
-        if state is None:
+        if state is None or state.users > 0:
             return
-        acquired = state.rlock.acquire(timeout=0.05)
+        acquired = state.rlock.acquire(timeout=0.0)
         if not acquired:
             return
         try:
@@ -526,12 +578,12 @@ def _cleanup_open_lock_fds() -> None:
 
 
 def _clean_possessives(text: str) -> str:
-    s = text.lower().replace("\u2019", "'").replace("\u2018", "'").replace("`", "'")
+    s = unicodedata.normalize("NFKC", text).casefold().replace("\u2019", "'").replace("\u2018", "'").replace("`", "'")
     return re.sub(r"'s\b", "", s)
 
 
 def _fast_stem(w: str) -> str:
-    if len(w) <= 3:
+    if len(w) <= 3 or not w.isascii():
         return w
     if w.endswith("ies") and len(w) > 4:
         return w[:-3] + "y"
@@ -613,24 +665,33 @@ for _grp in _SYNONYM_GROUPS:
 _SPLIT_TO_COMPOUND: dict[tuple[str, ...], str] = {v: k for k, v in _COMPOUND_SPLITS.items()}
 
 
-def _extract_search_tokens(text: str) -> tuple[list[str], list[str], set[str]]:
-    norm = _clean_possessives(text)
+def _extract_search_tokens(
+    text: str, *, _normalized: Optional[str] = None,
+    _stemmer: Optional[Callable[[str], str]] = None,
+    _word_tokens: Optional[list[str]] = None,
+) -> tuple[list[str], list[str], set[str]]:
+    norm = _clean_possessives(text) if _normalized is None else _normalized
     raw_tokens = [t.strip("._:-/") for t in _TOKEN_RE.findall(norm)]
-    raw_tokens = [t for t in raw_tokens if len(t) >= 2]
-    word_tokens = _WORD_RE.findall(norm)
-
+    raw_tokens = [t for t in raw_tokens if t]
+    word_tokens = _WORD_RE.findall(norm) if _word_tokens is None else _word_tokens
+    # A no-op camel split has the same normalized words; avoid parsing and
+    # normalizing the whole row a second time in that common case.
+    if re.search(r"(?<=[a-z0-9])(?=[A-Z])", text):
+        camel_words = _WORD_RE.findall(_clean_possessives(re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", text)))
+    else:
+        camel_words = word_tokens
     compact_ident_tokens: list[str] = []
     for rt in raw_tokens:
         if any(ch in rt for ch in ".-_:/"):
             compact = _PUNCT_SPLIT_RE.sub("", rt)
             if len(compact) >= 3 and compact != rt:
                 compact_ident_tokens.append(compact)
-
-    combined = list(dict.fromkeys([*raw_tokens, *compact_ident_tokens, *word_tokens]))
-    content_tokens = [t for t in combined if t not in _LEXICAL_STOPWORDS and len(t) >= 2]
+    combined = list(dict.fromkeys([*raw_tokens, *compact_ident_tokens, *word_tokens, *camel_words]))
+    content_tokens = [t for t in combined if t not in _LEXICAL_STOPWORDS]
     if not content_tokens:
-        content_tokens = [t for t in combined if len(t) >= 2]
-    stemmed_set = {_fast_stem(t) for t in content_tokens} | set(content_tokens)
+        content_tokens = combined
+    stemmer = _fast_stem if _stemmer is None else _stemmer
+    stemmed_set = {stemmer(t) for t in content_tokens} | set(content_tokens)
     return combined, content_tokens, stemmed_set
 
 
@@ -683,28 +744,123 @@ def _make_snippet(content: str, max_len: int = 110) -> str:
     return clean[: max_len - 3].rstrip() + "..."
 
 
+def _query_excerpt(content: str, query_tokens: list[str], width: int = 240) -> tuple[str, int, int]:
+    """A bounded original-text excerpt near literal evidence, with stable offsets."""
+    if len(content) <= width:
+        return content, 0, len(content)
+    terms = [token for token in query_tokens if token not in _FRAMING_TOKENS][:24]
+    if terms:
+        pattern = re.compile(r"(?<!\w)(?:" + "|".join(re.escape(token) for token in sorted(terms, key=len, reverse=True)) + r")(?!\w)", re.IGNORECASE)
+        matches = list(itertools.islice(pattern.finditer(content), 64))
+        best = None
+        for match in matches:
+            start = max(0, match.start() - width // 3)
+            end = min(len(content), start + width)
+            excerpt = content[start:end]
+            coverage = len({hit.group(0).casefold() for hit in pattern.finditer(excerpt)})
+            key = (coverage, len(match.group(0)), -start)
+            if best is None or key > best[0]:
+                best = (key, excerpt, start, end)
+        if best is not None:
+            return best[1], best[2], best[3]
+    return content[:width], 0, min(width, len(content))
+
+
+def _content_identity(content: str) -> bytes:
+    normalized = " ".join(_clean_possessives(content).split())
+    return hashlib.sha256(normalized.encode("utf-8")).digest()
+
+
+class _RowStemMemo:
+    """Short-lived deterministic stems with conservative entry/byte admission.
+
+    A row never shares tokens with another namespace or keeps them after the
+    lexical operation. Repeated surface forms need only one Python stem call.
+    """
+
+    __slots__ = ("_cache", "_owned_bytes", "_max_entries", "_max_bytes")
+
+    def __init__(self, max_entries: int = 1024, max_bytes: int = 64 * 1024):
+        if type(max_entries) is not int or max_entries < 0:
+            raise ValueError("Stem memo entry limit must be a nonnegative integer")
+        self._cache: dict[str, str] = {}
+        self._owned_bytes = 0
+        self._max_entries = max_entries
+        self._max_bytes = max_bytes
+        if type(max_bytes) is not int or max_bytes < self.retained_bytes:
+            raise ValueError("Stem memo byte limit cannot be smaller than its empty state")
+
+    @property
+    def retained_bytes(self) -> int:
+        # Strings and dictionary storage dominate; charge bookkeeping too.
+        return self._owned_bytes + sys.getsizeof(self._cache) + sys.getsizeof(self) + 3 * sys.getsizeof(0)
+
+    def __call__(self, token: str) -> str:
+        cached = self._cache.get(token)
+        if cached is not None:
+            return cached
+        stem = _fast_stem(token)
+        if len(self._cache) >= self._max_entries:
+            return stem
+        owned = sys.getsizeof(token) + (0 if stem is token else sys.getsizeof(stem)) + 32
+        # Reserve dictionary growth before mutation; oversize tokens bypass
+        # the memo without changing their lexical value.
+        container_peak = max(256, 3 * sys.getsizeof(self._cache))
+        projected = self._owned_bytes + owned + container_peak + sys.getsizeof(self) + 3 * sys.getsizeof(0)
+        if projected > self._max_bytes:
+            return stem
+        self._cache[token] = stem
+        self._owned_bytes += owned
+        if self.retained_bytes > self._max_bytes:
+            # Keep the bound on alternative/future Python dictionary layouts.
+            self._cache.clear()
+            self._owned_bytes = 0
+        return stem
+
+def _build_row_lexical_statistics(content: str, tags_list: list[str]) -> tuple[int, set[str]]:
+    """Exact DF/length projection for the streaming statistics pass."""
+    doc_norm = _clean_possessives(content)
+    stemmer = _RowStemMemo()
+    word_tokens = _WORD_RE.findall(doc_norm)
+    _, doc_tokens, doc_stems = _extract_search_tokens(content, _normalized=doc_norm, _stemmer=stemmer, _word_tokens=word_tokens)
+    tag_tokens = {str(t).strip().lower() for t in tags_list if str(t).strip()}
+    tag_stems = {stemmer(t) for t in tag_tokens}
+    doc_compacts = {_PUNCT_SPLIT_RE.sub("", t) for t in doc_tokens if len(t) >= 2}
+    df_stems = doc_stems | tag_stems | {stemmer(t) for t in doc_compacts}
+    return max(1, len(word_tokens)), df_stems
+
 def _build_row_lexical_entry(content: str, tags_list: list[str]) -> dict[str, Any]:
     doc_norm = _clean_possessives(content)
-    doc_compact = re.sub(r"[^a-z0-9]", "", doc_norm)
-    _, doc_tokens, doc_stems = _extract_search_tokens(content)
+    stemmer = _RowStemMemo()
+    word_tokens = _WORD_RE.findall(doc_norm)
+    _, doc_tokens, doc_stems = _extract_search_tokens(content, _normalized=doc_norm, _stemmer=stemmer, _word_tokens=word_tokens)
     tag_tokens = {str(t).strip().lower() for t in tags_list if str(t).strip()}
-    tag_stems = {_fast_stem(t) for t in tag_tokens}
-    tag_compacts = {re.sub(r"[^a-z0-9]", "", t) for t in tag_tokens if len(t) >= 2}
-    doc_compacts = {re.sub(r"[^a-z0-9]", "", t) for t in doc_tokens if len(t) >= 2}
-
+    tag_stems = {stemmer(t) for t in tag_tokens}
+    tag_compacts = {_PUNCT_SPLIT_RE.sub("", t) for t in tag_tokens if len(t) >= 2}
+    doc_compacts = {_PUNCT_SPLIT_RE.sub("", t) for t in doc_tokens if len(t) >= 2}
     all_doc_tokens = set(doc_tokens) | tag_tokens | doc_compacts | tag_compacts
-    all_doc_stems = doc_stems | tag_stems | {_fast_stem(t) for t in doc_compacts}
-    combined_df_stems = all_doc_stems | set(doc_tokens)
+    all_doc_stems = doc_stems | tag_stems | {stemmer(t) for t in doc_compacts}
+    canonical_stems = {stem: stem for stem in all_doc_stems}
+    # Count repeated words natively, then stem each distinct surface form.
+    term_freq = Counter()
+    for token, count in Counter(word_tokens).items():
+        if token not in _LEXICAL_STOPWORDS:
+            stem = stemmer(token)
+            term_freq[canonical_stems.get(stem, stem)] += count
+    for token in all_doc_tokens:
+        stem = stemmer(token)
+        term_freq.setdefault(canonical_stems.get(stem, stem), 1)
     return {
-        "doc_norm": doc_norm,
-        "doc_compact": doc_compact,
-        "doc_len": max(1, len(doc_tokens)),
+        "content_key": hashlib.sha256(" ".join(doc_norm.split()).encode("utf-8")).digest(),
+        "doc_len": max(1, len(word_tokens)),
+        "term_freq": term_freq,
         "tag_tokens": tag_tokens,
         "tag_stems": tag_stems,
         "tag_compacts": tag_compacts,
         "all_doc_tokens": all_doc_tokens,
         "all_doc_stems": all_doc_stems,
-        "df_stems": combined_df_stems,
+        "df_stems": all_doc_stems,
+        "indexed_tokens": all_doc_stems if all_doc_tokens.issubset(all_doc_stems) else all_doc_tokens | all_doc_stems,
     }
 
 
@@ -739,6 +895,22 @@ class _PooledConnection(sqlite3.Connection):
         self._mesh_users = 0
         self._mesh_retired = False
         self._mesh_closed = False
+        self._mesh_db_path: Optional[Path] = None
+        self._mesh_db_identity: Optional[tuple[int, int]] = None
+        self._mesh_active_store_generation: Optional[str] = None
+        self._mesh_owner_thread: Optional[int] = None
+        self._mesh_context_transactions: list[bool] = []
+        self._mesh_after_commit_actions: list[Callable[[], Any]] = []
+        self._mesh_savepoint_actions: dict[str, int] = {}
+        self._mesh_cache_dirty = False
+        self._mesh_cache_group_active = False
+        self._mesh_cache_base: Optional["_VectorCacheEntry"] = None
+        self._mesh_cache_base_version: Optional[int] = None
+        self._mesh_cache_target_version: Optional[int] = None
+        self._mesh_cache_updates: list[tuple[str, str, Any, Any, bool]] = []
+        self._mesh_cache_update_bytes = 0
+        self._mesh_cache_delta_lease: Optional["_CacheBudgetLease"] = None
+        self._mesh_savepoint_cache_states: dict[str, tuple[int, int, Optional[int]]] = {}
 
     def __enter__(self) -> "_PooledConnection":
         self._mesh_lock.acquire()
@@ -748,6 +920,8 @@ class _PooledConnection(sqlite3.Connection):
             if closed:
                 raise sqlite3.ProgrammingError("Cannot operate on a closed database.")
             super().__enter__()
+            self._mesh_context_transactions.append(self.in_transaction)
+            self._mesh_owner_thread = threading.get_ident()
             return self
         except BaseException:
             self._mesh_lock.release()
@@ -755,9 +929,13 @@ class _PooledConnection(sqlite3.Connection):
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> Literal[False]:
         try:
-            super().__exit__(exc_type, exc_val, exc_tb)
+            inherited_transaction = self._mesh_context_transactions.pop()
+            if not inherited_transaction:
+                super().__exit__(exc_type, exc_val, exc_tb)
             return False
         finally:
+            if not self._mesh_context_transactions:
+                self._mesh_owner_thread = None
             self._mesh_lock.release()
 
     def close(self) -> None:
@@ -777,14 +955,21 @@ class _PooledConnection(sqlite3.Connection):
 
     def checkin(self) -> None:
         should_close = False
+        became_idle = False
         with self._mesh_state_lock:
             if self._mesh_users > 0:
                 self._mesh_users -= 1
+                became_idle = self._mesh_users == 0
             if self._mesh_retired and self._mesh_users == 0 and not self._mesh_closed:
                 self._mesh_closed = True
                 should_close = True
         if should_close:
             self._close_physical()
+        elif became_idle:
+            # Release the state lock before the registry lock: checkout takes
+            # those locks in the opposite order.
+            with _WRITER_CONDITION:
+                _WRITER_CONDITION.notify_all()
 
     def retire(self) -> None:
         """Mark for closure; close immediately only when nobody is using it.
@@ -809,6 +994,9 @@ class _PooledConnection(sqlite3.Connection):
             super().close()
         except Exception:
             pass
+        finally:
+            with _WRITER_CONDITION:
+                _WRITER_CONDITION.notify_all()
 
 
 class _ConnectionCheckout:
@@ -851,6 +1039,124 @@ def _utc_now() -> datetime:
 
 def _utc_now_iso() -> str:
     return _utc_now().isoformat()
+
+
+def _check_namespace_binding(conn: sqlite3.Connection, namespace: str, *, claim: bool = False) -> None:
+    try:
+        bound = conn.execute("SELECT value FROM mesh_meta WHERE key='namespace_owner'").fetchone()
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc).lower():
+            return
+        raise
+    if bound is not None:
+        if bound[0] != namespace:
+            raise ValueError("Namespace database belongs to another namespace spelling; use the original spelling or a distinct namespace.")
+        return
+    if not claim:
+        return
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    owners: set[str] = set()
+    for table in ("memories", "work_items"):
+        if table in tables:
+            owners.update(str(row[0]) for row in conn.execute(f"SELECT DISTINCT namespace FROM {table} LIMIT 2"))
+    if len(owners) > 1:
+        raise RuntimeError("Database contains multiple namespaces; isolate them before upgrading Mesh.")
+    owner = next(iter(owners), namespace)
+    if owner != namespace:
+        raise ValueError("Namespace database belongs to another namespace spelling; use the original spelling or a distinct namespace.")
+    conn.execute("INSERT OR IGNORE INTO mesh_meta(key,value) VALUES('namespace_owner',?)", (namespace,))
+
+
+def _begin_write(
+    conn: sqlite3.Connection, namespace: Optional[str] = None,
+    expected_store_generation: Optional[str] = None,
+) -> Optional[str]:
+    _check_connection_file_identity(conn)
+    if conn.in_transaction:
+        _check_store_generation(conn, expected_store_generation)
+        if namespace is not None:
+            _check_namespace_binding(conn, namespace, claim=True)
+        marker = "mesh_" + uuid.uuid4().hex
+        conn.execute(f"SAVEPOINT {marker}")
+        if hasattr(conn, "_mesh_savepoint_actions"):
+            conn._mesh_savepoint_actions[marker] = len(conn._mesh_after_commit_actions)
+            conn._mesh_savepoint_cache_states[marker] = (len(conn._mesh_cache_updates), conn._mesh_cache_update_bytes, conn._mesh_cache_target_version)
+        return marker
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+        if version > int(SCHEMA_VERSION):
+            raise RuntimeError("Database schema is newer than supported; no mutation was committed.")
+        if namespace is not None:
+            _check_namespace_binding(conn, namespace, claim=True)
+        _check_store_generation(conn, expected_store_generation)
+        if hasattr(conn, "_mesh_active_store_generation"):
+            conn._mesh_active_store_generation = expected_store_generation
+    except BaseException:
+        conn.rollback()
+        raise
+    return None
+
+
+def _commit_write(conn: sqlite3.Connection, marker: Optional[str]) -> list[Callable[[], Any]]:
+    if marker is None:
+        _check_connection_file_identity(conn)
+        conn.commit()
+        if hasattr(conn, "_mesh_active_store_generation"):
+            conn._mesh_active_store_generation = None
+        actions = list(getattr(conn, "_mesh_after_commit_actions", ()))
+        if hasattr(conn, "_mesh_after_commit_actions"):
+            conn._mesh_after_commit_actions.clear()
+            conn._mesh_savepoint_actions.clear()
+            conn._mesh_savepoint_cache_states.clear()
+        return actions
+    else:
+        conn.execute(f"RELEASE SAVEPOINT {marker}")
+        if hasattr(conn, "_mesh_savepoint_actions"):
+            conn._mesh_savepoint_actions.pop(marker, None)
+            conn._mesh_savepoint_cache_states.pop(marker, None)
+        return []
+
+
+def _rollback_write(conn: sqlite3.Connection, marker: Optional[str]) -> None:
+    if not conn.in_transaction:
+        if hasattr(conn, "_mesh_active_store_generation"):
+            conn._mesh_active_store_generation = None
+        return
+    if marker is None:
+        conn.rollback()
+        if hasattr(conn, "_mesh_active_store_generation"):
+            conn._mesh_active_store_generation = None
+        if hasattr(conn, "_mesh_after_commit_actions"):
+            conn._mesh_after_commit_actions.clear()
+            conn._mesh_savepoint_actions.clear()
+            conn._mesh_savepoint_cache_states.clear()
+    else:
+        conn.execute(f"ROLLBACK TO SAVEPOINT {marker}")
+        conn.execute(f"RELEASE SAVEPOINT {marker}")
+        if hasattr(conn, "_mesh_savepoint_actions"):
+            offset = conn._mesh_savepoint_actions.pop(marker, len(conn._mesh_after_commit_actions))
+            del conn._mesh_after_commit_actions[offset:]
+            cache_state = conn._mesh_savepoint_cache_states.pop(marker, None)
+            if cache_state is not None:
+                length, size, version = cache_state
+                del conn._mesh_cache_updates[length:]
+                conn._mesh_cache_update_bytes = size if not conn._mesh_cache_dirty else 0
+                conn._mesh_cache_target_version = version
+                if conn._mesh_cache_delta_lease is not None:
+                    conn._mesh_cache_delta_lease.resize(conn._mesh_cache_update_bytes)
+
+
+@contextlib.contextmanager
+def _schema_transaction(conn: sqlite3.Connection, store: "MeshStore") -> Iterator[None]:
+    store._prepare_schema_upgrade(conn)
+    marker = _begin_write(conn, store.namespace, store._store_generation)
+    try:
+        yield
+        _commit_write(conn, marker)
+    except BaseException:
+        _rollback_write(conn, marker)
+        raise
 
 
 @functools.lru_cache(maxsize=16384)
@@ -940,7 +1246,9 @@ def _normalize_vector(vec: Sequence[float] | np.ndarray, enforce_dim: bool = Tru
         raise ValueError(
             f"Invalid embedding dimension {arr.size}; Mesh requires {EMBEDDING_DIM}-dimensional vectors."
         )
-    norm = float(np.linalg.norm(arr))
+    if not np.all(np.isfinite(arr)):
+        raise ValueError("Embedding values must be finite numbers.")
+    norm = float(np.linalg.norm(arr.astype(np.float64)))
     if norm > 1e-12:
         arr = arr / norm
     return np.ascontiguousarray(arr, dtype=np.float32)
@@ -963,8 +1271,11 @@ def _blob_to_vector(blob: bytes) -> np.ndarray:
         plain = decrypt_blob_if_encrypted(blob)
         if plain is None:
             return np.empty(0, dtype=np.float32)
-        return np.frombuffer(plain, dtype=np.float32)
-    return np.frombuffer(blob, dtype=np.float32)
+        blob = plain
+    if not blob or len(blob) % 4:
+        return np.empty(0, dtype=np.float32)
+    arr = np.frombuffer(blob, dtype=np.float32)
+    return arr if np.all(np.isfinite(arr)) else np.empty(0, dtype=np.float32)
 
 
 def _parse_tags_json(raw_tags: Any) -> list[str]:
@@ -1021,10 +1332,271 @@ def reset_cache_rebuild_count() -> None:
         _VectorCacheEntry.build_count = 0
 
 
+class _ExcludedIds:
+    """A nonmaterialized union of stable policy index sets."""
+
+    __slots__ = ("groups",)
+
+    def __init__(self, groups: tuple[set[str], ...]):
+        self.groups = groups
+
+    def __contains__(self, memory_id: str) -> bool:
+        return any(memory_id in group for group in self.groups)
+
+    def __iter__(self) -> Iterator[str]:
+        for index, group in enumerate(self.groups):
+            for memory_id in group:
+                if not any(memory_id in prior for prior in self.groups[:index]):
+                    yield memory_id
+
+
+class _QueryIds:
+    """Eligible IDs without copying an entire namespace's metadata or policy sets."""
+
+    __slots__ = ("base", "excluded", "size")
+
+    def __init__(self, base: set[str], excluded: tuple[set[str], ...], *, size: Optional[int] = None):
+        self.base = base
+        self.excluded = _ExcludedIds(excluded)
+        self.size = sum(mid not in self.excluded for mid in base) if size is None else size
+
+    def __contains__(self, memory_id: str) -> bool:
+        return memory_id in self.base and memory_id not in self.excluded
+
+    def __iter__(self) -> Iterator[str]:
+        return (mid for mid in self.base if mid not in self.excluded)
+
+    def __len__(self) -> int:
+        return self.size
+
+
+class CacheSnapshotInvalidatedError(RuntimeError):
+    """The caller must acquire a fresh namespace generation before retrying."""
+
+
+def _retry_cache_snapshot(method):
+    @functools.wraps(method)
+    def run(self, *args, **kwargs):
+        try:
+            return method(self, *args, **kwargs)
+        except CacheSnapshotInvalidatedError:
+            # Snapshot contexts have unwound. Refreshing here avoids acquiring
+            # a registry/SQL lock while holding a namespace read snapshot.
+            try:
+                self._get_vector_cache(force_refresh=True)
+            except CacheBudgetExceededError:
+                pass
+            return method(self, *args, **kwargs)
+    return run
+
+
+class CacheBudgetExceededError(RuntimeError):
+    """Use bounded streaming operations when a namespace cannot fit the cache budget."""
+
+    def __init__(self, message: str, *, required_bytes: int = 0) -> None:
+        super().__init__(message)
+        self.required_bytes = required_bytes
+
+
+def _get_max_vector_cache_bytes() -> int:
+    return env_int("MESH_MAX_VECTOR_CACHE_BYTES", DEFAULT_MAX_VECTOR_CACHE_BYTES, minimum=1024)
+
+
+def get_vector_cache_stats() -> dict[str, int]:
+    """Return allocation charges, including evicted generations still held by readers."""
+    with _CACHE_LOCK:
+        return {
+            "limit_bytes": _get_max_vector_cache_bytes(),
+            "charged_bytes": _CACHE_BUDGET_BYTES,
+            "cached_generations": len(_VECTOR_CACHE),
+            "live_generations_and_builds": len(_CACHE_BUDGET_LEASES),
+            "oversized_versions": len(_CACHE_REJECTIONS),
+        }
+
+
+class _CacheBudgetLease:
+    def __init__(self, key: tuple[Path, str]) -> None:
+        self.key = key
+        self.token = uuid.uuid4().hex
+        self.bytes = 0
+        self.released = False
+        with _CACHE_LOCK:
+            _CACHE_BUDGET_LEASES[self.token] = 0
+
+    def resize(self, size: int) -> None:
+        global _CACHE_BUDGET_BYTES
+        with _CACHE_LOCK:
+            if self.released:
+                raise RuntimeError("Cache allocation lease has been released.")
+            limit = _get_max_vector_cache_bytes()
+            growth = size - self.bytes
+            if growth > 0:
+                # Dropping an LRU reference only reclaims its charge when no reader
+                # retains the generation. Never retire writer connections here.
+                for victim_key in list(_VECTOR_CACHE):
+                    if _CACHE_BUDGET_BYTES + growth <= limit:
+                        break
+                    if victim_key == self.key:
+                        continue
+                    victim = _VECTOR_CACHE.pop(victim_key)
+                    del victim
+                if _CACHE_BUDGET_BYTES + growth > limit:
+                    raise CacheBudgetExceededError(
+                        "Namespace cache exceeds available allocation budget; use bounded streaming retrieval.",
+                        required_bytes=size,
+                    )
+            _CACHE_BUDGET_BYTES += growth
+            self.bytes = size
+            _CACHE_BUDGET_LEASES[self.token] = size
+
+    def release(self) -> None:
+        global _CACHE_BUDGET_BYTES
+        with _CACHE_LOCK:
+            if not self.released:
+                _CACHE_BUDGET_BYTES -= self.bytes
+                _CACHE_BUDGET_LEASES.pop(self.token, None)
+                self.bytes = 0
+                self.released = True
+
+
+def _object_graph_bytes(value: Any, seen: Optional[set[int]] = None) -> int:
+    """Conservatively charge Python objects without counting shared references twice."""
+    if seen is None:
+        seen = set()
+    ident = id(value)
+    if ident in seen:
+        return 0
+    seen.add(ident)
+    size = sys.getsizeof(value)
+    if isinstance(value, dict):
+        size += sum(_object_graph_bytes(key, seen) + _object_graph_bytes(item, seen) for key, item in value.items())
+    elif isinstance(value, (tuple, list, set, frozenset)):
+        size += sum(_object_graph_bytes(item, seen) for item in value)
+    return size
+
+
+_CACHE_TOP_FIELDS = (
+    "ids", "id_to_idx", "all_ids", "rows_by_id", "lexical_by_id", "stem_df",
+    "stem_to_ids", "token_to_ids", "lexical_strings", "needs_healing_ids", "private_ids", "quarantine_ids",
+    "model_ids", "type_ids", "tag_ids", "agent_ids", "content_ids", "visible_stem_df",
+    "_row_charges",
+)
+_CACHE_TEXT_FIELDS = (
+    "id", "namespace", "content", "tags", "memory_type", "source_agent", "created_at",
+    "updated_at", "accessed_at", "decay_start_at", "embedding_model", "trust_tier", "secret_ref",
+)
+
+
+def _cache_row_peak_bytes(row: Any) -> int:
+    chars = sum(len(str((row.get(name) if isinstance(row, dict) else row[name]) or "")) for name in _CACHE_TEXT_FIELDS)
+    # Includes one SQLite row, decoded/encrypted values, lexical construction,
+    # object-size traversal scratch space, and simultaneous old/new metadata.
+    return 16384 + 256 * chars
+
+
+def _matrix_growth_capacity(capacity: int, required: int) -> int:
+    return max(required, capacity + max(16, capacity // 8))
+
+
+@dataclass(frozen=True, slots=True)
+class _HybridQuerySpec:
+    vector: np.ndarray
+    tokens: list[str]
+    stems: list[str]
+    synonyms: dict[str, set[str]]
+    stem_synonyms: dict[str, set[str]]
+    phrase: str
+    compact: str
+    literals: list[str]
+    identifier_only: bool
+    pool: int
+    mode: str
+
+
+@dataclass(slots=True)
+class _ScoredMemoryID:
+    score: float
+    memory_id: str
+
+    def __lt__(self, other: "_ScoredMemoryID") -> bool:
+        if self.score != other.score:
+            return self.score < other.score
+        return self.memory_id > other.memory_id
+
+
+def _keep_best_scored_id(heap: list[_ScoredMemoryID], score: float, memory_id: str, limit: int) -> None:
+    if len(heap) < limit:
+        heapq.heappush(heap, _ScoredMemoryID(score, memory_id))
+    elif score > heap[0].score or (score == heap[0].score and memory_id < heap[0].memory_id):
+        heapq.heapreplace(heap, _ScoredMemoryID(score, memory_id))
+
+
+class _ReadWriteLock:
+    def __init__(self) -> None:
+        self._condition = threading.Condition(threading.RLock())
+        self._readers: dict[int, int] = {}
+        self._writer: Optional[int] = None
+        self._depth = 0
+        self._waiting = 0
+
+    @contextlib.contextmanager
+    def read(self) -> Iterator[None]:
+        ident = threading.get_ident()
+        with self._condition:
+            while self._writer not in (None, ident) or (self._waiting and ident not in self._readers and self._writer != ident):
+                self._condition.wait()
+            self._readers[ident] = self._readers.get(ident, 0) + 1
+        try:
+            yield
+        finally:
+            with self._condition:
+                count = self._readers[ident] - 1
+                if count:
+                    self._readers[ident] = count
+                else:
+                    self._readers.pop(ident)
+                self._condition.notify_all()
+
+    @contextlib.contextmanager
+    def write(self) -> Iterator[None]:
+        ident = threading.get_ident()
+        with self._condition:
+            if self._writer == ident:
+                self._depth += 1
+            else:
+                if ident in self._readers:
+                    raise RuntimeError("A retrieval snapshot cannot be upgraded to a write lock.")
+                self._waiting += 1
+                try:
+                    while self._writer is not None or self._readers:
+                        self._condition.wait()
+                    self._writer = ident
+                    self._depth = 1
+                finally:
+                    self._waiting -= 1
+        try:
+            yield
+        finally:
+            with self._condition:
+                self._depth -= 1
+                if not self._depth:
+                    self._writer = None
+                    self._condition.notify_all()
+
+
 class _VectorCacheEntry:
     build_count: int = 0
 
     __slots__ = (
+        "__weakref__",
+        "_lease",
+        "_cache_bytes",
+        "_build_peak_bytes",
+        "_row_charges",
+        "_rows_bytes",
+        "_index_bytes",
+        "_rw",
+        "_valid",
         "stamp",
         "data_version",
         "content_version",
@@ -1041,7 +1613,19 @@ class _VectorCacheEntry:
         "stem_df",
         "stem_to_ids",
         "token_to_ids",
+        "lexical_strings",
         "needs_healing_ids",
+        "private_ids",
+        "quarantine_ids",
+        "model_ids",
+        "type_ids",
+        "tag_ids",
+        "agent_ids",
+        "doc_len_total",
+        "content_ids",
+        "visible_stem_df",
+        "visible_doc_len_total",
+        "visible_id_count",
     )
 
     def __init__(
@@ -1055,8 +1639,18 @@ class _VectorCacheEntry:
         content_version: Optional[int] = None,
         needs_healing_ids: Optional[set[str]] = None,
         reused_lexical: Optional[dict[str, dict[str, Any]]] = None,
+        owned_matrix: bool = False,
+        budget_lease: Optional[_CacheBudgetLease] = None,
     ):
         global _CACHE_REBUILD_COUNT
+        self._lease = budget_lease
+        self._cache_bytes = 0
+        self._build_peak_bytes = 0
+        self._row_charges: dict[str, int] = {}
+        self._rows_bytes = 0
+        self._index_bytes = 0
+        self._rw = _ReadWriteLock()
+        self._valid = True
         self.stamp: DbStamp = stamp
         self.data_version: int = data_version
         self.content_version: Optional[int] = content_version
@@ -1069,21 +1663,35 @@ class _VectorCacheEntry:
         self.lexical_by_id: dict[str, dict[str, Any]] = {}
         self.stem_df: dict[str, int] = {}
         self.stem_to_ids: dict[str, set[str]] = {}
-        self.token_to_ids: dict[str, set[str]] = {}
+        self.token_to_ids: dict[str, set[str]] = self.stem_to_ids
+        self.lexical_strings: dict[str, str] = {}
+        self.private_ids: set[str] = set()
+        self.quarantine_ids: set[str] = set()
+        self.model_ids: dict[str, set[str]] = {}
+        self.type_ids: dict[str, set[str]] = {}
+        self.tag_ids: dict[str, set[str]] = {}
+        self.agent_ids: dict[str, set[str]] = {}
+        self.doc_len_total: int = 0
+        self.content_ids: dict[bytes, set[str]] = {}
+        self.visible_stem_df: dict[str, int] = {}
+        self.visible_doc_len_total = 0
+        self.visible_id_count = 0
         self.needs_healing_ids: set[str] = (
             set(needs_healing_ids) if needs_healing_ids is not None else set()
         )
 
         if matrix is not None and matrix.ndim == 2 and matrix.shape[0] > 0:
             n_rows, dim = int(matrix.shape[0]), int(matrix.shape[1])
-            cap = max(64, 1 << (n_rows - 1).bit_length())
-            buf = np.empty((cap, dim), dtype=np.float32)
-            buf[:n_rows] = matrix
+            cap = n_rows
+            if owned_matrix and matrix.dtype == np.float32 and matrix.flags.c_contiguous:
+                buf = matrix
+            else:
+                buf = np.empty((cap, dim), dtype=np.float32)
+                buf[:n_rows] = matrix
             self._matrix_buf: Optional[np.ndarray] = buf
             self.dim: int = dim
 
-            hbuf = np.empty((cap, 384), dtype=np.float32)
-            self._hash_matrix_buf: Optional[np.ndarray] = hbuf
+            self._hash_matrix_buf: Optional[np.ndarray] = None
         else:
             self._matrix_buf = None
             self._hash_matrix_buf = None
@@ -1091,19 +1699,6 @@ class _VectorCacheEntry:
 
         for mid, row_meta in self.rows_by_id.items():
             self._index_row_lexical(mid, row_meta)
-            idx = self.id_to_idx.get(mid)
-            if idx is not None and self._hash_matrix_buf is not None:
-                if row_meta.get("embedding_model") == "hash-384" and self._matrix_buf is not None:
-                    self._hash_matrix_buf[idx] = self._matrix_buf[idx]
-                else:
-                    try:
-                        from .memory import _hash_embed_384
-
-                        self._hash_matrix_buf[idx] = _hash_embed_384(str(row_meta.get("content", "")))
-                    except Exception:
-                        if self._matrix_buf is not None and self._matrix_buf.shape[1] == 384:
-                            self._hash_matrix_buf[idx] = self._matrix_buf[idx]
-
             if needs_healing_ids is None:
                 idx = self.id_to_idx.get(mid)
                 vec = self._matrix_buf[idx] if (idx is not None and self._matrix_buf is not None) else None
@@ -1112,66 +1707,148 @@ class _VectorCacheEntry:
 
         _VectorCacheEntry.build_count += 1
         _CACHE_REBUILD_COUNT += 1
+        if budget_lease is not None:
+            self._cache_bytes = self._top_bytes()
+            weakref.finalize(self, budget_lease.release)
+
+    def _ensure_lexical_posting_mode(self, lexical: dict[str, Any], *, temporary_peak_bytes: int = 0) -> None:
+        if self.token_to_ids is not self.stem_to_ids or lexical["indexed_tokens"] == lexical["df_stems"]:
+            return
+        original = self.stem_to_ids
+        working_peak = max(temporary_peak_bytes, self._build_peak_bytes)
+        if self._lease is not None:
+            clone_peak = 512 + 2 * (sys.getsizeof(original) + sum(sys.getsizeof(key) + sys.getsizeof(value) for key, value in original.items()))
+            self._lease.resize(self._cache_bytes + working_peak + clone_peak)
+        # Diverging tag literals need independent membership; retain shared
+        # strings/IDs but copy every mutable posting set before either changes.
+        try:
+            copied = {key: set(value) for key, value in original.items()}
+        except BaseException:
+            if self._lease is not None:
+                self._lease.resize(self._cache_bytes + working_peak)
+            raise
+        self.token_to_ids = copied
+        if self._lease is not None:
+            # Charge the entire new index, including keys outside this row's
+            # selected delta, before incremental accounting resumes.
+            self._index_bytes += sum(
+                (0 if self.lexical_strings.get(key) is key else sys.getsizeof(key)) + sys.getsizeof(value)
+                for key, value in copied.items()
+            )
+            self._cache_bytes = self._top_bytes() + self._rows_bytes + self._index_bytes
+            self._lease.resize(self._cache_bytes + working_peak)
+
+    def _canonicalize_row_lexical(self, lexical: dict[str, Any]) -> dict[str, str]:
+        # Only indexed strings have posting membership that can own their
+        # lifetime. Counter-only tag stems remain independently row-owned.
+        canonical = {token: self.lexical_strings.get(token, token) for token in lexical["indexed_tokens"]}
+        remapped: dict[int, set[str]] = {}
+        for name in (
+            "tag_tokens", "tag_stems", "tag_compacts", "all_doc_tokens",
+            "all_doc_stems", "df_stems", "indexed_tokens",
+        ):
+            original = lexical[name]
+            identity = id(original)
+            if identity not in remapped:
+                remapped[identity] = {canonical.get(token, token) for token in original}
+            lexical[name] = remapped[identity]
+        lexical["term_freq"] = Counter({canonical.get(token, token): count for token, count in lexical["term_freq"].items()})
+        return canonical
 
     def _index_row_lexical(self, memory_id: str, row_meta: dict[str, Any]) -> None:
-        old_tokens = row_meta.get("_indexed_tokens")
-        if old_tokens:
-            for tok in old_tokens:
-                t_set = self.token_to_ids.get(tok)
-                if t_set is not None:
-                    t_set.discard(memory_id)
-                    if not t_set:
-                        self.token_to_ids.pop(tok, None)
-
-        old_lex = self.lexical_by_id.pop(memory_id, None)
-        if old_lex is not None:
-            for s in old_lex["df_stems"]:
-                new_cnt = self.stem_df.get(s, 1) - 1
-                if new_cnt <= 0:
-                    self.stem_df.pop(s, None)
-                else:
-                    self.stem_df[s] = new_cnt
-                s_set = self.stem_to_ids.get(s)
-                if s_set is not None:
-                    s_set.discard(memory_id)
-                    if not s_set:
-                        self.stem_to_ids.pop(s, None)
-
         content = str(row_meta.get("content", ""))
         tags_raw = row_meta.get("tags")
         tags_list = row_meta.get("tags_list") or (_parse_tags_json(tags_raw) if tags_raw else [])
         row_meta["tags_list"] = tags_list
-        row_meta["_tags_low_set"] = frozenset(t.lower() for t in tags_list)
 
-        search_text = f"{content} {' '.join(tags_list)}" if tags_list else content
-        search_tokens = _extract_search_tokens(search_text)
-        row_meta["_search_tokens"] = search_tokens
-
-        indexed_tokens = set(search_tokens[0]) | search_tokens[2]
+        row_meta.pop("_prepared_search_tokens", None)
+        new_lex = row_meta.pop("_prepared_lexical", None)
+        if new_lex is None:
+            new_lex = _build_row_lexical_entry(content, tags_list)
+        canonical = self._canonicalize_row_lexical(new_lex)
+        lowered_tags = (tag.lower() for tag in tags_list)
+        row_meta["_tags_low_set"] = frozenset(canonical.get(tag, tag) for tag in lowered_tags)
+        self._ensure_lexical_posting_mode(new_lex)
+        self._unindex_row_lexical(memory_id)
+        indexed_tokens = new_lex["indexed_tokens"]
         row_meta["_indexed_tokens"] = indexed_tokens
         for tok in indexed_tokens:
+            self.lexical_strings.setdefault(tok, tok)
             self.token_to_ids.setdefault(tok, set()).add(memory_id)
 
-        new_lex = _build_row_lexical_entry(content, tags_list)
+        new_lex["policy"] = {
+            "private": bool(row_meta.get("local_only")),
+            "quarantine": bool(row_meta.get("quarantined")),
+            "model": str(row_meta.get("embedding_model") or "unknown"),
+            "type": str(row_meta.get("memory_type") or "fact").lower(),
+            "agent": str(row_meta.get("source_agent") or "unknown"),
+            "tags": row_meta["_tags_low_set"],
+        }
         self.lexical_by_id[memory_id] = new_lex
+        self.content_ids.setdefault(new_lex["content_key"], set()).add(memory_id)
+        self.doc_len_total += new_lex["doc_len"]
+        policy = new_lex["policy"]
+        if not policy["private"] and not policy["quarantine"]:
+            self.visible_doc_len_total += new_lex["doc_len"]
+            self.visible_id_count += 1
+            for stem in new_lex["df_stems"]:
+                self.visible_stem_df[stem] = self.visible_stem_df.get(stem, 0) + 1
+        if policy["private"]:
+            self.private_ids.add(memory_id)
+        if policy["quarantine"]:
+            self.quarantine_ids.add(memory_id)
+        for index, value in (
+            (self.model_ids, policy["model"]), (self.type_ids, policy["type"]), (self.agent_ids, policy["agent"]),
+        ):
+            index.setdefault(value, set()).add(memory_id)
+        for tag in policy["tags"]:
+            self.tag_ids.setdefault(tag, set()).add(memory_id)
         for s in new_lex["df_stems"]:
             self.stem_df[s] = self.stem_df.get(s, 0) + 1
             self.stem_to_ids.setdefault(s, set()).add(memory_id)
 
     def _unindex_row_lexical(self, memory_id: str) -> None:
-        row_meta = self.rows_by_id.get(memory_id)
-        if row_meta is not None:
-            old_tokens = row_meta.get("_indexed_tokens")
-            if old_tokens:
-                for tok in old_tokens:
-                    t_set = self.token_to_ids.get(tok)
-                    if t_set is not None:
-                        t_set.discard(memory_id)
-                        if not t_set:
-                            self.token_to_ids.pop(tok, None)
-
         old_lex = self.lexical_by_id.pop(memory_id, None)
         if old_lex is not None:
+            equal_members = self.content_ids.get(old_lex["content_key"])
+            if equal_members is not None:
+                equal_members.discard(memory_id)
+                if not equal_members:
+                    self.content_ids.pop(old_lex["content_key"], None)
+            for tok in old_lex["indexed_tokens"]:
+                t_set = self.token_to_ids.get(tok)
+                if t_set is not None:
+                    t_set.discard(memory_id)
+                    if not t_set:
+                        self.token_to_ids.pop(tok, None)
+                        self.lexical_strings.pop(tok, None)
+            self.doc_len_total -= old_lex["doc_len"]
+            self.private_ids.discard(memory_id)
+            self.quarantine_ids.discard(memory_id)
+            policy = old_lex["policy"]
+            if not policy["private"] and not policy["quarantine"]:
+                self.visible_doc_len_total -= old_lex["doc_len"]
+                self.visible_id_count -= 1
+                for stem in old_lex["df_stems"]:
+                    remaining = self.visible_stem_df.get(stem, 1) - 1
+                    if remaining > 0:
+                        self.visible_stem_df[stem] = remaining
+                    else:
+                        self.visible_stem_df.pop(stem, None)
+            for index, value in (
+                (self.model_ids, policy["model"]), (self.type_ids, policy["type"]), (self.agent_ids, policy["agent"]),
+            ):
+                members = index.get(value)
+                if members is not None:
+                    members.discard(memory_id)
+                    if not members:
+                        index.pop(value, None)
+            for tag in policy["tags"]:
+                members = self.tag_ids.get(tag)
+                if members is not None:
+                    members.discard(memory_id)
+                    if not members:
+                        self.tag_ids.pop(tag, None)
             for s in old_lex["df_stems"]:
                 new_cnt = self.stem_df.get(s, 1) - 1
                 if new_cnt <= 0:
@@ -1191,11 +1868,21 @@ class _VectorCacheEntry:
             return None
         return self._matrix_buf[:n]
 
+    @contextlib.contextmanager
+    def read_snapshot(self) -> Iterator["_VectorCacheEntry"]:
+        with self._rw.read():
+            if not self._valid:
+                raise CacheSnapshotInvalidatedError("Namespace cache changed; acquire a fresh snapshot.")
+            yield self
+
+    def write_snapshot(self) -> Any:
+        return self._rw.write()
+
     def snapshot(
         self,
         copy_matrix: bool = True,
     ) -> tuple[list[str], Optional[np.ndarray], dict[str, dict[str, Any]]]:
-        with _CACHE_LOCK:
+        with self.read_snapshot():
             ids_copy = list(self.ids)
             if self._matrix_buf is not None and ids_copy:
                 mat_slice = self._matrix_buf[: len(ids_copy)]
@@ -1210,7 +1897,7 @@ class _VectorCacheEntry:
         query_vec: np.ndarray,
         use_hash_matrix: bool = False,
     ) -> tuple[list[str], Optional[np.ndarray], dict[str, dict[str, Any]]]:
-        with _CACHE_LOCK:
+        with self.read_snapshot():
             ids_copy = list(self.ids)
             buf = self._hash_matrix_buf if use_hash_matrix else self._matrix_buf
             if buf is None or not ids_copy:
@@ -1226,13 +1913,14 @@ class _VectorCacheEntry:
         data_version: Optional[int] = None,
         content_version: Optional[int] = None,
     ) -> None:
-        self.stamp = stamp
-        self.mtime_ns = stamp[0]
-        self.file_size = stamp[1]
-        if data_version is not None:
-            self.data_version = data_version
-        if content_version is not None:
-            self.content_version = content_version
+        with self.write_snapshot():
+            self.stamp = stamp
+            self.mtime_ns = stamp[0]
+            self.file_size = stamp[1]
+            if data_version is not None:
+                self.data_version = data_version
+            if content_version is not None:
+                self.content_version = content_version
 
     def upsert_vector(
         self,
@@ -1240,8 +1928,144 @@ class _VectorCacheEntry:
         vec: Optional[np.ndarray],
         row_meta: Optional[dict[str, Any]] = None,
     ) -> bool:
+        with self.write_snapshot():
+            try:
+                return self._upsert_vector(memory_id, vec, row_meta)
+            except (CacheBudgetExceededError, MemoryError):
+                # A cache allocation is optional; an already committed write
+                # must still succeed when memory admission is exhausted.
+                self._valid = False
+                return False
+
+    def _top_bytes(self) -> int:
+        total = 4096
+        seen = set()
+        for name in _CACHE_TOP_FIELDS:
+            if not hasattr(self, name):
+                continue
+            value = getattr(self, name)
+            if id(value) not in seen:
+                seen.add(id(value))
+                total += sys.getsizeof(value)
+        for name in ("_matrix_buf", "_hash_matrix_buf"):
+            buf = getattr(self, name, None)
+            if buf is not None:
+                total += int(buf.nbytes) + 128
+        return total
+
+    @staticmethod
+    def _index_keys(row: Optional[dict[str, Any]], lexical: Optional[dict[str, Any]]) -> dict[str, set[Any]]:
+        if row is None:
+            return {}
+        lex = lexical or row.get("_prepared_lexical") or {}
+        search = row.get("_prepared_search_tokens") or row.get("_search_tokens") or ([], [], set())
+        tokens = lex.get("indexed_tokens")
+        if tokens is None:
+            tokens = (set(search[0]) | set(search[2])) if row.get("_prepared_search_tokens") is not None else row.get("_indexed_tokens", set())
+        stems = set(lex.get("df_stems", ()))
+        tags = row.get("_tags_low_set") or {str(tag).lower() for tag in row.get("tags_list", ())}
+        content_key = lex.get("content_key") or hashlib.sha256(str(row.get("content", "")).encode("utf-8")).digest()
+        return {
+            "stem_df": stems,
+            "stem_to_ids": stems,
+            "visible_stem_df": stems,
+            "token_to_ids": set(tokens),
+            "lexical_strings": set(tokens),
+            "model_ids": {str(row.get("embedding_model") or "unknown")},
+            "type_ids": {str(row.get("memory_type") or "fact").lower()},
+            "tag_ids": set(tags),
+            "agent_ids": {str(row.get("source_agent") or "unknown")},
+            "content_ids": {content_key},
+        }
+
+    def _index_value_bytes(self, keys: dict[str, set[Any]]) -> int:
+        selected_indexes: dict[int, tuple[Any, set[Any]]] = {}
+        for name, selected in keys.items():
+            index = getattr(self, name, None)
+            if index is None:
+                continue
+            identity = id(index)
+            if identity in selected_indexes:
+                selected_indexes[identity][1].update(selected)
+            else:
+                selected_indexes[identity] = (index, set(selected))
+        canonical_indexes = {
+            id(self.stem_to_ids), id(self.token_to_ids), id(self.stem_df), id(self.visible_stem_df),
+        }
+        total = 0
+        for index, selected in selected_indexes.values():
+            for key in selected:
+                if key not in index:
+                    continue
+                if index is self.lexical_strings:
+                    total += sys.getsizeof(index[key])
+                else:
+                    if id(index) not in canonical_indexes or self.lexical_strings.get(key) is not key:
+                        total += sys.getsizeof(key)
+                    total += sys.getsizeof(index[key])
+        return total
+
+    def _upsert_vector(
+        self,
+        memory_id: str,
+        vec: Optional[np.ndarray],
+        row_meta: Optional[dict[str, Any]] = None,
+    ) -> bool:
+        if self._lease is None:
+            return self._upsert_vector_unmetered(memory_id, vec, row_meta)
+        peak = _cache_row_peak_bytes(row_meta) if row_meta is not None else 16384
+        matrix_peak = 0
+        if vec is not None and memory_id not in self.id_to_idx:
+            capacity = int(self._matrix_buf.shape[0]) if self._matrix_buf is not None else 0
+            if len(self.ids) >= capacity:
+                matrix_peak = _matrix_growth_capacity(capacity, len(self.ids) + 1) * EMBEDDING_DIM * 4 + 128
+        self._lease.resize(self._cache_bytes + max(peak, self._build_peak_bytes) + matrix_peak)
+        prepared = None
+        if row_meta is not None:
+            prepared = dict(row_meta)
+            tags = prepared.get("tags_list") or _parse_tags_json(prepared.get("tags") or "[]")
+            prepared["tags_list"] = tags
+            text = str(prepared.get("content", ""))
+            prepared["_prepared_lexical"] = _build_row_lexical_entry(text, tags)
+            self._canonicalize_row_lexical(prepared["_prepared_lexical"])
+            if "indexed_tokens" not in prepared["_prepared_lexical"]:
+                prepared["_prepared_search_tokens"] = _extract_search_tokens(f"{text} {' '.join(tags)}" if tags else text)
+        if prepared is not None:
+            self._ensure_lexical_posting_mode(prepared["_prepared_lexical"], temporary_peak_bytes=max(peak, self._build_peak_bytes) + matrix_peak)
+        keys = self._index_keys(self.rows_by_id.get(memory_id), self.lexical_by_id.get(memory_id))
+        for name, selected in self._index_keys(prepared, None).items():
+            keys.setdefault(name, set()).update(selected)
+        before_index = self._index_value_bytes(keys)
+        array_bytes = sum(int(buf.nbytes) + 128 for buf in (self._matrix_buf, self._hash_matrix_buf) if buf is not None)
+        container_peak = 2 * (self._top_bytes() - array_bytes + before_index)
+        self._lease.resize(self._cache_bytes + max(peak, self._build_peak_bytes) + matrix_peak + container_peak)
+        old_row_charge = self._row_charges.get(memory_id, 0)
+        result = self._upsert_vector_unmetered(memory_id, vec, prepared)
+        if row_meta is not None:
+            # The posting pool owns these strings once for the generation.
+            # Counter-only tokens outside indexed membership stay row-owned.
+            seen = {
+                id(token) for token in self.lexical_by_id[memory_id]["indexed_tokens"]
+                if self.lexical_strings.get(token) is token
+            }
+            row_charge = _object_graph_bytes(self.rows_by_id[memory_id], seen)
+            row_charge += _object_graph_bytes(self.lexical_by_id.get(memory_id), seen) + 64
+            self._row_charges[memory_id] = row_charge
+            self._rows_bytes += row_charge - old_row_charge
+        self._index_bytes += self._index_value_bytes(keys) - before_index
+        self._cache_bytes = self._top_bytes() + self._rows_bytes + self._index_bytes
+        self._lease.resize(self._cache_bytes + self._build_peak_bytes)
+        return result
+
+    def _upsert_vector_unmetered(
+        self,
+        memory_id: str,
+        vec: Optional[np.ndarray],
+        row_meta: Optional[dict[str, Any]] = None,
+    ) -> bool:
         self.all_ids.add(memory_id)
         if row_meta is not None:
+            self._unindex_row_lexical(memory_id)
             self.rows_by_id[memory_id] = dict(row_meta)
             self._index_row_lexical(memory_id, self.rows_by_id[memory_id])
             if _row_needs_healing(self.rows_by_id[memory_id], vec):
@@ -1250,6 +2074,7 @@ class _VectorCacheEntry:
                 self.needs_healing_ids.discard(memory_id)
 
         if vec is None or vec.size == 0:
+            self._remove_vector(memory_id)
             return True
 
         vec_1d = np.ascontiguousarray(vec.reshape(-1), dtype=np.float32)
@@ -1261,38 +2086,15 @@ class _VectorCacheEntry:
             if self._matrix_buf is None or vec_1d.shape[0] != self.dim:
                 return False
             self._matrix_buf[existing_idx] = vec_1d
-            if self._hash_matrix_buf is not None:
-                meta = self.rows_by_id.get(memory_id) or row_meta or {}
-                if meta.get("embedding_model") == "hash-384" and vec_1d.shape[0] == 384:
-                    self._hash_matrix_buf[existing_idx] = vec_1d
-                else:
-                    try:
-                        from .memory import _hash_embed_384
-
-                        self._hash_matrix_buf[existing_idx] = _hash_embed_384(str(meta.get("content", "")))
-                    except Exception:
-                        pass
             return True
 
         n = len(self.ids)
-        if self._matrix_buf is None or n == 0:
+        if self._matrix_buf is None:
             dim = int(vec_1d.shape[0])
-            buf = np.empty((64, dim), dtype=np.float32)
+            buf = np.empty((_matrix_growth_capacity(0, 1), dim), dtype=np.float32)
             buf[0] = vec_1d
             self._matrix_buf = buf
             self.dim = dim
-            hbuf = np.empty((64, 384), dtype=np.float32)
-            meta = self.rows_by_id.get(memory_id) or row_meta or {}
-            if meta.get("embedding_model") == "hash-384" and vec_1d.shape[0] == 384:
-                hbuf[0] = vec_1d
-            else:
-                try:
-                    from .memory import _hash_embed_384
-
-                    hbuf[0] = _hash_embed_384(str(meta.get("content", "")))
-                except Exception:
-                    hbuf[0] = vec_1d
-            self._hash_matrix_buf = hbuf
             self.ids = [memory_id]
             self.id_to_idx = {memory_id: 0}
             return True
@@ -1301,37 +2103,41 @@ class _VectorCacheEntry:
             return False
 
         if n >= self._matrix_buf.shape[0]:
-            new_cap = max(64, self._matrix_buf.shape[0] * 2)
+            new_cap = _matrix_growth_capacity(int(self._matrix_buf.shape[0]), n + 1)
             new_buf = np.empty((new_cap, self.dim), dtype=np.float32)
             new_buf[:n] = self._matrix_buf[:n]
             self._matrix_buf = new_buf
-            if self._hash_matrix_buf is not None:
-                new_hbuf = np.empty((new_cap, 384), dtype=np.float32)
-                new_hbuf[:n] = self._hash_matrix_buf[:n]
-                self._hash_matrix_buf = new_hbuf
 
         self._matrix_buf[n] = vec_1d
-        if self._hash_matrix_buf is not None:
-            meta = self.rows_by_id.get(memory_id) or row_meta or {}
-            if meta.get("embedding_model") == "hash-384" and vec_1d.shape[0] == 384:
-                self._hash_matrix_buf[n] = vec_1d
-            else:
-                try:
-                    from .memory import _hash_embed_384
-
-                    self._hash_matrix_buf[n] = _hash_embed_384(str(meta.get("content", "")))
-                except Exception:
-                    self._hash_matrix_buf[n] = vec_1d
 
         self.id_to_idx[memory_id] = n
         self.ids.append(memory_id)
         return True
 
     def delete_vector(self, memory_id: str) -> None:
+        with self.write_snapshot():
+            self._delete_vector(memory_id)
+
+    def _delete_vector(self, memory_id: str) -> None:
+        if self._lease is not None:
+            keys = self._index_keys(self.rows_by_id.get(memory_id), self.lexical_by_id.get(memory_id))
+            before_index = self._index_value_bytes(keys)
+            self._delete_vector_unmetered(memory_id)
+            self._rows_bytes -= self._row_charges.pop(memory_id, 0)
+            self._index_bytes += self._index_value_bytes(keys) - before_index
+            self._cache_bytes = self._top_bytes() + self._rows_bytes + self._index_bytes
+            self._lease.resize(self._cache_bytes + self._build_peak_bytes)
+            return
+        self._delete_vector_unmetered(memory_id)
+
+    def _delete_vector_unmetered(self, memory_id: str) -> None:
         self.all_ids.discard(memory_id)
         self.needs_healing_ids.discard(memory_id)
         self._unindex_row_lexical(memory_id)
         self.rows_by_id.pop(memory_id, None)
+        self._remove_vector(memory_id)
+
+    def _remove_vector(self, memory_id: str) -> None:
         idx = self.id_to_idx.pop(memory_id, None)
         if idx is None:
             return
@@ -1342,8 +2148,6 @@ class _VectorCacheEntry:
             self.id_to_idx[last_id] = idx
             if self._matrix_buf is not None:
                 self._matrix_buf[idx] = self._matrix_buf[last_idx]
-            if self._hash_matrix_buf is not None:
-                self._hash_matrix_buf[idx] = self._hash_matrix_buf[last_idx]
         self.ids.pop()
         if not self.ids or self._matrix_buf is None:
             self._matrix_buf = None
@@ -1352,9 +2156,60 @@ class _VectorCacheEntry:
 
 
 _CACHE_LOCK = threading.RLock()
+_WRITER_CONDITION = threading.Condition(_CACHE_LOCK)
 _CONNECTION_POOL: OrderedDict[Path, _PooledConnection] = OrderedDict()
+_WRITER_OPENING: set[Path] = set()
 _DB_PATH_NAMESPACES: dict[Path, str] = {}
 _VECTOR_CACHE: OrderedDict[tuple[Path, str], _VectorCacheEntry] = OrderedDict()
+_CACHE_BUDGET_BYTES = 0
+_CACHE_BUDGET_LEASES: dict[str, int] = {}
+_CACHE_REJECTIONS: OrderedDict[tuple[Path, str], tuple[Optional[int], int]] = OrderedDict()
+_STORE_COORDINATORS: weakref.WeakValueDictionary[tuple[Path, str], "_StoreCoordinator"] = weakref.WeakValueDictionary()
+_READER_CONDITION = threading.Condition(threading.RLock())
+_READER_CONNECTION_POOL: OrderedDict[tuple[Path, int], _PooledConnection] = OrderedDict()
+_READER_OPENING: dict[Path, int] = {}
+_READER_NEXT_ID = 0
+
+
+class _ReaderCheckout(_ConnectionCheckout):
+    def _checkin(self) -> None:
+        was_checked_in = self._checked_in
+        super()._checkin()
+        if not was_checked_in:
+            with _READER_CONDITION:
+                _READER_CONDITION.notify_all()
+
+
+def close_store_readers(db_path: Optional[Path] = None) -> None:
+    with _READER_CONDITION:
+        keys = [key for key in _READER_CONNECTION_POOL if db_path is None or key[0] == db_path]
+        retired = [_READER_CONNECTION_POOL.pop(key) for key in keys]
+        _READER_CONDITION.notify_all()
+    for conn in retired:
+        conn.retire()
+
+
+class _StoreCoordinator:
+    def __init__(self) -> None:
+        self.lock = threading.RLock()
+
+    def __enter__(self) -> "_StoreCoordinator":
+        self.lock.acquire()
+        return self
+
+    def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> Literal[False]:
+        self.lock.release()
+        return False
+
+
+def _get_store_coordinator(db_path: Path, namespace: str) -> _StoreCoordinator:
+    with _CACHE_LOCK:
+        key = (db_path, namespace.casefold() if os.name == "nt" else namespace)
+        coordinator = _STORE_COORDINATORS.get(key)
+        if coordinator is None:
+            coordinator = _StoreCoordinator()
+            _STORE_COORDINATORS[key] = coordinator
+        return coordinator
 
 
 def _evict_vector_cache_for_db_path(db_path: Path) -> None:
@@ -1370,17 +2225,45 @@ _TRANSIENT_EMBEDDINGS: dict[tuple[str, str], np.ndarray] = {}
 
 
 class _AccessTrackingBuffer:
-    def __init__(self, db_path: Path, namespace: str) -> None:
+    def __init__(self, db_path: Path, namespace: str, store_generation: Optional[str] = None) -> None:
         self.db_path = db_path
         self.namespace = namespace
+        self.store_generation = store_generation
         self.access_increments: dict[str, tuple[int, str]] = {}
+        self.access_incarnations: dict[str, str] = {}
         self.query_rows: list[tuple[str, str, str, str, Optional[float], int, str, int]] = []
         self.event_count: int = 0
         self.first_event_ts: float = 0.0
+        self.byte_charge = 1024 + 4 * (len(str(db_path)) + len(namespace))
 
 
 _ACCESS_TRACKING_LOCK = threading.RLock()
 _ACCESS_TRACKING_BUFFERS: dict[Path, _AccessTrackingBuffer] = {}
+_ACCESS_TRACKING_INFLIGHT_ENTRIES = 0
+_ACCESS_TRACKING_INFLIGHT_BYTES = 0
+_ACCESS_TRACKING_DROPPED_ENTRIES = 0
+
+
+def _access_entry_bytes(memory_id: str, timestamp: str) -> int:
+    return 512 + 4 * (len(memory_id) + len(timestamp) + 32)
+
+
+def _query_entry_bytes(row: tuple[Any, ...]) -> int:
+    return 512 + 4 * sum(len(value) for value in row if isinstance(value, str))
+
+
+def _tracking_charge_locked() -> tuple[int, int]:
+    return (
+        _ACCESS_TRACKING_INFLIGHT_ENTRIES + sum(len(buffer.access_increments) + len(buffer.query_rows) for buffer in _ACCESS_TRACKING_BUFFERS.values()),
+        _ACCESS_TRACKING_INFLIGHT_BYTES + sum(buffer.byte_charge for buffer in _ACCESS_TRACKING_BUFFERS.values()),
+    )
+
+
+def get_access_tracking_stats() -> dict[str, int]:
+    """Report separately loss-tolerant, bounded access-statistics admission."""
+    with _ACCESS_TRACKING_LOCK:
+        count, size = _tracking_charge_locked()
+        return {"pending_entries": count, "pending_bytes": size, "dropped_entries": _ACCESS_TRACKING_DROPPED_ENTRIES}
 
 # Backward-compatibility aliases
 _TelemetryBuffer = _AccessTrackingBuffer
@@ -1439,26 +2322,44 @@ def _requeue_access_tracking(
     namespace: str,
     inc_items: list[tuple[str, tuple[int, str]]],
     q_rows: list[tuple],
+    *,
+    inflight: tuple[int, int] = (0, 0),
+    store_generation: Optional[str] = None,
+    access_incarnations: Optional[dict[str, str]] = None,
 ) -> None:
+    global _ACCESS_TRACKING_INFLIGHT_ENTRIES, _ACCESS_TRACKING_INFLIGHT_BYTES, _ACCESS_TRACKING_DROPPED_ENTRIES
     with _ACCESS_TRACKING_LOCK:
         buf = _ACCESS_TRACKING_BUFFERS.get(resolved)
+        if buf is not None and store_generation is not None and buf.store_generation not in (None, store_generation):
+            _ACCESS_TRACKING_DROPPED_ENTRIES += inflight[0]
+            _ACCESS_TRACKING_INFLIGHT_ENTRIES -= inflight[0]
+            _ACCESS_TRACKING_INFLIGHT_BYTES -= inflight[1]
+            return
         if buf is None:
-            buf = _AccessTrackingBuffer(db_path=resolved, namespace=namespace)
+            buf = _AccessTrackingBuffer(db_path=resolved, namespace=namespace, store_generation=store_generation)
             _ACCESS_TRACKING_BUFFERS[resolved] = buf
         for mid, (delta, accessed_at) in inc_items:
+            incarnation = (access_incarnations or {}).get(mid)
             prev = buf.access_increments.get(mid)
+            if prev is not None and buf.access_incarnations.get(mid) != incarnation:
+                # A newer pending event must survive an obsolete failed flush.
+                _ACCESS_TRACKING_DROPPED_ENTRIES += 1
+                continue
+            if incarnation is not None:
+                buf.access_incarnations[mid] = incarnation
             if prev is None:
                 buf.access_increments[mid] = (delta, accessed_at)
+                buf.byte_charge += _access_entry_bytes(mid, accessed_at)
             else:
-                buf.access_increments[mid] = (
-                    prev[0] + delta,
-                    max(prev[1], accessed_at),
-                )
+                buf.access_increments[mid] = (prev[0] + delta, max(prev[1], accessed_at))
         if q_rows:
             buf.query_rows.extend(q_rows)
+            buf.byte_charge += sum(_query_entry_bytes(row) for row in q_rows)
         buf.event_count += len(inc_items) + len(q_rows)
         if buf.event_count == len(inc_items) + len(q_rows):
             buf.first_event_ts = time.monotonic()
+        _ACCESS_TRACKING_INFLIGHT_ENTRIES -= inflight[0]
+        _ACCESS_TRACKING_INFLIGHT_BYTES -= inflight[1]
 
 
 # Backward-compatibility alias
@@ -1466,80 +2367,79 @@ _requeue_telemetry = _requeue_access_tracking
 
 
 def _flush_access_tracking_for_db_path(db_path: Path) -> None:
+    global _ACCESS_TRACKING_INFLIGHT_ENTRIES, _ACCESS_TRACKING_INFLIGHT_BYTES, _ACCESS_TRACKING_DROPPED_ENTRIES
     resolved = db_path.resolve()
     with _ACCESS_TRACKING_LOCK:
         buf = _ACCESS_TRACKING_BUFFERS.pop(resolved, None)
         if buf is None or (not buf.access_increments and not buf.query_rows):
             return
         inc_items = list(buf.access_increments.items())
+        incarnations = buf.access_incarnations
         q_rows = list(buf.query_rows)
         ns = buf.namespace
+        generation = buf.store_generation
+        inflight = (len(inc_items) + len(q_rows), buf.byte_charge)
+        _ACCESS_TRACKING_INFLIGHT_ENTRIES += inflight[0]
+        _ACCESS_TRACKING_INFLIGHT_BYTES += inflight[1]
 
     if not resolved.exists():
-        _requeue_access_tracking(resolved, ns, inc_items, q_rows)
+        if generation is not None:
+            with _ACCESS_TRACKING_LOCK:
+                _ACCESS_TRACKING_DROPPED_ENTRIES += inflight[0]
+                _ACCESS_TRACKING_INFLIGHT_ENTRIES -= inflight[0]
+                _ACCESS_TRACKING_INFLIGHT_BYTES -= inflight[1]
+        else:
+            _requeue_access_tracking(resolved, ns, inc_items, q_rows, inflight=inflight, access_incarnations=incarnations)
         return
 
     try:
-        enc_on = is_encryption_enabled()
-        with _CACHE_LOCK:
+        # Background or eviction flushes bind the buffer's real root; they must
+        # never resolve another caller's current MESH_HOME.
+        with mesh_dir_context(resolved.parent):
             store = MeshStore(namespace=ns, create=False)
-            q_writes = _QUERY_WRITE_COUNTS.get(resolved, 0) + len(q_rows)
-            _QUERY_WRITE_COUNTS[resolved] = q_writes
-            with store._connect() as conn:
-                conn.execute("BEGIN IMMEDIATE")
-                try:
-                    for mid, (delta, accessed_at) in inc_items:
-                        conn.execute(
-                            """
-                            UPDATE memories
-                            SET access_count = access_count + ?,
-                                accessed_at = ?
-                            WHERE namespace = ? AND id = ?
-                            """,
-                            (delta, accessed_at, ns, mid),
-                        )
-                    if q_rows:
-                        rows_to_insert = [
-                            (
-                                qid,
-                                q_ns,
-                                encrypt_text_for_storage(q_text) if enc_on else q_text,
-                                aid,
-                                b_sim,
-                                r_cnt,
-                                ts,
-                                p_flag,
-                            )
-                            for (qid, q_ns, q_text, aid, b_sim, r_cnt, ts, p_flag) in q_rows
-                        ]
+            if generation is not None and generation != store.store_generation:
+                raise StaleStoreError("Access statistics belong to a retired database generation.")
+            with namespace_write_lock(ns, data_root=resolved.parent), store._cache_lock:
+                with _CACHE_LOCK:
+                    q_writes = _QUERY_WRITE_COUNTS.get(resolved, 0) + len(q_rows)
+                with store._connect() as conn:
+                    marker = _begin_write(conn, ns, store._store_generation)
+                    try:
                         conn.executemany(
-                            """
-                            INSERT INTO queries
-                            (id, namespace, query_text, agent_id, best_similarity, result_count, timestamp, private_query)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                            """,
-                            rows_to_insert,
+                            "UPDATE memories SET access_count=access_count+?,accessed_at=MAX(COALESCE(accessed_at,''),?) WHERE namespace=? AND id=? AND incarnation=?",
+                            [(delta, accessed_at, ns, mid, incarnations[mid]) for mid, (delta, accessed_at) in inc_items if mid in incarnations],
                         )
-                        if q_writes >= 100:
-                            _QUERY_WRITE_COUNTS[resolved] = 0
-                            _prune_queries_table_locked(conn, ns, _max_query_rows())
-                    conn.commit()
-                    store._read_content_version_locked(conn)
-                except Exception:
-                    if conn.in_transaction:
-                        conn.rollback()
-                    raise
-            new_stamp = _get_db_stamp(resolved)
-            with _CACHE_LOCK:
-                if new_stamp is not None:
-                    _INITIALIZED_DBS[resolved] = new_stamp
-                    for (c_path, _), vcache in _VECTOR_CACHE.items():
-                        if c_path == resolved:
-                            vcache.stamp = new_stamp
-                            vcache.mtime_ns = new_stamp[0]
-                            vcache.file_size = new_stamp[1]
+                        if q_rows:
+                            enc_on = is_encryption_enabled()
+                            rows_to_insert = [
+                                (qid, q_ns, encrypt_text_for_storage(text) if enc_on else text, agent, similarity, count, when, private)
+                                for qid, q_ns, text, agent, similarity, count, when, private in q_rows
+                            ]
+                            conn.executemany(
+                                "INSERT INTO queries(id,namespace,query_text,agent_id,best_similarity,result_count,timestamp,private_query) VALUES(?,?,?,?,?,?,?,?)",
+                                rows_to_insert,
+                            )
+                            if q_writes >= 100:
+                                q_writes = 0
+                                _prune_queries_table_locked(conn, ns, _max_query_rows())
+                        _commit_write(conn, marker)
+                    except BaseException:
+                        _rollback_write(conn, marker)
+                        raise
+                with _CACHE_LOCK:
+                    _QUERY_WRITE_COUNTS[resolved] = q_writes
+                store._refresh_cache_stamp_after_non_memory_write()
+    except StaleStoreError:
+        with _ACCESS_TRACKING_LOCK:
+            _ACCESS_TRACKING_DROPPED_ENTRIES += inflight[0]
+            _ACCESS_TRACKING_INFLIGHT_ENTRIES -= inflight[0]
+            _ACCESS_TRACKING_INFLIGHT_BYTES -= inflight[1]
     except Exception:
-        _requeue_access_tracking(resolved, ns, inc_items, q_rows)
+        _requeue_access_tracking(resolved, ns, inc_items, q_rows, inflight=inflight, store_generation=generation, access_incarnations=incarnations)
+    else:
+        with _ACCESS_TRACKING_LOCK:
+            _ACCESS_TRACKING_INFLIGHT_ENTRIES -= inflight[0]
+            _ACCESS_TRACKING_INFLIGHT_BYTES -= inflight[1]
 
 
 # Backward-compatibility alias
@@ -1595,7 +2495,7 @@ def _scrub_queries_in_tx(conn: sqlite3.Connection, namespace: str, content: str)
             continue
 
 
-def _scrub_pending_query_tracking(namespace: str, content: Optional[str]) -> None:
+def _scrub_pending_query_tracking(namespace: str, content: Optional[str], *, data_root: Optional[Path] = None) -> None:
     """Drop buffered recall queries that reproduce content being deleted or redacted (Finding S12)."""
     clean = (content or "").strip()
     if not clean:
@@ -1604,7 +2504,7 @@ def _scrub_pending_query_tracking(namespace: str, content: Optional[str]) -> Non
     trunc_low = clean[:512].lower()
     with _ACCESS_TRACKING_LOCK:
         for buf in _ACCESS_TRACKING_BUFFERS.values():
-            if buf.namespace != namespace or not buf.query_rows:
+            if buf.namespace != namespace or not buf.query_rows or (data_root is not None and buf.db_path.parent != data_root):
                 continue
             kept = []
             for row in buf.query_rows:
@@ -1620,6 +2520,7 @@ def _scrub_pending_query_tracking(namespace: str, content: Optional[str]) -> Non
             dropped = len(buf.query_rows) - len(kept)
             if dropped:
                 buf.event_count = max(0, buf.event_count - dropped)
+                buf.byte_charge -= sum(_query_entry_bytes(row) for row in buf.query_rows) - sum(_query_entry_bytes(row) for row in kept)
                 buf.query_rows = kept
 
 
@@ -1643,10 +2544,7 @@ def _is_permanent_fts_error(exc: BaseException) -> bool:
 
 
 def close_store_connection(db_path: Path) -> None:
-    try:
-        _flush_access_tracking_for_db_path(db_path)
-    except Exception:
-        pass
+    close_store_readers(db_path)
     with _CACHE_LOCK:
         _QUERY_WRITE_COUNTS.pop(db_path, None)
         _DB_PATH_NAMESPACES.pop(db_path, None)
@@ -1675,6 +2573,7 @@ def _close_all_pooled_connections() -> None:
         flush_all_telemetry()
     except Exception:
         pass
+    close_store_readers()
     with _CACHE_LOCK:
         for conn in list(_CONNECTION_POOL.values()):
             conn.close_pooled()
@@ -1802,176 +2701,26 @@ class _CollectionCompatShim:
         embeddings: Optional[list[list[float]]] = None,
         documents: Optional[list[str]] = None,
         metadatas: Optional[list[dict[str, Any]]] = None,
+        *,
+        include_private: bool = True,
+        expected_source_agent: Optional[str] = None,
     ) -> None:
-        now = _utc_now_iso()
-        enc_on = is_encryption_enabled()
-        with namespace_write_lock(self._store.namespace):
-            with _CACHE_LOCK:
-                synced_cache = self._store._is_cache_synced_locked()
-                in_place_ok = synced_cache is not None
-                pending_vectors: list[tuple[str, Optional[np.ndarray], dict[str, Any]]] = []
-                new_cv: Optional[int] = None
-                audit_scrubs: list[tuple[str, str, bool]] = []
-                with self._store._connect() as conn:
-                    conn.execute("BEGIN IMMEDIATE")
-                    try:
-                        for i, raw_mid in enumerate(ids):
-                            mid = validate_memory_id(raw_mid)
-                            raw_doc = documents[i] if documents and i < len(documents) else ""
-                            meta = metadatas[i] if metadatas and i < len(metadatas) else {}
-                            emb = embeddings[i] if embeddings and i < len(embeddings) else None
-                            norm_vec = _normalize_vector(emb) if emb is not None else None
-                            raw_blob = norm_vec.tobytes() if norm_vec is not None else None
-
-                            tags_raw = meta.get("tags", "[]")
-                            raw_tags_list = _parse_tags_json(tags_raw)
-                            req_local = bool(meta.get("local_only", 0))
-
-                            # Finding S11: Enforce guard_ingest and guard_tags at lowest layer
-                            doc, tags_list, final_local = _enforce_store_guard(
-                                raw_doc, raw_tags_list, req_local
-                            )
-                            tags_str = json.dumps(tags_list)
-                            local_flag = 1 if final_local else 0
-
-                            mem_type = str(meta.get("memory_type", "fact"))
-                            source_agent = str(meta.get("source_agent", "unknown"))
-                            conf = float(meta.get("confidence", 1.0))
-                            created_at = meta.get("created_at", now)
-                            updated_at = meta.get("updated_at", now)
-                            accessed_at = meta.get("accessed_at", now)
-                            access_count = int(meta.get("access_count", 0))
-                            ttl_days = meta.get("ttl_days")
-                            decay_start_at = meta.get("decay_start_at")
-                            emb_model = str(
-                                meta.get("embedding_model")
-                                or ("onnx-minilm-l6-v2" if raw_blob else "needs-reembed")
-                            )
-                            trust_tier = _normalize_trust_tier(meta.get("trust_tier"), default="user")
-                            quarantined_flag = 1 if meta.get("quarantined") else 0
-                            norm_ref = normalize_secret_ref(
-                                meta.get("secret_ref"), default_namespace=self._store.namespace
-                            )
-                            secret_ref_json = json.dumps(norm_ref, sort_keys=True) if norm_ref else None
-
-                            db_doc = encrypt_text_for_storage(doc) if enc_on else doc
-                            db_tags = encrypt_text_for_storage(tags_str) if enc_on else tags_str
-                            db_blob = encrypt_blob_for_storage(raw_blob) if (enc_on and raw_blob) else raw_blob
-                            db_ref = (
-                                encrypt_text_for_storage(secret_ref_json)
-                                if (enc_on and secret_ref_json)
-                                else secret_ref_json
-                            )
-
-                            old_row = conn.execute(
-                                "SELECT content, local_only FROM memories WHERE id = ? AND namespace = ?",
-                                (mid, self._store.namespace),
-                            ).fetchone()
-                            old_rowid = self._store._get_memory_rowid(conn, mid)
-                            conn.execute(
-                                """
-                                INSERT OR REPLACE INTO memories
-                                (id, namespace, content, confidence, memory_type,
-                                 source_agent, tags, created_at, updated_at, accessed_at, access_count,
-                                 ttl_days, decay_start_at, local_only, embedding, embedding_model,
-                                 trust_tier, quarantined, secret_ref)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                """,
-                                (
-                                    mid,
-                                    self._store.namespace,
-                                    db_doc,
-                                    conf,
-                                    mem_type,
-                                    source_agent,
-                                    db_tags,
-                                    created_at,
-                                    updated_at,
-                                    accessed_at,
-                                    access_count,
-                                    ttl_days,
-                                    decay_start_at,
-                                    local_flag,
-                                    db_blob,
-                                    emb_model,
-                                    trust_tier,
-                                    quarantined_flag,
-                                    db_ref,
-                                ),
-                            )
-                            new_rowid = self._store._get_memory_rowid(conn, mid)
-                            self._store._sync_fts_row(
-                                conn,
-                                memory_id=mid,
-                                content=doc,
-                                tags=tags_str,
-                                memory_type=mem_type,
-                                source_agent=source_agent,
-                                old_rowid=old_rowid,
-                                new_rowid=new_rowid,
-                                local_only=bool(local_flag),
-                            )
-                            if old_row is not None:
-                                old_content = decrypt_text_if_encrypted(str(old_row[0] or ""))
-                                old_local = bool(old_row[1])
-                                if old_content != doc or (local_flag and not old_local):
-                                    _scrub_contradictions_in_tx(
-                                        conn,
-                                        self._store.namespace,
-                                        mid,
-                                        REDACTED_CONTENT_PLACEHOLDER
-                                        if local_flag
-                                        else doc,
-                                    )
-                                    _scrub_queries_in_tx(conn, self._store.namespace, old_content)
-                                    _scrub_pending_query_telemetry(self._store.namespace, old_content)
-                                    audit_scrubs.append((mid, old_content, bool(local_flag)))
-                            if in_place_ok and synced_cache is not None:
-                                row_meta = {
-                                    "id": mid,
-                                    "namespace": self._store.namespace,
-                                    "content": doc,
-                                    "confidence": conf,
-                                    "memory_type": mem_type,
-                                    "source_agent": source_agent,
-                                    "tags": tags_str,
-                                    "tags_list": tags_list,
-                                    "created_at": created_at,
-                                    "updated_at": updated_at,
-                                    "accessed_at": accessed_at,
-                                    "access_count": access_count,
-                                    "ttl_days": ttl_days,
-                                    "decay_start_at": decay_start_at,
-                                    "local_only": bool(local_flag),
-                                    "embedding_model": emb_model,
-                                    "trust_tier": trust_tier,
-                                    "quarantined": bool(quarantined_flag),
-                                    "secret_ref": norm_ref,
-                                }
-                                pending_vectors.append((mid, norm_vec, row_meta))
-                        new_cv = self._store._bump_content_version_in_tx(conn)
-                        conn.commit()
-                    except Exception:
-                        if conn.in_transaction:
-                            conn.rollback()
-                        raise
-                if in_place_ok and synced_cache is not None:
-                    for mid, vec, meta in pending_vectors:
-                        if not synced_cache.upsert_vector(mid, vec, row_meta=meta):
-                            in_place_ok = False
-                            break
-                if in_place_ok and synced_cache is not None:
-                    self._store._refresh_stamps_after_write_locked(synced_cache, content_version=new_cv)
-                else:
-                    self._store._invalidate_cache()
-
-        for scrubbed_id, scrubbed_old_content, scrubbed_local in audit_scrubs:
-            scrub_memory_update_from_audit(
-                namespace=self._store.namespace,
-                memory_id=scrubbed_id,
-                old_content=scrubbed_old_content,
-                local_only=scrubbed_local,
+        for values in (embeddings, documents, metadatas):
+            if values is not None and len(values) != len(ids):
+                raise ValueError("IDs, documents, metadata, and embeddings must have matching lengths.")
+        items = [
+            (
+                memory_id,
+                documents[index] if documents is not None else "",
+                embeddings[index] if embeddings is not None else None,
+                metadatas[index] if metadatas is not None else {},
+                bool(metadatas[index].get("local_only")) if metadatas is not None else False,
             )
+            for index, memory_id in enumerate(ids)
+        ]
+        self._store.upsert_batch(
+            items, include_private=include_private, expected_source_agent=expected_source_agent,
+        )
 
     def query(
         self,
@@ -1998,14 +2747,21 @@ class MeshStore:
     def __init__(self, namespace: str = "default", create: bool = True):
         self.namespace = validate_namespace(namespace)
         self.create = bool(create)
+        self._store_generation: Optional[str] = None
+        self._db_identity: Optional[tuple[int, int]] = None
         ensure_secure_mesh_dir()
         base_dir = cached_resolved_mesh_dir()
+        if any(base_dir.glob(".mesh-rename-*.json")):
+            from .namespace_maintenance import recover_namespace_renames
+
+            recover_namespace_renames(base_dir, self.namespace)
         raw_candidate = base_dir / f"mesh_{self.namespace}.db"
         reject_symlink(raw_candidate)
         resolved_db = raw_candidate.resolve()
         if resolved_db.parent != base_dir:
             raise ValueError(f"Invalid namespace path resolution for '{namespace}'.")
         self.db_path = resolved_db
+        self._cache_lock = _get_store_coordinator(self.db_path, self.namespace)
         self._fts_enabled = True
         self._fts_dirty = False
         if not self.create and not self.db_path.exists():
@@ -2015,109 +2771,718 @@ class MeshStore:
         if self.db_path.exists() or self.create:
             self._ensure_initialized()
         self.collection = _CollectionCompatShim(self)
+        from .mutation_delivery import register_mutation_store
+
+        register_mutation_store(self)
 
     # --- Connection, Content Version & Schema Management ---
 
-    def _connect(self) -> _ConnectionCheckout:
-        """Check out a persistent, thread-safe SQLite WAL connection for `self.db_path`."""
+    @property
+    def store_generation(self) -> str:
+        """The durable database identity captured when this instance was opened."""
+        if self._store_generation is None:
+            raise RuntimeError("Store identity has not been initialized.")
+        return self._store_generation
+
+    def _assert_instance_file(self) -> Optional[tuple[int, int]]:
+        identity = _file_identity(self.db_path)
+        if self._store_generation is not None and identity != self._db_identity:
+            raise StaleStoreError("The namespace database was deleted or replaced; open a new store.")
+        return identity
+
+    def _is_current_instance(self) -> bool:
+        """Check a registry candidate without reopening an old store as a writer."""
+        try:
+            self._assert_instance_file()
+            with self._read_connect():
+                pass
+        except StaleStoreError:
+            return False
+        return True
+
+    def _bind_store_identity(self, conn: sqlite3.Connection) -> None:
+        row = conn.execute("SELECT value,(SELECT value FROM mesh_meta WHERE key='namespace_rename_pending') FROM mesh_meta WHERE key='store_generation'").fetchone()
+        if row is None:
+            raise RuntimeError("Database identity is missing; the schema upgrade did not complete.")
+        if row[1] is not None:
+            raise StaleStoreError("Namespace rename is pending; reopen the store to recover maintenance.")
+        generation = _validate_incarnation(row[0], "store_generation")
+        identity = _file_identity(self.db_path)
+        if identity is None:
+            raise StaleStoreError("The namespace database was deleted while opening it.")
+        if self._store_generation is not None and (
+            generation != self._store_generation or identity != self._db_identity
+        ):
+            raise StaleStoreError("The namespace database was replaced; open a new store.")
+        self._store_generation = generation
+        self._db_identity = identity
+
+    def _connect(self, *, wait_timeout: float = 5.0) -> _ConnectionCheckout:
+        """Lease a writer; disk opens and initialization never hold the global registry lock."""
+        if type(wait_timeout) not in (int, float) or not 0.0 <= wait_timeout <= 5.0:
+            raise ValueError("Writer admission wait must be a finite number between 0 and 5 seconds.")
         reject_symlink(self.db_path)
-        evicted: list[tuple[Path, Optional[_PooledConnection], Optional[str]]] = []
+        identity = self._assert_instance_file()
+        exists = identity is not None
+        if not self.create and not exists:
+            raise NamespaceNotFoundError(f"Namespace '{self.namespace}' does not exist.")
         with _CACHE_LOCK:
-            if not self.create and not self.db_path.exists():
-                raise NamespaceNotFoundError(f"Namespace '{self.namespace}' does not exist.")
             conn = _CONNECTION_POOL.get(self.db_path)
-            if conn is not None and conn._mesh_closed:
-                _CONNECTION_POOL.pop(self.db_path, None)
-                _DB_PATH_NAMESPACES.pop(self.db_path, None)
-                conn = None
-            if conn is not None and self.db_path.exists():
+            if conn is not None and exists and conn._mesh_db_identity == identity and not conn._mesh_closed and not conn._mesh_retired:
                 _CONNECTION_POOL.move_to_end(self.db_path)
                 _DB_PATH_NAMESPACES[self.db_path] = self.namespace
                 conn.checkout()
                 return _ConnectionCheckout(conn)
-            if conn is not None:
-                conn.close_pooled()
-                _CONNECTION_POOL.pop(self.db_path, None)
-                _DB_PATH_NAMESPACES.pop(self.db_path, None)
-            if not self.db_path.exists():
-                _check_namespace_creation_limit(self.db_path.parent, self.namespace)
-            ensure_secure_mesh_dir(self.db_path.parent)
-            conn = sqlite3.connect(
-                self.db_path,
-                timeout=10.0,
-                check_same_thread=False,
-                isolation_level=None,
-                factory=_PooledConnection,
-            )
-            conn.execute("PRAGMA journal_mode=WAL")
-            sync_mode = "NORMAL" if os.environ.get("MESH_STRICT_FSYNC") == "1" else "OFF"
-            conn.execute(f"PRAGMA synchronous={sync_mode}")
-            conn.execute("PRAGMA temp_store=MEMORY")
-            conn.execute("PRAGMA busy_timeout=5000")
-            conn.execute("PRAGMA secure_delete=ON")
+        evicted: list[tuple[Path, Optional[_PooledConnection], Optional[str]]] = []
+        deadline = time.monotonic() + wait_timeout
+        with self._cache_lock:
+            identity = self._assert_instance_file()
+            with _WRITER_CONDITION:
+                conn = _CONNECTION_POOL.get(self.db_path)
+                if conn is not None and identity is not None and conn._mesh_db_identity == identity and not conn._mesh_closed and not conn._mesh_retired:
+                    _CONNECTION_POOL.move_to_end(self.db_path)
+                    conn.checkout()
+                    return _ConnectionCheckout(conn)
+                if conn is not None:
+                    _CONNECTION_POOL.pop(self.db_path, None)
+                    _DB_PATH_NAMESPACES.pop(self.db_path, None)
+                    evicted.append((self.db_path, conn, None))
+                maximum = _get_max_pool_size()
+                while len(_CONNECTION_POOL) + len(_WRITER_OPENING) >= maximum:
+                    victim_path = next((path for path, candidate in _CONNECTION_POOL.items() if candidate._mesh_users == 0), None)
+                    if victim_path is None:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0.0:
+                            if wait_timeout == 0.0:
+                                raise TimeoutError("Writer connection capacity exceeded; background work deferred.")
+                            raise RuntimeError("Writer connection capacity exceeded; retry after an active operation finishes.")
+                        # Condition.wait releases the global registry lock,
+                        # allowing active leases and cold opens to finish.
+                        _WRITER_CONDITION.wait(timeout=remaining)
+                        continue
+                    victim = _CONNECTION_POOL.pop(victim_path)
+                    namespace = _DB_PATH_NAMESPACES.pop(victim_path, None)
+                    _QUERY_WRITE_COUNTS.pop(victim_path, None)
+                    dict.pop(_INITIALIZED_DBS, victim_path, None)
+                    _evict_vector_cache_for_db_path(victim_path)
+                    evicted.append((victim_path, victim, namespace))
+                _WRITER_OPENING.add(self.db_path)
+            # Idle handles are retired before opening a replacement, so the
+            # physical connection count respects admission during cold starts.
+            for _, retired, _ in evicted:
+                if retired is not None:
+                    retired.retire()
+            conn = None
             try:
+                if self._assert_instance_file() is None:
+                    _check_namespace_creation_limit(self.db_path.parent, self.namespace)
+                ensure_secure_mesh_dir(self.db_path.parent)
+                existing_only = self._store_generation is not None or not self.create
+                conn = sqlite3.connect(
+                    self.db_path.as_uri() + "?mode=rw" if existing_only else self.db_path,
+                    uri=existing_only, timeout=10.0, check_same_thread=False,
+                    isolation_level=None, factory=_PooledConnection,
+                )
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("PRAGMA synchronous=FULL")
+                if sys.platform == "darwin":
+                    conn.execute("PRAGMA fullfsync=ON")
+                    conn.execute("PRAGMA checkpoint_fullfsync=ON")
+                conn.execute("PRAGMA temp_store=MEMORY")
+                conn.execute("PRAGMA busy_timeout=5000")
+                conn.execute("PRAGMA secure_delete=ON")
                 if os.name != "nt":
                     conn.execute("PRAGMA mmap_size=67108864")
-                conn.execute("PRAGMA cache_size=-32000")
-            except sqlite3.OperationalError:
-                pass
-            secure_file_permissions(self.db_path)
-            _CONNECTION_POOL[self.db_path] = conn
-            _CONNECTION_POOL.move_to_end(self.db_path)
-            _DB_PATH_NAMESPACES[self.db_path] = self.namespace
-            conn.checkout()
-
-            max_pool = _get_max_pool_size()
-            while len(_CONNECTION_POOL) > max_pool:
-                victim_path: Optional[Path] = None
-                for cand_path in _CONNECTION_POOL:
-                    if cand_path != self.db_path:
-                        victim_path = cand_path
-                        break
-                if victim_path is None:
-                    break
-                victim_conn = _CONNECTION_POOL.pop(victim_path, None)
-                victim_ns = _DB_PATH_NAMESPACES.pop(victim_path, None)
-                _QUERY_WRITE_COUNTS.pop(victim_path, None)
-                dict.pop(_INITIALIZED_DBS, victim_path, None)
-                _evict_vector_cache_for_db_path(victim_path)
-                evicted.append((victim_path, victim_conn, victim_ns))
-
+                cache_kib = min(65536, env_int("MESH_SQLITE_CACHE_KIB", 2048, minimum=256))
+                conn.execute(f"PRAGMA cache_size=-{cache_kib}")
+                conn._mesh_db_path = self.db_path
+                conn._mesh_db_identity = self._assert_instance_file()
+                _check_store_generation(conn, self._store_generation)
+                secure_file_permissions(self.db_path)
+                with _CACHE_LOCK:
+                    _CONNECTION_POOL[self.db_path] = conn
+                    _CONNECTION_POOL.move_to_end(self.db_path)
+                    _DB_PATH_NAMESPACES[self.db_path] = self.namespace
+                    conn.checkout()
+            except BaseException:
+                if conn is not None:
+                    conn.retire()
+                raise
+            finally:
+                with _WRITER_CONDITION:
+                    _WRITER_OPENING.discard(self.db_path)
+                    _WRITER_CONDITION.notify_all()
         if evicted:
             _finalize_evicted_resources(evicted)
         return _ConnectionCheckout(conn)
 
-    def _get_data_version_locked(self) -> int:
-        conn = _CONNECTION_POOL.get(self.db_path)
-        if conn is None:
-            return 0
+    def _connect_reader(self) -> _ConnectionCheckout:
+        """Lease bounded readonly connections; transaction owners read their own writes."""
+        global _READER_NEXT_ID
+        identity = self._assert_instance_file()
+        with _CACHE_LOCK:
+            writer = _CONNECTION_POOL.get(self.db_path)
+            owns_writer = writer is not None and writer._mesh_owner_thread == threading.get_ident()
+        if owns_writer:
+            return self._connect()
+        if identity is None:
+            raise NamespaceNotFoundError(f"Namespace '{self.namespace}' does not exist.")
+        reject_symlink(self.db_path)
+        stale_readers = []
+        with _READER_CONDITION:
+            for key, candidate in list(_READER_CONNECTION_POOL.items()):
+                if key[0] == self.db_path and candidate._mesh_db_identity != identity and candidate._mesh_users == 0:
+                    stale_readers.append(_READER_CONNECTION_POOL.pop(key))
+            if stale_readers:
+                _READER_CONDITION.notify_all()
+        for candidate in stale_readers:
+            candidate.retire()
+        per_db = env_int("MESH_READERS_PER_NAMESPACE", 2, minimum=1, maximum=8)
+        maximum = env_int("MESH_MAX_READER_CONNECTIONS", 32, minimum=1, maximum=256)
+        deadline = time.monotonic() + 5.0
+        retired: Optional[_PooledConnection] = None
+        with _READER_CONDITION:
+            while True:
+                existing = [key for key in _READER_CONNECTION_POOL if key[0] == self.db_path]
+                for key in existing:
+                    conn = _READER_CONNECTION_POOL[key]
+                    if conn._mesh_db_identity == identity and conn._mesh_users == 0 and not conn._mesh_closed:
+                        conn.checkout()
+                        _READER_CONNECTION_POOL.move_to_end(key)
+                        return _ReaderCheckout(conn)
+                opening = _READER_OPENING.get(self.db_path, 0)
+                total = len(_READER_CONNECTION_POOL) + sum(_READER_OPENING.values())
+                if len(existing) + opening < per_db:
+                    if total >= maximum:
+                        for key, conn in _READER_CONNECTION_POOL.items():
+                            if conn._mesh_users == 0:
+                                retired = conn
+                                _READER_CONNECTION_POOL.pop(key)
+                                total -= 1
+                                break
+                    if total < maximum:
+                        _READER_OPENING[self.db_path] = opening + 1
+                        break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError("Reader connection capacity exceeded; retry after an active read finishes.")
+                _READER_CONDITION.wait(timeout=remaining)
+        if retired is not None:
+            retired.retire()
+        conn = None
         try:
-            with conn._mesh_lock:
-                row = conn.execute("PRAGMA data_version").fetchone()
+            conn = sqlite3.connect(
+                self.db_path.as_uri() + "?mode=ro", uri=True, timeout=3.0,
+                check_same_thread=False, isolation_level=None, factory=_PooledConnection,
+            )
+            conn.execute("PRAGMA query_only=ON")
+            conn.execute("PRAGMA temp_store=MEMORY")
+            conn.execute("PRAGMA busy_timeout=3000")
+            cache_kib = env_int("MESH_SQLITE_READER_CACHE_KIB", 512, minimum=256, maximum=4096)
+            conn.execute(f"PRAGMA cache_size=-{cache_kib}")
+            conn._mesh_db_path = self.db_path
+            conn._mesh_db_identity = self._assert_instance_file()
+            _check_store_generation(conn, self._store_generation)
+            with _READER_CONDITION:
+                _READER_NEXT_ID += 1
+                _READER_CONNECTION_POOL[(self.db_path, _READER_NEXT_ID)] = conn
+                conn.checkout()
+            return _ReaderCheckout(conn)
+        except BaseException:
+            if conn is not None:
+                conn.retire()
+            raise
+        finally:
+            with _READER_CONDITION:
+                count = _READER_OPENING[self.db_path] - 1
+                if count:
+                    _READER_OPENING[self.db_path] = count
+                else:
+                    _READER_OPENING.pop(self.db_path)
+                _READER_CONDITION.notify_all()
+
+    @contextlib.contextmanager
+    def _read_connect(self) -> Iterator[sqlite3.Connection]:
+        """Lease a reader and maintain one snapshot, preserving an owning write transaction."""
+        with self._connect_reader() as conn:
+            conn.row_factory = sqlite3.Row
+            owns_read = not conn.in_transaction
+            if owns_read:
+                conn.execute("BEGIN")
+            try:
+                _check_connection_file_identity(conn)
+                _check_store_generation(conn, self._store_generation)
+                yield conn
+            finally:
+                if owns_read:
+                    conn.rollback()
+
+    @contextlib.contextmanager
+    def write_transaction(self) -> Iterator["MeshStore"]:
+        """Commit nested guarded writes together, publishing cache state only after commit."""
+        self._ensure_initialized()
+        actions: list[Callable[[], Any]] = []
+        with namespace_write_lock(self.namespace, data_root=self.db_path.parent), self._cache_lock, self._connect() as conn:
+            marker = _begin_write(conn, self.namespace, self._store_generation)
+            if marker is None:
+                conn._mesh_cache_dirty = False
+                conn._mesh_cache_group_active = True
+                with _CACHE_LOCK:
+                    candidate = _VECTOR_CACHE.get((self.db_path, self.namespace))
+                if candidate is not None:
+                    try:
+                        with candidate.read_snapshot():
+                            base_version = candidate.content_version
+                        if base_version == self._read_content_version_locked(conn):
+                            conn._mesh_cache_base = candidate
+                            conn._mesh_cache_base_version = base_version
+                    except CacheSnapshotInvalidatedError:
+                        pass
+            try:
+                yield self
+                actions = _commit_write(conn, marker)
+            except BaseException:
+                _rollback_write(conn, marker)
+                self._invalidate_cache()
+                raise
+            finally:
+                if marker is None:
+                    try:
+                        if not conn.in_transaction:
+                            self._publish_pending_cache(conn)
+                    except Exception as exc:
+                        logger.warning("Cache publication deferred (%s).", type(exc).__name__)
+                        self._invalidate_cache()
+                    finally:
+                        conn._mesh_cache_updates.clear()
+                        conn._mesh_cache_update_bytes = 0
+                        conn._mesh_cache_base = None
+                        conn._mesh_cache_base_version = None
+                        conn._mesh_cache_target_version = None
+                        conn._mesh_cache_group_active = False
+                        conn._mesh_cache_dirty = False
+                        if conn._mesh_cache_delta_lease is not None:
+                            conn._mesh_cache_delta_lease.release()
+                            conn._mesh_cache_delta_lease = None
+                self._refresh_cache_stamp_after_non_memory_write()
+        self._run_after_commit_actions(actions)
+
+    def _collects_cache_deltas(self) -> bool:
+        with _CACHE_LOCK:
+            conn = _CONNECTION_POOL.get(self.db_path)
+        return bool(conn is not None and conn._mesh_owner_thread == threading.get_ident() and conn._mesh_cache_group_active and conn._mesh_cache_base is not None and not conn._mesh_cache_dirty)
+
+    def _queue_cache_delta(
+        self, operation: str, memory_id: str, vector: Optional[np.ndarray],
+        metadata: Optional[dict[str, Any]], version: Optional[int], *, preserve_vector: bool = False,
+    ) -> None:
+        with _CACHE_LOCK:
+            conn = _CONNECTION_POOL[self.db_path]
+        if not conn._mesh_cache_group_active or conn._mesh_cache_base is None or conn._mesh_cache_dirty:
+            conn._mesh_cache_dirty = True
+            return
+        charge = 256 + (_object_graph_bytes(metadata) if metadata is not None else len(memory_id) * 4)
+        charge += int(vector.nbytes) if vector is not None else 0
+        maximum = env_int("MESH_MAX_CACHE_DELTA_BYTES", 8 * 1024 * 1024, minimum=1024)
+        try:
+            if len(conn._mesh_cache_updates) >= env_int("MESH_MAX_BULK_ITEMS", 1000, minimum=1) or conn._mesh_cache_update_bytes + charge > maximum:
+                raise CacheBudgetExceededError("Transaction cache deltas exceed their bounded allocation allowance.")
+            if conn._mesh_cache_delta_lease is None:
+                conn._mesh_cache_delta_lease = _CacheBudgetLease((self.db_path, self.namespace))
+            conn._mesh_cache_delta_lease.resize(conn._mesh_cache_update_bytes + charge)
+        except CacheBudgetExceededError:
+            conn._mesh_cache_dirty = True
+            conn._mesh_cache_updates.clear()
+            conn._mesh_cache_update_bytes = 0
+            if conn._mesh_cache_delta_lease is not None:
+                conn._mesh_cache_delta_lease.release()
+                conn._mesh_cache_delta_lease = None
+            return
+        conn._mesh_cache_updates.append((operation, memory_id, vector, metadata, preserve_vector))
+        conn._mesh_cache_update_bytes += charge
+        conn._mesh_cache_target_version = version
+
+    def _publish_pending_cache(self, conn: _PooledConnection) -> None:
+        if conn._mesh_cache_dirty:
+            self._invalidate_cache()
+            return
+        if not conn._mesh_cache_updates:
+            return
+        cached = conn._mesh_cache_base
+        version = conn._mesh_cache_target_version
+        with _CACHE_LOCK:
+            current = _VECTOR_CACHE.get((self.db_path, self.namespace))
+        if cached is None or current is not cached or self._read_content_version_locked(conn) != version:
+            self._invalidate_cache()
+            return
+        stamp = _get_db_stamp(self.db_path)
+        data_version = int(conn.execute("PRAGMA data_version").fetchone()[0])
+        publish_ok = stamp is not None
+        with cached.write_snapshot():
+            if not cached._valid or cached.content_version != conn._mesh_cache_base_version:
+                publish_ok = False
+            if publish_ok:
+                for operation, memory_id, vector, metadata, preserve_vector in conn._mesh_cache_updates:
+                    if operation == "delete":
+                        cached.delete_vector(memory_id)
+                    else:
+                        if preserve_vector and vector is None:
+                            index = cached.id_to_idx.get(memory_id)
+                            if index is not None and cached._matrix_buf is not None:
+                                vector = cached._matrix_buf[index]
+                        if not cached.upsert_vector(memory_id, vector, row_meta=metadata):
+                            publish_ok = False
+                            break
+                if publish_ok:
+                    cached.update_stamp(stamp, data_version=data_version, content_version=version)
+        if not publish_ok:
+            self._invalidate_cache()
+        else:
+            with _CACHE_LOCK:
+                _INITIALIZED_DBS[self.db_path] = stamp
+
+    @staticmethod
+    def _run_after_commit_actions(actions: list[Callable[[], Any]]) -> None:
+        for callback in actions:
+            try:
+                callback()
+            except Exception as exc:
+                logger.warning("Post-commit action failed (%s).", type(exc).__name__)
+
+    def after_commit(self, callback: Callable[[], Any]) -> None:
+        """Defer a wakeup until the enclosing write commits; discard it on rollback."""
+        if not callable(callback):
+            raise ValueError("after_commit requires a callable.")
+        captured = contextvars.copy_context()
+        action = lambda: captured.run(callback)
+        with self._connect() as conn:
+            if conn.in_transaction:
+                conn._mesh_after_commit_actions.append(action)
+                return
+        self._run_after_commit_actions([action])
+
+    atomic_write = write_transaction
+
+    @staticmethod
+    def _check_mutation_permission(
+        local_only: bool,
+        owner: Optional[str],
+        include_private: bool,
+        expected_source_agent: Optional[str],
+    ) -> None:
+        if (local_only and not include_private) or (
+            expected_source_agent is not None and owner != expected_source_agent
+        ):
+            raise ValueError("Requested object is unavailable or mutation is not permitted.")
+
+    @staticmethod
+    def _mutation_result(row: dict[str, Any], include_private: bool) -> dict[str, Any]:
+        if include_private or not row.get("local_only"):
+            return row
+        visible_fields = {
+            "id", "short_id", "namespace", "kind", "status", "local_only",
+            "revision", "embedding_model", "updated_at", "created_at", "completed_at",
+            "incarnation", "store_generation",
+        }
+        return {key: value for key, value in row.items() if key in visible_fields}
+
+    @staticmethod
+    def _receipt_result(value: Any, *, _depth: int = 0, _remaining: Optional[list[int]] = None) -> Any:
+        if _remaining is None:
+            _remaining = [16 * env_int("MESH_MAX_BULK_ITEMS", 1000, minimum=1)]
+        _remaining[0] -= 1
+        if _depth > 8 or _remaining[0] < 0:
+            raise ValueError("Operation result exceeds the bounded receipt nesting limit.")
+        if isinstance(value, list):
+            if len(value) > env_int("MESH_MAX_BULK_ITEMS", 1000, minimum=1):
+                raise ValueError("Operation result exceeds the bounded bulk limit.")
+            return [MeshStore._receipt_result(item, _depth=_depth + 1, _remaining=_remaining) for item in value]
+        if not isinstance(value, dict):
+            return {"status": "ok"}
+        fields = {
+            "memory_id", "item_id", "id", "short_id", "revision", "status", "disposition",
+            "incarnation", "store_generation",
+            "deduplicated", "local_only", "embedding_model", "indexing_state", "forgotten",
+            "count", "imported", "imported_items", "imported_events", "skipped_items", "errors",
+        }
+        result = {key: item for key, item in value.items() if key in fields and isinstance(item, (str, int, float, bool, type(None)))}
+        for key in ("memory_id", "item_id", "id", "short_id"):
+            if key in result and (not isinstance(result[key], str) or not _VALID_MEMORY_ID_RE.fullmatch(result[key])):
+                result.pop(key)
+        for key in ("incarnation", "store_generation"):
+            if key in result and (not isinstance(result[key], str) or not re.fullmatch(r"[a-f0-9]{32}", result[key])):
+                result.pop(key)
+        for key in ("status", "disposition", "indexing_state"):
+            if key in result and (not isinstance(result[key], str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{0,63}", result[key])):
+                result.pop(key)
+        if "embedding_model" in result and (not isinstance(result["embedding_model"], str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}", result["embedding_model"])):
+            result.pop("embedding_model")
+        for key in ("deduplicated", "local_only", "forgotten"):
+            if key in result and type(result[key]) is not bool:
+                result.pop(key)
+        if "revision" in result and (type(result["revision"]) is not int or result["revision"] < 1):
+            result.pop("revision")
+        for key in ("count", "imported", "imported_items", "imported_events", "skipped_items", "errors"):
+            if key in result and (type(result[key]) is not int or result[key] < 0):
+                result.pop(key)
+        if isinstance(value.get("results"), list):
+            result["results"] = MeshStore._receipt_result(value["results"], _depth=_depth + 1, _remaining=_remaining)
+        return result
+
+    def execute_operation(
+        self,
+        operation_id: str,
+        producer_scope: str,
+        operation: str,
+        parameter_digest: str,
+        callback: Callable[[], Any],
+    ) -> dict[str, Any]:
+        operation_id = validate_memory_id(operation_id)
+        if not isinstance(producer_scope, str) or not producer_scope.strip() or len(producer_scope) > 128 or any(ord(c) < 32 for c in producer_scope):
+            raise ValueError("producer_scope must be a nonempty identifier of at most 128 characters.")
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{0,63}", operation or ""):
+            raise ValueError("Invalid operation identifier.")
+        if not re.fullmatch(r"[a-fA-F0-9]{64}", parameter_digest or ""):
+            raise ValueError("parameter_digest must be a SHA-256 digest.")
+        with self.write_transaction():
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT operation, parameter_digest, result_json, created_at FROM operation_receipts WHERE namespace=? AND producer_scope=? AND operation_id=?",
+                    (self.namespace, producer_scope, operation_id),
+                ).fetchone()
+                if row is not None:
+                    if row[0] != operation or row[1] != parameter_digest:
+                        raise ValueError("Operation ID was already used with a different request.")
+                    result = json.loads(row[2])
+                    return {"replayed": True, "result": result, "receipt": {"operation_id": operation_id, "created_at": row[3], "result": result}}
+                maximum = env_int("MESH_MAX_OPERATION_RECEIPTS", 100000, minimum=1)
+                count = int(conn.execute("SELECT value FROM mesh_meta WHERE key='operation_receipts_count'").fetchone()[0])
+                if count >= maximum:
+                    raise RuntimeError("Operation receipt capacity exceeded; no mutation was admitted.")
+                result = callback()
+                receipt_result = self._receipt_result(result)
+                receipt_json = json.dumps(receipt_result, allow_nan=False)
+                if len(receipt_json.encode("utf-8")) > env_int("MESH_MAX_OPERATION_RECEIPT_BYTES", 1024 * 1024, minimum=1024):
+                    raise ValueError("Operation result exceeds the receipt byte limit; no mutation was committed.")
+                now = _utc_now_iso()
+                conn.execute(
+                    "INSERT INTO operation_receipts(namespace,producer_scope,operation_id,operation,parameter_digest,result_json,created_at) VALUES(?,?,?,?,?,?,?)",
+                    (self.namespace, producer_scope, operation_id, operation, parameter_digest, receipt_json, now),
+                )
+                return {"replayed": False, "result": result, "receipt": {"operation_id": operation_id, "created_at": now, "result": receipt_result}}
+
+    def get_operation_receipt(self, operation_id: str, producer_scope: str) -> Optional[dict[str, Any]]:
+        """Return the content-free receipt in this store and producer scope."""
+        operation_id = validate_memory_id(operation_id)
+        if not isinstance(producer_scope, str) or not producer_scope.strip() or len(producer_scope) > 128 or any(ord(c) < 32 for c in producer_scope):
+            raise ValueError("Invalid producer scope.")
+        with self._read_connect() as conn:
+            row = conn.execute(
+                "SELECT operation,result_json,created_at FROM operation_receipts WHERE namespace=? AND producer_scope=? AND operation_id=?",
+                (self.namespace, producer_scope, operation_id),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "operation_id": operation_id, "operation": row[0],
+            "created_at": row[2], "result": json.loads(row[1]),
+        }
+
+    def _record_mutation_in_tx(self, conn: sqlite3.Connection, operation: str, object_id: Optional[str] = None, revision: Optional[int] = None) -> None:
+        maximum = env_int("MESH_MAX_MUTATION_OUTBOX", 100000, minimum=1)
+        count = int(conn.execute("SELECT value FROM mesh_meta WHERE key='mutation_outbox_count'").fetchone()[0])
+        if count >= maximum:
+            raise RuntimeError("Mutation event capacity exceeded; no mutation was committed.")
+        conn.execute(
+            "INSERT INTO mutation_outbox(event_id,namespace,operation,object_id,revision,created_at) VALUES(?,?,?,?,?,?)",
+            (uuid.uuid4().hex, self.namespace, operation, object_id, revision, _utc_now_iso()),
+        )
+        from .mutation_delivery import register_mutation_store
+
+        self.after_commit(lambda: register_mutation_store(self))
+
+    def _insert_conflict_in_tx(self, conn: sqlite3.Connection, memory_id: str, content: str, local_only: bool, conflict: dict[str, Any]) -> None:
+        existing_id = validate_memory_id(conflict.get("existing_memory_id", ""))
+        row = conn.execute("SELECT content,local_only,revision,incarnation FROM memories WHERE namespace=? AND id=?", (self.namespace, existing_id)).fetchone()
+        expected = conflict.get("existing_revision")
+        expected_incarnation = conflict.get("existing_incarnation")
+        if expected_incarnation is not None:
+            _validate_incarnation(expected_incarnation, "existing_incarnation")
+        if row is None or (expected is not None and int(row[2]) != int(expected)) or (expected_incarnation is not None and row[3] != expected_incarnation):
+            raise ValueError("Conflict candidate changed; no memory was committed.")
+        score = float(conflict.get("similarity", 0.0))
+        if not math.isfinite(score) or not 0.0 <= score <= 1.0:
+            raise ValueError("Conflict similarity must be finite and between zero and one.")
+        cid = validate_memory_id(conflict.get("contradiction_id") or str(uuid.uuid4()))
+        new_text = REDACTED_CONTENT_PLACEHOLDER if local_only else redact_secrets_local(content)
+        old_text = REDACTED_CONTENT_PLACEHOLDER if row[1] else redact_secrets_local(decrypt_text_if_encrypted(row[0]))
+        conn.execute(
+            "INSERT INTO contradictions(id,namespace,new_memory_id,new_content,existing_memory_id,existing_content,similarity,detected_at,resolved) VALUES(?,?,?,?,?,?,?,?,0)",
+            (cid, self.namespace, memory_id, self._encrypt_work_text(new_text), existing_id, self._encrypt_work_text(old_text), score, _utc_now_iso()),
+        )
+        self._record_mutation_in_tx(conn, "contradiction", cid)
+
+    def list_mutation_events(self, limit: int = 100) -> list[dict[str, Any]]:
+        with self._read_connect() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute("SELECT * FROM mutation_outbox WHERE namespace=? AND delivered_at IS NULL ORDER BY created_at,event_id LIMIT ?", (self.namespace, max(1, min(1000, int(limit))))).fetchall()
+            return [dict(row) for row in rows]
+
+    def acknowledge_mutation_events(self, event_ids: list[str]) -> None:
+        ids = [validate_memory_id(item) for item in event_ids]
+        with self.write_transaction(), self._connect() as conn:
+            conn.executemany("DELETE FROM mutation_outbox WHERE namespace=? AND event_id=?", [(self.namespace, item) for item in ids])
+
+    @staticmethod
+    def _validate_model_id(model: str) -> str:
+        if not isinstance(model, str) or not model.strip() or len(model) > 256 or any(ord(c) < 32 for c in model):
+            raise ValueError("Embedding model must be a nonempty identifier of at most 256 characters.")
+        return model.strip()
+
+    def _schedule_embedding_in_tx(
+        self, conn: sqlite3.Connection, memory_id: str, revision: int, embedding_model: str,
+        target_model: str = "onnx-minilm-l6-v2", *, incarnation: str,
+    ) -> None:
+        if embedding_model not in ("hash-384", "needs-reembed", "unknown"):
+            conn.execute("DELETE FROM embedding_jobs WHERE namespace=? AND memory_id=?", (self.namespace, memory_id))
+            return
+        target_model = self._validate_model_id(target_model)
+        maximum = env_int("MESH_MAX_PENDING_EMBEDDING_JOBS", 100000, minimum=1)
+        count = int(conn.execute("SELECT value FROM mesh_meta WHERE key='embedding_jobs_count'").fetchone()[0])
+        if count >= maximum and conn.execute(
+            "SELECT 1 FROM embedding_jobs WHERE namespace=? AND memory_id=?", (self.namespace, memory_id),
+        ).fetchone() is None:
+            raise RuntimeError("Pending embedding job capacity exceeded; no mutation was committed.")
+        now = _utc_now_iso()
+        conn.execute(
+            """INSERT INTO embedding_jobs(memory_id,namespace,revision,incarnation,target_model,attempts,available_at,created_at,error_code)
+            VALUES(?,?,?,?,?,0,?,?,NULL) ON CONFLICT(memory_id) DO UPDATE SET revision=excluded.revision,incarnation=excluded.incarnation,target_model=excluded.target_model,
+            attempts=0,available_at=excluded.available_at,created_at=excluded.created_at,error_code=NULL""",
+            (memory_id, self.namespace, revision, incarnation, target_model, now, now),
+        )
+
+    @staticmethod
+    def _validate_expected_identity(expected_revision: int, expected_incarnation: str, expected_store_generation: str) -> None:
+        if type(expected_revision) is not int or expected_revision < 1:
+            raise ValueError("expected_revision must be a positive integer.")
+        _validate_incarnation(expected_incarnation, "expected_incarnation")
+        _validate_incarnation(expected_store_generation, "expected_store_generation")
+
+    def enqueue_embedding_job(
+        self, memory_id: str, *, expected_revision: int, expected_incarnation: str,
+        expected_store_generation: str, target_model: str = "onnx-minilm-l6-v2",
+    ) -> bool:
+        memory_id = validate_memory_id(memory_id)
+        self._validate_expected_identity(expected_revision, expected_incarnation, expected_store_generation)
+        target_model = self._validate_model_id(target_model)
+        if expected_store_generation != self.store_generation:
+            return False
+        with self.write_transaction(), self._connect() as conn:
+            row = conn.execute("SELECT revision,embedding_model,incarnation FROM memories WHERE namespace=? AND id=?", (self.namespace, memory_id)).fetchone()
+            if row is None or int(row[0]) != expected_revision or row[2] != expected_incarnation:
+                return False
+            job = conn.execute(
+                "SELECT revision,target_model,incarnation FROM embedding_jobs WHERE namespace=? AND memory_id=?",
+                (self.namespace, memory_id),
+            ).fetchone()
+            if job is not None and int(job[0]) == expected_revision and job[1] == target_model and job[2] == expected_incarnation:
+                return True
+            self._schedule_embedding_in_tx(conn, memory_id, int(row[0]), "needs-reembed", target_model, incarnation=row[2])
+            return True
+
+    def list_embedding_jobs(self, limit: int = 32) -> list[dict[str, Any]]:
+        with self._read_connect() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT jobs.*,(SELECT value FROM mesh_meta WHERE key='store_generation') AS store_generation "
+                "FROM embedding_jobs jobs WHERE jobs.namespace=? AND jobs.available_at<=? "
+                "AND EXISTS(SELECT 1 FROM memories WHERE id=jobs.memory_id AND namespace=jobs.namespace "
+                "AND revision=jobs.revision AND incarnation=jobs.incarnation) "
+                "ORDER BY jobs.available_at,jobs.memory_id LIMIT ?",
+                (self.namespace, _utc_now_iso(), max(1, min(1000, int(limit)))),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def embedding_job_stats(self) -> dict[str, Any]:
+        with self._read_connect() as conn:
+            row = conn.execute("SELECT COUNT(*),MIN(created_at) FROM embedding_jobs WHERE namespace=?", (self.namespace,)).fetchone()
+            return {"pending_count": int(row[0]), "oldest_at": row[1]}
+
+    def retry_embedding_job(
+        self, memory_id: str, *, expected_revision: int, expected_incarnation: str,
+        expected_store_generation: str, expected_target_model: str,
+        error_code: str = "embedding_failed", delay_seconds: float = 1.0,
+    ) -> bool:
+        memory_id = validate_memory_id(memory_id)
+        self._validate_expected_identity(expected_revision, expected_incarnation, expected_store_generation)
+        expected_target_model = self._validate_model_id(expected_target_model)
+        if not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", error_code or ""):
+            raise ValueError("error_code must be a content-free error identifier.")
+        if not math.isfinite(delay_seconds) or delay_seconds < 0:
+            raise ValueError("delay_seconds must be finite and nonnegative.")
+        available = (_utc_now() + timedelta(seconds=min(delay_seconds, 3600.0))).isoformat()
+        if expected_store_generation != self.store_generation:
+            return False
+        with self.write_transaction(), self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE embedding_jobs SET attempts=attempts+1,available_at=MAX(available_at,?),error_code=? "
+                "WHERE namespace=? AND memory_id=? AND revision=? AND incarnation=? AND target_model=? "
+                "AND EXISTS(SELECT 1 FROM memories WHERE id=memory_id AND namespace=embedding_jobs.namespace "
+                "AND revision=embedding_jobs.revision AND incarnation=embedding_jobs.incarnation)",
+                (available, error_code, self.namespace, memory_id, expected_revision, expected_incarnation, expected_target_model),
+            )
+            return cursor.rowcount > 0
+
+    def publish_embedding(
+        self, memory_id: str, embedding: list[float], *, expected_revision: int,
+        expected_incarnation: str, expected_store_generation: str,
+        embedding_model: str, expected_model: Optional[str] = None,
+    ) -> bool:
+        memory_id = validate_memory_id(memory_id)
+        self._validate_expected_identity(expected_revision, expected_incarnation, expected_store_generation)
+        model = self._validate_model_id(embedding_model)
+        if expected_model is not None:
+            expected_model = self._validate_model_id(expected_model)
+        vector = _normalize_vector(embedding, enforce_dim=True)
+        blob = vector.tobytes()
+        if is_encryption_enabled():
+            blob = encrypt_blob_for_storage(blob)
+        if expected_store_generation != self.store_generation:
+            return False
+        with self.write_transaction(), self._connect() as conn:
+            row = conn.execute("SELECT revision,embedding_model,incarnation FROM memories WHERE namespace=? AND id=?", (self.namespace, memory_id)).fetchone()
+            if row is None or int(row[0]) != expected_revision or row[2] != expected_incarnation or (expected_model is not None and row[1] != expected_model):
+                return False
+            job = conn.execute("SELECT revision,target_model,incarnation FROM embedding_jobs WHERE namespace=? AND memory_id=?", (self.namespace, memory_id)).fetchone()
+            if job is None or int(job[0]) != expected_revision or job[1] != model or job[2] != expected_incarnation:
+                return False
+            cache = self._is_cache_synced_locked()
+            conn.execute("UPDATE memories SET embedding=?,embedding_model=? WHERE namespace=? AND id=? AND revision=? AND incarnation=?", (blob, model, self.namespace, memory_id, expected_revision, expected_incarnation))
+            conn.execute("DELETE FROM embedding_jobs WHERE namespace=? AND memory_id=? AND revision=? AND incarnation=? AND target_model=?", (self.namespace, memory_id, expected_revision, expected_incarnation, model))
+            version = self._bump_content_version_in_tx(conn)
+            if self._owns_write_transaction():
+                self._queue_cache_delta("upsert", memory_id, vector, self.get(memory_id), version)
+            if cache is not None:
+                with cache.write_snapshot():
+                    metadata = {**cache.rows_by_id[memory_id], "embedding_model": model}
+                    cache.upsert_vector(memory_id, vector, metadata)
+                    self._refresh_stamps_after_write_locked(cache, version)
+            return True
+
+    def _get_data_version_locked(self) -> int:
+        with self._connect() as conn:
+            row = conn.execute("PRAGMA data_version").fetchone()
             return int(row[0]) if row else 0
-        except Exception:
-            return 0
 
     def _read_content_version_locked(self, conn: Optional[sqlite3.Connection] = None) -> Optional[int]:
-        c = conn or _CONNECTION_POOL.get(self.db_path)
-        if c is None:
-            return None
+        if conn is None:
+            with self._connect() as checked_out:
+                return self._read_content_version_locked(checked_out)
         try:
-            lock = getattr(c, "_mesh_lock", None)
-            if lock is not None:
-                with lock:
-                    row = c.execute(
-                        "SELECT value FROM mesh_meta WHERE key = 'content_version'"
-                    ).fetchone()
-            else:
-                row = c.execute(
-                    "SELECT value FROM mesh_meta WHERE key = 'content_version'"
-                ).fetchone()
-            if row and row[0] is not None:
-                return int(row[0])
-        except Exception:
-            pass
-        return None
+            row = conn.execute("SELECT value FROM mesh_meta WHERE key='content_version'").fetchone()
+            return int(row[0]) if row else None
+        except (sqlite3.OperationalError, TypeError, ValueError):
+            return None
 
     def _bump_content_version_in_tx(self, conn: sqlite3.Connection) -> int:
         cur_val = self._read_content_version_locked(conn) or 0
@@ -2129,43 +3494,42 @@ class MeshStore:
         return new_val
 
     def _is_cache_synced_locked(self) -> Optional[_VectorCacheEntry]:
+        if self._owns_write_transaction():
+            return None
         key = (self.db_path, self.namespace)
-        cached = _VECTOR_CACHE.get(key)
+        with _CACHE_LOCK:
+            cached = _VECTOR_CACHE.get(key)
         if cached is None:
             return None
         stamp = _get_db_stamp(self.db_path)
         if stamp is None:
             return None
-        dv = self._get_data_version_locked()
-        if cached.stamp == stamp and (dv == 0 or cached.data_version == 0 or dv == cached.data_version):
+        try:
+            with cached.read_snapshot():
+                old_stamp = cached.stamp
+                old_cv = cached.content_version
+                cached_count = len(cached.all_ids)
+        except CacheSnapshotInvalidatedError:
+            return None
+        with self._read_connect() as conn:
+            cv = self._read_content_version_locked(conn)
+            if cv is None or old_cv is None or cv != old_cv:
+                return None
+            if stamp != old_stamp:
+                count_row = conn.execute("SELECT COUNT(*) FROM memories WHERE namespace=?", (self.namespace,)).fetchone()
+                if int(count_row[0]) != cached_count:
+                    return None
+            dv = int(conn.execute("PRAGMA data_version").fetchone()[0])
+        if stamp != old_stamp:
+            cached.update_stamp(stamp, data_version=dv, content_version=cv)
+        with _CACHE_LOCK:
+            if _VECTOR_CACHE.get(key) is not cached:
+                return None
             _VECTOR_CACHE.move_to_end(key)
             if self.db_path in _CONNECTION_POOL:
                 _CONNECTION_POOL.move_to_end(self.db_path)
-            return cached
-
-        try:
-            with self._connect() as conn:
-                cv = self._read_content_version_locked(conn)
-                if (
-                    cv is not None
-                    and cached.content_version is not None
-                    and cv == cached.content_version
-                ):
-                    cnt_row = conn.execute(
-                        "SELECT COUNT(*) FROM memories WHERE namespace = ?",
-                        (self.namespace,),
-                    ).fetchone()
-                    db_count = int(cnt_row[0]) if cnt_row and cnt_row[0] is not None else 0
-                    if db_count == len(cached.all_ids):
-                        cached.update_stamp(stamp, data_version=dv, content_version=cv)
-                        _INITIALIZED_DBS[self.db_path] = stamp
-                        _VECTOR_CACHE.move_to_end(key)
-                        if self.db_path in _CONNECTION_POOL:
-                            _CONNECTION_POOL.move_to_end(self.db_path)
-                        return cached
-        except Exception:
-            pass
-        return None
+            _INITIALIZED_DBS[self.db_path] = stamp
+        return cached
 
     def _refresh_stamps_after_write_locked(
         self,
@@ -2175,10 +3539,12 @@ class MeshStore:
         secure_file_permissions(self.db_path)
         stamp = _get_db_stamp(self.db_path)
         if stamp is None:
-            _INITIALIZED_DBS.pop(self.db_path, None)
-            _evict_vector_cache_for_db_path(self.db_path)
+            with _CACHE_LOCK:
+                _INITIALIZED_DBS.pop(self.db_path, None)
+                _evict_vector_cache_for_db_path(self.db_path)
             return
-        _INITIALIZED_DBS[self.db_path] = stamp
+        with _CACHE_LOCK:
+            _INITIALIZED_DBS[self.db_path] = stamp
         if synced_cache is not None:
             dv = self._get_data_version_locked()
             cv = content_version if content_version is not None else self._read_content_version_locked()
@@ -2186,29 +3552,71 @@ class MeshStore:
 
     def _refresh_cache_stamp_after_non_memory_write(self) -> None:
         stamp = _get_db_stamp(self.db_path)
-        if stamp is not None:
+        if stamp is None:
+            return
+        with self._cache_lock:
+            cv = self._read_content_version_locked()
+            dv = self._get_data_version_locked()
             with _CACHE_LOCK:
                 _INITIALIZED_DBS[self.db_path] = stamp
-                for (c_path, _), vcache in _VECTOR_CACHE.items():
-                    if c_path == self.db_path:
-                        vcache.stamp = stamp
-                        vcache.mtime_ns = stamp[0]
-                        vcache.file_size = stamp[1]
+                cached = _VECTOR_CACHE.get((self.db_path, self.namespace))
+            if cached is not None:
+                with cached.write_snapshot():
+                    if cached.content_version == cv:
+                        cached.update_stamp(stamp, data_version=dv, content_version=cv)
 
     def _ensure_initialized(self) -> None:
+        self._assert_instance_file()
+        stamp = _get_db_stamp(self.db_path)
+        with _CACHE_LOCK:
+            known = _INITIALIZED_DBS.get(self.db_path)
+            if self.__dict__.get("_namespace_verified") and stamp is not None and stamp[1] > 0 and known == stamp and not self._fts_dirty:
+                return
+        # A cold encrypted open must perform legacy data and FTS cleanup.
+        if stamp is not None and stamp[1] > 0 and not self._fts_dirty and (known is not None or not is_encryption_enabled()):
+            schema_current = False
+            with self._read_connect() as conn:
+                version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+                if version > int(SCHEMA_VERSION):
+                    raise RuntimeError("Database schema is newer than supported; upgrade Mesh before opening it.")
+                if version == int(SCHEMA_VERSION):
+                    row = conn.execute("SELECT value FROM mesh_meta WHERE key='schema_version'").fetchone()
+                    cleanup = conn.execute("SELECT value FROM mesh_meta WHERE key='work_encryption_cleanup_pending'").fetchone()
+                    owner = conn.execute("SELECT value FROM mesh_meta WHERE key='namespace_owner'").fetchone()
+                    if owner is not None and owner[0] != self.namespace:
+                        raise ValueError("Namespace database belongs to another namespace spelling; use the original spelling or a distinct namespace.")
+                    if row is not None and row[0] == SCHEMA_VERSION and owner is not None and not (cleanup and cleanup[0] == "1"):
+                        conn.execute("SELECT revision,incarnation FROM memories LIMIT 0").close()
+                        conn.execute("SELECT incarnation FROM embedding_jobs LIMIT 0").close()
+                        self._bind_store_identity(conn)
+                        schema_current = True
+            if schema_current:
+                current_stamp = _get_db_stamp(self.db_path)
+                with _CACHE_LOCK:
+                    if current_stamp is not None:
+                        _INITIALIZED_DBS[self.db_path] = current_stamp
+                self._namespace_verified = True
+                return
+        with namespace_write_lock(self.namespace, data_root=self.db_path.parent):
+            self._ensure_initialized_locked()
+        self._namespace_verified = True
+
+    def _ensure_initialized_locked(self) -> None:
         if not self.create and not self.db_path.exists():
             raise NamespaceNotFoundError(f"Namespace '{self.namespace}' does not exist.")
-        with _CACHE_LOCK:
+        with self._cache_lock:
             stamp = _get_db_stamp(self.db_path)
-            if (
-                stamp is not None
-                and stamp[1] > 0
-                and _INITIALIZED_DBS.get(self.db_path) == stamp
-                and not self._fts_dirty
-            ):
-                if self.db_path in _CONNECTION_POOL:
-                    _CONNECTION_POOL.move_to_end(self.db_path)
-                return
+            with _CACHE_LOCK:
+                if (
+                    stamp is not None
+                    and stamp[1] > 0
+                    and _INITIALIZED_DBS.get(self.db_path) == stamp
+                    and self.__dict__.get("_namespace_verified")
+                    and not self._fts_dirty
+                ):
+                    if self.db_path in _CONNECTION_POOL:
+                        _CONNECTION_POOL.move_to_end(self.db_path)
+                    return
             try:
                 _init_budget = max(0.0, float(os.environ.get("MESH_INIT_LOCK_RETRY_SECONDS", "10")))
             except ValueError:
@@ -2227,15 +3635,72 @@ class MeshStore:
                     _init_delay = min(_init_delay * 2.0, 0.25)
             new_stamp = _get_db_stamp(self.db_path)
             if new_stamp is not None:
-                _INITIALIZED_DBS[self.db_path] = new_stamp
+                with _CACHE_LOCK:
+                    _INITIALIZED_DBS[self.db_path] = new_stamp
+
+    def _prepare_schema_upgrade(self, conn: sqlite3.Connection) -> None:
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        user_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+        current = str(user_version or 1)
+        if "mesh_meta" in tables:
+            row = conn.execute("SELECT value FROM mesh_meta WHERE key='schema_version'").fetchone()
+            if row:
+                current = str(row[0])
+        elif "schema_info" in tables:
+            row = conn.execute("SELECT version FROM schema_info").fetchone()
+            if row:
+                current = str(row[0])
+        try:
+            schema_version = int(current)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("Database schema version is invalid; migration was not started.") from exc
+        if user_version > int(SCHEMA_VERSION) or schema_version > int(SCHEMA_VERSION):
+            raise RuntimeError(
+                f"Database schema {max(user_version, schema_version)} is newer than supported version {SCHEMA_VERSION}; upgrade Mesh before opening it."
+            )
+        if current == SCHEMA_VERSION and user_version == int(SCHEMA_VERSION):
+            return
+        populated = any(
+            table in tables and conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone() is not None
+            for table in ("memories", "work_items", "work_events")
+        )
+        if not populated:
+            return
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+        backup = self.db_path.with_name(f"{self.db_path.name}.backup-v0.7.2-{stamp}-{uuid.uuid4().hex[:8]}")
+        reject_symlink(backup)
+        destination: Optional[sqlite3.Connection] = None
+        try:
+            destination = sqlite3.connect(backup)
+            with destination:
+                destination.execute("PRAGMA synchronous=FULL")
+                destination.execute("PRAGMA secure_delete=ON")
+                conn.backup(destination)
+                if is_encryption_enabled():
+                    self._encrypt_work_tables_in_tx(destination)
+                    destination.commit()
+                    destination.execute("VACUUM")
+                if destination.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                    raise RuntimeError("Schema backup integrity check failed.")
+            secure_file_permissions(backup)
+        except Exception as exc:
+            raise RuntimeError("Could not verify the pre-migration backup; schema upgrade was not started.") from exc
+        finally:
+            if destination is not None:
+                destination.close()
 
     def _init_db(self) -> None:
+        with namespace_write_lock(self.namespace, data_root=self.db_path.parent):
+            self._init_db_locked()
+
+    def _init_db_locked(self) -> None:
         mem_count = 0
         public_unencrypted_mem_count = 0
         evicted: list[tuple[Path, Optional[_PooledConnection], Optional[str]]] = []
         enc_on = is_encryption_enabled()
-        with _CACHE_LOCK:
-            with self._connect() as conn:
+        encryption_cleanup_pending = False
+        with self._cache_lock:
+            with self._connect() as conn, _schema_transaction(conn, self):
                 conn.execute("PRAGMA journal_mode=WAL")
                 conn.execute(
                     """
@@ -2245,6 +3710,7 @@ class MeshStore:
                     )
                     """
                 )
+                _check_namespace_binding(conn, self.namespace, claim=True)
                 conn.execute(
                     "INSERT OR IGNORE INTO mesh_meta (key, value) VALUES ('content_version', '1')"
                 )
@@ -2267,21 +3733,13 @@ class MeshStore:
                         )
                 except ValueError:
                     pass
-                if cur_ver != SCHEMA_VERSION or user_ver != int(SCHEMA_VERSION):
-                    has_memories = conn.execute(
-                        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='memories'"
-                    ).fetchone()[0] > 0
-                    if has_memories:
-                        mem_rows = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
-                        if mem_rows > 0 and self.db_path.exists():
-                            import shutil
-                            ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-                            backup_file = self.db_path.with_name(f"{self.db_path.name}.backup-v0.7.2-{ts}")
-                            if not backup_file.exists():
-                                try:
-                                    shutil.copy2(self.db_path, backup_file)
-                                except Exception as exc:
-                                    logger.warning("Could not create schema backup: %s", exc)
+                generation = conn.execute("SELECT value FROM mesh_meta WHERE key='store_generation'").fetchone()
+                if generation is None:
+                    if str(cur_ver) == "5":
+                        raise RuntimeError("Database identity is missing; repair or restore this database before opening it.")
+                    conn.execute("INSERT INTO mesh_meta(key,value) VALUES('store_generation',?)", (uuid.uuid4().hex,))
+                else:
+                    _validate_incarnation(generation[0], "store_generation")
                 conn.execute(
                     f"INSERT OR REPLACE INTO mesh_meta (key, value) VALUES ('schema_version', '{SCHEMA_VERSION}')"
                 )
@@ -2307,7 +3765,9 @@ class MeshStore:
                         embedding_model TEXT NOT NULL DEFAULT 'unknown',
                         trust_tier      TEXT NOT NULL DEFAULT 'user',
                         quarantined     INTEGER NOT NULL DEFAULT 0,
-                        secret_ref      TEXT
+                        secret_ref      TEXT,
+                        revision        INTEGER NOT NULL DEFAULT 1,
+                        incarnation     TEXT NOT NULL
                     )
                     """
                 )
@@ -2325,12 +3785,23 @@ class MeshStore:
                     ("trust_tier", "ALTER TABLE memories ADD COLUMN trust_tier TEXT DEFAULT 'user'"),
                     ("quarantined", "ALTER TABLE memories ADD COLUMN quarantined INTEGER DEFAULT 0"),
                     ("secret_ref", "ALTER TABLE memories ADD COLUMN secret_ref TEXT"),
+                    ("revision", "ALTER TABLE memories ADD COLUMN revision INTEGER NOT NULL DEFAULT 1"),
+                    ("incarnation", "ALTER TABLE memories ADD COLUMN incarnation TEXT NOT NULL DEFAULT ''"),
                 ):
                     if col_name not in existing_cols:
+                        if col_name == "incarnation" and str(cur_ver) == "5":
+                            raise RuntimeError("Memory identities are missing from a current-schema database.")
                         try:
                             conn.execute(col_sql)
                         except sqlite3.OperationalError:
+                            if col_name == "incarnation":
+                                raise
                             pass
+                if str(cur_ver) != "5":
+                    conn.execute("UPDATE memories SET incarnation=lower(hex(randomblob(16))) WHERE incarnation IS NULL OR incarnation=''")
+                if conn.execute("SELECT 1 FROM memories WHERE length(incarnation)!=32 OR incarnation GLOB '*[^a-f0-9]*' LIMIT 1").fetchone():
+                    raise RuntimeError("Memory identity is malformed; repair or restore this database before opening it.")
+                conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_incarnation ON memories(incarnation)")
 
                 conn.execute(
                     """
@@ -2374,7 +3845,9 @@ class MeshStore:
                 )
 
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_namespace ON memories (namespace)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_id_nocase ON memories(namespace,id COLLATE NOCASE)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_type ON memories (namespace, memory_type)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_brief ON memories(namespace,memory_type,quarantined,local_only,updated_at DESC,id)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_accessed_at ON memories (namespace, accessed_at DESC)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_created_at ON memories (namespace, created_at DESC)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_queries_namespace ON queries (namespace)")
@@ -2427,8 +3900,84 @@ class MeshStore:
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_work_items_ns_status ON work_items (namespace, status)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_work_items_ns_completed ON work_items (namespace, completed_at DESC)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_work_items_short_id ON work_items (namespace, short_id)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_work_items_id_nocase ON work_items(namespace,id COLLATE NOCASE)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_work_items_short_nocase ON work_items(namespace,short_id COLLATE NOCASE)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_work_events_item ON work_events (item_id, timestamp DESC)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_work_events_ns_ts ON work_events (namespace, timestamp DESC)")
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS embedding_jobs (
+                        memory_id TEXT PRIMARY KEY,
+                        namespace TEXT NOT NULL,
+                        revision INTEGER NOT NULL CHECK(revision > 0),
+                        incarnation TEXT NOT NULL,
+                        target_model TEXT NOT NULL,
+                        attempts INTEGER NOT NULL DEFAULT 0,
+                        available_at TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        error_code TEXT
+                    )
+                    """
+                )
+                job_columns = {row[1] for row in conn.execute("PRAGMA table_info(embedding_jobs)")}
+                if "incarnation" not in job_columns:
+                    if str(cur_ver) == "5":
+                        raise RuntimeError("Embedding job identities are missing from a current-schema database.")
+                    conn.execute("ALTER TABLE embedding_jobs ADD COLUMN incarnation TEXT NOT NULL DEFAULT ''")
+                if str(cur_ver) != "5":
+                    conn.execute(
+                        "UPDATE embedding_jobs SET incarnation=COALESCE((SELECT incarnation FROM memories "
+                        "WHERE memories.id=embedding_jobs.memory_id AND memories.namespace=embedding_jobs.namespace "
+                        "AND memories.revision=embedding_jobs.revision),'') WHERE incarnation=''"
+                    )
+                    conn.execute("DELETE FROM embedding_jobs WHERE incarnation='' OR NOT EXISTS(SELECT 1 FROM memories WHERE memories.id=embedding_jobs.memory_id AND memories.namespace=embedding_jobs.namespace AND memories.revision=embedding_jobs.revision AND memories.incarnation=embedding_jobs.incarnation)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_embedding_jobs_ready ON embedding_jobs(namespace, available_at)")
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS mutation_outbox (
+                        event_id TEXT PRIMARY KEY,
+                        namespace TEXT NOT NULL,
+                        operation TEXT NOT NULL,
+                        object_id TEXT,
+                        revision INTEGER,
+                        created_at TEXT NOT NULL,
+                        delivered_at TEXT
+                    )
+                    """
+                )
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_mutation_outbox_pending ON mutation_outbox(namespace, delivered_at, created_at)")
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS operation_receipts (
+                        namespace TEXT NOT NULL,
+                        producer_scope TEXT NOT NULL,
+                        operation_id TEXT NOT NULL,
+                        operation TEXT NOT NULL,
+                        parameter_digest TEXT NOT NULL,
+                        result_json TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        PRIMARY KEY(namespace, producer_scope, operation_id)
+                    )
+                    """
+                )
+                for table, key in (
+                    ("embedding_jobs", "embedding_jobs_count"),
+                    ("mutation_outbox", "mutation_outbox_count"),
+                    ("operation_receipts", "operation_receipts_count"),
+                ):
+                    conn.execute(f"INSERT OR IGNORE INTO mesh_meta(key,value) SELECT ?,CAST(COUNT(*) AS TEXT) FROM {table}", (key,))
+                    conn.execute(f"CREATE TRIGGER IF NOT EXISTS {table}_count_insert AFTER INSERT ON {table} BEGIN UPDATE mesh_meta SET value=CAST(value AS INTEGER)+1 WHERE key='{key}'; END")
+                    conn.execute(f"CREATE TRIGGER IF NOT EXISTS {table}_count_delete AFTER DELETE ON {table} BEGIN UPDATE mesh_meta SET value=MAX(0,CAST(value AS INTEGER)-1) WHERE key='{key}'; END")
+                now_jobs = _utc_now_iso()
+                conn.execute(
+                    "INSERT OR IGNORE INTO embedding_jobs(memory_id,namespace,revision,incarnation,target_model,available_at,created_at) SELECT id,namespace,revision,incarnation,'onnx-minilm-l6-v2',?,? FROM memories WHERE embedding_model IN ('hash-384','unknown','needs-reembed')",
+                    (now_jobs, now_jobs),
+                )
+                if enc_on:
+                    if self._encrypt_work_tables_in_tx(conn):
+                        conn.execute("INSERT OR REPLACE INTO mesh_meta(key,value) VALUES('work_encryption_cleanup_pending','1')")
+                cleanup_row = conn.execute("SELECT value FROM mesh_meta WHERE key='work_encryption_cleanup_pending'").fetchone()
+                encryption_cleanup_pending = bool(cleanup_row and cleanup_row[0] == "1")
 
                 mem_count = int(
                     conn.execute(
@@ -2437,7 +3986,7 @@ class MeshStore:
                 )
                 public_unencrypted_mem_count = int(
                     conn.execute(
-                        "SELECT COUNT(*) FROM memories WHERE COALESCE(local_only, 0) = 0 AND content NOT LIKE 'enc:v1:%'"
+                        "SELECT COUNT(*) FROM memories WHERE COALESCE(local_only, 0) = 0 AND COALESCE(quarantined, 0) = 0 AND content NOT LIKE 'enc:v1:%'"
                     ).fetchone()[0]
                 )
 
@@ -2463,7 +4012,7 @@ class MeshStore:
                         # Purge any historical local_only=1 or encrypted rows from FTS5
                         conn.execute(
                             "DELETE FROM memories_fts WHERE rowid IN "
-                            "(SELECT rowid FROM memories WHERE COALESCE(local_only, 0) != 0 OR content LIKE 'enc:v1:%')"
+                            "(SELECT rowid FROM memories WHERE COALESCE(local_only, 0) != 0 OR COALESCE(quarantined, 0) != 0 OR content LIKE 'enc:v1:%')"
                         )
                         fts_count = int(conn.execute("SELECT COUNT(*) FROM memories_fts").fetchone()[0])
                         misaligned = conn.execute(
@@ -2471,6 +4020,7 @@ class MeshStore:
                             SELECT 1 FROM memories m
                             LEFT JOIN memories_fts f ON f.rowid = m.rowid
                             WHERE COALESCE(m.local_only, 0) = 0
+                              AND COALESCE(m.quarantined, 0) = 0
                               AND m.content NOT LIKE 'enc:v1:%'
                               AND (f.rowid IS NULL OR f.id != m.id)
                             LIMIT 1
@@ -2483,7 +4033,7 @@ class MeshStore:
                                 INSERT INTO memories_fts (rowid, id, content, tags, memory_type, source_agent)
                                 SELECT rowid, id, content, tags, memory_type, source_agent
                                 FROM memories
-                                WHERE COALESCE(local_only, 0) = 0 AND content NOT LIKE 'enc:v1:%'
+                                WHERE COALESCE(local_only, 0) = 0 AND COALESCE(quarantined, 0) = 0 AND content NOT LIKE 'enc:v1:%'
                                 """
                             )
                     else:
@@ -2497,29 +4047,12 @@ class MeshStore:
                         self._fts_dirty = True
                     logger.warning("FTS5 synchronization deferred for %s: %s", self.db_path, exc)
 
-                if conn.in_transaction:
-                    conn.commit()
             secure_file_permissions(self.db_path)
+            with self._connect() as identity_connection:
+                self._bind_store_identity(identity_connection)
 
-            if mem_count == 0 and (self.db_path, self.namespace) not in _VECTOR_CACHE:
-                stamp = _get_db_stamp(self.db_path)
-                if stamp is not None:
-                    key = (self.db_path, self.namespace)
-                    _VECTOR_CACHE[key] = _VectorCacheEntry(
-                        stamp=stamp,
-                        ids=[],
-                        matrix=None,
-                        all_ids=set(),
-                        rows_by_id={},
-                        data_version=self._get_data_version_locked(),
-                        content_version=self._read_content_version_locked() or 1,
-                        needs_healing_ids=set(),
-                    )
-                    _VECTOR_CACHE.move_to_end(key)
-                    global _CACHE_REBUILD_COUNT
-                    _CACHE_REBUILD_COUNT = max(0, _CACHE_REBUILD_COUNT - 1)
-                    _VectorCacheEntry.build_count = max(0, _VectorCacheEntry.build_count - 1)
-                    evicted.extend(self._trim_vector_cache_locked())
+            if encryption_cleanup_pending:
+                self._finish_work_encryption_cleanup()
 
             if mem_count > 0:
                 self._migrate_from_chroma_if_needed()
@@ -2536,7 +4069,7 @@ class MeshStore:
         while len(_VECTOR_CACHE) > max_vec:
             victim_key: Optional[tuple[Path, str]] = None
             for cand_key in _VECTOR_CACHE:
-                if cand_key != active_key and cand_key[1] != self.namespace:
+                if cand_key != active_key:
                     victim_key = cand_key
                     break
             if victim_key is None:
@@ -2546,18 +4079,21 @@ class MeshStore:
             still_used = any(k[0] == v_path for k in _VECTOR_CACHE)
             v_conn: Optional[_PooledConnection] = None
             if not still_used and v_path != self.db_path:
-                v_conn = _CONNECTION_POOL.pop(v_path, None)
-                _DB_PATH_NAMESPACES.pop(v_path, None)
-                _QUERY_WRITE_COUNTS.pop(v_path, None)
-                dict.pop(_INITIALIZED_DBS, v_path, None)
+                candidate = _CONNECTION_POOL.get(v_path)
+                # Nested mutation groups must retain their current writer.
+                if candidate is None or candidate._mesh_users == 0:
+                    v_conn = _CONNECTION_POOL.pop(v_path, None)
+                    _DB_PATH_NAMESPACES.pop(v_path, None)
+                    _QUERY_WRITE_COUNTS.pop(v_path, None)
+                    dict.pop(_INITIALIZED_DBS, v_path, None)
             evicted.append((v_path, v_conn, v_ns))
         return evicted
 
     def _migrate_from_chroma_if_needed(self) -> None:
-        chroma_dir = get_mesh_dir() / "chroma"
+        chroma_dir = self.db_path.parent / "chroma"
         if not chroma_dir.exists():
             return
-        with _CACHE_LOCK:
+        with self._cache_lock:
             with self._connect() as conn:
                 missing_rows = conn.execute(
                     "SELECT id FROM memories WHERE namespace = ? AND embedding IS NULL",
@@ -2576,7 +4112,7 @@ class MeshStore:
                 got_embs = data.get("embeddings") or []
                 if got_ids and got_embs:
                     with self._connect() as conn:
-                        conn.execute("BEGIN IMMEDIATE")
+                        tx_marker = _begin_write(conn, self.namespace, self._store_generation)
                         for mid, emb in zip(got_ids, got_embs):
                             if emb is not None and len(emb) == EMBEDDING_DIM:
                                 conn.execute(
@@ -2584,7 +4120,7 @@ class MeshStore:
                                     (_vector_to_blob(emb), mid),
                                 )
                         self._bump_content_version_in_tx(conn)
-                        conn.commit()
+                        _commit_write(conn, tx_marker)
                     self._invalidate_cache()
             except Exception:
                 pass
@@ -2605,6 +4141,7 @@ class MeshStore:
         old_rowid: Optional[int] = None,
         new_rowid: Optional[int] = None,
         local_only: bool = False,
+        quarantined: bool = False,
     ) -> None:
         """
         Synchronize an FTS5 entry in O(log N) time using integer `rowid`.
@@ -2623,7 +4160,7 @@ class MeshStore:
                 conn.execute("DELETE FROM memories_fts WHERE id = ?", (memory_id,))
 
             # Suppress on-disk FTS5 indexing for private memories or when at-rest encryption is active
-            if local_only or is_encryption_enabled() or is_encrypted_text(content):
+            if local_only or quarantined or is_encryption_enabled() or is_encrypted_text(content):
                 return
 
             if new_rowid is not None:
@@ -2666,151 +4203,133 @@ class MeshStore:
 
     # --- In-Memory Vector & Metadata Matrix Cache ---
 
-    def _invalidate_cache(self) -> None:
+    def _owns_write_transaction(self) -> bool:
         with _CACHE_LOCK:
-            _evict_vector_cache_for_db_path(self.db_path)
-            stamp = _get_db_stamp(self.db_path)
-            if stamp is not None:
-                _INITIALIZED_DBS[self.db_path] = stamp
-            else:
-                _INITIALIZED_DBS.pop(self.db_path, None)
+            writer = _CONNECTION_POOL.get(self.db_path)
+        return bool(writer is not None and writer._mesh_owner_thread == threading.get_ident() and writer.in_transaction)
+
+    def _invalidate_cache(self) -> None:
+        if self._owns_write_transaction():
+            with _CACHE_LOCK:
+                _CONNECTION_POOL[self.db_path]._mesh_cache_dirty = True
+            return
+        with self._cache_lock:
+            with _CACHE_LOCK:
+                cached = _VECTOR_CACHE.pop((self.db_path, self.namespace), None)
+                stamp = _get_db_stamp(self.db_path)
+                if stamp is not None:
+                    _INITIALIZED_DBS[self.db_path] = stamp
+                else:
+                    _INITIALIZED_DBS.pop(self.db_path, None)
+            if cached is not None:
+                with cached.write_snapshot():
+                    cached._valid = False
 
     def _get_vector_cache(self, force_refresh: bool = False) -> _VectorCacheEntry:
-        """
-        Return the normalized 384-dim float32 embedding matrix, decrypted row metadata cache,
-        and pre-computed lexical IDF cache for this namespace.
-        """
+        """Return a metered generation, or request the bounded streaming path."""
+        self._ensure_initialized()
+        if self._owns_write_transaction():
+            raise CacheBudgetExceededError("Use bounded streaming retrieval inside an owning write transaction.")
+        if not force_refresh:
+            synced = self._is_cache_synced_locked()
+            if synced is not None:
+                return synced
+        key = (self.db_path, self.namespace)
         evicted: list[tuple[Path, Optional[_PooledConnection], Optional[str]]] = []
-        with _CACHE_LOCK:
-            if not self.db_path.exists():
-                if not self.create:
-                    raise NamespaceNotFoundError(f"Namespace '{self.namespace}' does not exist.")
-                self._ensure_initialized()
+        with self._cache_lock:
             if not force_refresh:
                 synced = self._is_cache_synced_locked()
                 if synced is not None:
-                    _INITIALIZED_DBS[self.db_path] = synced.stamp
                     return synced
-
-            prev_cache = _VECTOR_CACHE.get((self.db_path, self.namespace))
-            stamp_before = _get_db_stamp(self.db_path)
-
-            with self._connect() as conn:
-                conn.row_factory = sqlite3.Row
-                try:
+            with _CACHE_LOCK:
+                stale = _VECTOR_CACHE.pop(key, None)
+            del stale
+            stamp = _get_db_stamp(self.db_path) or (0, 0, 0, 0)
+            lease: Optional[_CacheBudgetLease] = None
+            entry: Optional[_VectorCacheEntry] = None
+            cv: Optional[int] = None
+            try:
+                with self._read_connect() as conn:
+                    dv = int(conn.execute("PRAGMA data_version").fetchone()[0])
                     cv = self._read_content_version_locked(conn)
-                    rows = conn.execute(
-                        f"SELECT {_MEMORY_COLUMNS}, embedding FROM memories WHERE namespace = ?",
+                    with _CACHE_LOCK:
+                        rejected = _CACHE_REJECTIONS.get(key)
+                    limit = _get_max_vector_cache_bytes()
+                    if rejected is not None and rejected[0] == cv and rejected[1] > limit:
+                        raise CacheBudgetExceededError(
+                            "Namespace version exceeds the cache allocation budget; use bounded streaming retrieval.",
+                            required_bytes=rejected[1],
+                        )
+                    length_expr = "+".join(f"COALESCE(length({name}),0)" for name in _CACHE_TEXT_FIELDS)
+                    summary = conn.execute(
+                        "SELECT COUNT(*),COALESCE(SUM(embedding IS NOT NULL),0),"
+                        f"COALESCE(SUM({length_expr}),0),COALESCE(MAX({length_expr}),0) "
+                        "FROM memories WHERE namespace=?",
                         (self.namespace,),
-                    ).fetchall()
-                except sqlite3.OperationalError:
-                    self._init_db()
-                    stamp_before = _get_db_stamp(self.db_path)
-                    cv = self._read_content_version_locked(conn)
-                    rows = conn.execute(
-                        f"SELECT {_MEMORY_COLUMNS}, embedding FROM memories WHERE namespace = ?",
+                    ).fetchone()
+                    count, vector_count, text_chars, max_chars = map(int, summary)
+                    matrix_bytes = vector_count * EMBEDDING_DIM * 4
+                    minimum = 4096 + matrix_bytes + count * 2048 + text_chars * 4
+                    if minimum > limit:
+                        raise CacheBudgetExceededError(
+                            "Namespace exceeds the cache allocation budget; use bounded streaming retrieval.",
+                            required_bytes=minimum,
+                        )
+                    peak = 16384 + max_chars * 256
+                    lease = _CacheBudgetLease(key)
+                    lease.resize(8192 + matrix_bytes + peak)
+                    matrix = np.empty((vector_count, EMBEDDING_DIM), dtype=np.float32) if vector_count else None
+                    entry = _VectorCacheEntry(
+                        stamp=stamp, ids=[], matrix=matrix, all_ids=set(), rows_by_id={},
+                        data_version=dv, content_version=cv, needs_healing_ids=set(),
+                        owned_matrix=True, budget_lease=lease,
+                    )
+                    del matrix
+                    entry._build_peak_bytes = peak
+                    # Keep a single SQL row and vector live. No full fetchall,
+                    # list of vectors, or second matrix is allocated on rebuild.
+                    cursor = conn.execute(
+                        f"SELECT {_MEMORY_COLUMNS},embedding FROM memories WHERE namespace=?",
                         (self.namespace,),
-                    ).fetchall()
-
-            ids: list[str] = []
-            all_ids: set[str] = set()
-            rows_by_id: dict[str, dict[str, Any]] = {}
-            vecs: list[np.ndarray] = []
-            needs_healing_ids: set[str] = set()
-            reused_lexical: dict[str, dict[str, Any]] = {}
-
-            for r in rows:
-                mid = r["id"]
-                all_ids.add(mid)
-                r_keys = r.keys()
-                content_plain = decrypt_text_if_encrypted(r["content"])
-                tags_str = decrypt_text_if_encrypted(r["tags"] or "[]")
-                blob = r["embedding"]
-                emb_model = str(r["embedding_model"] or "unknown")
-                trust_tier = _normalize_trust_tier(
-                    r["trust_tier"] if "trust_tier" in r_keys else "user",
-                    default="user",
-                )
-                quarantined_bool = bool(r["quarantined"]) if "quarantined" in r_keys else False
-                secret_ref_dict = (
-                    _parse_secret_ref_json(r["secret_ref"]) if "secret_ref" in r_keys else None
-                )
-
-                vec: Optional[np.ndarray] = None
-                if prev_cache is not None and mid in prev_cache.rows_by_id:
-                    prev_meta = prev_cache.rows_by_id[mid]
-                    if (
-                        prev_meta.get("content") == content_plain
-                        and prev_meta.get("tags") == tags_str
-                        and prev_meta.get("embedding_model") == emb_model
-                    ):
-                        if mid in prev_cache.lexical_by_id:
-                            reused_lexical[mid] = prev_cache.lexical_by_id[mid]
-
-                if vec is None:
-                    if blob:
-                        arr = _blob_to_vector(blob)
-                        if arr.size == EMBEDDING_DIM:
-                            vec = arr
-                            if emb_model == "unknown":
-                                if np.all(arr[368:] == 0.0) and int(np.count_nonzero(arr == 0.0)) >= 16:
-                                    emb_model = "hash-384"
-                                else:
-                                    emb_model = "onnx-minilm-l6-v2"
+                    )
+                    for row in cursor:
+                        raw = dict(row)
+                        blob = raw.pop("embedding")
+                        meta = self._deserialize_memory_row(raw)
+                        vector = _blob_to_vector(blob) if blob else None
+                        model = str(meta.get("embedding_model") or "unknown")
+                        if vector is not None and vector.size == EMBEDDING_DIM:
+                            if model == "unknown":
+                                model = "hash-384" if np.all(vector[368:] == 0.0) and int(np.count_nonzero(vector == 0.0)) >= 16 else "onnx-minilm-l6-v2"
                         else:
-                            emb_model = "needs-reembed"
-                    else:
-                        emb_model = "needs-reembed"
-
-                row_meta = {
-                    "id": mid,
-                    "namespace": r["namespace"],
-                    "content": content_plain,
-                    "confidence": float(r["confidence"]),
-                    "memory_type": r["memory_type"],
-                    "source_agent": r["source_agent"],
-                    "tags": tags_str,
-                    "tags_list": _parse_tags_json(tags_str),
-                    "created_at": r["created_at"],
-                    "updated_at": r["updated_at"] if "updated_at" in r_keys else r["created_at"],
-                    "accessed_at": r["accessed_at"],
-                    "access_count": int(r["access_count"] or 0),
-                    "ttl_days": r["ttl_days"],
-                    "decay_start_at": r["decay_start_at"],
-                    "local_only": bool(r["local_only"]),
-                    "embedding_model": emb_model,
-                    "trust_tier": trust_tier,
-                    "quarantined": quarantined_bool,
-                    "secret_ref": secret_ref_dict,
-                }
-                rows_by_id[mid] = row_meta
-                if _row_needs_healing(row_meta, vec):
-                    needs_healing_ids.add(mid)
-
-                if vec is not None:
-                    ids.append(mid)
-                    vecs.append(vec)
-
-            stamp = stamp_before or (0, 0, 0, 0)
-            dv = self._get_data_version_locked()
-            matrix = np.ascontiguousarray(np.vstack(vecs), dtype=np.float32) if vecs else None
-            entry = _VectorCacheEntry(
-                stamp=stamp,
-                ids=ids,
-                matrix=matrix,
-                all_ids=all_ids,
-                rows_by_id=rows_by_id,
-                data_version=dv,
-                content_version=cv,
-                needs_healing_ids=needs_healing_ids,
-                reused_lexical=reused_lexical,
-            )
-            key = (self.db_path, self.namespace)
-            _VECTOR_CACHE[key] = entry
-            _VECTOR_CACHE.move_to_end(key)
-            _INITIALIZED_DBS[self.db_path] = stamp
-            evicted = self._trim_vector_cache_locked()
-
+                            vector = None
+                            model = "needs-reembed"
+                        meta["embedding_model"] = model
+                        if not entry._upsert_vector(meta["id"], vector, row_meta=meta):
+                            raise RuntimeError("Unable to construct a valid namespace vector cache.")
+                    cursor.close()
+                    entry._build_peak_bytes = 0
+                    lease.resize(entry._cache_bytes)
+                with _CACHE_LOCK:
+                    _CACHE_REJECTIONS.pop(key, None)
+                    _VECTOR_CACHE[key] = entry
+                    _VECTOR_CACHE.move_to_end(key)
+                    _INITIALIZED_DBS[self.db_path] = stamp
+                    evicted = self._trim_vector_cache_locked()
+            except CacheBudgetExceededError as exc:
+                if exc.required_bytes > _get_max_vector_cache_bytes():
+                    with _CACHE_LOCK:
+                        _CACHE_REJECTIONS[key] = (cv, exc.required_bytes)
+                        _CACHE_REJECTIONS.move_to_end(key)
+                        while len(_CACHE_REJECTIONS) > _get_max_namespaces():
+                            _CACHE_REJECTIONS.popitem(last=False)
+                if lease is not None and entry is None:
+                    lease.release()
+                raise
+            except BaseException:
+                if lease is not None and entry is None:
+                    lease.release()
+                raise
         if evicted:
             _finalize_evicted_resources(evicted)
         return entry
@@ -2821,11 +4340,15 @@ class MeshStore:
         self,
         memory_id: str,
         content: str,
-        embedding: list[float],
+        embedding: Optional[list[float]],
         metadata: dict[str, Any],
         local_only: bool = False,
         embedding_model: Optional[str] = None,
         allow_redacted_public: bool = False,
+        conflict: Optional[dict[str, Any]] = None,
+        *,
+        include_private: bool = True,
+        expected_source_agent: Optional[str] = None,
     ) -> bool:
         """
         Store or overwrite a memory and its normalized 384-dim vector in a single atomic transaction,
@@ -2837,8 +4360,8 @@ class MeshStore:
         memory_id = validate_memory_id(memory_id)
         self._ensure_initialized()
         now = _utc_now_iso()
-        norm_vec = _normalize_vector(embedding, enforce_dim=True)
-        raw_blob = norm_vec.tobytes()
+        norm_vec = _normalize_vector(embedding, enforce_dim=True) if embedding is not None else None
+        raw_blob = norm_vec.tobytes() if norm_vec is not None else None
 
         tags_raw = metadata.get("tags", [])
         if isinstance(tags_raw, str):
@@ -2855,6 +4378,8 @@ class MeshStore:
 
         mem_type = str(metadata.get("memory_type", "fact"))
         source_agent = str(metadata.get("source_agent", "unknown"))
+        if expected_source_agent is not None and source_agent != expected_source_agent:
+            raise ValueError("Memory mutation is not permitted for this agent.")
         confidence = float(metadata.get("confidence", 1.0))
         created_at = metadata.get("created_at") or now
         updated_at = metadata.get("updated_at") or created_at
@@ -2865,7 +4390,7 @@ class MeshStore:
         emb_model = str(
             embedding_model
             or metadata.get("embedding_model")
-            or ("hash-384" if np.all(norm_vec[368:] == 0.0) else "onnx-minilm-l6-v2")
+            or ("needs-reembed" if norm_vec is None else "hash-384" if np.all(norm_vec[368:] == 0.0) else "onnx-minilm-l6-v2")
         )
         trust_tier = _normalize_trust_tier(metadata.get("trust_tier"), default="user")
         quarantined_flag = 1 if metadata.get("quarantined") else 0
@@ -2875,7 +4400,7 @@ class MeshStore:
         enc_on = is_encryption_enabled()
         db_content = encrypt_text_for_storage(content) if enc_on else content
         db_tags = encrypt_text_for_storage(tags_str) if enc_on else tags_str
-        db_blob = encrypt_blob_for_storage(raw_blob) if enc_on else raw_blob
+        db_blob = encrypt_blob_for_storage(raw_blob) if enc_on and raw_blob is not None else raw_blob
         db_ref = (
             encrypt_text_for_storage(secret_ref_json)
             if (enc_on and secret_ref_json)
@@ -2904,18 +4429,30 @@ class MeshStore:
             "secret_ref": norm_ref,
         }
 
-        with namespace_write_lock(self.namespace):
-            with _CACHE_LOCK:
+        after_commit_actions: list[Callable[[], Any]] = []
+        with namespace_write_lock(self.namespace, data_root=self.db_path.parent):
+            with self._cache_lock:
                 synced_cache = self._is_cache_synced_locked()
                 new_cv: Optional[int] = None
                 audit_scrub_old_content: Optional[str] = None
                 with self._connect() as conn:
-                    conn.execute("BEGIN IMMEDIATE")
+                    tx_marker = _begin_write(conn, self.namespace, self._store_generation)
                     try:
                         old_row = conn.execute(
-                            "SELECT content, local_only FROM memories WHERE id = ? AND namespace = ?",
-                            (memory_id, self.namespace),
+                            "SELECT content, local_only, revision, source_agent, namespace, incarnation FROM memories WHERE id = ?",
+                            (memory_id,),
                         ).fetchone()
+                        if old_row is not None and old_row[4] != self.namespace:
+                            raise ValueError("Requested object is unavailable or mutation is not permitted.")
+                        if old_row is not None:
+                            self._check_mutation_permission(
+                                bool(old_row[1]), old_row[3], include_private, expected_source_agent
+                            )
+                        revision = int(old_row[2]) + 1 if old_row is not None else 1
+                        incarnation = old_row[5] if old_row is not None else uuid.uuid4().hex
+                        row_meta["revision"] = revision
+                        row_meta["incarnation"] = incarnation
+                        row_meta["store_generation"] = self.store_generation
                         old_rowid = self._get_memory_rowid(conn, memory_id)
                         conn.execute(
                             """
@@ -2923,8 +4460,8 @@ class MeshStore:
                             (id, namespace, content, confidence, memory_type,
                              source_agent, tags, created_at, updated_at, accessed_at, access_count,
                              ttl_days, decay_start_at, local_only, embedding, embedding_model,
-                             trust_tier, quarantined, secret_ref)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                             trust_tier, quarantined, secret_ref, revision, incarnation)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             """,
                             (
                                 memory_id,
@@ -2946,6 +4483,8 @@ class MeshStore:
                                 trust_tier,
                                 quarantined_flag,
                                 db_ref,
+                                revision,
+                                incarnation,
                             ),
                         )
                         new_rowid = self._get_memory_rowid(conn, memory_id)
@@ -2959,6 +4498,7 @@ class MeshStore:
                             old_rowid=old_rowid,
                             new_rowid=new_rowid,
                             local_only=bool(local_flag),
+                            quarantined=bool(quarantined_flag),
                         )
                         if old_row is not None:
                             old_content = decrypt_text_if_encrypted(str(old_row[0] or ""))
@@ -2971,22 +4511,31 @@ class MeshStore:
                                     REDACTED_CONTENT_PLACEHOLDER if local_flag else content,
                                 )
                                 _scrub_queries_in_tx(conn, self.namespace, old_content)
-                                _scrub_pending_query_telemetry(self.namespace, old_content)
+                                _scrub_pending_query_telemetry(self.namespace, old_content, data_root=self.db_path.parent)
                                 audit_scrub_old_content = old_content
+                        self._schedule_embedding_in_tx(conn, memory_id, revision, emb_model, incarnation=incarnation)
+                        self._record_mutation_in_tx(conn, "upsert", memory_id, revision)
+                        if conflict is not None:
+                            self._insert_conflict_in_tx(conn, memory_id, content, bool(local_flag), conflict)
                         new_cv = self._bump_content_version_in_tx(conn)
-                        conn.commit()
+                        after_commit_actions = _commit_write(conn, tx_marker)
                     except Exception:
                         if conn.in_transaction:
-                            conn.rollback()
+                            _rollback_write(conn, tx_marker)
                         raise
 
-                if synced_cache is not None and synced_cache.upsert_vector(
-                    memory_id, norm_vec, row_meta=row_meta
-                ):
-                    self._refresh_stamps_after_write_locked(synced_cache, content_version=new_cv)
+                if self._owns_write_transaction():
+                    self._queue_cache_delta("upsert", memory_id, norm_vec, row_meta, new_cv)
+                elif synced_cache is not None:
+                    with synced_cache.write_snapshot():
+                        if synced_cache.upsert_vector(memory_id, norm_vec, row_meta=row_meta):
+                            self._refresh_stamps_after_write_locked(synced_cache, content_version=new_cv)
+                        else:
+                            self._invalidate_cache()
                 else:
                     self._invalidate_cache()
 
+        self._run_after_commit_actions(after_commit_actions)
         if audit_scrub_old_content is not None:
             scrub_memory_update_from_audit(
                 namespace=self.namespace,
@@ -2998,7 +4547,10 @@ class MeshStore:
 
     def upsert_batch(
         self,
-        items: list[tuple[str, str, list[float], dict[str, Any], bool]],
+        items: list[tuple[str, str, Optional[list[float]], dict[str, Any], bool]],
+        *,
+        include_private: bool = True,
+        expected_source_agent: Optional[str] = None,
     ) -> None:
         """
         Batch-insert or overwrite multiple memories in a single SQLite WAL transaction,
@@ -3006,24 +4558,28 @@ class MeshStore:
         """
         if not items:
             return
+        if len(items) > env_int("MESH_MAX_BULK_ITEMS", 1000, minimum=1):
+            raise ValueError("Bulk item limit exceeded; split the request into bounded batches.")
         self._ensure_initialized()
         now = _utc_now_iso()
         enc_on = is_encryption_enabled()
 
-        with namespace_write_lock(self.namespace):
-            with _CACHE_LOCK:
+        after_commit_actions: list[Callable[[], Any]] = []
+        with namespace_write_lock(self.namespace, data_root=self.db_path.parent):
+            with self._cache_lock:
                 synced_cache = self._is_cache_synced_locked()
                 in_place_ok = synced_cache is not None
+                collect_cache_meta = in_place_ok or self._collects_cache_deltas()
                 pending_vectors: list[tuple[str, Optional[np.ndarray], dict[str, Any]]] = []
                 new_cv: Optional[int] = None
                 audit_scrubs: list[tuple[str, str, bool]] = []
                 with self._connect() as conn:
-                    conn.execute("BEGIN IMMEDIATE")
+                    tx_marker = _begin_write(conn, self.namespace, self._store_generation)
                     try:
                         for raw_memory_id, raw_content, embedding, metadata, local_only in items:
                             memory_id = validate_memory_id(raw_memory_id)
-                            norm_vec = _normalize_vector(embedding, enforce_dim=True)
-                            raw_blob = norm_vec.tobytes()
+                            norm_vec = _normalize_vector(embedding, enforce_dim=True) if embedding is not None else None
+                            raw_blob = norm_vec.tobytes() if norm_vec is not None else None
 
                             tags_raw = metadata.get("tags", [])
                             if isinstance(tags_raw, str):
@@ -3040,6 +4596,8 @@ class MeshStore:
 
                             mem_type = str(metadata.get("memory_type", "fact"))
                             source_agent = str(metadata.get("source_agent", "unknown"))
+                            if expected_source_agent is not None and source_agent != expected_source_agent:
+                                raise ValueError("Memory mutation is not permitted for this agent.")
                             confidence = float(metadata.get("confidence", 1.0))
                             created_at = metadata.get("created_at") or now
                             updated_at = metadata.get("updated_at") or created_at
@@ -3049,7 +4607,7 @@ class MeshStore:
                             decay_start_at = metadata.get("decay_start_at")
                             emb_model = str(
                                 metadata.get("embedding_model")
-                                or ("hash-384" if np.all(norm_vec[368:] == 0.0) else "onnx-minilm-l6-v2")
+                                or ("needs-reembed" if norm_vec is None else "hash-384" if np.all(norm_vec[368:] == 0.0) else "onnx-minilm-l6-v2")
                             )
                             trust_tier = _normalize_trust_tier(metadata.get("trust_tier"), default="user")
                             quarantined_flag = 1 if metadata.get("quarantined") else 0
@@ -3060,7 +4618,7 @@ class MeshStore:
 
                             db_content = encrypt_text_for_storage(content) if enc_on else content
                             db_tags = encrypt_text_for_storage(tags_str) if enc_on else tags_str
-                            db_blob = encrypt_blob_for_storage(raw_blob) if enc_on else raw_blob
+                            db_blob = encrypt_blob_for_storage(raw_blob) if enc_on and raw_blob is not None else raw_blob
                             db_ref = (
                                 encrypt_text_for_storage(secret_ref_json)
                                 if (enc_on and secret_ref_json)
@@ -3068,9 +4626,17 @@ class MeshStore:
                             )
 
                             old_row = conn.execute(
-                                "SELECT content, local_only FROM memories WHERE id = ? AND namespace = ?",
-                                (memory_id, self.namespace),
+                                "SELECT content, local_only, revision, source_agent, namespace, incarnation FROM memories WHERE id = ?",
+                                (memory_id,),
                             ).fetchone()
+                            if old_row is not None and old_row[4] != self.namespace:
+                                raise ValueError("Requested object is unavailable or mutation is not permitted.")
+                            if old_row is not None:
+                                self._check_mutation_permission(
+                                    bool(old_row[1]), old_row[3], include_private, expected_source_agent,
+                                )
+                            revision = int(old_row[2]) + 1 if old_row is not None else 1
+                            incarnation = old_row[5] if old_row is not None else uuid.uuid4().hex
                             old_rowid = self._get_memory_rowid(conn, memory_id)
                             conn.execute(
                                 """
@@ -3078,8 +4644,8 @@ class MeshStore:
                                 (id, namespace, content, confidence, memory_type,
                                  source_agent, tags, created_at, updated_at, accessed_at, access_count,
                                  ttl_days, decay_start_at, local_only, embedding, embedding_model,
-                                 trust_tier, quarantined, secret_ref)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                 trust_tier, quarantined, secret_ref, revision, incarnation)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                                 """,
                                 (
                                     memory_id,
@@ -3101,6 +4667,8 @@ class MeshStore:
                                     trust_tier,
                                     quarantined_flag,
                                     db_ref,
+                                    revision,
+                                    incarnation,
                                 ),
                             )
                             new_rowid = self._get_memory_rowid(conn, memory_id)
@@ -3114,6 +4682,7 @@ class MeshStore:
                                 old_rowid=old_rowid,
                                 new_rowid=new_rowid,
                                 local_only=bool(local_flag),
+                                quarantined=bool(quarantined_flag),
                             )
                             if old_row is not None:
                                 old_content = decrypt_text_if_encrypted(str(old_row[0] or ""))
@@ -3126,11 +4695,16 @@ class MeshStore:
                                         REDACTED_CONTENT_PLACEHOLDER if local_flag else content,
                                     )
                                     _scrub_queries_in_tx(conn, self.namespace, old_content)
-                                    _scrub_pending_query_telemetry(self.namespace, old_content)
+                                    _scrub_pending_query_telemetry(self.namespace, old_content, data_root=self.db_path.parent)
                                     audit_scrubs.append((memory_id, old_content, bool(local_flag)))
-                            if in_place_ok and synced_cache is not None:
+                            self._schedule_embedding_in_tx(conn, memory_id, revision, emb_model, incarnation=incarnation)
+                            self._record_mutation_in_tx(conn, "upsert", memory_id, revision)
+                            if collect_cache_meta:
                                 row_meta = {
                                     "id": memory_id,
+                                    "revision": revision,
+                                    "incarnation": incarnation,
+                                    "store_generation": self.store_generation,
                                     "namespace": self.namespace,
                                     "content": content,
                                     "confidence": confidence,
@@ -3152,22 +4726,31 @@ class MeshStore:
                                 }
                                 pending_vectors.append((memory_id, norm_vec, row_meta))
                         new_cv = self._bump_content_version_in_tx(conn)
-                        conn.commit()
+                        after_commit_actions = _commit_write(conn, tx_marker)
                     except Exception:
                         if conn.in_transaction:
-                            conn.rollback()
+                            _rollback_write(conn, tx_marker)
                         raise
 
-                if in_place_ok and synced_cache is not None:
-                    for memory_id, vec, meta in pending_vectors:
-                        if not synced_cache.upsert_vector(memory_id, vec, row_meta=meta):
-                            in_place_ok = False
-                            break
-                if in_place_ok and synced_cache is not None:
-                    self._refresh_stamps_after_write_locked(synced_cache, content_version=new_cv)
+                if self._owns_write_transaction():
+                    for memory_id, vector, metadata in pending_vectors:
+                        self._queue_cache_delta("upsert", memory_id, vector, metadata, new_cv)
+                    if not collect_cache_meta:
+                        self._invalidate_cache()
+                elif in_place_ok and synced_cache is not None:
+                    with synced_cache.write_snapshot():
+                        for memory_id, vec, meta in pending_vectors:
+                            if not synced_cache.upsert_vector(memory_id, vec, row_meta=meta):
+                                in_place_ok = False
+                                break
+                        if in_place_ok:
+                            self._refresh_stamps_after_write_locked(synced_cache, content_version=new_cv)
+                        else:
+                            self._invalidate_cache()
                 else:
                     self._invalidate_cache()
 
+        self._run_after_commit_actions(after_commit_actions)
         for scrubbed_id, scrubbed_old_content, scrubbed_local in audit_scrubs:
             scrub_memory_update_from_audit(
                 namespace=self.namespace,
@@ -3176,40 +4759,84 @@ class MeshStore:
                 local_only=scrubbed_local,
             )
 
-    def resolve_id_prefix(self, prefix: str) -> Optional[str]:
-        clean_pref = (prefix or "").strip().lower()
-        if not clean_pref:
+    def resolve_id_prefix(
+        self, prefix: str, *, include_private: bool = True,
+        expected_source_agent: Optional[str] = None,
+    ) -> Optional[str]:
+        """Resolve one canonical ID with bounded, policy-filtered SQL lookups."""
+        clean = (prefix or "").strip()
+        if not clean or not self.db_path.exists():
             return None
-        if not self.db_path.exists():
-            return None
-        with _CACHE_LOCK:
-            cache = self._get_vector_cache()
-            if clean_pref in cache.rows_by_id:
-                return clean_pref
-            for mid in cache.all_ids:
-                if mid.lower() == clean_pref:
-                    return mid
-            if len(clean_pref) < 4:
-                return None
-            matches = [mid for mid in cache.all_ids if mid.lower().startswith(clean_pref)]
+        validate_memory_id(clean)
+        self._ensure_initialized()
+        predicates = "namespace=? AND (? OR local_only=0) AND (? IS NULL OR source_agent=?)"
+        params = (self.namespace, bool(include_private), expected_source_agent, expected_source_agent)
+        with self._read_connect() as conn:
+            exact = conn.execute(
+                f"SELECT id FROM memories WHERE {predicates} AND id=? LIMIT 1", (*params, clean),
+            ).fetchone()
+            if exact is not None:
+                return str(exact[0])
+            matches = conn.execute(
+                f"SELECT id FROM memories WHERE {predicates} AND id=? COLLATE NOCASE LIMIT 2", (*params, clean),
+            ).fetchall()
+            if not matches and len(clean) >= 4:
+                escaped = clean.replace("\\", "\\\\").replace("_", "\\_").replace("%", "\\%")
+                matches = conn.execute(
+                    f"SELECT id FROM memories WHERE {predicates} AND id LIKE ? ESCAPE '\\' LIMIT 2",
+                    (*params, escaped + "%"),
+                ).fetchall()
         if len(matches) == 1:
-            return matches[0]
+            return str(matches[0][0])
         if len(matches) > 1:
-            raise ValueError(
-                f"Ambiguous ID prefix '{prefix}' matches multiple memories: {matches[:3]}. "
-                "Please provide a longer prefix."
-            )
+            raise ValueError("Ambiguous memory ID prefix; provide a longer prefix or the complete ID.")
         return None
 
-    def get(self, memory_id: str) -> Optional[dict[str, Any]]:
+    @staticmethod
+    def _deserialize_memory_row(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+        result = dict(row)
+        result["content"] = decrypt_text_if_encrypted(result["content"])
+        result["tags"] = decrypt_text_if_encrypted(result.get("tags") or "[]")
+        result["tags_list"] = _parse_tags_json(result["tags"])
+        result["local_only"] = bool(result.get("local_only"))
+        result["quarantined"] = bool(result.get("quarantined"))
+        result["trust_tier"] = _normalize_trust_tier(result.get("trust_tier"))
+        result["secret_ref"] = _parse_secret_ref_json(result.get("secret_ref"))
+        return result
+
+    def get(self, memory_id: str, *, include_private: bool = True) -> Optional[dict[str, Any]]:
+        memory_id = validate_memory_id(memory_id)
         if not self.db_path.exists():
             return None
+        self._ensure_initialized()
+        with self._read_connect() as conn:
+            row = conn.execute(
+                f"SELECT {_MEMORY_COLUMNS} FROM memories WHERE namespace=? AND id=? AND (? OR local_only=0)",
+                (self.namespace, memory_id, bool(include_private)),
+            ).fetchone()
+            result = self._deserialize_memory_row(row) if row is not None else None
+        return self._overlay_access_tracking(result) if result is not None else None
+
+    def _overlay_access_tracking(self, row: dict[str, Any]) -> dict[str, Any]:
+        """Overlay bounded local access statistics while keeping SQL content authoritative."""
+        with _ACCESS_TRACKING_LOCK:
+            buffered = _ACCESS_TRACKING_BUFFERS.get(self.db_path)
+            pending = buffered.access_increments.get(row["id"]) if buffered is not None and buffered.store_generation in (None, row.get("store_generation")) and buffered.access_incarnations.get(row["id"]) == row["incarnation"] else None
+        if pending is not None:
+            row["access_count"] = int(row.get("access_count") or 0) + pending[0]
+            row["accessed_at"] = max(str(row.get("accessed_at") or ""), pending[1])
         with _CACHE_LOCK:
-            cache = self._get_vector_cache()
-            row = cache.rows_by_id.get(memory_id)
-            if row is not None:
-                return dict(row)
-        return None
+            cached = _VECTOR_CACHE.get((self.db_path, self.namespace))
+        if cached is not None:
+            try:
+                with cached.read_snapshot():
+                    metadata = cached.rows_by_id.get(row["id"])
+                    if metadata is not None and metadata.get("revision") == row.get("revision") and metadata.get("incarnation") == row.get("incarnation") and metadata.get("store_generation") == row.get("store_generation"):
+                        row["access_count"] = max(int(row.get("access_count") or 0), int(metadata.get("access_count") or 0))
+                        row["accessed_at"] = max(str(row.get("accessed_at") or ""), str(metadata.get("accessed_at") or ""))
+            except CacheSnapshotInvalidatedError:
+                pass
+        return row
 
     def update(
         self,
@@ -3229,6 +4856,12 @@ class MeshStore:
         trust_tier: Optional[str] = None,
         quarantined: Optional[bool] = None,
         secret_ref: Optional[Any] = None,
+        *,
+        include_private: bool = True,
+        expected_source_agent: Optional[str] = None,
+        expected_revision: Optional[int] = None,
+        expected_incarnation: Optional[str] = None,
+        expected_store_generation: Optional[str] = None,
     ) -> Optional[dict[str, Any]]:
         """
         Update an existing memory in-place while preserving its `id`, `created_at`,
@@ -3236,6 +4869,15 @@ class MeshStore:
         Finding S11: Always enforces `guard_ingest` and `guard_tags`, including when
         `content is None` and `local_only=False` is requested.
         """
+        memory_id = validate_memory_id(memory_id)
+        if expected_revision is not None and (type(expected_revision) is not int or expected_revision < 1):
+            raise ValueError("expected_revision must be a positive integer.")
+        if expected_incarnation is not None:
+            _validate_incarnation(expected_incarnation, "expected_incarnation")
+        if expected_store_generation is not None:
+            _validate_incarnation(expected_store_generation, "expected_store_generation")
+            if expected_store_generation != self.store_generation:
+                raise StaleStoreError("The requested database generation changed; refresh and retry.")
         self._ensure_initialized()
         self._maybe_lazy_flush_telemetry()
         now = _utc_now_iso()
@@ -3248,12 +4890,17 @@ class MeshStore:
         new_local_bool = False
         enc_on = is_encryption_enabled()
 
-        with namespace_write_lock(self.namespace):
-            with _CACHE_LOCK:
-                cache = self._get_vector_cache()
-                existing_meta = cache.rows_by_id.get(memory_id)
+        after_commit_actions: list[Callable[[], Any]] = []
+        with namespace_write_lock(self.namespace, data_root=self.db_path.parent):
+            with self._cache_lock:
+                cache = self._is_cache_synced_locked()
+                existing_meta = self.get(memory_id)
                 if existing_meta is None:
                     return None
+                self._check_mutation_permission(
+                    bool(existing_meta.get("local_only")), existing_meta.get("source_agent"),
+                    include_private, expected_source_agent,
+                )
 
                 old_content = str(existing_meta.get("content", ""))
                 candidate_content = content if content is not None else old_content
@@ -3290,6 +4937,8 @@ class MeshStore:
                     else float(existing_meta["confidence"])
                 )
                 new_agent = source_agent if source_agent is not None else existing_meta["source_agent"]
+                if expected_source_agent is not None and new_agent != expected_source_agent:
+                    raise ValueError("Memory mutation is not permitted for this agent.")
                 new_trust_tier = (
                     _normalize_trust_tier(trust_tier, default=existing_meta.get("trust_tier", "user"))
                     if trust_tier is not None
@@ -3341,7 +4990,10 @@ class MeshStore:
                     if preserve_accessed_at
                     else now
                 )
+                new_revision = int(existing_meta.get("revision", 1)) + 1
                 content_changed = new_content != old_content
+                if content_changed and norm_vec is None:
+                    new_emb_model = "needs-reembed"
                 became_private = new_local_bool and not bool(existing_meta.get("local_only"))
 
                 if content_changed or new_local_bool:
@@ -3358,8 +5010,25 @@ class MeshStore:
 
                 new_cv: Optional[int] = None
                 with self._connect() as conn:
-                    conn.execute("BEGIN IMMEDIATE")
+                    tx_marker = _begin_write(conn, self.namespace, self._store_generation)
                     try:
+                        authoritative = conn.execute(
+                            "SELECT revision,local_only,source_agent,incarnation FROM memories WHERE namespace=? AND id=?",
+                            (self.namespace, memory_id),
+                        ).fetchone()
+                        if authoritative is None:
+                            after_commit_actions = _commit_write(conn, tx_marker)
+                            self._invalidate_cache()
+                            return None
+                        self._check_mutation_permission(
+                            bool(authoritative[1]), authoritative[2], include_private, expected_source_agent
+                        )
+                        if expected_revision is not None and int(authoritative[0]) != expected_revision:
+                            raise ValueError("Memory revision changed; no mutation was committed.")
+                        if expected_incarnation is not None and authoritative[3] != expected_incarnation:
+                            raise ValueError("Memory incarnation changed; no mutation was committed.")
+                        if int(authoritative[0]) != int(existing_meta.get("revision", 1)) or authoritative[3] != existing_meta["incarnation"]:
+                            raise ValueError("Memory changed before the mutation; refresh and retry.")
                         rowid = self._get_memory_rowid(conn, memory_id)
                         if norm_vec is not None:
                             raw_blob = norm_vec.tobytes()
@@ -3381,7 +5050,8 @@ class MeshStore:
                                     embedding_model = ?,
                                     trust_tier = ?,
                                     quarantined = ?,
-                                    secret_ref = ?
+                                    secret_ref = ?,
+                                    revision = ?
                                 WHERE id = ? AND namespace = ?
                                 """,
                                 (
@@ -3400,6 +5070,7 @@ class MeshStore:
                                     new_trust_tier,
                                     new_quarantined_flag,
                                     db_ref,
+                                    new_revision,
                                     memory_id,
                                     self.namespace,
                                 ),
@@ -3421,7 +5092,8 @@ class MeshStore:
                                     embedding_model = ?,
                                     trust_tier = ?,
                                     quarantined = ?,
-                                    secret_ref = ?
+                                    secret_ref = ?,
+                                    revision = ?
                                 WHERE id = ? AND namespace = ?
                                 """,
                                 (
@@ -3439,6 +5111,7 @@ class MeshStore:
                                     new_trust_tier,
                                     new_quarantined_flag,
                                     db_ref,
+                                    new_revision,
                                     memory_id,
                                     self.namespace,
                                 ),
@@ -3453,6 +5126,7 @@ class MeshStore:
                             old_rowid=rowid,
                             new_rowid=rowid,
                             local_only=new_local_bool,
+                            quarantined=new_quarantined_bool,
                         )
                         if content_changed or became_private:
                             replacement_text = (
@@ -3462,16 +5136,21 @@ class MeshStore:
                                 conn, self.namespace, memory_id, replacement_text
                             )
                             _scrub_queries_in_tx(conn, self.namespace, old_content)
-                            _scrub_pending_query_telemetry(self.namespace, old_content)
+                            _scrub_pending_query_telemetry(self.namespace, old_content, data_root=self.db_path.parent)
+                        self._schedule_embedding_in_tx(conn, memory_id, new_revision, new_emb_model, incarnation=existing_meta["incarnation"])
+                        self._record_mutation_in_tx(conn, "update", memory_id, new_revision)
                         new_cv = self._bump_content_version_in_tx(conn)
-                        conn.commit()
+                        _commit_write(conn, tx_marker)
                     except Exception:
                         if conn.in_transaction:
-                            conn.rollback()
+                            _rollback_write(conn, tx_marker)
                         raise
 
                 updated_row = {
                     "id": memory_id,
+                    "revision": new_revision,
+                    "incarnation": existing_meta["incarnation"],
+                    "store_generation": self.store_generation,
                     "namespace": self.namespace,
                     "content": new_content,
                     "confidence": new_conf,
@@ -3491,26 +5170,23 @@ class MeshStore:
                     "quarantined": new_quarantined_bool,
                     "secret_ref": new_secret_ref,
                 }
-                if norm_vec is not None:
-                    if cache.upsert_vector(memory_id, norm_vec, row_meta=updated_row):
-                        self._refresh_stamps_after_write_locked(cache, content_version=new_cv)
-                    else:
-                        self._invalidate_cache()
+                if self._owns_write_transaction():
+                    self._queue_cache_delta("upsert", memory_id, norm_vec, updated_row, new_cv, preserve_vector=norm_vec is None and not content_changed)
+                elif cache is not None:
+                    with cache.write_snapshot():
+                        cache_vector = norm_vec
+                        if cache_vector is None and not content_changed:
+                            existing_idx = cache.id_to_idx.get(memory_id)
+                            if existing_idx is not None and cache._matrix_buf is not None:
+                                cache_vector = cache._matrix_buf[existing_idx]
+                        if cache.upsert_vector(memory_id, cache_vector, row_meta=updated_row):
+                            self._refresh_stamps_after_write_locked(cache, content_version=new_cv)
+                        else:
+                            self._invalidate_cache()
                 else:
-                    cache.rows_by_id[memory_id] = dict(updated_row)
-                    cache._index_row_lexical(memory_id, updated_row)
-                    idx = cache.id_to_idx.get(memory_id)
-                    existing_vec = (
-                        cache._matrix_buf[idx]
-                        if (idx is not None and cache._matrix_buf is not None)
-                        else None
-                    )
-                    if _row_needs_healing(updated_row, existing_vec):
-                        cache.needs_healing_ids.add(memory_id)
-                    else:
-                        cache.needs_healing_ids.discard(memory_id)
-                    self._refresh_stamps_after_write_locked(cache, content_version=new_cv)
+                    self._invalidate_cache()
 
+        self._run_after_commit_actions(after_commit_actions)
         if should_scrub_audit and not preserve_accessed_at:
             scrub_memory_update_from_audit(
                 namespace=self.namespace,
@@ -3518,194 +5194,187 @@ class MeshStore:
                 old_content=old_content_for_scrub,
                 local_only=new_local_bool,
             )
-        return dict(updated_row)
+        return self._mutation_result(dict(updated_row), include_private)
 
-    def approve(self, memory_id: str) -> Optional[dict[str, Any]]:
+    def approve(
+        self, memory_id: str, *, include_private: bool = True,
+        expected_source_agent: Optional[str] = None,
+        expected_revision: Optional[int] = None,
+        expected_incarnation: Optional[str] = None,
+        expected_store_generation: Optional[str] = None,
+    ) -> Optional[dict[str, Any]]:
         """Approve a quarantined memory (`quarantined=False`), preserving its provenance `trust_tier` (Finding S8)."""
         resolved = self.resolve_id_prefix(memory_id) or memory_id
-        return self.update(memory_id=resolved, quarantined=False, preserve_accessed_at=True)
+        return self.update(
+            memory_id=resolved, quarantined=False, preserve_accessed_at=True,
+            include_private=include_private, expected_source_agent=expected_source_agent,
+            expected_revision=expected_revision,
+            expected_incarnation=expected_incarnation,
+            expected_store_generation=expected_store_generation,
+        )
 
     # --- Vector & Hybrid Search Operations ---
 
+    @_retry_cache_snapshot
     def query(
         self,
         embedding: list[float],
         n: int = 5,
         query_embedding_model: Optional[str] = None,
     ) -> dict[str, list[list[Any]]]:
-        if not self.db_path.exists():
-            return {"documents": [[]], "distances": [[]], "metadatas": [[]], "ids": [[]]}
-        cache = self._get_vector_cache()
-        if n <= 0:
-            return {"documents": [[]], "distances": [[]], "metadatas": [[]], "ids": [[]]}
-
+        empty = {"documents": [[]], "distances": [[]], "metadatas": [[]], "ids": [[]]}
+        if not self.db_path.exists() or n <= 0:
+            return empty
+        if type(n) is not int or n > 1000:
+            raise ValueError("n must be an integer between 1 and 1000")
         q_vec = _normalize_vector(embedding, enforce_dim=False)
-        ids_snap, sims, rows_snap = cache.similarity_snapshot(q_vec)
-        if sims is None or len(ids_snap) == 0:
-            return {"documents": [[]], "distances": [[]], "metadatas": [[]], "ids": [[]]}
-        if query_embedding_model is not None:
-            # the per-row model tag takes a handful of distinct values: decide each value once, not once per row
-            _mix_memo: dict[Any, bool] = {}
-            valid_indices = []
-            for idx, mid in enumerate(ids_snap):
-                _row = rows_snap.get(mid)
-                if _row is None:
-                    continue
-                _em = _row.get("embedding_model")
-                _mixed = _mix_memo.get(_em)
-                if _mixed is None:
-                    _mixed = _is_mixed_space(_em, query_embedding_model)
-                    _mix_memo[_em] = _mixed
-                if not _mixed:
-                    valid_indices.append(idx)
-            if len(valid_indices) < len(ids_snap) and not os.environ.get("MESH_QUIET"):
-                excluded_cnt = len(ids_snap) - len(valid_indices)
-                warnings.warn(
-                    f"Excluded {excluded_cnt} memories from semantic search due to mixed embedding space "
-                    f"(query uses '{query_embedding_model}'). Run 'mesh reembed' to re-embed historical memories.",
-                    UserWarning,
-                    stacklevel=2,
+        if q_vec.size != EMBEDDING_DIM or not np.isfinite(q_vec).all():
+            raise ValueError(f"query embedding must contain {EMBEDDING_DIM} finite values")
+        try:
+            cache = self._get_vector_cache()
+        except CacheBudgetExceededError:
+            return self._streaming_vector_query(q_vec, n, query_embedding_model)
+        with cache.read_snapshot():
+            if cache.matrix is None or not cache.ids:
+                return empty
+            similarities = cache.matrix @ q_vec
+            excluded = 0
+            compatible_models = {model for model in cache.model_ids if not _is_mixed_space(model, query_embedding_model)}
+            if len(compatible_models) != len(cache.model_ids):
+                mask = np.fromiter(
+                    (cache.rows_by_id[mid].get("embedding_model") in compatible_models for mid in cache.ids),
+                    dtype=np.bool_, count=len(cache.ids),
                 )
-            if not valid_indices:
-                return {"documents": [[]], "distances": [[]], "metadatas": [[]], "ids": [[]]}
-            valid_arr = np.asarray(valid_indices, dtype=np.int64)
-            valid_sims = sims[valid_arr]
-            k = min(n, len(valid_arr))
-            if k < len(valid_arr):
-                part = np.argpartition(-valid_sims, k - 1)[:k]
-                part = part[np.argsort(-valid_sims[part])]
-                top_indices = valid_arr[part]
+                excluded = len(cache.ids) - int(mask.sum())
+                similarities[~mask] = -np.inf
+            count = min(n, len(cache.ids) - excluded)
+            if not count:
+                rows = []
             else:
-                top_indices = valid_arr[np.argsort(-valid_sims)]
-        else:
-            k = min(n, len(ids_snap))
-            if k < len(ids_snap):
-                top_indices = np.argpartition(-sims, k - 1)[:k]
-                top_indices = top_indices[np.argsort(-sims[top_indices])]
-            else:
-                top_indices = np.argsort(-sims)
+                top = np.argpartition(similarities, len(cache.ids) - count)[-count:]
+                boundary = float(np.min(similarities[top]))
+                above = np.flatnonzero(similarities > boundary)
+                tied = heapq.nsmallest(
+                    count - len(above),
+                    ((cache.ids[int(index)], int(index)) for index in np.flatnonzero(similarities == boundary)),
+                )
+                best = [*map(int, above), *(index for _, index in tied)]
+                best.sort(key=lambda index: (-float(similarities[index]), cache.ids[index]))
+                rows = [(dict(cache.rows_by_id[cache.ids[index]]), float(similarities[index])) for index in best]
+        self._warn_mixed_query(excluded, query_embedding_model)
+        return self._format_vector_query(rows, streaming=False)
 
-        out_ids: list[str] = []
-        out_docs: list[str] = []
-        out_dists: list[float] = []
-        out_metas: list[dict[str, Any]] = []
-
-        for raw_idx in top_indices:
-            idx = int(raw_idx)
-            mid = ids_snap[idx]
-            row = rows_snap.get(mid)
-            if not row:
-                continue
-            sim = max(-1.0, min(1.0, float(sims[idx])))
-            dist = max(0.0, 1.0 - sim)
-            out_ids.append(mid)
-            out_docs.append(row["content"])
-            out_dists.append(dist)
-            out_metas.append(
-                {
-                    "memory_type": row["memory_type"],
-                    "confidence": float(row["confidence"]),
-                    "source_agent": row["source_agent"],
-                    "tags": row["tags"],
-                    "created_at": row["created_at"],
-                    "accessed_at": row["accessed_at"],
-                    "access_count": int(row["access_count"] or 0),
-                    "ttl_days": row["ttl_days"],
-                    "decay_start_at": row["decay_start_at"],
-                    "local_only": 1 if row.get("local_only") else 0,
-                    "embedding_model": row["embedding_model"],
-                    "trust_tier": row.get("trust_tier", "user"),
-                    "quarantined": 1 if row.get("quarantined") else 0,
-                }
+    @staticmethod
+    def _warn_mixed_query(excluded: int, query_embedding_model: Optional[str]) -> None:
+        if excluded and not os.environ.get("MESH_QUIET"):
+            warnings.warn(
+                f"Excluded {excluded} memories from semantic search due to mixed embedding space "
+                f"(query uses '{query_embedding_model}'). Run 'mesh reembed' to re-embed historical memories.",
+                UserWarning, stacklevel=3,
             )
 
-        return {
-            "ids": [out_ids],
-            "documents": [out_docs],
-            "distances": [out_dists],
-            "metadatas": [out_metas],
-        }
+    def _streaming_vector_query(self, vector, n, query_embedding_model):
+        heap: list[_ScoredMemoryID] = []
+        excluded = 0
+        with self._read_connect() as conn:
+            for raw in conn.execute("SELECT id,embedding_model,embedding FROM memories WHERE namespace=?", (self.namespace,)):
+                row = dict(raw)
+                blob = row.pop("embedding")
+                stored_vector = self._stream_row_vector(row, blob, None)
+                if stored_vector is None:
+                    continue
+                if _is_mixed_space(row["embedding_model"], query_embedding_model):
+                    excluded += 1
+                    continue
+                _keep_best_scored_id(heap, float(stored_vector @ vector), row["id"], n)
+            best = sorted(heap, key=lambda item: (-item.score, item.memory_id))
+            ids = [item.memory_id for item in best]
+            metadata = {}
+            for offset in range(0, len(ids), 512):
+                block = ids[offset:offset + 512]
+                placeholders = ",".join("?" for _ in block)
+                raw_rows = conn.execute(
+                    f"SELECT {_MEMORY_COLUMNS},embedding FROM memories WHERE namespace=? AND id IN ({placeholders})",
+                    (self.namespace, *block),
+                )
+                for raw in raw_rows:
+                    data = dict(raw)
+                    blob = data.pop("embedding")
+                    row = self._deserialize_memory_row(data)
+                    self._stream_row_vector(row, blob, None)
+                    metadata[row["id"]] = row
+            rows = [(metadata[item.memory_id], item.score) for item in best]
+        self._warn_mixed_query(excluded, query_embedding_model)
+        return self._format_vector_query(rows, streaming=True)
+
+    @staticmethod
+    def _format_vector_query(rows, *, streaming):
+        ids, documents, distances, metadatas = [], [], [], []
+        for row, score in rows:
+            ids.append(row["id"])
+            documents.append(row["content"])
+            distances.append(max(0.0, 1.0 - max(-1.0, min(1.0, score))))
+            metadatas.append({
+                "memory_type": row["memory_type"], "confidence": float(row["confidence"]),
+                "source_agent": row["source_agent"], "tags": row["tags"],
+                "created_at": row["created_at"], "accessed_at": row["accessed_at"],
+                "access_count": int(row["access_count"] or 0), "ttl_days": row["ttl_days"],
+                "decay_start_at": row["decay_start_at"], "local_only": 1 if row.get("local_only") else 0,
+                "embedding_model": row["embedding_model"], "trust_tier": row.get("trust_tier", "user"),
+                "quarantined": 1 if row.get("quarantined") else 0,
+                "retrieval_mode": "streaming" if streaming else "cached",
+                "retrieval_degradation_reason": "cache_budget" if streaming else None,
+            })
+        return {"ids": [ids], "documents": [documents], "distances": [distances], "metadatas": [metadatas]}
 
     def _fts_lexical_scores(
         self,
         query_text: str,
-        limit: int = 250,
+        limit: int = 128,
         conn: Optional[sqlite3.Connection] = None,
+        *,
+        expected_content_version: Optional[int] = None,
     ) -> dict[str, float]:
         if not self._fts_enabled or is_encryption_enabled() or not query_text or not self.db_path.exists():
             return {}
-
-        _, content_tokens, _ = _extract_search_tokens(query_text)
-        if not content_tokens:
+        _, tokens, _ = _extract_search_tokens(query_text)
+        non_framing = [t for t in tokens if _fast_stem(t) not in _FRAMING_TOKENS]
+        target_tokens = non_framing or tokens
+        clauses = ['"' + tok.replace('"', '""') + '"' for tok in target_tokens[:24] if tok]
+        if not clauses:
             return {}
-
-        non_framing = [t for t in content_tokens if _fast_stem(t) not in _FRAMING_TOKENS]
-        target_tokens = non_framing if non_framing else content_tokens
-        synonym_map = expand_query_tokens(target_tokens)
-
-        safe_clauses: list[str] = []
-        for tok in target_tokens[:12]:
-            if any(c in tok for c in ".-_:/"):
-                parts = [re.sub(r"[^a-zA-Z0-9]", "", p) for p in _PUNCT_SPLIT_RE.split(tok)]
-                parts = [p for p in parts if len(p) >= 2]
-                if len(parts) >= 2:
-                    phrase = " ".join(f'"{p}"' for p in parts)
-                    safe_clauses.append(f"({phrase})")
-                for p in parts:
-                    safe_clauses.append(f'"{p}"*')
-                joined = "".join(parts)
-                if len(joined) >= 3:
-                    safe_clauses.append(f'"{joined}"*')
-            else:
-                clean = re.sub(r"[^a-zA-Z0-9_]", "", tok)
-                if len(clean) >= 2:
-                    safe_clauses.append(f'"{clean}"*')
-                    stem = _fast_stem(clean)
-                    if len(stem) >= 3 and stem != clean:
-                        safe_clauses.append(f'"{stem}"*')
-
-        for tok in target_tokens[:8]:
-            for syn in sorted(synonym_map.get(tok, set()))[:4]:
-                clean_syn = re.sub(r"[^a-zA-Z0-9_]", "", syn)
-                if len(clean_syn) >= 3:
-                    safe_clauses.append(f'"{clean_syn}"*')
-                if len(safe_clauses) >= 32:
-                    break
-
-        if not safe_clauses:
-            return {}
-
-        fts_query = " OR ".join(dict.fromkeys(safe_clauses))
         sql = """
-            SELECT id, bm25(memories_fts, 0.0, 1.0, 0.8, 0.3, 0.2) AS rank_score
+            SELECT memories_fts.id,
+                   bm25(memories_fts, 0.0, 1.0, 0.8, 0.0, 0.0) AS rank_score
             FROM memories_fts
-            WHERE memories_fts MATCH ?
-            ORDER BY rank_score ASC
-            LIMIT ?
+            JOIN memories AS m ON m.id = memories_fts.id
+            WHERE memories_fts MATCH ? AND m.namespace = ?
+              AND m.local_only = 0 AND m.quarantined = 0
+              AND m.content NOT LIKE 'enc:v1:%'
+            ORDER BY rank_score ASC, memories_fts.id ASC LIMIT ?
         """
-        scores: dict[str, float] = {}
+
+        def read_scores(handle):
+            own_transaction = not handle.in_transaction
+            if own_transaction:
+                handle.execute("BEGIN")
+            try:
+                version = self._read_content_version_locked(handle)
+                if expected_content_version is not None and version != expected_content_version:
+                    return {}
+                rows = handle.execute(sql, (" OR ".join(dict.fromkeys(clauses)), self.namespace, limit)).fetchall()
+                return {str(mid): max(0.0, -float(score)) for mid, score in rows}
+            finally:
+                if own_transaction and handle.in_transaction:
+                    handle.rollback()
+
         try:
             if conn is not None:
-                rows = conn.execute(sql, (fts_query, limit)).fetchall()
-            else:
-                with _CACHE_LOCK:
-                    with self._connect() as own_conn:
-                        rows = own_conn.execute(sql, (fts_query, limit)).fetchall()
-            if not rows:
-                return {}
-            raw_positives = [max(0.0, -float(r[1])) for r in rows]
-            max_bm25 = max(raw_positives) if raw_positives else 0.0
-            if max_bm25 <= 1e-9:
-                for rank_idx, (mid, _) in enumerate(rows):
-                    scores[str(mid)] = round(max(0.35, 0.85 - 0.1 * rank_idx), 4)
-                return scores
-            for (mid, _), pos in zip(rows, raw_positives):
-                rel_score = pos / max_bm25
-                abs_factor = min(1.0, pos / (pos + 2.0))
-                scores[str(mid)] = round(0.65 * rel_score + 0.35 * abs_factor, 4)
-        except Exception:
+                return read_scores(conn)
+            with self._read_connect() as own_conn:
+                return read_scores(own_conn)
+        except sqlite3.DatabaseError:
             return {}
-        return scores
 
     def _score_candidate_lexical(
         self,
@@ -3725,7 +5394,6 @@ class MeshStore:
             return fts_score, 0.0, 0.0, "semantic"
 
         lex = cached_lex if cached_lex is not None else _build_row_lexical_entry(doc_content, doc_tags)
-        doc_norm = lex["doc_norm"]
         doc_len = lex["doc_len"]
         tag_tokens = lex["tag_tokens"]
         tag_stems = lex["tag_stems"]
@@ -3751,7 +5419,7 @@ class MeshStore:
 
             tok_compact = _TOK_COMPACT_CACHE.get(tok)
             if tok_compact is None:
-                tok_compact = re.sub(r"[^a-z0-9]", "", tok)
+                tok_compact = _PUNCT_SPLIT_RE.sub("", tok)
                 if len(_TOK_COMPACT_CACHE) > 4096:
                     _TOK_COMPACT_CACHE.clear()
                 _TOK_COMPACT_CACHE[tok] = tok_compact
@@ -3802,7 +5470,7 @@ class MeshStore:
 
         phrase_bonus = 0.0
         if len(q_content_tokens) >= 2 and exact_stem_coverage > 0.0:
-            if len(q_norm_phrase) >= 4 and _phrase_pattern(q_norm_phrase).search(doc_norm):
+            if len(q_norm_phrase) >= 4 and _phrase_pattern(q_norm_phrase).search(_clean_possessives(doc_content)):
                 phrase_bonus = 0.25
             elif len(q_compact) >= 6 and q_compact in all_doc_tokens:
                 phrase_bonus = 0.22
@@ -3837,6 +5505,399 @@ class MeshStore:
             reason,
         )
 
+    def _query_eligible_ids(
+        self, cache, *, memory_type, tags, source_agent, include_private,
+        include_quarantined, include_stale, min_confidence, now,
+    ):
+        selectors = []
+        if memory_type:
+            selectors.append(cache.type_ids.get(memory_type.strip().lower(), set()))
+        if source_agent:
+            selectors.append(cache.agent_ids.get(source_agent, set()))
+        for tag in tags or []:
+            selectors.append(cache.tag_ids.get(str(tag).strip().lower(), set()))
+        if selectors:
+            selectors.sort(key=len)
+            eligible = set(selectors[0])
+            for members in selectors[1:]:
+                eligible.intersection_update(members)
+        else:
+            eligible = cache.all_ids
+        denied = tuple(
+            members for members, allowed in (
+                (cache.private_ids, include_private), (cache.quarantine_ids, include_quarantined),
+            ) if not allowed and members
+        )
+        if denied:
+            known_size = None
+            if eligible is cache.all_ids:
+                if not include_private and not include_quarantined:
+                    known_size = cache.visible_id_count
+                elif not include_private:
+                    known_size = len(cache.all_ids) - len(cache.private_ids)
+                else:
+                    known_size = len(cache.all_ids) - len(cache.quarantine_ids)
+            eligible = _QueryIds(eligible, denied, size=known_size)
+        if not include_stale or min_confidence > 0.0:
+            eligible = {
+                mid for mid in eligible
+                if (state := _compute_row_effective_confidence(cache.rows_by_id[mid], now=now))[0] >= min_confidence
+                and (include_stale or not state[1])
+            }
+        return eligible
+
+    @staticmethod
+    def _cached_bm25(lex, q_stems, q_synonyms, idf_map, avg_doc_len):
+        frequency = lex["term_freq"]
+        normalizer = 1.2 * (0.25 + 0.75 * lex["doc_len"] / max(1.0, avg_doc_len))
+        score = 0.0
+        for stem, alternatives in q_synonyms.items():
+            tf = frequency.get(stem, 0)
+            if not tf:
+                tf = 0.25 * max((frequency.get(s, 0) for s in alternatives), default=0)
+            if tf:
+                score += idf_map.get(stem, 0.0) * (tf * 2.2 / (tf + normalizer))
+        return score
+
+    def get_indexing_status(self, memory_ids: list[str], *, include_private: bool = True) -> dict[str, dict[str, Any]]:
+        if not isinstance(memory_ids, (list, tuple)) or len(memory_ids) > 128:
+            raise ValueError("Indexing status accepts at most 128 memory IDs")
+        ids = list(dict.fromkeys(validate_memory_id(mid) for mid in memory_ids))
+        if not ids or not self.db_path.exists():
+            return {}
+        placeholders = ",".join("?" for _ in ids)
+        with self._read_connect() as conn:
+            rows = conn.execute(
+                f"SELECT id, revision, embedding_model, local_only, embedding IS NOT NULL, incarnation FROM memories WHERE namespace=? AND id IN ({placeholders})",
+                (self.namespace, *ids),
+            ).fetchall()
+        return {
+            str(mid): {"id": str(mid), "revision": int(revision), "incarnation": str(incarnation), "store_generation": self.store_generation, "embedding_model": str(model), "indexing_state": "indexed" if has_vector and model not in ("hash-384", "needs-reembed", "unknown", None) else "pending"}
+            for mid, revision, model, private, has_vector, incarnation in rows
+            if include_private or not private
+        }
+
+    @_retry_cache_snapshot
+    def revalidate_query_results(
+        self, results: list[dict[str, Any]], *, include_private: bool = False,
+        include_quarantined: bool = False, include_stale: bool = True,
+        min_confidence: float = 0.0, memory_type: Optional[str] = None,
+        tags: Optional[list[str]] = None, source_agent: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        """Recheck visibility and complete content identity after slow candidate processing."""
+        if not results or not self.db_path.exists():
+            return []
+        now = _utc_now()
+        tag_set = {str(tag).strip().lower() for tag in tags or []}
+        accepted = []
+        where, params = self._query_sql_filter(
+            memory_type=memory_type, source_agent=source_agent,
+            include_private=include_private, include_quarantined=include_quarantined,
+        )
+        columns = "id,revision,incarnation,(SELECT value FROM mesh_meta WHERE key='store_generation') AS store_generation,tags,confidence,ttl_days,decay_start_at,created_at"
+        with self._read_connect() as conn:
+            for offset in range(0, len(results), 512):
+                block = results[offset:offset + 512]
+                ids = [result.get("id") for result in block if isinstance(result.get("id"), str)]
+                if not ids:
+                    continue
+                placeholders = ",".join("?" for _ in ids)
+                rows = conn.execute(
+                    f"SELECT {columns} FROM memories WHERE {where} AND id IN ({placeholders})",
+                    (*params, *ids),
+                )
+                metadata = {row["id"]: dict(row) for row in rows}
+                for result in block:
+                    row = metadata.get(result.get("id"))
+                    if row is None or type(result.get("revision")) is not int or row["revision"] != result["revision"]:
+                        continue
+                    if row["incarnation"] != result.get("incarnation") or row["store_generation"] != result.get("store_generation"):
+                        continue
+                    if tag_set:
+                        current_tags = _parse_tags_json(decrypt_text_if_encrypted(row.get("tags") or "[]"))
+                        if not tag_set.issubset(str(tag).lower() for tag in current_tags):
+                            continue
+                    confidence, stale = _compute_row_effective_confidence(row, now=now)
+                    if confidence < min_confidence or (stale and not include_stale):
+                        continue
+                    accepted.append(result)
+        return accepted
+
+    def _query_sql_filter(
+        self, *, memory_type: Optional[str] = None, source_agent: Optional[str] = None,
+        include_private: bool = False, include_quarantined: bool = False,
+    ) -> tuple[str, tuple[Any, ...]]:
+        clauses = ["namespace=?"]
+        params: list[Any] = [self.namespace]
+        if not include_private:
+            clauses.append("local_only=0")
+        if not include_quarantined:
+            clauses.append("quarantined=0")
+        if memory_type:
+            clauses.append("lower(memory_type)=?")
+            params.append(memory_type.strip().lower())
+        if source_agent:
+            clauses.append("source_agent=?")
+            params.append(source_agent)
+        return " AND ".join(clauses), tuple(params)
+
+    @staticmethod
+    def _stream_row_eligible(row, *, tag_set, include_stale, min_confidence, now):
+        if tag_set and not tag_set.issubset(str(tag).lower() for tag in row["tags_list"]):
+            return False
+        if not include_stale or min_confidence > 0.0:
+            confidence, stale = _compute_row_effective_confidence(row, now=now)
+            if confidence < min_confidence or (stale and not include_stale):
+                return False
+        return True
+
+    @staticmethod
+    def _stream_row_vector(row, blob, query_embedding_model):
+        model = str(row.get("embedding_model") or "unknown")
+        if not blob:
+            row["embedding_model"] = "needs-reembed"
+            return None
+        if query_embedding_model is not None and model not in (query_embedding_model, "unknown"):
+            return None
+        vector = _blob_to_vector(blob)
+        if vector.ndim != 1 or vector.size != EMBEDDING_DIM or not np.isfinite(vector).all():
+            row["embedding_model"] = "needs-reembed"
+            return None
+        if model == "unknown":
+            model = "hash-384" if np.all(vector[368:] == 0.0) and np.count_nonzero(vector == 0.0) >= 16 else "onnx-minilm-l6-v2"
+            row["embedding_model"] = model
+        return vector if query_embedding_model is None or model == query_embedding_model else None
+
+    @_retry_cache_snapshot
+    def exact_content_ids(
+        self, content: str, *, include_private: bool = True,
+        include_quarantined: bool = False, source_agent: Optional[str] = None,
+        limit: int = 16,
+    ) -> list[str]:
+        """Backend-independent equality lookup over protected ephemeral cache data."""
+        if not self.db_path.exists():
+            return []
+        content_key = _content_identity(content)
+        try:
+            cache = self._get_vector_cache()
+        except CacheBudgetExceededError:
+            where, params = self._query_sql_filter(
+                source_agent=source_agent, include_private=include_private,
+                include_quarantined=include_quarantined,
+            )
+            with self._read_connect() as conn:
+                rows = conn.execute(f"SELECT id,content FROM memories WHERE {where}", params)
+                return heapq.nsmallest(
+                    max(1, min(limit, 128)),
+                    (str(row["id"]) for row in rows if _content_identity(decrypt_text_if_encrypted(row["content"])) == content_key),
+                )
+        with cache.read_snapshot():
+            return heapq.nsmallest(
+                max(1, min(limit, 128)),
+                (
+                    mid for mid in cache.content_ids.get(content_key, set())
+                    if (include_private or mid not in cache.private_ids)
+                    and (include_quarantined or mid not in cache.quarantine_ids)
+                    and (source_agent is None or mid in cache.agent_ids.get(source_agent, set()))
+                ),
+            )
+
+    def _hybrid_candidate(self, row, lex, sem, spec, idf_map, total_query_idf, query_embedding_model):
+        lex_score, _, _, reason = self._score_candidate_lexical(
+            q_content_tokens=spec.tokens, q_stems=spec.stems, q_norm_phrase=spec.phrase,
+            q_compact=spec.compact, doc_content=row["content"], doc_tags=row["tags_list"],
+            idf_map=idf_map, total_query_idf=total_query_idf,
+            fts_score=0.0, q_synonyms=spec.synonyms, cached_lex=lex,
+        )
+        literal_match = bool(spec.literals) and all(token in lex["all_doc_tokens"] for token in spec.literals)
+        if spec.identifier_only and not literal_match:
+            return None
+        sem = max(0.0, min(1.0, sem))
+        lexical_weight = 0.55 if query_embedding_model == "hash-384" else 0.25
+        similarity = sem + (1.0 - sem) * lexical_weight * lex_score
+        if literal_match and spec.identifier_only:
+            similarity = max(similarity, 0.90)
+        metadata = {key: value for key, value in row.items() if not key.startswith("_")}
+        return metadata, sem, lex_score, similarity, reason, literal_match
+
+    @staticmethod
+    def _rank_hybrid_results(candidate_rows, dense_scores, bm25_scores, exact_best, spec, n, *, streaming=False):
+        rrf_scores = Counter()
+        channels = (
+            (sorted(dense_scores, key=lambda mid: (-dense_scores[mid], mid)), 1.0),
+            (sorted(bm25_scores, key=lambda mid: (-bm25_scores[mid], mid)), 0.9),
+            (exact_best, 1.5),
+        )
+        for ranked, weight in channels:
+            for rank, mid in enumerate(ranked, 1):
+                rrf_scores[mid] += weight / (60.0 + rank)
+        results = []
+        for mid, (row, sem, lex_score, similarity, reason, literal_match) in candidate_rows.items():
+            rank_score = float(rrf_scores[mid]) if spec.mode == "rrf" else similarity
+            excerpt, span_start, span_end = _query_excerpt(row["content"], spec.tokens)
+            row.update({
+                "semantic_similarity": round(sem, 4),
+                "lexical_score": round(lex_score, 4),
+                "bm25_score": round(float(bm25_scores.get(mid, 0.0)), 6),
+                "similarity": round(similarity, 4),
+                "rank_score": round(rank_score, 8),
+                "ranking_mode": spec.mode,
+                "retrieval_mode": "streaming" if streaming else "cached",
+                "retrieval_degradation_reason": "cache_budget" if streaming else None,
+                "candidate_count": len(candidate_rows),
+                "match_reason": "exact_identifier" if literal_match else reason,
+                "snippet": _make_snippet(excerpt),
+                "supporting_spans": [{"memory_id": mid, "revision": int(row.get("revision", 1)), "start": span_start, "end": span_end, "text": excerpt}],
+            })
+            results.append(row)
+        results.sort(key=lambda row: (-row["rank_score"], -row["similarity"], -row["semantic_similarity"], row["id"]))
+        return results[:n]
+
+    def _streaming_hybrid_query(
+        self, spec, *, n, memory_type, tags, source_agent, include_private,
+        include_quarantined, include_stale, min_confidence, now, query_embedding_model,
+    ):
+        """Consider every authorized row while retaining only bounded candidates."""
+        where, params = self._query_sql_filter(
+            memory_type=memory_type, source_agent=source_agent,
+            include_private=include_private, include_quarantined=include_quarantined,
+        )
+        tag_set = {str(tag).strip().lower() for tag in tags or []}
+        # Empty-vector lookups (including guarded deduplication) do not need
+        # bodies or lexical statistics for every row in an oversized namespace.
+        if not (spec.tokens or spec.literals or spec.phrase or spec.compact):
+            vector_where = where + " AND embedding IS NOT NULL"
+            vector_params = params
+            if query_embedding_model is not None:
+                vector_where += " AND COALESCE(NULLIF(embedding_model,''),'unknown') IN (?,'unknown')"
+                vector_params = (*params, query_embedding_model)
+            columns = "id,embedding_model,embedding"
+            if tag_set:
+                columns += ",tags"
+            if not include_stale or min_confidence > 0.0:
+                columns += ",confidence,ttl_days,decay_start_at,created_at"
+            dense_heap: list[_ScoredMemoryID] = []
+            candidate_rows = {}
+            with self._read_connect() as conn:
+                for raw in conn.execute(f"SELECT {columns} FROM memories WHERE {vector_where}", vector_params):
+                    row = dict(raw)
+                    blob = row.pop("embedding")
+                    row["tags_list"] = _parse_tags_json(decrypt_text_if_encrypted(row.get("tags") or "[]")) if tag_set else []
+                    if not self._stream_row_eligible(row, tag_set=tag_set, include_stale=include_stale, min_confidence=min_confidence, now=now):
+                        continue
+                    vector = self._stream_row_vector(row, blob, query_embedding_model)
+                    if vector is not None:
+                        _keep_best_scored_id(dense_heap, float(vector @ spec.vector), row["id"], spec.pool)
+                dense_scores = {item.memory_id: item.score for item in dense_heap}
+                candidate_ids = sorted(dense_scores)
+                for offset in range(0, len(candidate_ids), 512):
+                    block = candidate_ids[offset:offset + 512]
+                    placeholders = ",".join("?" for _ in block)
+                    rows = conn.execute(
+                        f"SELECT {_MEMORY_COLUMNS},embedding FROM memories WHERE {where} AND id IN ({placeholders})",
+                        (*params, *block),
+                    )
+                    for raw in rows:
+                        data = dict(raw)
+                        blob = data.pop("embedding", None)
+                        row = self._deserialize_memory_row(data)
+                        if not self._stream_row_eligible(row, tag_set=tag_set, include_stale=include_stale, min_confidence=min_confidence, now=now):
+                            continue
+                        if self._stream_row_vector(row, blob, query_embedding_model) is None:
+                            continue
+                        candidate = self._hybrid_candidate(row, {}, dense_scores[row["id"]], spec, {}, 1.0, query_embedding_model)
+                        if candidate is not None:
+                            candidate_rows[row["id"]] = candidate
+            results = self._rank_hybrid_results(candidate_rows, dense_scores, {}, [], spec, n, streaming=True)
+            # Revalidate current identity and policy after releasing the snapshot.
+            # TTL/confidence eligibility already used the caller's reference time.
+            return self.revalidate_query_results(
+                results, include_private=include_private, include_quarantined=include_quarantined,
+                memory_type=memory_type, tags=tags, source_agent=source_agent,
+            )
+        query_stems = set(spec.stems)
+        document_frequency = dict.fromkeys(query_stems, 0)
+        total_docs = 0
+        total_doc_len = 0
+        dense_heap: list[_ScoredMemoryID] = []
+        bm25_heap: list[_ScoredMemoryID] = []
+        exact_heap: list[_ScoredMemoryID] = []
+
+        def eligible_rows(conn, *, with_vectors):
+            columns = _MEMORY_COLUMNS + (", embedding" if with_vectors else "")
+            for raw in conn.execute(f"SELECT {columns} FROM memories WHERE {where}", params):
+                data = dict(raw)
+                blob = data.pop("embedding", None)
+                row = self._deserialize_memory_row(data)
+                if self._stream_row_eligible(row, tag_set=tag_set, include_stale=include_stale, min_confidence=min_confidence, now=now):
+                    yield row, blob
+
+        # Two passes share one dedicated reader snapshot. No ID set, metadata
+        # dictionary, lexical index or duplicate matrix grows with corpus size.
+        with self._read_connect() as conn:
+            for row, blob in eligible_rows(conn, with_vectors=True):
+                total_docs += 1
+                if spec.tokens:
+                    doc_len, df_stems = _build_row_lexical_statistics(row["content"], row["tags_list"])
+                    total_doc_len += doc_len
+                    for stem in query_stems:
+                        if stem in df_stems:
+                            document_frequency[stem] += 1
+                vector = self._stream_row_vector(row, blob, query_embedding_model)
+                if vector is not None:
+                    _keep_best_scored_id(dense_heap, float(vector @ spec.vector), row["id"], spec.pool)
+            if not total_docs:
+                return []
+            avg_doc_len = total_doc_len / total_docs
+            has_specific = any(stem not in _FRAMING_TOKENS for stem in spec.stems)
+            idf_map = {}
+            for stem, df in document_frequency.items():
+                weight = math.log1p((total_docs - df + 0.5) / (df + 0.5))
+                if has_specific and stem in _FRAMING_TOKENS:
+                    weight *= 0.12
+                idf_map[stem] = max(0.001, weight)
+            total_query_idf = sum(idf_map.get(stem, 0.0) for stem in spec.stems) or 1.0
+            if spec.tokens or spec.literals:
+                for row, _ in eligible_rows(conn, with_vectors=False):
+                    lex = _build_row_lexical_entry(row["content"], row["tags_list"])
+                    score = self._cached_bm25(lex, spec.stems, spec.stem_synonyms, idf_map, avg_doc_len)
+                    if score > 0.0:
+                        _keep_best_scored_id(bm25_heap, score, row["id"], spec.pool)
+                    if any(token in lex["indexed_tokens"] for token in spec.literals):
+                        _keep_best_scored_id(exact_heap, score, row["id"], spec.pool)
+            dense_scores = {item.memory_id: item.score for item in dense_heap}
+            bm25_scores = {item.memory_id: item.score for item in bm25_heap}
+            exact_best = [item.memory_id for item in sorted(exact_heap, key=lambda item: (-item.score, item.memory_id))]
+            candidate_ids = sorted(set(dense_scores) | set(bm25_scores) | set(exact_best))
+            candidate_rows = {}
+            for offset in range(0, len(candidate_ids), 512):
+                block = candidate_ids[offset:offset + 512]
+                placeholders = ",".join("?" for _ in block)
+                rows = conn.execute(
+                    f"SELECT {_MEMORY_COLUMNS},embedding FROM memories WHERE {where} AND id IN ({placeholders})",
+                    (*params, *block),
+                )
+                for raw in rows:
+                    data = dict(raw)
+                    blob = data.pop("embedding", None)
+                    row = self._deserialize_memory_row(data)
+                    vector = self._stream_row_vector(row, blob, query_embedding_model)
+                    sem = dense_scores.get(row["id"])
+                    if sem is None:
+                        if vector is not None:
+                            sem = float(vector @ spec.vector)
+                        elif query_embedding_model == "hash-384":
+                            from .memory import _hash_embed_384
+                            sem = float(_hash_embed_384(row["content"]) @ spec.vector)
+                        else:
+                            sem = 0.0
+                    lex = _build_row_lexical_entry(row["content"], row["tags_list"])
+                    candidate = self._hybrid_candidate(row, lex, sem, spec, idf_map, total_query_idf, query_embedding_model)
+                    if candidate is not None:
+                        candidate_rows[row["id"]] = candidate
+        return self._rank_hybrid_results(candidate_rows, dense_scores, bm25_scores, exact_best, spec, n, streaming=True)
+
+    @_retry_cache_snapshot
     def hybrid_query(
         self,
         query_text: str,
@@ -3852,246 +5913,204 @@ class MeshStore:
         query_embedding_model: Optional[str] = None,
         include_quarantined: bool = False,
     ) -> list[dict[str, Any]]:
-        """
-        Execute a 5-stage calibrated hybrid retrieval with pre-cached lexical IDF.
-        Finding S8: Excludes `quarantined=True` memories by default (`include_quarantined=False`).
-        """
+        """Independent, policy-filtered lexical/exact/dense candidate retrieval."""
         if not self.db_path.exists() or n <= 0:
             return []
+        if type(n) is not int or n > 1000:
+            raise ValueError("n must be an integer between 1 and 1000")
         self._maybe_lazy_flush_telemetry()
         q_vec = _normalize_vector(embedding, enforce_dim=False)
-        cache = self._get_vector_cache()
-        use_hash_sim = False
-        with _CACHE_LOCK:
-            ids_snap = list(cache.ids)
-            mat = cache.matrix
-            if (query_embedding_model == "hash-384" or mat is None) and cache._hash_matrix_buf is not None and len(ids_snap) > 0 and q_vec.ndim == 1 and q_vec.shape[0] == 384:
-                mat = cache._hash_matrix_buf[: len(ids_snap)]
-                use_hash_sim = True
-            if mat is None or len(ids_snap) == 0 or q_vec.ndim != 1 or q_vec.shape[0] != mat.shape[1]:
-                return []
-            sims = mat @ q_vec
-            rows_snap = dict(cache.rows_by_id)
-            lex_snap = dict(cache.lexical_by_id)
-            stem_df_snap = dict(cache.stem_df)
-
-        type_filter = memory_type.strip().lower() if memory_type else None
-        filter_tags = {t.strip().lower() for t in (tags or []) if t.strip()}
+        if q_vec.ndim != 1 or q_vec.size != EMBEDDING_DIM or not np.isfinite(q_vec).all():
+            raise ValueError(f"query embedding must contain {EMBEDDING_DIM} values")
+        mode = os.environ.get("MESH_RECALL_FUSION", "calibrated").strip().lower()
+        if mode not in ("calibrated", "rrf"):
+            raise ValueError("MESH_RECALL_FUSION must be calibrated or rrf")
+        pool = max(n, env_int("MESH_RECALL_CANDIDATES", 96, minimum=16, maximum=512))
         ref_now = now if now is not None else _utc_now()
-
-        masked_indices: list[int] = []
-        masked_mid_set: set[str] = set()
-        _no_row_filters = (
-            not type_filter
-            and not source_agent
-            and not filter_tags
-            and include_private
-            and include_stale
-            and min_confidence <= 0.0
-        )
-        if _no_row_filters:
-            # Fast path: only the quarantine flag can exclude a row (comprehensions run ~2x faster than the
-            # per-row append loop; same rows, same order).
-            if include_quarantined:
-                masked_indices = [idx for idx, mid in enumerate(ids_snap) if mid in rows_snap]
-            else:
-                masked_indices = [
-                    idx
-                    for idx, mid in enumerate(ids_snap)
-                    if (_r := rows_snap.get(mid)) is not None and not _r.get("quarantined")
-                ]
-            masked_mid_set = {ids_snap[idx] for idx in masked_indices}
-        else:
-            for idx, mid in enumerate(ids_snap):
-                cached_row = rows_snap.get(mid)
-                if cached_row is None:
-                    continue
-                if not include_quarantined and cached_row.get("quarantined"):
-                    continue
-                if type_filter and cached_row["memory_type"].lower() != type_filter:
-                    continue
-                if source_agent and cached_row["source_agent"] != source_agent:
-                    continue
-                if not include_private and cached_row.get("local_only"):
-                    continue
-                if filter_tags:
-                    parsed_tags = cached_row.get("tags_list") or []
-                    mem_tags_lower = {str(t).lower() for t in parsed_tags}
-                    if not filter_tags.issubset(mem_tags_lower):
-                        continue
-                if not include_stale or min_confidence > 0.0:
-                    eff_conf, is_stale = _compute_row_effective_confidence(cached_row, now=ref_now)
-                    if not include_stale and is_stale:
-                        continue
-                    if eff_conf < min_confidence:
-                        continue
-                masked_indices.append(idx)
-                masked_mid_set.add(mid)
-
-        if not masked_indices:
-            return []
-
         norm_q = _clean_possessives(query_text)
-        raw_q_tokens = [t.strip("._:-/") for t in _TOKEN_RE.findall(norm_q)]
-        raw_q_tokens = [t for t in raw_q_tokens if len(t) >= 2 and t not in _LEXICAL_STOPWORDS]
-        if not raw_q_tokens:
-            _, raw_q_tokens, _ = _extract_search_tokens(query_text)
-        q_content_tokens = list(dict.fromkeys(raw_q_tokens))
-        q_stems = [_fast_stem(t) for t in q_content_tokens]
-        q_synonyms = expand_query_tokens(q_content_tokens)
-        q_norm_phrase = " ".join(_WORD_RE.findall(norm_q))
-        q_compact = re.sub(r"[^a-z0-9]", "", q_norm_phrase)
-
-        # Counter.update() counts in C; identical totals to the old per-id Python loop
-        # (+1.0 per exact token hit, +0.5 per synonym hit, masked rows only).
-        from collections import Counter as _HitCounter
-
-        _exact_hits: _HitCounter[str] = _HitCounter()
-        for tok in q_content_tokens:
-            t_hits = cache.token_to_ids.get(tok)
-            if t_hits:
-                _exact_hits.update(t_hits)
-        _syn_hits: _HitCounter[str] = _HitCounter()
-        for syn_set in q_synonyms.values():
-            for syn in syn_set:
-                s_hits = cache.token_to_ids.get(syn)
-                if s_hits:
-                    _syn_hits.update(s_hits)
-        lexical_map: dict[str, float] = {
-            mid: float(cnt) for mid, cnt in _exact_hits.items() if mid in masked_mid_set
+        _, q_tokens, _ = _extract_search_tokens(query_text)
+        q_stems = [_fast_stem(t) for t in q_tokens]
+        q_synonyms = expand_query_tokens(q_tokens)
+        stem_synonyms = {
+            stem: {_fast_stem(s) for s in q_synonyms.get(tok, set())}
+            for tok, stem in zip(q_tokens, q_stems)
         }
-        for mid, cnt in _syn_hits.items():
-            if mid in masked_mid_set:
-                lexical_map[mid] = lexical_map.get(mid, 0.0) + 0.5 * cnt
-        if lexical_map:
-            max_hits = max(lexical_map.values())
-            lexical_map = {
-                mid: round(0.65 * (hits / max_hits) + 0.35 * (hits / (hits + 1.0)), 4)
-                for mid, hits in lexical_map.items()
-            }
-
-        masked_count = len(masked_indices)
-        k = min(masked_count, max(n * 4, 30))
-        if masked_count > k:
-            masked_arr = np.asarray(masked_indices, dtype=np.int64)
-            masked_sims = sims[masked_arr]
-            top_local = np.argpartition(-masked_sims, k - 1)[:k]
-            candidate_mid_set = {ids_snap[int(masked_arr[i])] for i in top_local}
-            candidate_mid_set.update(mid for mid in lexical_map if mid in masked_mid_set)
-            with _CACHE_LOCK:
-                for s in q_stems:
-                    s_hits = cache.stem_to_ids.get(s)
-                    if s_hits:
-                        candidate_mid_set.update(s_hits & masked_mid_set)
-            eval_indices = [idx for idx in masked_indices if ids_snap[idx] in candidate_mid_set]
-        else:
-            eval_indices = masked_indices
-
-        # df-aware pruning: terms such as "port"/"architecture" occur in nearly every row,
-        # so the union above can be the whole namespace. Rank by (lexical hits, semantic sim),
-        # keep the best few dozen plus every row that matches a RARE query stem, and only
-        # run the expensive per-row lexical scorer on those.
-        _prune_cap = max(n * 2, 48)
-        if len(eval_indices) > _prune_cap:
-            _must: set[str] = set()
-            with _CACHE_LOCK:
-                for _s in set(q_stems):
-                    if 0 < stem_df_snap.get(_s, 0) <= 24:
-                        _hits = cache.stem_to_ids.get(_s)
-                        if _hits:
-                            _must.update(_hits & masked_mid_set)
-            _ev = np.asarray(eval_indices, dtype=np.int64)
-            _lex_part = np.fromiter(
-                (lexical_map.get(ids_snap[_i], 0.0) for _i in eval_indices),
-                dtype=np.float64,
-                count=len(eval_indices),
+        q_phrase = " ".join(_WORD_RE.findall(norm_q))
+        q_compact = _PUNCT_SPLIT_RE.sub("", q_phrase)
+        raw_query_tokens = [t.strip("._:-/\\") for t in _TOKEN_RE.findall(norm_q)]
+        useful_raw_tokens = [t for t in raw_query_tokens if t and t not in _LEXICAL_STOPWORDS]
+        literal_tokens = [
+            t for t in useful_raw_tokens
+            if t.isdigit() or any(c in t for c in "._:/\\-")
+            or (any(c.isdigit() for c in t) and any(c.isalpha() for c in t))
+        ]
+        identifier_only = bool(literal_tokens) and len(useful_raw_tokens) == 1
+        if not query_text:
+            pool = n
+        spec = _HybridQuerySpec(q_vec, q_tokens, q_stems, q_synonyms, stem_synonyms, q_phrase, q_compact, literal_tokens, identifier_only, pool, mode)
+        try:
+            cache = self._get_vector_cache()
+        except CacheBudgetExceededError:
+            return self._streaming_hybrid_query(
+                spec, n=n, memory_type=memory_type, tags=tags, source_agent=source_agent,
+                include_private=include_private, include_quarantined=include_quarantined,
+                include_stale=include_stale, min_confidence=min_confidence, now=ref_now,
+                query_embedding_model=query_embedding_model,
             )
-            _rank = 0.6 * _lex_part + 0.4 * np.clip(sims[_ev].astype(np.float64), 0.0, 1.0)
-            _top = np.argpartition(-_rank, _prune_cap - 1)[:_prune_cap]
-            _keep = {eval_indices[int(_i)] for _i in _top}
-            eval_indices = [_i for _i in eval_indices if _i in _keep or ids_snap[_i] in _must]
-
-        total_docs = max(1, len(rows_snap))
-        has_specific_tokens = any(s not in _FRAMING_TOKENS for s in q_stems)
-        idf_map: dict[str, float] = {}
-        if q_stems:
-            for s in set(q_stems):
-                df = stem_df_snap.get(s, 0)
-                raw_idf = float(np.log(1.0 + (total_docs - df + 0.5) / (df + 0.5)))
-                if has_specific_tokens and s in _FRAMING_TOKENS:
-                    raw_idf *= 0.12
-                idf_map[s] = max(0.05, raw_idf)
-
-        total_query_idf = sum(idf_map.get(s, 1.0) for s in q_stems) or 1.0
-
-        scored_candidates: list[dict[str, Any]] = []
-        max_specific_cov_in_pool = 0.0
-
-        for idx in eval_indices:
-            mid = ids_snap[idx]
-            cached_row = rows_snap.get(mid)
-            if cached_row is None:
-                continue
-            parsed_tags = cached_row.get("tags_list") or []
-
-            mixed_space = False if use_hash_sim else _is_mixed_space(cached_row.get("embedding_model"), query_embedding_model)
-            sem_sim = 0.0 if mixed_space else max(0.0, min(1.0, float(sims[idx])))
-            fts_score = lexical_map.get(mid, 0.0)
-            lex_score, specific_cov, exact_stem_cov, match_reason = self._score_candidate_lexical(
-                q_content_tokens=q_content_tokens,
-                q_stems=q_stems,
-                q_norm_phrase=q_norm_phrase,
-                q_compact=q_compact,
-                doc_content=cached_row["content"],
-                doc_tags=parsed_tags,
-                idf_map=idf_map,
-                total_query_idf=total_query_idf,
-                fts_score=fts_score,
-                q_synonyms=q_synonyms,
-                cached_lex=lex_snap.get(mid),
+        with cache.read_snapshot():
+            eligible = self._query_eligible_ids(
+                cache, memory_type=memory_type, tags=tags, source_agent=source_agent,
+                include_private=include_private, include_quarantined=include_quarantined,
+                include_stale=include_stale, min_confidence=min_confidence, now=ref_now,
             )
-            if specific_cov > max_specific_cov_in_pool:
-                max_specific_cov_in_pool = specific_cov
+            if not eligible:
+                return []
+            version = cache.content_version
+            # FTS5's corpus statistics cannot be scoped by a WHERE predicate. Its
+            # native ranks are safe only when every indexed public row is eligible.
+            use_native_fts = (
+                not is_encryption_enabled()
+                and not memory_type and not tags and not source_agent
+                and include_stale and min_confidence <= 0.0
+                and (not include_private or not cache.private_ids)
+                and (not include_quarantined or not cache.quarantine_ids)
+            )
+        native_scores = self._fts_lexical_scores(
+            query_text, limit=pool, expected_content_version=version,
+        ) if use_native_fts else {}
 
-            row_dict = dict(cached_row)
-            row_dict["tags_list"] = parsed_tags
-            row_dict["local_only"] = bool(cached_row.get("local_only", False))
-            row_dict["semantic_similarity"] = round(sem_sim, 4)
-            row_dict["lexical_score"] = lex_score
-            row_dict["_specific_cov"] = specific_cov
-            row_dict["_exact_stem_cov"] = exact_stem_cov
-            row_dict["match_reason"] = match_reason
-            row_dict["snippet"] = _make_snippet(cached_row["content"])
-            scored_candidates.append(row_dict)
-
-        if not scored_candidates:
-            return []
-
-        for item in scored_candidates:
-            sem_sim = item["semantic_similarity"]
-            lex_score = item["lexical_score"]
-            specific_cov = item.pop("_specific_cov", 0.0)
-            exact_stem_cov = item.pop("_exact_stem_cov", 0.0)
-            if exact_stem_cov > 0.0:
-                lexical_floor = 0.78 * exact_stem_cov + 0.14 * lex_score + 0.08 * sem_sim
-                boosted_sem = sem_sim + (1.0 - sem_sim) * (0.58 * lex_score + 0.25 * exact_stem_cov)
-                hybrid_sim = min(1.0, max(lexical_floor, boosted_sem))
-            elif specific_cov > 0.0:
-                hybrid_sim = min(1.0, sem_sim + (1.0 - sem_sim) * (0.42 * lex_score + 0.18 * specific_cov))
+        with cache.read_snapshot():
+            eligible = self._query_eligible_ids(
+                cache, memory_type=memory_type, tags=tags, source_agent=source_agent,
+                include_private=include_private, include_quarantined=include_quarantined,
+                include_stale=include_stale, min_confidence=min_confidence, now=ref_now,
+            )
+            if not eligible:
+                return []
+            if cache.content_version != version:
+                native_scores = {}
+            native_scores = {mid: score for mid, score in native_scores.items() if mid in eligible}
+            total_docs = len(eligible)
+            if not memory_type and not tags and not source_agent and include_stale and min_confidence <= 0.0 and not include_private and not include_quarantined:
+                total_doc_len = cache.visible_doc_len_total
+            elif eligible is cache.all_ids:
+                total_doc_len = cache.doc_len_total
+            elif isinstance(eligible, _QueryIds) and eligible.base is cache.all_ids:
+                total_doc_len = cache.doc_len_total - sum(
+                    cache.lexical_by_id[mid]["doc_len"] for mid in eligible.excluded if mid in cache.all_ids
+                )
+            elif len(cache.all_ids) - total_docs < total_docs:
+                total_doc_len = cache.doc_len_total - sum(
+                    cache.lexical_by_id[mid]["doc_len"] for mid in cache.all_ids if mid not in eligible
+                )
             else:
-                if max_specific_cov_in_pool >= 0.5 and sem_sim < 0.55:
-                    hybrid_sim = sem_sim * 0.38
+                total_doc_len = sum(cache.lexical_by_id[mid]["doc_len"] for mid in eligible)
+            avg_doc_len = total_doc_len / max(1, total_docs)
+            has_specific = any(s not in _FRAMING_TOKENS for s in q_stems)
+            idf_map = {}
+            for stem in set(q_stems):
+                postings = cache.stem_to_ids.get(stem, set())
+                if not memory_type and not tags and not source_agent and include_stale and min_confidence <= 0.0 and not include_private and not include_quarantined:
+                    df = cache.visible_stem_df.get(stem, 0)
+                elif eligible is cache.all_ids:
+                    df = len(postings)
+                elif isinstance(eligible, _QueryIds) and eligible.base is cache.all_ids:
+                    df = sum(mid in eligible for mid in postings)
+                elif len(eligible) < len(postings):
+                    df = sum(mid in postings for mid in eligible)
                 else:
-                    hybrid_sim = sem_sim
-            item["similarity"] = round(hybrid_sim, 4)
+                    df = sum(mid in eligible for mid in postings)
+                weight = math.log1p((total_docs - df + 0.5) / (df + 0.5))
+                if has_specific and stem in _FRAMING_TOKENS:
+                    weight *= 0.12
+                idf_map[stem] = max(0.001, weight)
+            total_query_idf = sum(idf_map.get(s, 0.0) for s in q_stems) or 1.0
 
-        # Sort descending by score components; memory_id ascending breaks exact-score ties
-        # deterministically so that two calls with all-equal scores always return the same order.
-        # Negating the three floats avoids reverse=True (which would flip the id direction).
-        scored_candidates.sort(
-            key=lambda x: (-x["similarity"], -x["lexical_score"], -x["semantic_similarity"], x["id"]),
-        )
-        return scored_candidates[:n]
+            def lexical_score(mid):
+                return self._cached_bm25(
+                    cache.lexical_by_id[mid], q_stems, stem_synonyms, idf_map, avg_doc_len,
+                )
+
+            posting_lists = []
+            for tok, stem in zip(q_tokens, q_stems):
+                posting_lists.append(cache.token_to_ids.get(tok, set()))
+                posting_lists.append(cache.stem_to_ids.get(stem, set()))
+                for synonym in q_synonyms.get(tok, set()):
+                    posting_lists.append(cache.token_to_ids.get(synonym, set()))
+            if sum(len(p) for p in posting_lists) <= pool * 8:
+                lexical_ids = {mid for members in posting_lists for mid in members if mid in eligible}
+            elif native_scores:
+                lexical_ids = set(native_scores)
+                for members in posting_lists:
+                    if len(members) <= pool:
+                        lexical_ids.update(mid for mid in members if mid in eligible)
+            else:
+                # Only the bounded heap is materialized, even for a ubiquitous word.
+                lexical_ids = eligible
+            lex_best = heapq.nsmallest(pool, lexical_ids, key=lambda mid: (-lexical_score(mid), mid))
+            bm25_scores = {}
+            for mid in set(lex_best) | set(native_scores):
+                score = lexical_score(mid)
+                if score > 0.0:
+                    bm25_scores[mid] = score
+
+            dense_scores = {}
+            matrix = cache.matrix
+            if query_embedding_model is None:
+                compatible = eligible
+            else:
+                compatible = cache.model_ids.get(query_embedding_model, set())
+            if matrix is not None and compatible:
+                all_compatible = query_embedding_model is None or (
+                    len(cache.model_ids) == 1 and query_embedding_model in cache.model_ids
+                )
+                if len(eligible) == len(cache.all_ids) and all_compatible:
+                    dense_ids = cache.ids
+                    similarities = matrix @ q_vec
+                else:
+                    dense_ids = [mid for mid in cache.ids if mid in eligible and mid in compatible]
+                    similarities = np.empty(len(dense_ids), dtype=np.float32)
+                    for offset in range(0, len(dense_ids), 512):
+                        block = dense_ids[offset : offset + 512]
+                        indices = np.fromiter((cache.id_to_idx[mid] for mid in block), dtype=np.intp, count=len(block))
+                        similarities[offset : offset + len(block)] = matrix[indices] @ q_vec
+                if dense_ids:
+                    if len(dense_ids) > pool:
+                        top = np.argpartition(-similarities, pool - 1)[:pool]
+                        boundary = float(np.min(similarities[top]))
+                        above = np.flatnonzero(similarities > boundary)
+                        dense_scores = {dense_ids[int(i)]: float(similarities[int(i)]) for i in above}
+                        tied = heapq.nsmallest(
+                            pool - len(dense_scores),
+                            (mid for mid, score in zip(dense_ids, similarities) if float(score) == boundary),
+                        )
+                        dense_scores.update((mid, boundary) for mid in tied)
+                    else:
+                        dense_scores = {mid: float(score) for mid, score in zip(dense_ids, similarities)}
+
+            exact_ids = set()
+            for token in literal_tokens:
+                exact_ids.update(mid for mid in cache.token_to_ids.get(token, set()) if mid in eligible)
+            exact_best = heapq.nsmallest(pool, exact_ids, key=lambda mid: (-lexical_score(mid), mid))
+            candidate_ids = set(dense_scores) | set(bm25_scores) | set(exact_best)
+            candidate_rows = {}
+            for mid in candidate_ids:
+                row = cache.rows_by_id[mid]
+                lex = cache.lexical_by_id[mid]
+                sem = dense_scores.get(mid)
+                if sem is None:
+                    index = cache.id_to_idx.get(mid)
+                    if index is not None and matrix is not None and mid in compatible:
+                        sem = float(matrix[index] @ q_vec)
+                    elif query_embedding_model == "hash-384":
+                        from .memory import _hash_embed_384
+                        sem = float(_hash_embed_384(row["content"]) @ q_vec)
+                    else:
+                        sem = 0.0
+                candidate = self._hybrid_candidate(row, lex, sem, spec, idf_map, total_query_idf, query_embedding_model)
+                if candidate is not None:
+                    candidate_rows[mid] = candidate
+        return self._rank_hybrid_results(candidate_rows, dense_scores, bm25_scores, exact_best, spec, n)
 
     def discover_other_possible(
         self,
@@ -4112,10 +6131,8 @@ class MeshStore:
         """
         if not self.db_path.exists() or limit <= 0:
             return []
-        cache = self._get_vector_cache()
-        _, _, rows_snap = cache.snapshot(copy_matrix=False)
-        if len(rows_snap) == 0:
-            return []
+        if type(limit) is not int or limit > 1000:
+            raise ValueError("limit must be an integer between 1 and 1000")
 
         suggestions: list[dict[str, Any]] = []
         seen_ids: set[str] = set(exclude_ids)
@@ -4165,6 +6182,9 @@ class MeshStore:
             suggestions.append(
                 {
                     "id": mid,
+                    "revision": int(cand.get("revision", 1)),
+                    "incarnation": cand["incarnation"],
+                    "store_generation": cand["store_generation"],
                     "content": full_content,
                     "snippet": _make_snippet(full_content, max_len=120),
                     "memory_type": mtype,
@@ -4181,47 +6201,36 @@ class MeshStore:
                 }
             )
             if len(suggestions) >= limit:
-                return suggestions
+                return self.revalidate_query_results(suggestions, include_private=include_private, include_quarantined=include_quarantined)
 
         # Finding N8: Never pad unrelated "namespace_context" items with `local_only=True` or `quarantined=True` rows
-        remaining = [
-            r
-            for mid, r in rows_snap.items()
-            if mid not in seen_ids
-            and not r.get("local_only")
-            and (include_quarantined or not r.get("quarantined"))
-        ]
-        remaining.sort(
-            key=lambda x: (
-                int(x.get("access_count") or 0),
-                float(x.get("confidence") or 1.0),
-                str(x.get("accessed_at") or ""),
-            ),
-            reverse=True,
-        )
-        for r in remaining[: limit - len(suggestions)]:
-            mid = r["id"]
-            full_content = r.get("content", "")
-            seen_ids.add(mid)
-            suggestions.append(
-                {
-                    "id": mid,
-                    "content": full_content,
-                    "snippet": _make_snippet(full_content, max_len=120),
-                    "memory_type": r.get("memory_type", "fact"),
-                    "tags": r.get("tags_list") or _parse_tags_json(r.get("tags")),
-                    "confidence": float(r.get("confidence", 1.0)),
-                    "ttl_days": r.get("ttl_days"),
-                    "local_only": bool(r.get("local_only", False)),
-                    "trust_tier": r.get("trust_tier", "user"),
-                    "quarantined": bool(r.get("quarantined", False)),
-                    "similarity": 0.0,
-                    "semantic_similarity": 0.0,
-                    "lexical_score": 0.0,
-                    "reason": "namespace_context",
-                }
+        where, params = self._query_sql_filter(include_private=False, include_quarantined=include_quarantined)
+        if seen_ids:
+            placeholders = ",".join("?" for _ in seen_ids)
+            where += f" AND id NOT IN ({placeholders})"
+            params = (*params, *seen_ids)
+        with self._read_connect() as conn:
+            rows = conn.execute(
+                f"SELECT {_MEMORY_COLUMNS} FROM memories WHERE {where} "
+                "ORDER BY access_count DESC,confidence DESC,accessed_at DESC,id ASC LIMIT ?",
+                (*params, limit - len(suggestions)),
             )
-        return suggestions
+            for raw in rows:
+                row = self._deserialize_memory_row(raw)
+                mid = row["id"]
+                full_content = row["content"]
+                suggestions.append({
+                    "id": mid, "revision": int(row.get("revision", 1)),
+                    "incarnation": row["incarnation"], "store_generation": row["store_generation"],
+                    "content": full_content, "snippet": _make_snippet(full_content, max_len=120),
+                    "memory_type": row.get("memory_type", "fact"), "tags": row["tags_list"],
+                    "confidence": float(row.get("confidence", 1.0)), "ttl_days": row.get("ttl_days"),
+                    "local_only": False, "trust_tier": row.get("trust_tier", "user"),
+                    "quarantined": bool(row.get("quarantined", False)),
+                    "similarity": 0.0, "semantic_similarity": 0.0, "lexical_score": 0.0,
+                    "reason": "namespace_context",
+                })
+        return self.revalidate_query_results(suggestions, include_private=include_private, include_quarantined=include_quarantined)
 
     def list_all(
         self,
@@ -4236,354 +6245,372 @@ class MeshStore:
         include_quarantined: bool = True,
         quarantined_only: bool = False,
     ) -> list[dict[str, Any]]:
-        """
-        Return memories in the namespace sorted by `accessed_at DESC` (or by
-        effective confidence when `order_by="confidence"`).
-        """
+        """Read a bounded result page without constructing a full namespace cache."""
         if not self.db_path.exists() or limit <= 0:
             return []
+        if type(limit) is not int or limit > env_int("MESH_MAX_LIST_ITEMS", 10000, minimum=1):
+            raise ValueError("List limit exceeds the configured result-page limit.")
+        self._ensure_initialized()
         self.flush_telemetry()
-        cache = self._get_vector_cache()
-        _, _, rows_snap = cache.snapshot(copy_matrix=False)
-        if not rows_snap:
-            return []
-
-        type_filter = memory_type.strip().lower() if memory_type else None
-        req_tags: set[str] = set()
-        if tag and tag.strip():
-            req_tags.add(tag.strip().lower())
-        if tags:
-            for t in tags:
-                if str(t).strip():
-                    req_tags.add(str(t).strip().lower())
-
+        predicates = "namespace=? AND (? OR local_only=0) AND (? OR quarantined=0) AND (NOT ? OR quarantined=1)"
+        params: list[Any] = [self.namespace, bool(include_private), bool(include_quarantined), bool(quarantined_only)]
+        if memory_type and memory_type.strip():
+            predicates += " AND LOWER(memory_type)=?"
+            params.append(memory_type.strip().lower())
+        requested = {str(value).strip().lower() for value in [tag, *(tags or [])] if value and str(value).strip()}
         now = _utc_now()
-        filtered: list[dict[str, Any]] = []
-        for mid, row in rows_snap.items():
-            if not include_private and row.get("local_only"):
-                continue
-            if quarantined_only and not row.get("quarantined"):
-                continue
-            if not include_quarantined and row.get("quarantined"):
-                continue
-            if type_filter and str(row.get("memory_type", "")).lower() != type_filter:
-                continue
-            if req_tags:
-                row_tags = {
-                    str(t).lower()
-                    for t in (row.get("tags_list") or _parse_tags_json(row.get("tags")))
-                }
-                if not req_tags.issubset(row_tags):
-                    continue
-            if not include_stale or min_confidence > 0.0:
-                eff_conf, is_stale = _compute_row_effective_confidence(row, now=now)
-                if not include_stale and is_stale:
-                    continue
-                if eff_conf < min_confidence:
-                    continue
-            filtered.append(dict(row))
+        with self._read_connect() as conn:
+            cursor = conn.execute(
+                f"SELECT {_MEMORY_COLUMNS} FROM memories WHERE {predicates} ORDER BY accessed_at DESC,created_at DESC,id ASC",
+                params,
+            )
+            def eligible() -> Iterator[dict[str, Any]]:
+                for raw in cursor:
+                    row = self._deserialize_memory_row(raw)
+                    if requested and not requested.issubset({str(value).lower() for value in row["tags_list"]}):
+                        continue
+                    if not include_stale or min_confidence > 0.0:
+                        confidence, stale = _compute_row_effective_confidence(row, now=now)
+                        if (not include_stale and stale) or confidence < min_confidence:
+                            continue
+                    yield row
+            try:
+                if order_by == "confidence":
+                    return heapq.nlargest(limit, eligible(), key=lambda row: (
+                        _compute_row_effective_confidence(row, now=now)[0],
+                        int(row.get("access_count") or 0), str(row.get("created_at") or ""), row["id"],
+                    ))
+                return list(itertools.islice(eligible(), limit))
+            finally:
+                cursor.close()
 
-        if order_by == "confidence":
-            filtered.sort(
-                key=lambda r: (
-                    _compute_row_effective_confidence(r, now=now)[0],
-                    int(r.get("access_count") or 0),
-                    str(r.get("created_at") or ""),
-                ),
-                reverse=True,
+    def iter_exportable_memories(
+        self,
+        include_embeddings: bool = True,
+        include_quarantined: bool = False,
+    ) -> Iterator[dict[str, Any]]:
+        """Stream visible export rows, including memories awaiting an embedding."""
+        if not self.db_path.exists():
+            return
+        self._ensure_initialized()
+        self._maybe_lazy_flush_telemetry()
+        columns = _MEMORY_COLUMNS + (",embedding" if include_embeddings else "")
+        with self._read_connect() as conn:
+            cursor = conn.execute(
+                f"SELECT {columns} FROM memories WHERE namespace=? AND local_only=0 AND (? OR quarantined=0) ORDER BY created_at ASC,id ASC",
+                (self.namespace, bool(include_quarantined)),
             )
-        else:
-            filtered.sort(
-                key=lambda r: (str(r.get("accessed_at") or ""), str(r.get("created_at") or "")),
-                reverse=True,
+            try:
+                for raw in cursor:
+                    values = dict(raw)
+                    blob = values.pop("embedding", None)
+                    row = self._deserialize_memory_row(values)
+                    if include_embeddings:
+                        row["embedding"] = _blob_to_vector(blob).tolist() if blob else None
+                    yield row
+            finally:
+                cursor.close()
+
+    def iter_export_records(
+        self, include_embeddings: bool = True, include_quarantined: bool = False,
+    ) -> Iterator[tuple[str, dict[str, Any]]]:
+        """Stream one coherent memory/task/history snapshot without constructing lists."""
+        self._ensure_initialized()
+        self._maybe_lazy_flush_telemetry()
+        columns = _MEMORY_COLUMNS + (",embedding" if include_embeddings else "")
+        with self._read_connect() as conn:
+            memory_counts = conn.execute(
+                "SELECT COUNT(*),COALESCE(SUM(local_only=0 AND (? OR quarantined=0)),0),"
+                "COALESCE(SUM(local_only=0 AND quarantined=1),0) FROM memories WHERE namespace=?",
+                (bool(include_quarantined), self.namespace),
+            ).fetchone()
+            task_counts = conn.execute(
+                "SELECT COUNT(*),COALESCE(SUM(local_only=0),0) FROM work_items WHERE namespace=?",
+                (self.namespace,),
+            ).fetchone()
+            yield "counts", {
+                "memory_count": int(memory_counts[1]),
+                "skipped_local_only": int(memory_counts[0]) - int(memory_counts[1]),
+                "skipped_quarantined": 0 if include_quarantined else int(memory_counts[2]),
+                "work_items_count": int(task_counts[1]),
+                "skipped_local_only_work_items": int(task_counts[0]) - int(task_counts[1]),
+            }
+            statements = (
+                ("memory", f"SELECT {columns} FROM memories WHERE namespace=? AND local_only=0 AND (? OR quarantined=0) ORDER BY created_at ASC,id ASC", (self.namespace, bool(include_quarantined))),
+                ("work_item", "SELECT * FROM work_items WHERE namespace=? AND local_only=0 ORDER BY created_at ASC,id ASC", (self.namespace,)),
+                ("work_event", "SELECT e.* FROM work_events e JOIN work_items i ON e.item_id=i.id AND e.namespace=i.namespace WHERE e.namespace=? AND i.local_only=0 ORDER BY e.timestamp ASC,e.id ASC", (self.namespace,)),
             )
-        return filtered[:limit]
+            for kind, statement, parameters in statements:
+                cursor = conn.execute(statement, parameters)
+                try:
+                    for raw in cursor:
+                        if kind == "memory":
+                            values = dict(raw)
+                            blob = values.pop("embedding", None)
+                            row = self._deserialize_memory_row(values)
+                            if include_embeddings:
+                                row["embedding"] = _blob_to_vector(blob).tolist() if blob else None
+                        elif kind == "work_item":
+                            row = self._deserialize_work_item_row(raw)
+                        else:
+                            row = self._deserialize_work_event_row(raw)
+                        yield kind, row
+                finally:
+                    cursor.close()
 
     def get_exportable_memories(
         self,
         include_embeddings: bool = True,
         include_quarantined: bool = False,
     ) -> list[dict[str, Any]]:
-        """
-        Return all non-private (`local_only = 0`) and non-quarantined memories in the namespace
-        for `io.export_namespace()`, decrypting fields if at-rest encryption is enabled.
-        """
-        if not self.db_path.exists():
-            return []
-        self._maybe_lazy_flush_telemetry()
-        with _CACHE_LOCK:
-            synced = self._is_cache_synced_locked()
-            if synced is not None:
-                results: list[dict[str, Any]] = []
-                for mid in synced.ids:
-                    row = synced.rows_by_id.get(mid)
-                    if row is None:
-                        continue
-                    if row.get("local_only"):
-                        continue
-                    if not include_quarantined and row.get("quarantined"):
-                        continue
-                    d = dict(row)
-                    if include_embeddings:
-                        idx = synced.id_to_idx.get(mid)
-                        if idx is not None and synced._matrix_buf is not None:
-                            d["embedding"] = synced._matrix_buf[idx].tolist()
-                        else:
-                            d["embedding"] = None
-                    results.append(d)
-                results.sort(key=lambda r: str(r.get("created_at") or ""))
-                return results
-
-        q_clause = "" if include_quarantined else "AND COALESCE(quarantined, 0) = 0 "
-        with _CACHE_LOCK:
-            with self._connect() as conn:
-                conn.row_factory = sqlite3.Row
-                if include_embeddings:
-                    rows = conn.execute(
-                        f"SELECT {_MEMORY_COLUMNS}, embedding FROM memories "
-                        f"WHERE namespace = ? AND (local_only = 0 OR local_only IS NULL) {q_clause}"
-                        "ORDER BY created_at ASC",
-                        (self.namespace,),
-                    ).fetchall()
-                else:
-                    rows = conn.execute(
-                        f"SELECT {_MEMORY_COLUMNS} FROM memories "
-                        f"WHERE namespace = ? AND (local_only = 0 OR local_only IS NULL) {q_clause}"
-                        "ORDER BY created_at ASC",
-                        (self.namespace,),
-                    ).fetchall()
-
-        db_results: list[dict[str, Any]] = []
-        for r in rows:
-            d = {col: r[col] for col in r.keys() if col != "embedding"}
-            d["content"] = decrypt_text_if_encrypted(d.get("content"))
-            d["tags"] = decrypt_text_if_encrypted(d.get("tags") or "[]")
-            d["local_only"] = bool(d.get("local_only"))
-            d["quarantined"] = bool(d.get("quarantined"))
-            d["trust_tier"] = _normalize_trust_tier(d.get("trust_tier"), default="user")
-            d["secret_ref"] = _parse_secret_ref_json(d.get("secret_ref"))
-            d["tags_list"] = _parse_tags_json(d.get("tags"))
-            if include_embeddings:
-                blob = r["embedding"] if "embedding" in r.keys() else None
-                if blob:
-                    arr = _blob_to_vector(blob)
-                    d["embedding"] = arr.tolist() if arr.size == EMBEDDING_DIM else None
-                else:
-                    d["embedding"] = None
-            db_results.append(d)
-        return db_results
+        """Compatibility list API; streaming consumers should use the iterator."""
+        return list(self.iter_exportable_memories(include_embeddings, include_quarantined))
 
     def get_exportable_work_items(
         self,
         include_private: bool = False,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int, int]:
-        """
-        Return (exportable_items, exportable_events, total_count, skipped_private_count)
-        for this namespace.
-        Private items (local_only == 1) are excluded unless include_private=True.
-        Events for private items are excluded if the item is excluded.
-        """
+        """Return visible work rows and events from one SQL snapshot."""
         if not self.db_path.exists():
             return [], [], 0, 0
-        with self._connect() as conn:
-            conn.row_factory = sqlite3.Row
-            try:
-                all_items = conn.execute(
-                    "SELECT * FROM work_items WHERE namespace = ? ORDER BY created_at ASC",
-                    (self.namespace,),
-                ).fetchall()
-            except sqlite3.OperationalError:
-                return [], [], 0, 0
-
-            total_count = len(all_items)
-            exportable_items = []
-            skipped_private = 0
-            allowed_ids = set()
-            for r in all_items:
-                d = dict(r)
-                is_priv = bool(d.get("local_only"))
-                if is_priv and not include_private:
-                    skipped_private += 1
-                    continue
-                d["title"] = decrypt_text_if_encrypted(d.get("title"))
-                d["description"] = decrypt_text_if_encrypted(d.get("description") or "")
-                if d.get("summary"):
-                    d["summary"] = decrypt_text_if_encrypted(d["summary"])
-                d["evidence"] = json.loads(d.get("evidence") or "[]")
-                d["tags"] = json.loads(d.get("tags") or "[]")
-                d["local_only"] = is_priv
-                exportable_items.append(d)
-                allowed_ids.add(d["id"])
-
-            if not allowed_ids:
-                return exportable_items, [], total_count, skipped_private
-
-            placeholders = ",".join("?" for _ in allowed_ids)
-            event_rows = conn.execute(
-                f"SELECT * FROM work_events WHERE namespace = ? AND item_id IN ({placeholders}) ORDER BY timestamp ASC",
-                (self.namespace, *allowed_ids),
-            ).fetchall()
-            exportable_events = []
-            for er in event_rows:
-                ed = dict(er)
-                if ed.get("note"):
-                    ed["note"] = decrypt_text_if_encrypted(ed["note"])
-                exportable_events.append(ed)
-
-            return exportable_items, exportable_events, total_count, skipped_private
+        self._ensure_initialized()
+        with self._read_connect() as conn:
+            counts = conn.execute(
+                "SELECT COUNT(*),COALESCE(SUM(local_only),0) FROM work_items WHERE namespace=?", (self.namespace,),
+            ).fetchone()
+            items = [self._deserialize_work_item_row(row) for row in conn.execute(
+                "SELECT * FROM work_items WHERE namespace=? AND (? OR local_only=0) ORDER BY created_at ASC,id ASC",
+                (self.namespace, bool(include_private)),
+            )]
+            events = [self._deserialize_work_event_row(row) for row in conn.execute(
+                "SELECT e.* FROM work_events e JOIN work_items i ON e.item_id=i.id AND e.namespace=i.namespace "
+                "WHERE e.namespace=? AND (? OR i.local_only=0) ORDER BY e.timestamp ASC,e.id ASC",
+                (self.namespace, bool(include_private)),
+            )]
+            return items, events, int(counts[0]), 0 if include_private else int(counts[1])
 
     def import_work_items(
         self,
         items: list[dict[str, Any]],
         events: list[dict[str, Any]],
         merge_strategy: str = "skip_existing",
+        *,
+        include_private: bool = True,
+        expected_source_agent: Optional[str] = None,
     ) -> dict[str, int]:
+        """Import valid records atomically; input errors roll back individual savepoints.
+
+        Storage, encryption, and admission failures abort the enclosing import.
+        Existing items and their events are skipped with skip_existing.
         """
-        Import work items and work events into this namespace.
-        Enforces guard_ingest and guard_tags.
-        """
+        if merge_strategy not in {"skip_existing", "overwrite"}:
+            raise ValueError("Invalid merge strategy; use skip_existing or overwrite.")
+        if not isinstance(items, list) or not isinstance(events, list):
+            raise ValueError("Imported work items and events must be lists.")
         self._ensure_initialized()
         stats = {"imported_items": 0, "skipped_items": 0, "imported_events": 0, "errors": 0}
-        with self._connect() as conn:
-            existing_ids = {r[0] for r in conn.execute("SELECT id FROM work_items WHERE namespace = ?", (self.namespace,)).fetchall()}
-            existing_short_ids = {r[0] for r in conn.execute("SELECT short_id FROM work_items WHERE namespace = ?", (self.namespace,)).fetchall()}
+        imported_ids: set[str] = set()
+        valid_statuses = {"todo", "in_progress", "blocked", "done", "cancelled"}
 
-            for it in items:
-                try:
-                    raw_id = str(it.get("id") or "").strip()
-                    if not raw_id:
-                        stats["errors"] += 1
-                        continue
-                    if merge_strategy == "skip_existing" and raw_id in existing_ids:
-                        stats["skipped_items"] += 1
-                        continue
+        def identifier(value: Any, default: str) -> str:
+            result = value if value is not None else default
+            if not isinstance(result, str) or not result.strip() or len(result) > 128 or any(ord(char) < 32 for char in result):
+                raise ValueError("Invalid imported agent identifier.")
+            return result.strip()
 
-                    title = str(it.get("title") or "").strip()
-                    if not title:
-                        stats["errors"] += 1
-                        continue
+        def timestamp(value: Any, default: Optional[str] = None) -> Optional[str]:
+            if value is None or value == "":
+                return default
+            parsed = _parse_iso_utc(value) if isinstance(value, str) else None
+            if parsed is None:
+                raise ValueError("Invalid imported timestamp.")
+            return parsed.isoformat()
 
-                    title_res = guard_ingest(title, local_only=bool(it.get("local_only")))
+        def guarded_text(value: Any, private: bool, *, required: bool = False) -> tuple[str, bool]:
+            if value is None:
+                value = ""
+            if not isinstance(value, str):
+                raise ValueError("Imported text must be a string.")
+            if not value.strip() and not required:
+                return "", private
+            result = guard_ingest(value, local_only=private)
+            if result.rejected or (required and not result.content.strip()):
+                raise ValueError("Imported text rejected by ingestion guard.")
+            return result.content.strip(), bool(result.local_only)
 
-                    desc_str = str(it.get("description") or "").strip()
-                    if desc_str:
-                        desc_res = guard_ingest(desc_str, local_only=title_res.local_only)
-                        clean_desc = desc_res.content.strip()
-                        desc_priv = desc_res.local_only
-                    else:
-                        clean_desc = ""
-                        desc_priv = False
+        def imported_list(value: Any) -> list[Any]:
+            parsed = json.loads(value) if isinstance(value, str) else (value or [])
+            if not isinstance(parsed, list):
+                raise ValueError("Imported tags and evidence must be lists.")
+            return parsed
 
-                    summary_text = it.get("summary")
-                    if summary_text and str(summary_text).strip():
-                        summary_res = guard_ingest(str(summary_text), local_only=desc_priv)
-                        clean_summary = summary_res.content.strip()
-                        summary_priv = summary_res.local_only
-                    else:
-                        clean_summary = None
-                        summary_priv = False
-
-                    raw_tags = it.get("tags") or []
-                    clean_tags, tags_priv, _ = guard_tags(
-                        raw_tags if isinstance(raw_tags, list) else json.loads(raw_tags),
-                        local_only=desc_priv,
-                    )
-                    final_local = 1 if (title_res.local_only or desc_priv or tags_priv or summary_priv) else 0
-
-                    short_id = str(it.get("short_id") or "").strip()
-                    kind = str(it.get("kind") or "task").lower()
-                    if not short_id or (short_id in existing_short_ids and raw_id not in existing_ids):
-                        prefix = "goal" if kind == "goal" else "task"
-                        short_id = self._generate_short_id_locked(conn, prefix)
-
-                    enc_on = is_encryption_enabled()
-                    title_to_store = encrypt_text_for_storage(title_res.content) if enc_on else title_res.content
-                    desc_to_store = encrypt_text_for_storage(clean_desc) if (enc_on and clean_desc) else clean_desc
-                    summary_to_store = (
-                        encrypt_text_for_storage(clean_summary)
-                        if (enc_on and clean_summary)
-                        else clean_summary
-                    )
-
-                    evidence_json = json.dumps(it.get("evidence") or []) if isinstance(it.get("evidence"), list) else str(it.get("evidence") or "[]")
-                    tags_json = json.dumps(clean_tags)
-
-                    if raw_id in existing_ids and merge_strategy == "overwrite":
-                        conn.execute(
-                            """
-                            UPDATE work_items
-                            SET short_id = ?, kind = ?, parent_id = ?, title = ?, description = ?, status = ?,
-                                priority = ?, created_by = ?, created_at = ?, started_at = ?, completed_at = ?,
-                                completed_by = ?, summary = ?, evidence = ?, tags = ?, local_only = ?
-                            WHERE id = ? AND namespace = ?
-                            """,
-                            (
-                                short_id, kind, it.get("parent_id"), title_to_store, desc_to_store,
-                                it.get("status", "todo"), it.get("priority", "medium"), it.get("created_by", "mesh-import"),
-                                it.get("created_at") or _utc_now_iso(), it.get("started_at"), it.get("completed_at"),
-                                it.get("completed_by"), summary_to_store, evidence_json, tags_json, final_local,
-                                raw_id, self.namespace
-                            ),
+        with self.write_transaction():
+            with self._connect() as conn:
+                for record in items:
+                    marker = _begin_write(conn, self.namespace, self._store_generation)
+                    try:
+                        if not isinstance(record, dict):
+                            raise ValueError("Imported item must be an object.")
+                        raw_id = validate_memory_id(record.get("id"))
+                        existing = conn.execute(
+                            "SELECT local_only,created_by,short_id FROM work_items WHERE namespace=? AND id=?",
+                            (self.namespace, raw_id),
+                        ).fetchone()
+                        if existing is not None and merge_strategy == "skip_existing":
+                            _commit_write(conn, marker)
+                            stats["skipped_items"] += 1
+                            continue
+                        if existing is not None:
+                            self._check_mutation_permission(bool(existing[0]), existing[1], include_private, expected_source_agent)
+                        requested_private = record.get("local_only", False)
+                        if type(requested_private) is not bool:
+                            raise ValueError("Imported privacy flag must be a boolean.")
+                        private = bool(requested_private or (existing and existing[0]))
+                        title, title_private = guarded_text(record.get("title"), private, required=True)
+                        description, description_private = guarded_text(record.get("description"), private)
+                        summary, summary_private = guarded_text(record.get("summary"), private)
+                        clean_tags, tags_private, _ = guard_tags(imported_list(record.get("tags")), local_only=private)
+                        evidence = imported_list(record.get("evidence"))
+                        if len(evidence) > 100:
+                            raise ValueError("At most 100 evidence references are permitted.")
+                        clean_evidence: list[str] = []
+                        evidence_private = False
+                        for reference in evidence:
+                            if not isinstance(reference, str) or len(reference) > 2048:
+                                raise ValueError("Invalid evidence reference.")
+                            clean_reference, reference_private = guarded_text(reference, private)
+                            if clean_reference:
+                                clean_evidence.append(clean_reference)
+                            evidence_private = evidence_private or reference_private
+                        private = bool(private or title_private or description_private or summary_private or tags_private or evidence_private)
+                        kind = str(record.get("kind") or "task").strip().lower()
+                        priority = str(record.get("priority") or "medium").strip().lower()
+                        status = str(record.get("status") or "todo").strip().lower()
+                        if kind not in {"goal", "task"} or priority not in {"low", "medium", "high", "critical"} or status not in valid_statuses:
+                            raise ValueError("Invalid imported work item kind, priority, or status.")
+                        created_by = identifier(record.get("created_by"), "mesh-import")
+                        self._check_mutation_permission(False, created_by, True, expected_source_agent)
+                        parent_id = record.get("parent_id")
+                        if parent_id:
+                            parent = self._resolve_work_item_locked(conn, validate_memory_id(parent_id))
+                            if parent is None or parent["id"] == raw_id:
+                                raise ValueError("Imported parent must exist in this namespace.")
+                            self._check_mutation_permission(bool(parent["local_only"]), parent["created_by"], include_private, expected_source_agent)
+                            parent_id = parent["id"]
+                            private = bool(private or parent["local_only"])
+                        else:
+                            parent_id = None
+                        short_id = record.get("short_id") or (existing[2] if existing else None)
+                        if short_id:
+                            short_id = validate_memory_id(short_id)
+                        collision = conn.execute(
+                            "SELECT id FROM work_items WHERE namespace=? AND short_id=? AND id<>?",
+                            (self.namespace, short_id, raw_id),
+                        ).fetchone() if short_id else None
+                        if not short_id or collision is not None:
+                            short_id = self._generate_short_id_locked(conn, kind)
+                        now = _utc_now_iso()
+                        values = (
+                            short_id, kind, parent_id, self._encrypt_work_text(title), self._encrypt_work_text(description),
+                            status, priority, created_by, timestamp(record.get("created_at"), now),
+                            timestamp(record.get("started_at")), timestamp(record.get("completed_at")),
+                            identifier(record.get("completed_by"), "mesh-import") if record.get("completed_by") is not None else None,
+                            self._encrypt_work_text(summary) if summary else None,
+                            self._encrypt_work_text(json.dumps(clean_evidence)), self._encrypt_work_text(json.dumps(clean_tags)), int(private),
                         )
-                    else:
-                        conn.execute(
-                            """
-                            INSERT INTO work_items (
-                                id, short_id, namespace, kind, parent_id, title, description, status,
-                                priority, created_by, created_at, started_at, completed_at, completed_by,
-                                summary, evidence, tags, local_only
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            """,
-                            (
-                                raw_id, short_id, self.namespace, kind, it.get("parent_id"), title_to_store, desc_to_store,
-                                it.get("status", "todo"), it.get("priority", "medium"), it.get("created_by", "mesh-import"),
-                                it.get("created_at") or _utc_now_iso(), it.get("started_at"), it.get("completed_at"),
-                                it.get("completed_by"), summary_to_store, evidence_json, tags_json, final_local
-                            ),
-                        )
-                    existing_ids.add(raw_id)
-                    existing_short_ids.add(short_id)
-                    stats["imported_items"] += 1
-                except Exception as exc:
-                    logger.warning("Error importing work item %s: %s", it, exc)
-                    stats["errors"] += 1
+                        if existing is None:
+                            conn.execute(
+                                "INSERT INTO work_items(id,namespace,short_id,kind,parent_id,title,description,status,priority,created_by,"
+                                "created_at,started_at,completed_at,completed_by,summary,evidence,tags,local_only) "
+                                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (raw_id, self.namespace, *values),
+                            )
+                        else:
+                            conn.execute(
+                                "UPDATE work_items SET short_id=?,kind=?,parent_id=?,title=?,description=?,status=?,priority=?,created_by=?,"
+                                "created_at=?,started_at=?,completed_at=?,completed_by=?,summary=?,evidence=?,tags=?,local_only=? WHERE id=? AND namespace=?",
+                                (*values, raw_id, self.namespace),
+                            )
+                        self._record_mutation_in_tx(conn, "task_import", raw_id)
+                        _commit_write(conn, marker)
+                        imported_ids.add(raw_id)
+                        stats["imported_items"] += 1
+                    except (ValueError, TypeError, sqlite3.IntegrityError):
+                        _rollback_write(conn, marker)
+                        stats["errors"] += 1
 
-            for ev in events:
-                try:
-                    item_id = str(ev.get("item_id") or "").strip()
-                    if item_id not in existing_ids:
-                        continue
-                    note = ev.get("note")
-                    enc_on = is_encryption_enabled()
-                    note_to_store = (
-                        encrypt_text_for_storage(str(note))
-                        if (enc_on and note)
-                        else (str(note) if note else None)
-                    )
-                    conn.execute(
-                        """
-                        INSERT INTO work_events (
-                            item_id, namespace, event_type, old_status, new_status, note, agent_id, timestamp
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            item_id, self.namespace, ev.get("event_type", "status_change"),
-                            ev.get("old_status"), ev.get("new_status"), note_to_store,
-                            ev.get("agent_id", "mesh-import"), ev.get("timestamp") or _utc_now_iso()
-                        ),
-                    )
-                    stats["imported_events"] += 1
-                except Exception:
-                    pass
-            conn.commit()
+                for record in events:
+                    marker = _begin_write(conn, self.namespace, self._store_generation)
+                    try:
+                        if not isinstance(record, dict):
+                            raise ValueError("Imported event must be an object.")
+                        item_id = validate_memory_id(record.get("item_id"))
+                        if merge_strategy == "skip_existing" and item_id not in imported_ids:
+                            _commit_write(conn, marker)
+                            continue
+                        item = conn.execute(
+                            "SELECT local_only,created_by FROM work_items WHERE namespace=? AND id=?",
+                            (self.namespace, item_id),
+                        ).fetchone()
+                        if item is None:
+                            raise ValueError("Imported event target does not exist.")
+                        self._check_mutation_permission(bool(item[0]), item[1], include_private, expected_source_agent)
+                        note, note_private = guarded_text(record.get("note"), bool(item[0]))
+                        event_type = record.get("event_type") or "status_change"
+                        if not isinstance(event_type, str) or not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", event_type):
+                            raise ValueError("Invalid imported event type.")
+                        old_status, new_status = record.get("old_status"), record.get("new_status")
+                        if any(value is not None and value not in valid_statuses for value in (old_status, new_status)):
+                            raise ValueError("Invalid imported event status.")
+                        agent = identifier(record.get("agent_id"), "mesh-import")
+                        self._check_mutation_permission(False, agent, True, expected_source_agent)
+                        when = timestamp(record.get("timestamp"), _utc_now_iso())
+                        previous = conn.execute(
+                            "SELECT note FROM work_events WHERE namespace=? AND item_id=? AND event_type=? AND agent_id=? "
+                            "AND timestamp=? AND old_status IS ? AND new_status IS ?",
+                            (self.namespace, item_id, event_type, agent, when, old_status, new_status),
+                        )
+                        duplicate = any((decrypt_text_if_encrypted(row[0]) or "") == note for row in previous)
+                        previous.close()
+                        if duplicate:
+                            _commit_write(conn, marker)
+                            continue
+                        if note_private and not item[0]:
+                            conn.execute("UPDATE work_items SET local_only=1 WHERE namespace=? AND id=?", (self.namespace, item_id))
+                        conn.execute(
+                            "INSERT INTO work_events(item_id,namespace,event_type,old_status,new_status,note,agent_id,timestamp) VALUES(?,?,?,?,?,?,?,?)",
+                            (item_id, self.namespace, event_type, old_status, new_status, self._encrypt_work_text(note) if note else None, agent, when),
+                        )
+                        self._record_mutation_in_tx(conn, "task_event_import", item_id)
+                        _commit_write(conn, marker)
+                        stats["imported_events"] += 1
+                    except (ValueError, TypeError, sqlite3.IntegrityError):
+                        _rollback_write(conn, marker)
+                        stats["errors"] += 1
+            self._refresh_cache_stamp_after_non_memory_write()
         return stats
 
-    def delete(self, memory_id: str) -> bool:
+    def delete(
+        self, memory_id: str, *, include_private: bool = True,
+        expected_source_agent: Optional[str] = None,
+        expected_revision: Optional[int] = None,
+        expected_incarnation: Optional[str] = None,
+        expected_store_generation: Optional[str] = None,
+    ) -> bool:
         """
         Delete a memory by ID, removing its FTS5 entry by `rowid`, scrubbing contradiction
         and query records referencing it, and updating the RAM cache in-place.
         """
         clean_id = (memory_id or "").strip()
+        if expected_revision is not None and (type(expected_revision) is not int or expected_revision < 1):
+            raise ValueError("expected_revision must be a positive integer.")
+        if expected_incarnation is not None:
+            _validate_incarnation(expected_incarnation, "expected_incarnation")
+        if expected_store_generation is not None:
+            _validate_incarnation(expected_store_generation, "expected_store_generation")
+            if expected_store_generation != self.store_generation:
+                raise StaleStoreError("The requested database generation changed; refresh and retry.")
+        if clean_id:
+            self._assert_instance_file()
         if not clean_id or not self.db_path.exists():
             return False
 
@@ -4597,21 +6624,29 @@ class MeshStore:
         purged_content: Optional[str] = None
         deleted = False
 
-        with namespace_write_lock(self.namespace):
-            with _CACHE_LOCK:
+        after_commit_actions: list[Callable[[], Any]] = []
+        with namespace_write_lock(self.namespace, data_root=self.db_path.parent):
+            with self._cache_lock:
                 synced_cache = self._is_cache_synced_locked()
                 if synced_cache is not None and clean_id in synced_cache.rows_by_id:
                     purged_content = synced_cache.rows_by_id[clean_id].get("content")
 
                 new_cv: Optional[int] = None
                 with self._connect() as conn:
-                    conn.execute("BEGIN IMMEDIATE")
+                    tx_marker = _begin_write(conn, self.namespace, self._store_generation)
                     try:
                         row = conn.execute(
-                            "SELECT rowid, content FROM memories WHERE id = ? AND namespace = ?",
+                            "SELECT rowid, content, local_only, source_agent, revision, incarnation FROM memories WHERE id = ? AND namespace = ?",
                             (clean_id, self.namespace),
                         ).fetchone()
                         if row is not None:
+                            self._check_mutation_permission(
+                                bool(row[2]), row[3], include_private, expected_source_agent,
+                            )
+                            if expected_revision is not None and int(row[4]) != expected_revision:
+                                raise ValueError("Memory revision changed; no mutation was committed.")
+                            if expected_incarnation is not None and row[5] != expected_incarnation:
+                                raise ValueError("Memory incarnation changed; no mutation was committed.")
                             rowid = int(row[0])
                             if purged_content is None:
                                 purged_content = decrypt_text_if_encrypted(str(row[1] or ""))
@@ -4625,23 +6660,32 @@ class MeshStore:
                                 "DELETE FROM contradictions WHERE namespace = ? AND (new_memory_id = ? OR existing_memory_id = ?)",
                                 (self.namespace, clean_id, clean_id),
                             )
+                            conn.execute(
+                                "DELETE FROM embedding_jobs WHERE namespace=? AND memory_id=?",
+                                (self.namespace, clean_id),
+                            )
+                            self._record_mutation_in_tx(conn, "delete", clean_id, int(row[4]))
                             if purged_content and purged_content.strip():
                                 _scrub_queries_in_tx(conn, self.namespace, purged_content)
-                                _scrub_pending_query_telemetry(self.namespace, purged_content)
+                                _scrub_pending_query_telemetry(self.namespace, purged_content, data_root=self.db_path.parent)
                             new_cv = self._bump_content_version_in_tx(conn)
-                        conn.commit()
+                        after_commit_actions = _commit_write(conn, tx_marker)
                     except Exception:
                         if conn.in_transaction:
-                            conn.rollback()
+                            _rollback_write(conn, tx_marker)
                         raise
 
                 if deleted:
-                    if synced_cache is not None:
-                        synced_cache.delete_vector(clean_id)
-                        self._refresh_stamps_after_write_locked(synced_cache, content_version=new_cv)
+                    if self._owns_write_transaction():
+                        self._queue_cache_delta("delete", clean_id, None, None, new_cv)
+                    elif synced_cache is not None:
+                        with synced_cache.write_snapshot():
+                            synced_cache.delete_vector(clean_id)
+                            self._refresh_stamps_after_write_locked(synced_cache, content_version=new_cv)
                     else:
                         self._invalidate_cache()
 
+        self._run_after_commit_actions(after_commit_actions)
         if deleted:
             purge_memory_from_audit(
                 namespace=self.namespace,
@@ -4650,13 +6694,16 @@ class MeshStore:
             )
         return deleted
 
-    def count(self) -> int:
+    def count(self, include_private: bool = True, include_quarantined: bool = True) -> int:
         if not self.db_path.exists():
             return 0
-        self._maybe_lazy_flush_telemetry()
-        cache = self._get_vector_cache()
-        with _CACHE_LOCK:
-            return len(cache.all_ids)
+        self._ensure_initialized()
+        with self._read_connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM memories WHERE namespace=? AND (? OR local_only=0) AND (? OR quarantined=0)",
+                (self.namespace, bool(include_private), bool(include_quarantined)),
+            ).fetchone()
+            return int(row[0])
 
     def count_matching(
         self,
@@ -4667,47 +6714,30 @@ class MeshStore:
         source_agent: Optional[str] = None,
         include_quarantined: bool = True,
     ) -> int:
-        """
-        Compute the number of matching memories using the decrypted in-memory metadata cache
-        so tag filters work identically whether the database is encrypted or plaintext.
-        """
+        """Count in SQL; stream only tag values when encrypted tag filtering is needed."""
         if not self.db_path.exists():
             return 0
+        self._ensure_initialized()
         self._maybe_lazy_flush_telemetry()
-        cache = self._get_vector_cache()
-        _, _, rows_snap = cache.snapshot(copy_matrix=False)
-        if not rows_snap:
-            return 0
-
-        type_filter = str(memory_type).strip().lower() if (memory_type and str(memory_type).strip()) else None
-        agent_filter = str(source_agent).strip() if (source_agent and str(source_agent).strip()) else None
-        req_tags: set[str] = set()
-        if tag and str(tag).strip():
-            req_tags.add(str(tag).strip().lower())
-        if tags:
-            for t in tags:
-                if str(t).strip():
-                    req_tags.add(str(t).strip().lower())
-
-        matched = 0
-        for row in rows_snap.values():
-            if not include_private and row.get("local_only"):
-                continue
-            if not include_quarantined and row.get("quarantined"):
-                continue
-            if type_filter and str(row.get("memory_type", "")).lower() != type_filter:
-                continue
-            if agent_filter and str(row.get("source_agent", "")) != agent_filter:
-                continue
-            if req_tags:
-                row_tags = {
-                    str(t).lower()
-                    for t in (row.get("tags_list") or _parse_tags_json(row.get("tags")))
-                }
-                if not req_tags.issubset(row_tags):
-                    continue
-            matched += 1
-        return matched
+        requested = {str(value).strip().lower() for value in [tag, *(tags or [])] if value and str(value).strip()}
+        type_filter = str(memory_type).strip().lower() if memory_type else None
+        agent_filter = str(source_agent).strip() if source_agent else None
+        predicates = "namespace=? AND (? OR local_only=0) AND (? OR quarantined=0)"
+        params: list[Any] = [self.namespace, bool(include_private), bool(include_quarantined)]
+        if type_filter:
+            predicates += " AND LOWER(memory_type)=?"
+            params.append(type_filter)
+        if agent_filter:
+            predicates += " AND source_agent=?"
+            params.append(agent_filter)
+        with self._read_connect() as conn:
+            if not requested:
+                return int(conn.execute(f"SELECT COUNT(*) FROM memories WHERE {predicates}", params).fetchone()[0])
+            cursor = conn.execute(f"SELECT tags FROM memories WHERE {predicates}", params)
+            try:
+                return sum(requested.issubset({str(value).lower() for value in _parse_tags_json(decrypt_text_if_encrypted(row[0] or "[]"))}) for row in cursor)
+            finally:
+                cursor.close()
 
     def clear_namespace(self) -> None:
         """
@@ -4718,15 +6748,15 @@ class MeshStore:
             clear_audit_log(self.namespace)
             return
         self.flush_access_tracking()
-        with namespace_write_lock(self.namespace):
+        with namespace_write_lock(self.namespace, data_root=self.db_path.parent):
             with _ACCESS_TRACKING_LOCK:
                 resolved = self.db_path.resolve()
                 buf = _ACCESS_TRACKING_BUFFERS.get(resolved)
                 if buf is not None and buf.namespace == self.namespace:
                     _ACCESS_TRACKING_BUFFERS.pop(resolved, None)
-            with _CACHE_LOCK:
+            with self._cache_lock:
                 with self._connect() as conn:
-                    conn.execute("BEGIN IMMEDIATE")
+                    tx_marker = _begin_write(conn, self.namespace, self._store_generation)
                     try:
                         if self._fts_enabled:
                             try:
@@ -4738,13 +6768,15 @@ class MeshStore:
                             except sqlite3.OperationalError:
                                 pass
                         conn.execute("DELETE FROM memories WHERE namespace = ?", (self.namespace,))
+                        conn.execute("DELETE FROM embedding_jobs WHERE namespace = ?", (self.namespace,))
                         conn.execute("DELETE FROM queries WHERE namespace = ?", (self.namespace,))
                         conn.execute("DELETE FROM contradictions WHERE namespace = ?", (self.namespace,))
+                        self._record_mutation_in_tx(conn, "clear")
                         self._bump_content_version_in_tx(conn)
-                        conn.commit()
+                        _commit_write(conn, tx_marker)
                     except Exception:
                         if conn.in_transaction:
-                            conn.rollback()
+                            _rollback_write(conn, tx_marker)
                         raise
                     try:
                         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -4839,84 +6871,115 @@ class MeshStore:
         best_similarity: Optional[float],
         result_count: int,
         private_query: bool = False,
+        *, expected_incarnations: Optional[dict[str, str]] = None,
     ) -> None:
-        """
-        Update in-memory `access_count`/`accessed_at` via copy-on-write immediately and
-        buffer SQLite access tracking writes.
-        All query text is passed through `redact_secrets_local` before storage.
-        If `MESH_LOG_QUERY_TEXT` is disabled (0/false/no), query text is omitted entirely.
-        """
+        """Publish synchronized access statistics and admit bounded loss-tolerant writes."""
+        global _ACCESS_TRACKING_DROPPED_ENTRIES
+        self._assert_instance_file()
         if not self.db_path.exists():
             if not self.create:
                 return
             self._ensure_initialized()
-
-        valid_ids = [mid for mid in dict.fromkeys(memory_ids) if mid]
+        valid_ids = [memory_id for memory_id in dict.fromkeys(memory_ids) if isinstance(memory_id, str) and _VALID_MEMORY_ID_RE.fullmatch(memory_id)]
+        incarnations: dict[str, str] = {}
+        if expected_incarnations is not None:
+            if not isinstance(expected_incarnations, dict):
+                raise ValueError("expected_incarnations must map memory IDs to incarnation tokens.")
+            for memory_id in valid_ids:
+                value = expected_incarnations.get(memory_id)
+                if value is not None:
+                    incarnations[memory_id] = _validate_incarnation(value, "expected_incarnation")
+        elif valid_ids:
+            # ID-only callers resolve one bounded reader snapshot. Recall callers
+            # already have validated tokens and can forward them without disk I/O.
+            with self._read_connect() as conn:
+                for offset in range(0, len(valid_ids), 512):
+                    block = valid_ids[offset:offset + 512]
+                    placeholders = ",".join("?" for _ in block)
+                    rows = conn.execute(
+                        f"SELECT id,incarnation FROM memories WHERE namespace=? AND id IN ({placeholders})",
+                        (self.namespace, *block),
+                    )
+                    incarnations.update((row["id"], row["incarnation"]) for row in rows)
+        valid_ids = [memory_id for memory_id in valid_ids if memory_id in incarnations]
         now = _utc_now_iso()
-        qid = str(uuid.uuid4())
         raw_query = (query_text or "").strip()[:512]
-        is_priv_q = bool(private_query)
-
-        # Secret redaction on query text and check setting
-        log_query_text_enabled = os.environ.get("MESH_LOG_QUERY_TEXT", "1").strip().lower() not in ("0", "false", "no")
-        if raw_query:
-            if is_credential(raw_query):
-                is_priv_q = True
-            # Always pass through secret redaction
-            clean_query = redact_secrets_local(raw_query) if log_query_text_enabled else ""
-        else:
-            clean_query = ""
-
+        is_private = bool(private_query or (raw_query and is_credential(raw_query)))
+        log_text = os.environ.get("MESH_LOG_QUERY_TEXT", "1").strip().lower() not in {"0", "false", "no"}
+        clean_query = redact_secrets_local(raw_query) if log_text and raw_query else ""
         resolved = self._resolved_db_path()
-
         with _CACHE_LOCK:
             cached = _VECTOR_CACHE.get((self.db_path, self.namespace))
-            if cached is not None:
-                for mid in valid_ids:
-                    rm = cached.rows_by_id.get(mid)
-                    if rm is not None:
-                        cached.rows_by_id[mid] = {
-                            **rm,
-                            "access_count": int(rm.get("access_count") or 0) + 1,
-                            "accessed_at": now,
-                        }
-
+        if cached is not None:
+            with cached.write_snapshot():
+                if cached._valid:
+                    for memory_id in valid_ids:
+                        row = cached.rows_by_id.get(memory_id)
+                        if row is not None and row.get("incarnation") == incarnations[memory_id] and row.get("store_generation") == self.store_generation:
+                            row["access_count"] = int(row.get("access_count") or 0) + 1
+                            row["accessed_at"] = now
         overflow_path: Optional[Path] = None
         with _ACCESS_TRACKING_LOCK:
             buf = _ACCESS_TRACKING_BUFFERS.get(resolved)
+            if buf is not None and buf.store_generation not in (None, self.store_generation):
+                _ACCESS_TRACKING_DROPPED_ENTRIES += len(buf.access_increments) + len(buf.query_rows)
+                _ACCESS_TRACKING_BUFFERS.pop(resolved)
+                buf = None
+            pending, pending_bytes = _tracking_charge_locked()
+            max_entries = env_int("MESH_MAX_ACCESS_TRACKING_ENTRIES", 10000, minimum=1)
+            max_bytes = env_int("MESH_MAX_ACCESS_TRACKING_BYTES", 8 * 1024 * 1024, minimum=1024)
             if buf is None:
                 if len(_ACCESS_TRACKING_BUFFERS) >= _get_max_pool_size():
-                    for cand_p in _ACCESS_TRACKING_BUFFERS:
-                        if cand_p != resolved:
-                            overflow_path = cand_p
-                            break
-                buf = _AccessTrackingBuffer(resolved, self.namespace)
-                _ACCESS_TRACKING_BUFFERS[resolved] = buf
-            if buf.event_count == 0:
-                buf.first_event_ts = time.monotonic()
-            buf.event_count += 1
-            for mid in valid_ids:
-                prev_cnt, _ = buf.access_increments.get(mid, (0, now))
-                buf.access_increments[mid] = (prev_cnt + 1, now)
-            if clean_query or not log_query_text_enabled:
-                buf.query_rows.append(
-                    (
-                        qid,
-                        self.namespace,
-                        clean_query,
-                        agent_id or "unknown",
-                        float(best_similarity) if best_similarity is not None else None,
-                        int(result_count),
-                        now,
-                        1 if is_priv_q else 0,
+                    overflow_path = next(iter(_ACCESS_TRACKING_BUFFERS))
+                else:
+                    candidate = _AccessTrackingBuffer(resolved, self.namespace, self.store_generation)
+                    if pending_bytes + candidate.byte_charge <= max_bytes:
+                        buf = candidate
+                        pending_bytes += candidate.byte_charge
+                        _ACCESS_TRACKING_BUFFERS[resolved] = buf
+            if buf is None:
+                _ACCESS_TRACKING_DROPPED_ENTRIES += len(valid_ids) + int(bool(clean_query or not log_text))
+            else:
+                if buf.event_count == 0:
+                    buf.first_event_ts = time.monotonic()
+                buf.event_count += 1
+                for memory_id in valid_ids:
+                    previous = buf.access_increments.get(memory_id)
+                    if previous is not None and buf.access_incarnations.get(memory_id) != incarnations[memory_id]:
+                        _ACCESS_TRACKING_DROPPED_ENTRIES += 1
+                        buf.access_increments.pop(memory_id)
+                        buf.access_incarnations.pop(memory_id, None)
+                        retired_charge = _access_entry_bytes(memory_id, previous[1])
+                        buf.byte_charge -= retired_charge
+                        pending -= 1
+                        pending_bytes -= retired_charge
+                        previous = None
+                    if previous is not None:
+                        buf.access_increments[memory_id] = (previous[0] + 1, now)
+                        continue
+                    charge = _access_entry_bytes(memory_id, now)
+                    if pending >= max_entries or pending_bytes + charge > max_bytes:
+                        _ACCESS_TRACKING_DROPPED_ENTRIES += 1
+                        continue
+                    buf.access_increments[memory_id] = (1, now)
+                    buf.access_incarnations[memory_id] = incarnations[memory_id]
+                    buf.byte_charge += charge
+                    pending += 1
+                    pending_bytes += charge
+                if clean_query or not log_text:
+                    query_row = (
+                        str(uuid.uuid4()), self.namespace, clean_query,
+                        str(agent_id or "unknown")[:128], float(best_similarity) if best_similarity is not None else None,
+                        int(result_count), now, int(is_private),
                     )
-                )
-
+                    charge = _query_entry_bytes(query_row)
+                    if pending < max_entries and pending_bytes + charge <= max_bytes:
+                        buf.query_rows.append(query_row)
+                        buf.byte_charge += charge
+                    else:
+                        _ACCESS_TRACKING_DROPPED_ENTRIES += 1
         if overflow_path is not None:
-            try:
-                _flush_access_tracking_for_db_path(overflow_path)
-            except Exception:
-                pass
+            _flush_access_tracking_for_db_path(overflow_path)
         self._maybe_lazy_flush_access_tracking()
 
     # Backward-compatibility alias
@@ -4941,8 +7004,8 @@ class MeshStore:
         now = _utc_now_iso()
         enc_on = is_encryption_enabled()
 
-        with namespace_write_lock(self.namespace):
-            with _CACHE_LOCK:
+        with namespace_write_lock(self.namespace, data_root=self.db_path.parent):
+            with self._cache_lock:
                 synced_cache = self._is_cache_synced_locked()
                 existing_is_private = bool(existing_local_only)
                 if existing_local_only is None and existing_memory_id:
@@ -4969,7 +7032,7 @@ class MeshStore:
                 db_existing = encrypt_text_for_storage(safe_existing) if enc_on else safe_existing
 
                 with self._connect() as conn:
-                    conn.execute("BEGIN IMMEDIATE")
+                    tx_marker = _begin_write(conn, self.namespace, self._store_generation)
                     try:
                         conn.execute(
                             """
@@ -4989,10 +7052,10 @@ class MeshStore:
                                 now,
                             ),
                         )
-                        conn.commit()
+                        _commit_write(conn, tx_marker)
                     except Exception:
                         if conn.in_transaction:
-                            conn.rollback()
+                            _rollback_write(conn, tx_marker)
                         raise
             self._refresh_cache_stamp_after_non_memory_write()
         return cid
@@ -5002,7 +7065,7 @@ class MeshStore:
         if not self.db_path.exists():
             return []
         res_flag = 1 if resolved else 0
-        with _CACHE_LOCK:
+        with self._cache_lock:
             with self._connect() as conn:
                 conn.row_factory = sqlite3.Row
                 rows = conn.execute(
@@ -5033,10 +7096,10 @@ class MeshStore:
                 f"Contradiction ID '{contradiction_id}' not found in namespace '{self.namespace}'."
             )
 
-        with namespace_write_lock(self.namespace):
-            with _CACHE_LOCK:
+        with namespace_write_lock(self.namespace, data_root=self.db_path.parent):
+            with self._cache_lock:
                 with self._connect() as conn:
-                    conn.execute("BEGIN IMMEDIATE")
+                    tx_marker = _begin_write(conn, self.namespace, self._store_generation)
                     try:
                         rows = conn.execute(
                             "SELECT id FROM contradictions WHERE namespace = ?",
@@ -5071,11 +7134,11 @@ class MeshStore:
                             "UPDATE contradictions SET resolved = 1 WHERE id = ? AND namespace = ?",
                             (target_id, self.namespace),
                         )
-                        conn.commit()
+                        _commit_write(conn, tx_marker)
                         updated = cur.rowcount > 0
                     except Exception:
                         if conn.in_transaction:
-                            conn.rollback()
+                            _rollback_write(conn, tx_marker)
                         raise
 
             self._refresh_cache_stamp_after_non_memory_write()
@@ -5101,7 +7164,7 @@ class MeshStore:
         ]
 
         priv_q_filter = "" if include_private else "AND COALESCE(private_query, 0) = 0"
-        with _CACHE_LOCK:
+        with self._cache_lock:
             with self._connect() as conn:
                 conn.row_factory = sqlite3.Row
                 raw_q_rows = conn.execute(
@@ -5202,37 +7265,84 @@ class MeshStore:
     # Work Items & Work Events (Goals, Tasks, Project Brief, Changelog)
     # =========================================================================
 
+    @staticmethod
+    def _encrypt_work_text(value: Optional[str], *, key: Optional[bytes] = None) -> Optional[str]:
+        if value is None or is_encrypted_text(value):
+            return value
+        if key is None and not is_encryption_enabled():
+            return value
+        return encrypt_text_for_storage(value, key=key)
+
+    @staticmethod
+    def _encrypt_work_tables_in_tx(conn: sqlite3.Connection, *, key: Optional[bytes] = None) -> bool:
+        changed = False
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        for table, fields in (("work_items", ("title", "description", "summary", "tags", "evidence")), ("work_events", ("note",))):
+            if table not in tables:
+                continue
+            columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+            selected_fields = [field for field in fields if field in columns]
+            if not selected_fields:
+                continue
+            cursor = conn.execute(f"SELECT id,{','.join(selected_fields)} FROM {table}")
+            try:
+                while batch := cursor.fetchmany(64):
+                    updates = []
+                    for row in batch:
+                        values = [MeshStore._encrypt_work_text(value, key=key) for value in row[1:]]
+                        if values != list(row[1:]):
+                            updates.append([*values, row[0]])
+                    if updates:
+                        changed = True
+                        assignments = ",".join(f"{field}=?" for field in selected_fields)
+                        conn.executemany(f"UPDATE {table} SET {assignments} WHERE id=?", updates)
+            finally:
+                cursor.close()
+        return changed
+
+    def _finish_work_encryption_cleanup(self) -> None:
+        """Retry physical cleanup until legacy plaintext no longer occupies live files."""
+        close_store_readers(self.db_path)
+        with self._connect() as conn:
+            if conn.in_transaction:
+                raise RuntimeError("Encrypted task cleanup requires the enclosing transaction to finish.")
+            for vacuum in (True, False):
+                result = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+                if int(result[0]) != 0:
+                    raise RuntimeError("Encrypted task upgrade committed; physical cleanup is waiting for active readers. Retry after they finish.")
+                if vacuum:
+                    conn.execute("VACUUM")
+            marker = _begin_write(conn, self.namespace, self._store_generation)
+            try:
+                conn.execute("UPDATE mesh_meta SET value='0' WHERE key='work_encryption_cleanup_pending'")
+                _commit_write(conn, marker)
+            except BaseException:
+                _rollback_write(conn, marker)
+                raise
+        secure_file_permissions(self.db_path)
+
     def _resolve_work_item_locked(self, conn: sqlite3.Connection, item_id: str) -> Optional[dict[str, Any]]:
-        clean_id = (item_id or "").strip()
-        if not clean_id:
-            return None
-        # 1. Exact UUID
-        row = conn.execute(
-            "SELECT * FROM work_items WHERE namespace = ? AND id = ?",
-            (self.namespace, clean_id),
-        ).fetchone()
-        if row:
+        clean = validate_memory_id(item_id)
+        row = conn.execute("SELECT * FROM work_items WHERE namespace=? AND id=?", (self.namespace, clean)).fetchone()
+        if row is not None:
             return dict(row)
-        # 2. Exact short_id (e.g. task-1, goal-2)
-        row = conn.execute(
-            "SELECT * FROM work_items WHERE namespace = ? AND lower(short_id) = lower(?)",
-            (self.namespace, clean_id),
-        ).fetchone()
-        if row:
-            return dict(row)
-        # 3. Hex prefix match on id (at least 4 chars)
-        if len(clean_id) >= 4:
+        rows = conn.execute(
+            "SELECT * FROM work_items WHERE namespace=? AND short_id=? COLLATE NOCASE LIMIT 2", (self.namespace, clean),
+        ).fetchall()
+        if not rows and len(clean) >= 4:
+            escaped = clean.replace("_", "\\_").replace("%", "\\%")
             rows = conn.execute(
-                "SELECT * FROM work_items WHERE namespace = ? AND id LIKE ? || '%'",
-                (self.namespace, clean_id),
+                "SELECT * FROM work_items WHERE namespace=? AND id LIKE ? ESCAPE '\\' LIMIT 2", (self.namespace, escaped + "%"),
             ).fetchall()
-            if len(rows) == 1:
-                return dict(rows[0])
+        if len(rows) == 1:
+            return dict(rows[0])
+        if len(rows) > 1:
+            raise ValueError("Ambiguous work item ID; provide the complete ID.")
         return None
 
     def _not_found_error_message(self, conn: sqlite3.Connection, item_id: str) -> str:
         rows = conn.execute(
-            "SELECT short_id, title FROM work_items WHERE namespace = ? ORDER BY created_at DESC LIMIT 5",
+            "SELECT short_id FROM work_items WHERE namespace = ? AND local_only=0 ORDER BY created_at DESC LIMIT 5",
             (self.namespace,),
         ).fetchall()
         if not rows:
@@ -5240,7 +7350,7 @@ class MeshStore:
                 f"Work item '{item_id}' not found in namespace '{self.namespace}'. "
                 "No work items exist yet in this namespace; use mesh_task_create to create one first."
             )
-        available = [f"{r[0]} ({r[1][:30]})" for r in rows]
+        available = [str(r[0]) for r in rows]
         return (
             f"Work item '{item_id}' not found in namespace '{self.namespace}'. "
             f"Available work items: {', '.join(available)}."
@@ -5270,6 +7380,9 @@ class MeshStore:
         tags: Optional[list[str]] = None,
         created_by: str = "agent",
         local_only: bool = False,
+        *,
+        include_private: bool = True,
+        expected_source_agent: Optional[str] = None,
     ) -> dict[str, Any]:
         self._ensure_initialized()
         clean_kind = str(kind or "task").strip().lower()
@@ -5297,11 +7410,12 @@ class MeshStore:
 
         clean_tags, tags_priv, _ = guard_tags(tags or [], local_only=is_priv)
         is_priv = bool(is_priv or tags_priv)
+        self._check_mutation_permission(False, created_by, True, expected_source_agent)
 
         item_uuid = uuid.uuid4().hex
         now_iso = _utc_now_iso()
 
-        with namespace_write_lock(self.namespace):
+        with self.write_transaction():
             with self._connect() as conn:
                 conn.row_factory = sqlite3.Row
                 resolved_parent: Optional[str] = None
@@ -5309,7 +7423,12 @@ class MeshStore:
                     parent_row = self._resolve_work_item_locked(conn, parent_id)
                     if not parent_row:
                         raise ValueError(f"Parent {self._not_found_error_message(conn, parent_id)}")
+                    self._check_mutation_permission(
+                        bool(parent_row["local_only"]), parent_row["created_by"],
+                        include_private, expected_source_agent,
+                    )
                     resolved_parent = parent_row["id"]
+                    is_priv = bool(is_priv or parent_row["local_only"])
 
                 count_row = conn.execute(
                     "SELECT COUNT(*) FROM work_items WHERE namespace = ? AND kind = ?",
@@ -5325,7 +7444,7 @@ class MeshStore:
                     INSERT INTO work_items
                     (id, short_id, namespace, kind, parent_id, title, description, status, priority,
                      created_by, created_at, started_at, completed_at, completed_by, summary, evidence, tags, local_only)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, 'todo', ?, ?, ?, NULL, NULL, NULL, NULL, '[]', ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'todo', ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?)
                     """,
                     (
                         item_uuid,
@@ -5333,12 +7452,13 @@ class MeshStore:
                         self.namespace,
                         clean_kind,
                         resolved_parent,
-                        clean_title,
-                        clean_desc,
+                        self._encrypt_work_text(clean_title),
+                        self._encrypt_work_text(clean_desc),
                         clean_priority,
                         str(created_by or "agent"),
                         now_iso,
-                        json.dumps(clean_tags),
+                        self._encrypt_work_text("[]"),
+                        self._encrypt_work_text(json.dumps(clean_tags)),
                         1 if is_priv else 0,
                     ),
                 )
@@ -5351,17 +7471,16 @@ class MeshStore:
                     (
                         item_uuid,
                         self.namespace,
-                        f"Created {clean_kind}: {clean_title}",
+                        self._encrypt_work_text(f"Created {clean_kind}: {clean_title}"),
                         str(created_by or "agent"),
                         now_iso,
                     ),
                 )
                 row = conn.execute("SELECT * FROM work_items WHERE id = ?", (item_uuid,)).fetchone()
-                item_dict = dict(row)
-                item_dict["tags"] = clean_tags
-                item_dict["evidence"] = []
+                item_dict = self._deserialize_work_item_row(row)
+                self._record_mutation_in_tx(conn, "task_create", item_uuid)
             self._refresh_cache_stamp_after_non_memory_write()
-            return item_dict
+            return self._mutation_result(item_dict, include_private)
 
     def update_work_item(
         self,
@@ -5372,15 +7491,21 @@ class MeshStore:
         description: Optional[str] = None,
         note: Optional[str] = None,
         agent_id: str = "agent",
+        *,
+        include_private: bool = True,
+        expected_source_agent: Optional[str] = None,
     ) -> dict[str, Any]:
         self._ensure_initialized()
         now_iso = _utc_now_iso()
-        with namespace_write_lock(self.namespace):
+        with self.write_transaction():
             with self._connect() as conn:
                 conn.row_factory = sqlite3.Row
                 item = self._resolve_work_item_locked(conn, item_id)
                 if not item:
                     raise ValueError(self._not_found_error_message(conn, item_id))
+                self._check_mutation_permission(
+                    bool(item["local_only"]), item["created_by"], include_private, expected_source_agent,
+                )
 
                 full_id = item["id"]
                 updates: list[str] = []
@@ -5388,6 +7513,7 @@ class MeshStore:
                 old_status = item["status"]
                 new_status = old_status
                 event_type = "updated"
+                is_priv = bool(item["local_only"])
 
                 if status is not None:
                     clean_status = str(status).strip().lower()
@@ -5423,9 +7549,10 @@ class MeshStore:
                     if guard_t.rejected:
                         raise ValueError(f"Title rejected: {guard_t.reason}")
                     updates.append("title = ?")
-                    params.append(guard_t.content.strip())
+                    params.append(self._encrypt_work_text(guard_t.content.strip()))
                     if guard_t.local_only and not item["local_only"]:
                         updates.append("local_only = 1")
+                        is_priv = True
 
                 if description is not None:
                     if str(description).strip():
@@ -5433,19 +7560,24 @@ class MeshStore:
                         if guard_d.rejected:
                             raise ValueError(f"Description rejected: {guard_d.reason}")
                         updates.append("description = ?")
-                        params.append(guard_d.content.strip())
+                        params.append(self._encrypt_work_text(guard_d.content.strip()))
                         if guard_d.local_only and not item["local_only"]:
                             updates.append("local_only = 1")
+                            is_priv = True
                     else:
                         updates.append("description = ?")
-                        params.append("")
+                        params.append(self._encrypt_work_text(""))
 
                 clean_note = None
                 if note is not None and str(note).strip():
-                    guard_n = guard_ingest(note)
+                    guard_n = guard_ingest(note, local_only=is_priv)
+                    if guard_n.rejected:
+                        raise ValueError("Work event note rejected by ingestion guard.")
                     clean_note = guard_n.content.strip()
                     if guard_n.local_only and not item["local_only"]:
                         updates.append("local_only = 1")
+                        is_priv = True
+
 
                 if updates:
                     params.append(full_id)
@@ -5463,17 +7595,16 @@ class MeshStore:
                         event_type,
                         old_status if status is not None else None,
                         new_status if status is not None else None,
-                        clean_note,
+                        self._encrypt_work_text(clean_note),
                         str(agent_id or "agent"),
                         now_iso,
                     ),
                 )
                 updated_row = conn.execute("SELECT * FROM work_items WHERE id = ?", (full_id,)).fetchone()
-                res = dict(updated_row)
-                res["tags"] = json.loads(res.get("tags") or "[]")
-                res["evidence"] = json.loads(res.get("evidence") or "[]")
+                res = self._deserialize_work_item_row(updated_row)
+                self._record_mutation_in_tx(conn, "task_update", full_id)
             self._refresh_cache_stamp_after_non_memory_write()
-            return res
+            return self._mutation_result(res, include_private)
 
     def complete_work_item(
         self,
@@ -5482,6 +7613,9 @@ class MeshStore:
         evidence: Optional[list[str]] = None,
         note: Optional[str] = None,
         agent_id: str = "agent",
+        *,
+        include_private: bool = True,
+        expected_source_agent: Optional[str] = None,
     ) -> dict[str, Any]:
         self._ensure_initialized()
         clean_sum = (summary or "").strip()
@@ -5493,26 +7627,46 @@ class MeshStore:
             raise ValueError(f"Summary rejected: {guard_s.reason}")
 
         now_iso = _utc_now_iso()
-        valid_ev: list[str] = [str(x).strip() for x in (evidence or []) if str(x).strip()]
+        if evidence is not None and not isinstance(evidence, list):
+            raise ValueError("Evidence must be a list of strings.")
+        if len(evidence or []) > 100:
+            raise ValueError("At most 100 evidence references are permitted.")
+        valid_ev: list[str] = []
+        evidence_private = False
+        for reference in evidence or []:
+            if not isinstance(reference, str) or len(reference) > 2048:
+                raise ValueError("Evidence references must be strings of at most 2048 characters.")
+            if not reference.strip():
+                continue
+            guarded_reference = guard_ingest(reference)
+            if guarded_reference.rejected:
+                raise ValueError("Evidence reference rejected by ingestion guard.")
+            valid_ev.append(guarded_reference.content.strip())
+            evidence_private = evidence_private or guarded_reference.local_only
 
         clean_note = None
         guard_n = None
         if note is not None and str(note).strip():
             guard_n = guard_ingest(note)
+            if guard_n.rejected:
+                raise ValueError("Work event note rejected by ingestion guard.")
             clean_note = guard_n.content.strip()
         else:
             clean_note = guard_s.content.strip()
 
-        with namespace_write_lock(self.namespace):
+        with self.write_transaction():
             with self._connect() as conn:
                 conn.row_factory = sqlite3.Row
                 item = self._resolve_work_item_locked(conn, item_id)
                 if not item:
                     raise ValueError(self._not_found_error_message(conn, item_id))
+                self._check_mutation_permission(
+                    bool(item["local_only"]), item["created_by"], include_private, expected_source_agent,
+                )
 
                 full_id = item["id"]
                 old_status = item["status"]
-                is_priv = bool(item["local_only"] or guard_s.local_only or (guard_n and guard_n.local_only))
+                is_priv = bool(item["local_only"] or guard_s.local_only or evidence_private or (guard_n and guard_n.local_only))
                 conn.execute(
                     """
                     UPDATE work_items
@@ -5527,8 +7681,8 @@ class MeshStore:
                     (
                         now_iso,
                         str(agent_id or "agent"),
-                        guard_s.content.strip(),
-                        json.dumps(valid_ev),
+                        self._encrypt_work_text(guard_s.content.strip()),
+                        self._encrypt_work_text(json.dumps(valid_ev)),
                         1 if is_priv else 0,
                         full_id,
                     ),
@@ -5543,17 +7697,16 @@ class MeshStore:
                         full_id,
                         self.namespace,
                         old_status,
-                        clean_note,
+                        self._encrypt_work_text(clean_note),
                         str(agent_id or "agent"),
                         now_iso,
                     ),
                 )
                 updated_row = conn.execute("SELECT * FROM work_items WHERE id = ?", (full_id,)).fetchone()
-                res = dict(updated_row)
-                res["tags"] = json.loads(res.get("tags") or "[]")
-                res["evidence"] = valid_ev
+                res = self._deserialize_work_item_row(updated_row)
+                self._record_mutation_in_tx(conn, "task_complete", full_id)
             self._refresh_cache_stamp_after_non_memory_write()
-            return res
+            return self._mutation_result(res, include_private)
 
     def _deserialize_work_item_row(self, row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
         d = dict(row)
@@ -5561,8 +7714,8 @@ class MeshStore:
         d["description"] = decrypt_text_if_encrypted(d.get("description") or "")
         if d.get("summary"):
             d["summary"] = decrypt_text_if_encrypted(d["summary"])
-        d["tags"] = json.loads(d.get("tags") or "[]")
-        d["evidence"] = json.loads(d.get("evidence") or "[]")
+        d["tags"] = json.loads(decrypt_text_if_encrypted(d.get("tags")) or "[]")
+        d["evidence"] = json.loads(decrypt_text_if_encrypted(d.get("evidence")) or "[]")
         d["local_only"] = bool(d.get("local_only"))
         return d
 
@@ -5574,7 +7727,7 @@ class MeshStore:
 
     def get_work_item(self, item_id: str, include_private: bool = True) -> Optional[dict[str, Any]]:
         self._ensure_initialized()
-        with self._connect() as conn:
+        with self._read_connect() as conn:
             conn.row_factory = sqlite3.Row
             item = self._resolve_work_item_locked(conn, item_id)
             if not item:
@@ -5593,7 +7746,7 @@ class MeshStore:
     ) -> list[dict[str, Any]]:
         self._ensure_initialized()
         safe_limit = max(1, min(1000, int(limit or 50)))
-        with self._connect() as conn:
+        with self._read_connect() as conn:
             conn.row_factory = sqlite3.Row
             query = "SELECT * FROM work_items WHERE namespace = ?"
             params: list[Any] = [self.namespace]
@@ -5628,25 +7781,32 @@ class MeshStore:
             rows = conn.execute(query, params).fetchall()
             return [self._deserialize_work_item_row(r) for r in rows]
 
-    def get_work_events(self, item_id: Optional[str] = None, limit: int = 50) -> list[dict[str, Any]]:
+    def get_work_events(
+        self, item_id: Optional[str] = None, limit: int = 50, *, include_private: bool = False,
+    ) -> list[dict[str, Any]]:
         self._ensure_initialized()
         safe_limit = max(1, min(1000, int(limit or 50)))
-        with self._connect() as conn:
+        with self._read_connect() as conn:
             conn.row_factory = sqlite3.Row
-            query = "SELECT * FROM work_events WHERE namespace = ?"
+            query = (
+                "SELECT e.* FROM work_events e JOIN work_items w ON w.id=e.item_id AND w.namespace=e.namespace "
+                "WHERE e.namespace=?"
+            )
             params: list[Any] = [self.namespace]
+            if not include_private:
+                query += " AND w.local_only=0"
             if item_id:
                 target = self._resolve_work_item_locked(conn, item_id)
                 target_id = target["id"] if target else item_id
-                query += " AND item_id = ?"
+                query += " AND e.item_id = ?"
                 params.append(target_id)
-            query += " ORDER BY timestamp DESC, id DESC LIMIT ?"
+            query += " ORDER BY e.timestamp DESC, e.id DESC LIMIT ?"
             params.append(safe_limit)
             return [self._deserialize_work_event_row(r) for r in conn.execute(query, params).fetchall()]
 
-    def get_work_item_stats(self) -> dict[str, Any]:
+    def get_work_item_stats(self, include_private: bool = False) -> dict[str, Any]:
         self._ensure_initialized()
-        with self._connect() as conn:
+        with self._read_connect() as conn:
             row = conn.execute(
                 """
                 SELECT
@@ -5659,9 +7819,9 @@ class MeshStore:
                     COALESCE(SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END), 0) AS done,
                     COALESCE(SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END), 0) AS cancelled
                 FROM work_items
-                WHERE namespace = ?
+                WHERE namespace = ? AND (? OR local_only=0)
                 """,
-                (self.namespace,),
+                (self.namespace, bool(include_private)),
             ).fetchone()
             if not row:
                 return {
@@ -5703,137 +7863,243 @@ class MeshStore:
         max_tokens: int = 500,
         include_work_items: bool = True,
         include_private: bool = False,
+        *,
+        max_facts: int = 20,
+        fact_offset: int = 0,
     ) -> dict[str, Any]:
+        """Select current facts and work in one read snapshot without loading vectors.
+
+        The token limit budgets Markdown; the complete serialized envelope has a
+        separate estimate. Both estimates use characters/4, not a model tokenizer.
+        """
+        from .brief import BriefTextBudget, finalize_project_brief, validate_brief_options
+
+        validate_brief_options(max_tokens, max_facts, fact_offset)
         self._ensure_initialized()
-        open_items = (
-            self.list_work_items(status="open", include_private=include_private, limit=10)
-            if include_work_items
-            else []
+        now = _utc_now()
+        privacy = "" if include_private else " AND local_only=0"
+        visible = f"namespace=? AND quarantined=0{privacy}"
+        effective = (
+            "ROUND(confidence * CASE WHEN ttl_days>0 AND "
+            "julianday(COALESCE(decay_start_at,created_at)) IS NOT NULL THEN "
+            "MAX(0.0,MIN(1.0,1.0-MAX(0.0,julianday(?)-"
+            "julianday(COALESCE(decay_start_at,created_at)))/ttl_days)) ELSE 1.0 END,4)"
         )
-        with self._connect() as conn:
+        current = f"{visible} AND {effective}>=?"
+        current_params = (self.namespace, now.isoformat(), STALE_THRESHOLD)
+        types = ("decision", "process", "preference", "fact")
+        fact_rows: list[dict[str, Any]] = []
+        handoff: Optional[dict[str, Any]] = None
+        open_items: list[dict[str, Any]] = []
+        recent_items: list[dict[str, Any]] = []
+        with self._read_connect() as conn:
             conn.row_factory = sqlite3.Row
-            total_mems = conn.execute(
-                "SELECT COUNT(*) FROM memories WHERE namespace = ?",
-                (self.namespace,),
-            ).fetchone()[0]
+            owns_read = not conn.in_transaction
+            if owns_read:
+                conn.execute("BEGIN")
+            try:
+                total_mems = int(conn.execute(
+                    f"SELECT COUNT(*) FROM memories WHERE {visible}", (self.namespace,),
+                ).fetchone()[0])
+                counts = {kind: 0 for kind in types}
+                for row in conn.execute(
+                    f"SELECT memory_type,COUNT(*) AS total FROM memories WHERE {current} "
+                    "AND memory_type IN ('decision','process','preference','fact') GROUP BY memory_type",
+                    current_params,
+                ).fetchall():
+                    counts[row["memory_type"]] = int(row["total"])
+                facts_available = sum(counts.values())
+                content_version = self._read_content_version_locked(conn) or 0
+                event_revision = int(conn.execute(
+                    "SELECT COALESCE(MAX(id),0) FROM work_events WHERE namespace=?", (self.namespace,),
+                ).fetchone()[0])
+                contradiction_privacy = "" if include_private else " AND n.local_only=0 AND e.local_only=0"
+                contradictions_count = int(conn.execute(
+                    "SELECT COUNT(*) FROM contradictions c JOIN memories n ON n.id=c.new_memory_id "
+                    "AND n.namespace=c.namespace JOIN memories e ON e.id=c.existing_memory_id "
+                    "AND e.namespace=c.namespace WHERE c.namespace=? AND c.resolved=0 "
+                    f"AND n.quarantined=0 AND e.quarantined=0{contradiction_privacy}",
+                    (self.namespace,),
+                ).fetchone()[0])
 
-            completed_recent = []
-            if include_work_items:
-                two_days_ago = datetime.fromtimestamp(
-                    datetime.now(timezone.utc).timestamp() - 172800, tz=timezone.utc
-                ).isoformat()
-                c_rows = conn.execute(
-                    """
-                    SELECT * FROM work_items
-                    WHERE namespace = ? AND status = 'done' AND completed_at >= ?
-                    ORDER BY completed_at DESC LIMIT 5
-                    """,
-                    (self.namespace, two_days_ago),
-                ).fetchall()
-                for r in c_rows:
-                    cd = dict(r)
-                    cd["tags"] = json.loads(cd.get("tags") or "[]")
-                    cd["evidence"] = json.loads(cd.get("evidence") or "[]")
-                    completed_recent.append(cd)
+                # Skip complete rounds natively; pagination never decrypts skipped bodies.
+                target = min(max_facts, max(0, facts_available - fact_offset))
+                if target:
+                    lo, hi = 0, max(counts.values()) + 1
+                    while lo + 1 < hi:
+                        level = (lo + hi) // 2
+                        if sum(min(count, level) for count in counts.values()) <= fact_offset:
+                            lo = level
+                        else:
+                            hi = level
+                    offsets = {kind: min(counts[kind], lo) for kind in types}
+                    residual = fact_offset - sum(offsets.values())
+                    active_types = [kind for kind in types if offsets[kind] < counts[kind]]
+                    for kind in active_types[:residual]:
+                        if residual and offsets[kind] < counts[kind]:
+                            offsets[kind] += 1
+                    ordered_types = active_types[residual:] + active_types[:residual]
+                    cursors: list[sqlite3.Cursor] = []
+                    try:
+                        for kind in ordered_types:
+                            cursors.append(conn.execute(
+                                f"SELECT id,memory_type,revision,updated_at,created_at FROM memories WHERE {current} "
+                                "AND memory_type=? ORDER BY updated_at DESC,id LIMIT ? OFFSET ?",
+                                (*current_params, kind, target, offsets[kind]),
+                            ))
+                        while len(fact_rows) < target:
+                            progressed = False
+                            for cursor in cursors:
+                                row = cursor.fetchone()
+                                if row is not None:
+                                    fact_rows.append(dict(row))
+                                    progressed = True
+                                    if len(fact_rows) == target:
+                                        break
+                            if not progressed:
+                                break
+                    finally:
+                        for cursor in cursors:
+                            cursor.close()
+                    selected_ids = [row["id"] for row in fact_rows]
+                    placeholders = ",".join("?" for _ in selected_ids)
+                    bodies = {row["id"]: decrypt_text_if_encrypted(row["content"]) for row in conn.execute(
+                        f"SELECT id,content FROM memories WHERE namespace=? AND id IN ({placeholders})",
+                        (self.namespace, *selected_ids),
+                    ).fetchall()}
+                    for row in fact_rows:
+                        row["content"] = bodies[row["id"]]
 
-            contradictions_count = conn.execute(
-                "SELECT COUNT(*) FROM contradictions WHERE namespace = ? AND resolved = 0",
-                (self.namespace,),
-            ).fetchone()[0]
-
-            if total_mems == 0 and not open_items and not completed_recent:
-                msg = (
-                    f"# Project Brief: {self.namespace}\n\n"
-                    f"*Namespace state:* `new_or_empty` (empty)\n"
-                    f"No memories, goals, or tasks exist yet in this namespace. "
-                    f"Use `mesh_learn` to record durable conventions/facts and `mesh_task_create` to track work."
+                # Only tag metadata is scanned when encryption hides the handoff tag.
+                cursor = conn.execute(
+                    f"SELECT id,tags,revision,updated_at FROM memories WHERE {current} AND memory_type='context' "
+                    "ORDER BY updated_at DESC,id", current_params,
                 )
-                return {
-                    "namespace": self.namespace,
-                    "namespace_state": "new_or_empty",
-                    "total_memories": 0,
-                    "open_tasks_count": 0,
-                    "completed_recent_count": 0,
-                    "pending_contradictions": 0,
-                    "brief_markdown": msg,
-                    "estimated_tokens": max(1, len(msg) // 4),
-                }
+                try:
+                    for row in cursor:
+                        tags = _parse_tags_json(decrypt_text_if_encrypted(row["tags"]))
+                        if "handoff" in {tag.casefold() for tag in tags}:
+                            handoff = dict(row)
+                            body = conn.execute(
+                                "SELECT content FROM memories WHERE namespace=? AND id=?",
+                                (self.namespace, row["id"]),
+                            ).fetchone()
+                            handoff["content"] = decrypt_text_if_encrypted(body[0])
+                            break
+                finally:
+                    cursor.close()
 
-            key_mems = []
-            priv_filter = "AND local_only = 0" if not include_private else ""
-            km_rows = conn.execute(
-                f"""
-                SELECT id, content, memory_type, confidence, tags
-                FROM memories
-                WHERE namespace = ? AND quarantined = 0 {priv_filter}
-                  AND memory_type IN ('fact', 'decision', 'process', 'preference')
-                ORDER BY confidence DESC, accessed_at DESC LIMIT 5
-                """,
-                (self.namespace,),
-            ).fetchall()
-            for r in km_rows:
-                dec_c = decrypt_text_if_encrypted(r["content"])
-                key_mems.append({
-                    "id": r["id"],
-                    "content": dec_c[:160] + "..." if len(dec_c) > 160 else dec_c,
-                    "type": r["memory_type"],
-                })
+                work_visible = f"namespace=?{privacy}"
+                open_count = recent_count = 0
+                if include_work_items:
+                    open_count = int(conn.execute(
+                        f"SELECT COUNT(*) FROM work_items WHERE {work_visible} AND status IN ('todo','in_progress','blocked')",
+                        (self.namespace,),
+                    ).fetchone()[0])
+                    recent_cutoff = (now - timedelta(days=2)).isoformat()
+                    recent_count = int(conn.execute(
+                        f"SELECT COUNT(*) FROM work_items WHERE {work_visible} AND status='done' AND completed_at>=?",
+                        (self.namespace, recent_cutoff),
+                    ).fetchone()[0])
+                    open_items = [dict(row) for row in conn.execute(
+                        f"SELECT id,short_id,title,status,priority FROM work_items WHERE {work_visible} "
+                        "AND status IN ('todo','in_progress','blocked') ORDER BY "
+                        "CASE priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,created_at DESC,id LIMIT 5",
+                        (self.namespace,),
+                    ).fetchall()]
+                    recent_items = [dict(row) for row in conn.execute(
+                        f"SELECT id,short_id,title,summary FROM work_items WHERE {work_visible} "
+                        "AND status='done' AND completed_at>=? ORDER BY completed_at DESC,id LIMIT 3",
+                        (self.namespace, recent_cutoff),
+                    ).fetchall()]
+            finally:
+                if owns_read:
+                    conn.rollback()
 
-            lines: list[str] = [
-                f"# Project Brief: {self.namespace}",
-                f"**Health:** {total_mems} memories | {len(open_items)} open work items | {contradictions_count} pending contradictions",
-                "",
-            ]
+        text = BriefTextBudget(max_tokens)
+        limit_chars = text.limit_chars
+        lines = text.lines
+        append_line = text.append_line
 
-            if open_items:
-                lines.append("## Open Goals & Tasks")
-                for it in open_items[:5]:
-                    p_badge = f"[{it['priority'].upper()}]" if it["priority"] in ("high", "critical") else ""
-                    lines.append(f"- **{it['short_id']}** {p_badge} ({it['status']}): {it['title']}")
-                lines.append("")
+        def compact(text: Optional[str], limit: int) -> str:
+            value = " ".join(str(text or "").split())
+            return value if len(value) <= limit else value[:max(0, limit - 1)] + "?"
 
-            if completed_recent:
-                lines.append("## Recently Completed (Past 48h)")
-                for it in completed_recent[:4]:
-                    summ = it.get("summary") or "Done"
-                    if len(summ) > 120:
-                        summ = summ[:117] + "..."
-                    lines.append(f"- **{it['short_id']}**: {it['title']} — *{summ}*")
-                lines.append("")
+        append_line(f"# Project Brief: {self.namespace}")
+        append_line(f"{total_mems} visible memories | {open_count} open work items | {contradictions_count} pending contradictions")
+        included_ids: list[str] = []
+        handoff_id: Optional[str] = None
+        work_included = recent_included = 0
+        active = bool(total_mems or open_count or recent_count)
+        if not active:
+            append_line("Namespace state: new_or_empty. Record durable facts and create work items when needed.")
+        else:
+            notice_reserve = min(128, max(0, limit_chars - len("\n".join(lines)))) if facts_available else 0
+            remaining = max(0, limit_chars - len("\n".join(lines)) - notice_reserve - 24)
+            fact_capacity = int(remaining * 0.75) if handoff or open_items or recent_items else remaining
+            row_chars = min(512, max(160, fact_capacity // max(1, len(fact_rows))))
+            facts_header = "\n## Current Facts & Decisions"
+            if fact_rows and len("\n".join(lines)) + len(facts_header) + row_chars + notice_reserve < limit_chars:
+                append_line(facts_header, reserve=notice_reserve)
+                facts_start = len("\n".join(lines))
+                for row in fact_rows:
+                    date = str(row.get("updated_at") or row.get("created_at") or "")[:10]
+                    prefix = f"- [{row['memory_type']}] {row['id']}@r{row['revision']} ({date}): "
+                    content = compact(row["content"], max(24, row_chars - len(prefix)))
+                    hint = ""
+                    if row["memory_type"] == "decision" and not re.search(r"\b(because|since|reason|rationale)\b|due to", row["content"], re.IGNORECASE):
+                        hint = " *(needs rationale)*"
+                    line = prefix + content + hint
+                    if len("\n".join(lines)) - facts_start + len(line) + 1 > fact_capacity:
+                        break
+                    if not append_line(line, reserve=notice_reserve):
+                        break
+                    included_ids.append(row["id"])
+            if handoff:
+                line = f"\n## Latest Handoff\n- {handoff['id']}@r{handoff['revision']}: {compact(handoff['content'], 320)}"
+                if append_line(line, reserve=notice_reserve):
+                    handoff_id = handoff["id"]
+            for item in open_items:
+                line = f"- {item['short_id']} [{item['status']}, {item['priority']}]: {compact(decrypt_text_if_encrypted(item['title']), 100)}"
+                if not work_included and not append_line("\n## Open Goals & Tasks", reserve=notice_reserve + len(line) + 1):
+                    break
+                if not append_line(line, reserve=notice_reserve):
+                    break
+                work_included += 1
+            for item in recent_items:
+                line = f"- {item['short_id']}: {compact(decrypt_text_if_encrypted(item['title']), 80)} ? {compact(decrypt_text_if_encrypted(item['summary']), 120)}"
+                if not recent_included and not append_line("\n## Recently Completed (Past 48h)", reserve=notice_reserve + len(line) + 1):
+                    break
+                if not append_line(line, reserve=notice_reserve):
+                    break
+                recent_included += 1
 
-            if key_mems:
-                lines.append("## Key Project Facts & Decisions")
-                for km in key_mems[:4]:
-                    extra_hint = ""
-                    if km["type"] == "decision":
-                        content_low = km["content"].lower()
-                        causal_markers = ("because", "since", "due to", "as ", "rationale:", "reason:")
-                        if not any(marker in content_low for marker in causal_markers):
-                            extra_hint = " *(needs rationale — add 'because <reason>')*"
-                    lines.append(f"- [{km['type']}] {km['content']}{extra_hint}")
-                lines.append("")
-
-            if contradictions_count > 0:
-                lines.append(f"> [!WARNING]\n> {contradictions_count} unresolved contradiction(s) detected. Run `mesh_contradictions` to review.")
-                lines.append("")
-
-            full_md = "\n".join(lines).strip()
-            budget_chars = max_tokens * 4
-            if len(full_md) > budget_chars:
-                full_md = full_md[:budget_chars].rsplit("\n", 1)[0]
-                full_md += "\n\n*(Brief capped at token budget. Call `mesh_recall` or `mesh_task_list` for full details.)*"
-
-            return {
-                "namespace": self.namespace,
-                "namespace_state": "active",
-                "total_memories": total_mems,
-                "open_tasks_count": len(open_items),
-                "completed_recent_count": len(completed_recent),
-                "pending_contradictions": contradictions_count,
-                "key_facts_count": len(key_mems),
-                "brief_markdown": full_md,
-                "estimated_tokens": max(1, len(full_md) // 4),
-            }
+        facts_included = len(included_ids)
+        next_offset = fact_offset + facts_included if fact_offset + facts_included < facts_available else None
+        facts_omitted = max(0, facts_available - facts_included)
+        if facts_omitted:
+            suffix = f"; continue with fact_offset={next_offset}" if next_offset is not None else ""
+            append_line(f"\n*{facts_omitted} facts omitted{suffix}. Increase the budget or use targeted recall.*")
+        markdown = text.markdown()
+        result = {
+            "namespace": self.namespace, "namespace_state": "active" if active else "new_or_empty",
+            "total_memories": total_mems, "open_tasks_count": open_count,
+            "completed_recent_count": recent_count, "pending_contradictions": contradictions_count,
+            "key_facts_count": facts_included, "facts_available": facts_available,
+            "facts_included": facts_included, "facts_omitted": facts_omitted,
+            "selected_memory_ids": included_ids, "next_fact_offset": next_offset,
+            "selection_revision": hashlib.sha256(json.dumps([
+                self.store_generation, self.namespace, bool(include_private), content_version,
+                event_revision, [counts[kind] for kind in types], total_mems,
+                bool(include_work_items), open_count, recent_count,
+                [handoff["id"], handoff["revision"]] if handoff else None,
+            ], separators=(",", ":")).encode()).hexdigest()[:16], "as_of": now.isoformat(),
+            "handoff_memory_id": handoff_id, "open_work_items_included": work_included,
+            "completed_recent_included": recent_included, "brief_markdown": markdown,
+            "budget_scope": "brief_markdown", "estimated_tokens": (len(markdown) + 3) // 4,
+            "payload_estimated_tokens": 0, "untrusted_reference_data": True,
+        }
+        return finalize_project_brief(result)
 
     def get_changelog(
         self,
@@ -5852,7 +8118,7 @@ class MeshStore:
         else:
             cutoff_iso = since_str
 
-        with self._connect() as conn:
+        with self._read_connect() as conn:
             conn.row_factory = sqlite3.Row
             priv_filter = "AND local_only = 0" if not include_private else ""
 
@@ -5866,16 +8132,14 @@ class MeshStore:
             ).fetchall()
             completed_items = []
             for r in c_rows:
-                d = dict(r)
-                d["tags"] = json.loads(d.get("tags") or "[]")
-                d["evidence"] = json.loads(d.get("evidence") or "[]")
+                d = self._deserialize_work_item_row(r)
                 completed_items.append(d)
 
             d_rows = conn.execute(
                 f"""
                 SELECT id, content, tags, created_at, source_agent
                 FROM memories
-                WHERE namespace = ? AND memory_type = 'decision' AND created_at >= ? {priv_filter}
+                WHERE namespace = ? AND memory_type = 'decision' AND quarantined = 0 AND created_at >= ? {priv_filter}
                 ORDER BY created_at DESC
                 """,
                 (self.namespace, cutoff_iso),

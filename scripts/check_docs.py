@@ -28,8 +28,9 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from mesh.mcp_server import _MCP_TOOLS
-from mesh.version import VERSION
+from scripts.schema_sources import read_cli_commands, read_mcp_tool_schemas, read_version
+
+VERSION = read_version(REPO_ROOT)
 
 CORE_DOCS = [
     REPO_ROOT / "README.md",
@@ -106,7 +107,7 @@ REGISTERED_CLI_COMMANDS = {
 
 
 def get_mcp_tool_names() -> set[str]:
-    return {tool.name for tool in _MCP_TOOLS}
+    return set(read_mcp_tool_schemas(REPO_ROOT))
 
 
 def check_version_stamps(errors: list[str]) -> None:
@@ -340,6 +341,7 @@ def check_public_manifest(errors: list[str]) -> None:
 
 def check_cli_references(errors: list[str]) -> None:
     """Verify CLI subcommand mentions in docs match real commands."""
+    cli_commands = read_cli_commands(REPO_ROOT)
     cmd_pattern = re.compile(r"`mesh\s+([a-z][a-z0-9_-]*)(?:\s+[^`]+)?`")
     ignored_subcommands = {"--help", "--version", "-y", "--yes", "--dir", "--apply"}
 
@@ -359,7 +361,7 @@ def check_cli_references(errors: list[str]) -> None:
             subcmd = match.group(1).lower()
             if subcmd.startswith("-") or subcmd in ignored_subcommands:
                 continue
-            if subcmd not in REGISTERED_CLI_COMMANDS:
+            if subcmd not in cli_commands:
                 errors.append(f"[{rel_doc}] Documented CLI command 'mesh {subcmd}' is not in registered CLI commands.")
 
 

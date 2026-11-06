@@ -27,6 +27,7 @@ from mesh.audit import export_content_free_audit, get_audit_log
 from mesh.cli import doctor_cmd
 from mesh.mcp_server import call_tool
 from mesh.memory import Mesh
+from mesh.crypto import decrypt_text_if_encrypted
 
 
 @pytest.fixture
@@ -300,7 +301,9 @@ def test_scenario_5_secret_input_handling(isolated_mesh_env):
         rows = c.execute("SELECT content FROM memories WHERE namespace = ?", (ns,)).fetchall()
         for row in rows:
             assert RAW_SECRET not in row[0]
-            assert "[REDACTED" in row[0]
+            decoded = decrypt_text_if_encrypted(row[0])
+            assert RAW_SECRET not in decoded
+            assert "[REDACTED" in decoded
 
 
 # ==============================================================================
@@ -369,8 +372,8 @@ def test_scenario_7_brief_token_budget_at_scale(isolated_mesh_env):
                 id, namespace, content, confidence, memory_type, source_agent,
                 tags, created_at, updated_at, accessed_at, access_count, ttl_days,
                 decay_start_at, local_only, embedding, embedding_model, trust_tier,
-                quarantined, secret_ref
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                quarantined, secret_ref, incarnation
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, lower(hex(randomblob(16))))""",
             records,
         )
 

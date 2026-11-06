@@ -1,0 +1,6 @@
+{"id": "e47becba", "query": "What degree did I graduate with?", "corpus": "corpus-000.jsonl", "question_type": "single-session-user", "corpus_count": 31, "full_source_corpus_count": 550}
+{"id": "118b2229", "query": "How long is my daily commute to work?", "corpus": "corpus-001.jsonl", "question_type": "single-session-user", "corpus_count": 31, "full_source_corpus_count": 485}
+{"id": "51a45a95", "query": "Where did I redeem a $5 coupon on coffee creamer?", "corpus": "corpus-002.jsonl", "question_type": "single-session-user", "corpus_count": 32, "full_source_corpus_count": 529}
+{"id": "58bf7951", "query": "What play did I attend at the local community theater?", "corpus": "corpus-003.jsonl", "question_type": "single-session-user", "corpus_count": 33, "full_source_corpus_count": 616}
+{"id": "1e043500", "query": "What is the name of the playlist I created on Spotify?", "corpus": "corpus-004.jsonl", "question_type": "single-session-user", "corpus_count": 32, "full_source_corpus_count": 510}
+{"id": "c5e8278d", "query": "What was my last name before I changed it?", "corpus": "corpus-005.jsonl", "question_type": "single-session-user", "corpus_count": 32, "full_source_corpus_count": 469}

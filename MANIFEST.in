@@ -14,11 +14,52 @@ recursive-include mesh *.py
 recursive-include mesh/skills *.md *.txt *.json
 recursive-include scripts *.py
 recursive-include tests *.py *.json
+include benchmark_all_surfaces.py
+include benchmarks/concurrency_stress.py
+include benchmarks/isolation.py
+include benchmarks/sleep_guard.py
+include benchmarks/production_bench.py
+include benchmarks/production_transport.py
+include benchmarks/production_runner.py
+include benchmarks/production_ledger.py
+include benchmarks/production_test_speed.py
+include benchmarks/production_report.py
+include benchmarks/freeze_production_dependencies.py
+include benchmarks/provision_production_model.py
+include benchmarks/production_retrieval.py
+include benchmarks/prepare_retrieval_ci.py
+include benchmarks/replay_retrieval.py
+include benchmarks/retrieval_ci.py
+include benchmarks/passage_retrieval.py
+include benchmarks/check_passage_contract.py
+include benchmarks/retrieval_c4.py
+include benchmarks/retrieval_c4_model.py
+include benchmarks/provision_retrieval_c4.py
+include benchmarks/retrieval_fixtures/README.md
+include benchmarks/retrieval_fixtures/prospective/manifest.json
+include benchmarks/retrieval_fixtures/prospective/labels.json
+include benchmarks/retrieval_fixtures/prospective/queries-selected.jsonl
+include benchmarks/retrieval_fixtures/prospective/corpus.jsonl
+include benchmarks/retrieval_fixtures/longtext-prospective/manifest.json
+include benchmarks/retrieval_fixtures/longtext-prospective/labels.json
+include benchmarks/retrieval_fixtures/longtext-prospective/queries-selected.jsonl
+include benchmarks/retrieval_fixtures/longtext-prospective/corpus.jsonl
+include benchmarks/retrieval_fixtures/longmemeval/manifest.json
+include benchmarks/retrieval_fixtures/longmemeval/labels.json
+include benchmarks/retrieval_fixtures/longmemeval/queries-selected.jsonl
+include benchmarks/retrieval_fixtures/longmemeval/corpus-000.jsonl
+include benchmarks/retrieval_fixtures/longmemeval/corpus-001.jsonl
+include benchmarks/retrieval_fixtures/longmemeval/corpus-002.jsonl
+include benchmarks/retrieval_fixtures/longmemeval/corpus-003.jsonl
+include benchmarks/retrieval_fixtures/longmemeval/corpus-004.jsonl
+include benchmarks/retrieval_fixtures/longmemeval/corpus-005.jsonl
 prune landing
 prune marketing
 prune docs
-prune benchmarks
+prune benchmarks/data
+prune benchmarks/results
+prune benchmarks/models
 prune assets
 prune .github
 prune unwanted
-global-exclude *.py[cod] __pycache__ *.so *.dylib *.dll *.exe *.mp4 *.mp3 *.wav *.png *.jpg
+global-exclude *.py[cod] __pycache__ *.so *.dylib *.dll *.exe *.mp4 *.mp3 *.wav *.png *.jpg *.onnx *.safetensors

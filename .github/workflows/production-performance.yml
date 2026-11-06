@@ -1,0 +1,990 @@
+name: Production qualification and performance
+
+"on":
+  push:
+    branches: ["ci/mesh-production-*"]
+  workflow_dispatch:
+    inputs:
+      run_performance:
+        description: "Run the complete serial 512-fact matrix after qualification"
+        type: boolean
+        default: true
+      run_scale:
+        description: "Include resource/readiness/budget-gated sixteen-agent 10k HTTP scalar pairs"
+        type: boolean
+        default: true
+      run_test_speed:
+        description: "Run one serial full-suite 1-versus-2 worker observation without coverage"
+        type: boolean
+        default: true
+      run_retrieval:
+        description: "Run the five independent retrieval datasets after qualification"
+        type: boolean
+        default: true
+      run_c4:
+        description: "Evaluate the optional four-candidate local reranker with strict quality and resource gates"
+        type: boolean
+        default: false
+      max_tree_rss_mib:
+        description: "Declare a process-tree RSS cap before pilots (MiB)"
+        type: choice
+        options: ["2048", "4096", "6144"]
+        default: "4096"
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  MESH_NO_AUTO_DAEMON: "1"
+  MESH_NO_MODEL_DOWNLOAD: "1"
+  MESH_NO_UPDATE_CHECK: "1"
+  MESH_NO_IMPLICIT_CLOUD: "1"
+  MESH_AUTO_APPROVE: "0"
+  MESH_ENABLE_AUTO_SYNC: "0"
+  MESH_ALLOW_CLOUD_CAPTURE: "0"
+  MESH_ALLOW_CLOUD_SYNC: "0"
+  HF_HUB_OFFLINE: "1"
+  TRANSFORMERS_OFFLINE: "1"
+  PYTHONUTF8: "1"
+
+jobs:
+  qualification:
+    name: Same-commit qualification (${{ matrix.kind }})
+    runs-on: windows-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - kind: primary
+            python: "3.14.0"
+          - kind: floor
+            python: "3.10"
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - name: Install qualification dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ".[test,secrets]" psutil ruff bandit build twine
+      - name: Pin the patched minimum native runtime
+        if: matrix.kind == 'floor'
+        run: python -m pip install "apsw==3.51.3.0"
+      - name: Check code, skills, docs and security
+        run: |
+          python -m ruff check .
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/check_skill.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/check_docs.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m bandit -r mesh -c pyproject.toml -ll
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Run full isolated suite, real crash recovery and coverage gate
+        env:
+          HYPOTHESIS_PROFILE: ci
+        run: |
+          New-Item -ItemType Directory -Force .work/qualification | Out-Null
+          python scripts/run_tests.py --workers 4 --report .work/qualification/full-run.json -- -q --tb=short -ra --hypothesis-profile=ci --hypothesis-show-statistics --cov=mesh --cov-fail-under=60 --cov-report=xml:.work/qualification/coverage.xml --junitxml=.work/qualification/full.xml
+      - name: Build and validate the installed wheel
+        if: matrix.kind == 'primary'
+        run: |
+          python -m build --outdir .work/dist
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m twine check --strict .work/dist/*
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/validate_production_package.py .work/dist --collect-sdist
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item -LiteralPath .work/package-final-validation.json -Destination .work/qualification/package-final-validation.json
+      - name: Bind source hashes and exact installed dependency versions
+        run: python benchmarks/freeze_production_dependencies.py --directory .work/qualification
+      - name: Preserve qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-qualification-${{ matrix.kind }}
+          path: .work/qualification/
+          if-no-files-found: warn
+          retention-days: 7
+
+  retrieval:
+    name: Same-source retrieval quality
+    if: >-
+      (github.event_name == 'workflow_dispatch' && (inputs.run_retrieval || inputs.run_c4)) ||
+      (github.event_name == 'push' && startsWith(github.ref_name, 'ci/mesh-production-run-'))
+    needs: [qualification]
+    uses: ./.github/workflows/retrieval-quality.yml
+    with:
+      run_c4: >-
+        ${{ (github.event_name == 'workflow_dispatch' && inputs.run_c4) ||
+            (github.event_name == 'push' && startsWith(github.ref_name, 'ci/mesh-production-run-c4-')) }}
+
+  test_speed:
+    name: Full-suite test speed (manual only, fixed order)
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.run_test_speed) ||
+      (github.event_name == 'push' && startsWith(github.ref_name, 'ci/mesh-production-run-'))
+    needs: [qualification]
+    runs-on: windows-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14.0"
+          cache: pip
+      - uses: actions/download-artifact@v4
+        with:
+          name: production-qualification-primary
+          path: .work/qualification/primary
+      - name: Install the exact qualified dependency versions
+        run: python -m pip install --constraint .work/qualification/primary/constraints.txt ".[test,secrets]" psutil
+      - name: Observe one versus two workers with the same source, selection and seed
+        run: python benchmarks/production_test_speed.py --qualified-source .work/qualification/primary/source-runtime.json --output-directory .work/test-speed
+      - name: Preserve numerical test-speed evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-test-speed-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .work/test-speed/observation-*.json
+            .work/test-speed/comparison.json
+            .work/test-speed/checkpoint.json
+          if-no-files-found: warn
+          retention-days: 7
+
+  performance:
+    name: Serial production matrix (manual only)
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.run_performance) ||
+      (github.event_name == 'push' && startsWith(github.ref_name, 'ci/mesh-production-run-'))
+    needs: [qualification]
+    runs-on: windows-latest
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14.0"
+          cache: pip
+      - uses: actions/download-artifact@v4
+        with:
+          name: production-qualification-primary
+          path: .work/qualification/primary
+      - uses: actions/download-artifact@v4
+        with:
+          name: production-qualification-floor
+          path: .work/qualification/floor
+      - name: Install the exact qualified dependency versions
+        run: python -m pip install --constraint .work/qualification/primary/constraints.txt ".[test,secrets]" psutil
+      - name: Provision only the fixed verified public model files
+        continue-on-error: true
+        timeout-minutes: 7
+        run: python benchmarks/provision_production_model.py --directory .work/production-models/embedding
+      - name: Register the fixed single-pass scope and resource budget
+        env:
+          DECLARED_RSS_MIB: ${{ inputs.max_tree_rss_mib || '4096' }}
+        run: python benchmarks/production_runner.py prepare --run-root .work/production-performance --model-dir .work/production-models/embedding --max-rss-mib $env:DECLARED_RSS_MIB --free-ram-mib 2048 --allow-unavailable-model
+      - name: Seal same-commit full-suite, recovery, coverage and packaging evidence
+        id: seal
+        run: python benchmarks/production_runner.py seal --plan .work/production-performance/plan.json --primary-junit .work/qualification/primary/full.xml --minimum-junit .work/qualification/floor/full.xml --coverage-xml .work/qualification/primary/coverage.xml --packaging-report .work/qualification/primary/package-final-validation.json --ci-qualification .work/qualification/primary/source-runtime.json --root-confirms-other-checks-and-source-binding
+      - name: Record an unrequested scale extension explicitly
+        if: github.event_name == 'workflow_dispatch' && !inputs.run_scale
+        run: python benchmarks/production_runner.py defer --plan .work/production-performance/plan.json --phase scale --reason not_requested
+
+      - name: Measure pilot-r0-hash-scalar-16a-http-g1-128
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase pilot --cell-id pilot-r0-hash-scalar-16a-http-g1-128 --quiet-window-open
+      - name: Preserve pilot-r0-hash-scalar-16a-http-g1-128
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-pilot-r0-hash-scalar-16a-http-g1-128
+          path: .work/production-performance/public/cells/pilot-r0-hash-scalar-16a-http-g1-128.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure pilot-r0-neural-scalar-1a-receipt-sdk-g0-128
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase pilot --cell-id pilot-r0-neural-scalar-1a-receipt-sdk-g0-128 --quiet-window-open
+      - name: Preserve pilot-r0-neural-scalar-1a-receipt-sdk-g0-128
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-pilot-r0-neural-scalar-1a-receipt-sdk-g0-128
+          path: .work/production-performance/public/cells/pilot-r0-neural-scalar-1a-receipt-sdk-g0-128.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure pilot-r0-neural-scalar-4a-receipt-sdk-g0-128
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase pilot --cell-id pilot-r0-neural-scalar-4a-receipt-sdk-g0-128 --quiet-window-open
+      - name: Preserve pilot-r0-neural-scalar-4a-receipt-sdk-g0-128
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-pilot-r0-neural-scalar-4a-receipt-sdk-g0-128
+          path: .work/production-performance/public/cells/pilot-r0-neural-scalar-4a-receipt-sdk-g0-128.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure pilot-r0-neural-scalar-16a-http-g0-128
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase pilot --cell-id pilot-r0-neural-scalar-16a-http-g0-128 --quiet-window-open
+      - name: Preserve pilot-r0-neural-scalar-16a-http-g0-128
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-pilot-r0-neural-scalar-16a-http-g0-128
+          path: .work/production-performance/public/cells/pilot-r0-neural-scalar-16a-http-g0-128.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure pilot-r0-neural-scalar-16a-http-g1-128
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase pilot --cell-id pilot-r0-neural-scalar-16a-http-g1-128 --quiet-window-open
+      - name: Preserve pilot-r0-neural-scalar-16a-http-g1-128
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-pilot-r0-neural-scalar-16a-http-g1-128
+          path: .work/production-performance/public/cells/pilot-r0-neural-scalar-16a-http-g1-128.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure primary-r1-hash-scalar-1a-receipt-sdk-g0-512
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-hash-scalar-1a-receipt-sdk-g0-512 --quiet-window-open
+      - name: Preserve primary-r1-hash-scalar-1a-receipt-sdk-g0-512
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-hash-scalar-1a-receipt-sdk-g0-512
+          path: .work/production-performance/public/cells/primary-r1-hash-scalar-1a-receipt-sdk-g0-512.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure primary-r1-hash-scalar-1a-http-g0-512
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-hash-scalar-1a-http-g0-512 --quiet-window-open
+      - name: Preserve primary-r1-hash-scalar-1a-http-g0-512
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-hash-scalar-1a-http-g0-512
+          path: .work/production-performance/public/cells/primary-r1-hash-scalar-1a-http-g0-512.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure primary-r1-hash-scalar-1a-http-g1-512
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-hash-scalar-1a-http-g1-512 --quiet-window-open
+      - name: Preserve primary-r1-hash-scalar-1a-http-g1-512
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-hash-scalar-1a-http-g1-512
+          path: .work/production-performance/public/cells/primary-r1-hash-scalar-1a-http-g1-512.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure primary-r1-hash-scalar-4a-receipt-sdk-g0-512
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-hash-scalar-4a-receipt-sdk-g0-512 --quiet-window-open
+      - name: Preserve primary-r1-hash-scalar-4a-receipt-sdk-g0-512
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-hash-scalar-4a-receipt-sdk-g0-512
+          path: .work/production-performance/public/cells/primary-r1-hash-scalar-4a-receipt-sdk-g0-512.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure primary-r1-hash-scalar-4a-http-g0-512
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-hash-scalar-4a-http-g0-512 --quiet-window-open
+      - name: Preserve primary-r1-hash-scalar-4a-http-g0-512
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-hash-scalar-4a-http-g0-512
+          path: .work/production-performance/public/cells/primary-r1-hash-scalar-4a-http-g0-512.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure primary-r1-hash-scalar-4a-http-g1-512
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-hash-scalar-4a-http-g1-512 --quiet-window-open
+      - name: Preserve primary-r1-hash-scalar-4a-http-g1-512
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-hash-scalar-4a-http-g1-512
+          path: .work/production-performance/public/cells/primary-r1-hash-scalar-4a-http-g1-512.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure primary-r1-hash-scalar-8a-receipt-sdk-g0-512
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-hash-scalar-8a-receipt-sdk-g0-512 --quiet-window-open
+      - name: Preserve primary-r1-hash-scalar-8a-receipt-sdk-g0-512
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-hash-scalar-8a-receipt-sdk-g0-512
+          path: .work/production-performance/public/cells/primary-r1-hash-scalar-8a-receipt-sdk-g0-512.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure primary-r1-hash-scalar-8a-http-g0-512
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-hash-scalar-8a-http-g0-512 --quiet-window-open
+      - name: Preserve primary-r1-hash-scalar-8a-http-g0-512
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-hash-scalar-8a-http-g0-512
+          path: .work/production-performance/public/cells/primary-r1-hash-scalar-8a-http-g0-512.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure primary-r1-hash-scalar-8a-http-g1-512
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-hash-scalar-8a-http-g1-512 --quiet-window-open
+      - name: Preserve primary-r1-hash-scalar-8a-http-g1-512
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-hash-scalar-8a-http-g1-512
+          path: .work/production-performance/public/cells/primary-r1-hash-scalar-8a-http-g1-512.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure primary-r1-hash-scalar-16a-receipt-sdk-g0-512
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-hash-scalar-16a-receipt-sdk-g0-512 --quiet-window-open
+      - name: Preserve primary-r1-hash-scalar-16a-receipt-sdk-g0-512
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-hash-scalar-16a-receipt-sdk-g0-512
+          path: .work/production-performance/public/cells/primary-r1-hash-scalar-16a-receipt-sdk-g0-512.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure primary-r1-hash-scalar-16a-http-g0-512
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-hash-scalar-16a-http-g0-512 --quiet-window-open
+      - name: Preserve primary-r1-hash-scalar-16a-http-g0-512
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-hash-scalar-16a-http-g0-512
+          path: .work/production-performance/public/cells/primary-r1-hash-scalar-16a-http-g0-512.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure primary-r1-hash-scalar-16a-http-g1-512
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-hash-scalar-16a-http-g1-512 --quiet-window-open
+      - name: Preserve primary-r1-hash-scalar-16a-http-g1-512
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-hash-scalar-16a-http-g1-512
+          path: .work/production-performance/public/cells/primary-r1-hash-scalar-16a-http-g1-512.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure primary-r1-hash-atomic-1a-receipt-sdk-g0-512
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-hash-atomic-1a-receipt-sdk-g0-512 --quiet-window-open
+      - name: Preserve primary-r1-hash-atomic-1a-receipt-sdk-g0-512
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-hash-atomic-1a-receipt-sdk-g0-512
+          path: .work/production-performance/public/cells/primary-r1-hash-atomic-1a-receipt-sdk-g0-512.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure primary-r1-hash-atomic-1a-http-g0-512
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-hash-atomic-1a-http-g0-512 --quiet-window-open
+      - name: Preserve primary-r1-hash-atomic-1a-http-g0-512
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-hash-atomic-1a-http-g0-512
+          path: .work/production-performance/public/cells/primary-r1-hash-atomic-1a-http-g0-512.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure primary-r1-hash-atomic-1a-http-g1-512
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-hash-atomic-1a-http-g1-512 --quiet-window-open
+      - name: Preserve primary-r1-hash-atomic-1a-http-g1-512
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-hash-atomic-1a-http-g1-512
+          path: .work/production-performance/public/cells/primary-r1-hash-atomic-1a-http-g1-512.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure primary-r1-hash-atomic-4a-receipt-sdk-g0-512
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-hash-atomic-4a-receipt-sdk-g0-512 --quiet-window-open
+      - name: Preserve primary-r1-hash-atomic-4a-receipt-sdk-g0-512
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-hash-atomic-4a-receipt-sdk-g0-512
+          path: .work/production-performance/public/cells/primary-r1-hash-atomic-4a-receipt-sdk-g0-512.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure primary-r1-hash-atomic-4a-http-g0-512
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-hash-atomic-4a-http-g0-512 --quiet-window-open
+      - name: Preserve primary-r1-hash-atomic-4a-http-g0-512
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-hash-atomic-4a-http-g0-512
+          path: .work/production-performance/public/cells/primary-r1-hash-atomic-4a-http-g0-512.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure primary-r1-hash-atomic-4a-http-g1-512
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-hash-atomic-4a-http-g1-512 --quiet-window-open
+      - name: Preserve primary-r1-hash-atomic-4a-http-g1-512
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-hash-atomic-4a-http-g1-512
+          path: .work/production-performance/public/cells/primary-r1-hash-atomic-4a-http-g1-512.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure primary-r1-hash-atomic-8a-receipt-sdk-g0-512
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-hash-atomic-8a-receipt-sdk-g0-512 --quiet-window-open
+      - name: Preserve primary-r1-hash-atomic-8a-receipt-sdk-g0-512
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-hash-atomic-8a-receipt-sdk-g0-512
+          path: .work/production-performance/public/cells/primary-r1-hash-atomic-8a-receipt-sdk-g0-512.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure primary-r1-hash-atomic-8a-http-g0-512
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-hash-atomic-8a-http-g0-512 --quiet-window-open
+      - name: Preserve primary-r1-hash-atomic-8a-http-g0-512
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-hash-atomic-8a-http-g0-512
+          path: .work/production-performance/public/cells/primary-r1-hash-atomic-8a-http-g0-512.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure primary-r1-hash-atomic-8a-http-g1-512
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-hash-atomic-8a-http-g1-512 --quiet-window-open
+      - name: Preserve primary-r1-hash-atomic-8a-http-g1-512
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-hash-atomic-8a-http-g1-512
+          path: .work/production-performance/public/cells/primary-r1-hash-atomic-8a-http-g1-512.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure primary-r1-hash-atomic-16a-receipt-sdk-g0-512
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-hash-atomic-16a-receipt-sdk-g0-512 --quiet-window-open
+      - name: Preserve primary-r1-hash-atomic-16a-receipt-sdk-g0-512
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-hash-atomic-16a-receipt-sdk-g0-512
+          path: .work/production-performance/public/cells/primary-r1-hash-atomic-16a-receipt-sdk-g0-512.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure primary-r1-hash-atomic-16a-http-g0-512
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-hash-atomic-16a-http-g0-512 --quiet-window-open
+      - name: Preserve primary-r1-hash-atomic-16a-http-g0-512
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-hash-atomic-16a-http-g0-512
+          path: .work/production-performance/public/cells/primary-r1-hash-atomic-16a-http-g0-512.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure primary-r1-hash-atomic-16a-http-g1-512
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-hash-atomic-16a-http-g1-512 --quiet-window-open
+      - name: Preserve primary-r1-hash-atomic-16a-http-g1-512
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-hash-atomic-16a-http-g1-512
+          path: .work/production-performance/public/cells/primary-r1-hash-atomic-16a-http-g1-512.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure primary-r1-neural-scalar-1a-receipt-sdk-g0-512
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-neural-scalar-1a-receipt-sdk-g0-512 --quiet-window-open
+      - name: Preserve primary-r1-neural-scalar-1a-receipt-sdk-g0-512
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-neural-scalar-1a-receipt-sdk-g0-512
+          path: .work/production-performance/public/cells/primary-r1-neural-scalar-1a-receipt-sdk-g0-512.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure primary-r1-neural-scalar-1a-http-g0-512
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-neural-scalar-1a-http-g0-512 --quiet-window-open
+      - name: Preserve primary-r1-neural-scalar-1a-http-g0-512
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-neural-scalar-1a-http-g0-512
+          path: .work/production-performance/public/cells/primary-r1-neural-scalar-1a-http-g0-512.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure primary-r1-neural-scalar-1a-http-g1-512
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-neural-scalar-1a-http-g1-512 --quiet-window-open
+      - name: Preserve primary-r1-neural-scalar-1a-http-g1-512
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-neural-scalar-1a-http-g1-512
+          path: .work/production-performance/public/cells/primary-r1-neural-scalar-1a-http-g1-512.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure primary-r1-neural-scalar-4a-receipt-sdk-g0-512
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-neural-scalar-4a-receipt-sdk-g0-512 --quiet-window-open
+      - name: Preserve primary-r1-neural-scalar-4a-receipt-sdk-g0-512
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-neural-scalar-4a-receipt-sdk-g0-512
+          path: .work/production-performance/public/cells/primary-r1-neural-scalar-4a-receipt-sdk-g0-512.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure primary-r1-neural-scalar-4a-http-g0-512
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-neural-scalar-4a-http-g0-512 --quiet-window-open
+      - name: Preserve primary-r1-neural-scalar-4a-http-g0-512
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-neural-scalar-4a-http-g0-512
+          path: .work/production-performance/public/cells/primary-r1-neural-scalar-4a-http-g0-512.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure primary-r1-neural-scalar-4a-http-g1-512
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-neural-scalar-4a-http-g1-512 --quiet-window-open
+      - name: Preserve primary-r1-neural-scalar-4a-http-g1-512
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-neural-scalar-4a-http-g1-512
+          path: .work/production-performance/public/cells/primary-r1-neural-scalar-4a-http-g1-512.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure primary-r1-neural-scalar-8a-receipt-sdk-g0-512
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-neural-scalar-8a-receipt-sdk-g0-512 --quiet-window-open
+      - name: Preserve primary-r1-neural-scalar-8a-receipt-sdk-g0-512
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-neural-scalar-8a-receipt-sdk-g0-512
+          path: .work/production-performance/public/cells/primary-r1-neural-scalar-8a-receipt-sdk-g0-512.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure primary-r1-neural-scalar-8a-http-g0-512
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-neural-scalar-8a-http-g0-512 --quiet-window-open
+      - name: Preserve primary-r1-neural-scalar-8a-http-g0-512
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-neural-scalar-8a-http-g0-512
+          path: .work/production-performance/public/cells/primary-r1-neural-scalar-8a-http-g0-512.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure primary-r1-neural-scalar-8a-http-g1-512
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-neural-scalar-8a-http-g1-512 --quiet-window-open
+      - name: Preserve primary-r1-neural-scalar-8a-http-g1-512
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-neural-scalar-8a-http-g1-512
+          path: .work/production-performance/public/cells/primary-r1-neural-scalar-8a-http-g1-512.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure primary-r1-neural-scalar-16a-receipt-sdk-g0-512
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-neural-scalar-16a-receipt-sdk-g0-512 --quiet-window-open
+      - name: Preserve primary-r1-neural-scalar-16a-receipt-sdk-g0-512
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-neural-scalar-16a-receipt-sdk-g0-512
+          path: .work/production-performance/public/cells/primary-r1-neural-scalar-16a-receipt-sdk-g0-512.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure primary-r1-neural-scalar-16a-http-g0-512
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-neural-scalar-16a-http-g0-512 --quiet-window-open
+      - name: Preserve primary-r1-neural-scalar-16a-http-g0-512
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-neural-scalar-16a-http-g0-512
+          path: .work/production-performance/public/cells/primary-r1-neural-scalar-16a-http-g0-512.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure primary-r1-neural-scalar-16a-http-g1-512
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-neural-scalar-16a-http-g1-512 --quiet-window-open
+      - name: Preserve primary-r1-neural-scalar-16a-http-g1-512
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-neural-scalar-16a-http-g1-512
+          path: .work/production-performance/public/cells/primary-r1-neural-scalar-16a-http-g1-512.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure primary-r1-neural-atomic-1a-receipt-sdk-g0-512
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-neural-atomic-1a-receipt-sdk-g0-512 --quiet-window-open
+      - name: Preserve primary-r1-neural-atomic-1a-receipt-sdk-g0-512
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-neural-atomic-1a-receipt-sdk-g0-512
+          path: .work/production-performance/public/cells/primary-r1-neural-atomic-1a-receipt-sdk-g0-512.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure primary-r1-neural-atomic-1a-http-g0-512
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-neural-atomic-1a-http-g0-512 --quiet-window-open
+      - name: Preserve primary-r1-neural-atomic-1a-http-g0-512
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-neural-atomic-1a-http-g0-512
+          path: .work/production-performance/public/cells/primary-r1-neural-atomic-1a-http-g0-512.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure primary-r1-neural-atomic-1a-http-g1-512
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-neural-atomic-1a-http-g1-512 --quiet-window-open
+      - name: Preserve primary-r1-neural-atomic-1a-http-g1-512
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-neural-atomic-1a-http-g1-512
+          path: .work/production-performance/public/cells/primary-r1-neural-atomic-1a-http-g1-512.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure primary-r1-neural-atomic-4a-receipt-sdk-g0-512
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-neural-atomic-4a-receipt-sdk-g0-512 --quiet-window-open
+      - name: Preserve primary-r1-neural-atomic-4a-receipt-sdk-g0-512
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-neural-atomic-4a-receipt-sdk-g0-512
+          path: .work/production-performance/public/cells/primary-r1-neural-atomic-4a-receipt-sdk-g0-512.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure primary-r1-neural-atomic-4a-http-g0-512
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-neural-atomic-4a-http-g0-512 --quiet-window-open
+      - name: Preserve primary-r1-neural-atomic-4a-http-g0-512
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-neural-atomic-4a-http-g0-512
+          path: .work/production-performance/public/cells/primary-r1-neural-atomic-4a-http-g0-512.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure primary-r1-neural-atomic-4a-http-g1-512
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-neural-atomic-4a-http-g1-512 --quiet-window-open
+      - name: Preserve primary-r1-neural-atomic-4a-http-g1-512
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-neural-atomic-4a-http-g1-512
+          path: .work/production-performance/public/cells/primary-r1-neural-atomic-4a-http-g1-512.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure primary-r1-neural-atomic-8a-receipt-sdk-g0-512
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-neural-atomic-8a-receipt-sdk-g0-512 --quiet-window-open
+      - name: Preserve primary-r1-neural-atomic-8a-receipt-sdk-g0-512
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-neural-atomic-8a-receipt-sdk-g0-512
+          path: .work/production-performance/public/cells/primary-r1-neural-atomic-8a-receipt-sdk-g0-512.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure primary-r1-neural-atomic-8a-http-g0-512
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-neural-atomic-8a-http-g0-512 --quiet-window-open
+      - name: Preserve primary-r1-neural-atomic-8a-http-g0-512
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-neural-atomic-8a-http-g0-512
+          path: .work/production-performance/public/cells/primary-r1-neural-atomic-8a-http-g0-512.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure primary-r1-neural-atomic-8a-http-g1-512
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-neural-atomic-8a-http-g1-512 --quiet-window-open
+      - name: Preserve primary-r1-neural-atomic-8a-http-g1-512
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-neural-atomic-8a-http-g1-512
+          path: .work/production-performance/public/cells/primary-r1-neural-atomic-8a-http-g1-512.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure primary-r1-neural-atomic-16a-receipt-sdk-g0-512
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-neural-atomic-16a-receipt-sdk-g0-512 --quiet-window-open
+      - name: Preserve primary-r1-neural-atomic-16a-receipt-sdk-g0-512
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-neural-atomic-16a-receipt-sdk-g0-512
+          path: .work/production-performance/public/cells/primary-r1-neural-atomic-16a-receipt-sdk-g0-512.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure primary-r1-neural-atomic-16a-http-g0-512
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-neural-atomic-16a-http-g0-512 --quiet-window-open
+      - name: Preserve primary-r1-neural-atomic-16a-http-g0-512
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-neural-atomic-16a-http-g0-512
+          path: .work/production-performance/public/cells/primary-r1-neural-atomic-16a-http-g0-512.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure primary-r1-neural-atomic-16a-http-g1-512
+        if: steps.seal.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 25
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-neural-atomic-16a-http-g1-512 --quiet-window-open
+      - name: Preserve primary-r1-neural-atomic-16a-http-g1-512
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-neural-atomic-16a-http-g1-512
+          path: .work/production-performance/public/cells/primary-r1-neural-atomic-16a-http-g1-512.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure scale-r1-hash-scalar-16a-http-g0-10000
+        if: steps.seal.outcome == 'success' && (github.event_name == 'push' || inputs.run_scale)
+        continue-on-error: true
+        timeout-minutes: 35
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase scale --cell-id scale-r1-hash-scalar-16a-http-g0-10000 --quiet-window-open
+      - name: Preserve scale-r1-hash-scalar-16a-http-g0-10000
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-scale-r1-hash-scalar-16a-http-g0-10000
+          path: .work/production-performance/public/cells/scale-r1-hash-scalar-16a-http-g0-10000.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure scale-r1-hash-scalar-16a-http-g1-10000
+        if: steps.seal.outcome == 'success' && (github.event_name == 'push' || inputs.run_scale)
+        continue-on-error: true
+        timeout-minutes: 35
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase scale --cell-id scale-r1-hash-scalar-16a-http-g1-10000 --quiet-window-open
+      - name: Preserve scale-r1-hash-scalar-16a-http-g1-10000
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-scale-r1-hash-scalar-16a-http-g1-10000
+          path: .work/production-performance/public/cells/scale-r1-hash-scalar-16a-http-g1-10000.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure scale-r1-neural-scalar-16a-http-g0-10000
+        if: steps.seal.outcome == 'success' && (github.event_name == 'push' || inputs.run_scale)
+        continue-on-error: true
+        timeout-minutes: 35
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase scale --cell-id scale-r1-neural-scalar-16a-http-g0-10000 --quiet-window-open
+      - name: Preserve scale-r1-neural-scalar-16a-http-g0-10000
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-scale-r1-neural-scalar-16a-http-g0-10000
+          path: .work/production-performance/public/cells/scale-r1-neural-scalar-16a-http-g0-10000.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure scale-r1-neural-scalar-16a-http-g1-10000
+        if: steps.seal.outcome == 'success' && (github.event_name == 'push' || inputs.run_scale)
+        continue-on-error: true
+        timeout-minutes: 35
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase scale --cell-id scale-r1-neural-scalar-16a-http-g1-10000 --quiet-window-open
+      - name: Preserve scale-r1-neural-scalar-16a-http-g1-10000
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-${{ github.run_id }}-${{ github.run_attempt }}-scale-r1-neural-scalar-16a-http-g1-10000
+          path: .work/production-performance/public/cells/scale-r1-neural-scalar-16a-http-g1-10000.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Stop remaining owned processes and finalize interrupted/deferred cells
+        if: always()
+        run: |
+          if (Test-Path -LiteralPath .work/production-performance/plan.json) {
+            python benchmarks/production_runner.py finalize --plan .work/production-performance/plan.json
+          }
+      - name: Render sanitized candidate evidence
+        if: always()
+        run: |
+          if (Test-Path -LiteralPath .work/production-performance/seal.json) {
+            python benchmarks/production_report.py --plan .work/production-performance/plan.json
+          }
+      - name: Preserve all sanitized cell records and final numerical ledger
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-numerical-ledger-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .work/production-performance/public/cells/*.json
+            .work/production-performance/numeric/ledger.json
+            .work/production-performance/candidate/
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Require review of failed or unavailable primary cases
+        if: always()
+        run: |
+          if (Test-Path -LiteralPath .work/production-performance/seal.json) {
+            python benchmarks/production_runner.py check --plan .work/production-performance/plan.json
+          }

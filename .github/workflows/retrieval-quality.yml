@@ -1,0 +1,131 @@
+name: Retrieval quality
+
+"on":
+  workflow_call:
+    inputs:
+      qualification_run_id:
+        description: "Qualification artifact run; omitted means this caller run"
+        required: false
+        type: string
+        default: ""
+      run_c4:
+        description: "Separate optional four-parent passage cross-encoder experiment"
+        required: false
+        type: boolean
+        default: false
+  workflow_dispatch:
+    inputs:
+      qualification_run_id:
+        description: "Successful same-source production qualification run ID"
+        required: true
+        type: string
+      run_c4:
+        description: "Run the separate optional C4 experiment after core conditions"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: retrieval-quality-${{ github.run_id }}-${{ github.run_attempt }}
+  cancel-in-progress: false
+
+jobs:
+  public-quality:
+    name: Guarded retrieval (${{ matrix.dataset }})
+    runs-on: windows-latest
+    timeout-minutes: 85
+    strategy:
+      fail-fast: false
+      matrix:
+        dataset: [nfcorpus, scifact, prospective, longtext-prospective, longmemeval]
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      RETRIEVAL_RUN_C4: ${{ inputs.run_c4 }}
+      RETRIEVAL_DATASET: ${{ matrix.dataset }}
+      RETRIEVAL_ROOT: .work/retrieval-ci/${{ github.run_id }}-${{ github.run_attempt }}/${{ matrix.dataset }}
+      RETRIEVAL_MODELS: .work/production-models/embedding
+      MESH_HOME: ${{ runner.temp }}/mesh-retrieval-ci-config-${{ matrix.dataset }}/mesh-home
+      HOME: ${{ runner.temp }}/mesh-retrieval-ci-config-${{ matrix.dataset }}/home
+      USERPROFILE: ${{ runner.temp }}/mesh-retrieval-ci-config-${{ matrix.dataset }}/home
+      APPDATA: ${{ runner.temp }}/mesh-retrieval-ci-config-${{ matrix.dataset }}/appdata
+      LOCALAPPDATA: ${{ runner.temp }}/mesh-retrieval-ci-config-${{ matrix.dataset }}/localappdata
+      XDG_CONFIG_HOME: ${{ runner.temp }}/mesh-retrieval-ci-config-${{ matrix.dataset }}/xdg/config
+      XDG_CACHE_HOME: ${{ runner.temp }}/mesh-retrieval-ci-config-${{ matrix.dataset }}/xdg/cache
+      XDG_DATA_HOME: ${{ runner.temp }}/mesh-retrieval-ci-config-${{ matrix.dataset }}/xdg/data
+      CODEX_HOME: ${{ runner.temp }}/mesh-retrieval-ci-config-${{ matrix.dataset }}/codex
+      CLAUDE_CONFIG_DIR: ${{ runner.temp }}/mesh-retrieval-ci-config-${{ matrix.dataset }}/claude
+      CLAUDE_HOME: ${{ runner.temp }}/mesh-retrieval-ci-config-${{ matrix.dataset }}/claude
+      MESH_NO_AUTO_DAEMON: "1"
+      MESH_NO_MODEL_DOWNLOAD: "1"
+      MESH_NO_UPDATE_CHECK: "1"
+      MESH_NO_IMPLICIT_CLOUD: "1"
+      MESH_AUTO_APPROVE: "0"
+      MESH_ENABLE_AUTO_SYNC: "0"
+      MESH_ALLOW_CLOUD_CAPTURE: "0"
+      MESH_ALLOW_CLOUD_SYNC: "0"
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      TOKENIZERS_PARALLELISM: "false"
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Create isolated directories and initial failure-safe artifact
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:MESH_HOME,$env:HOME,$env:APPDATA,$env:LOCALAPPDATA,$env:XDG_CONFIG_HOME,$env:XDG_CACHE_HOME,$env:XDG_DATA_HOME,$env:CODEX_HOME,$env:CLAUDE_CONFIG_DIR | Out-Null
+          python benchmarks/retrieval_ci.py init $env:RETRIEVAL_DATASET --output-root $env:RETRIEVAL_ROOT
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14.0"
+          cache: pip
+      - name: Download same-source primary qualification
+        uses: actions/download-artifact@v4
+        with:
+          name: production-qualification-primary
+          path: .work/qualification/primary
+          run-id: ${{ inputs.qualification_run_id || github.run_id }}
+          github-token: ${{ github.token }}
+      - name: Download same-source minimum qualification
+        uses: actions/download-artifact@v4
+        with:
+          name: production-qualification-floor
+          path: .work/qualification/floor
+          run-id: ${{ inputs.qualification_run_id || github.run_id }}
+          github-token: ${{ github.token }}
+      - name: Install exactly qualified dependency versions
+        run: |
+          python -m pip install -c .work/qualification/primary/constraints.txt ".[test,secrets]" psutil
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Restore fixed public local embedding pair
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.RETRIEVAL_MODELS }}
+          key: retrieval-minilm-1110a243fdf4706b-6fd5d72fe4589f18-be50c3628f2bf5bb
+      - name: Qualify source and supervise independent retrieval conditions
+        run: |
+          $taskRetrievalArgs = @("benchmarks/retrieval_ci.py", "run", $env:RETRIEVAL_DATASET, "--output-root", $env:RETRIEVAL_ROOT, "--model-directory", $env:RETRIEVAL_MODELS, "--qualification-directory", ".work/qualification/primary", "--floor-qualification-directory", ".work/qualification/floor", "--wall-seconds", "4200", "--rss-mib", "4096", "--cpu-seconds", "3600")
+          if ($env:RETRIEVAL_RUN_C4 -eq "true") { $taskRetrievalArgs += @("--reranker-experiment", "c4") }
+          python @taskRetrievalArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Mark an interrupted workflow in the sanitized artifact
+        if: always()
+        run: >-
+          python benchmarks/retrieval_ci.py finalize $env:RETRIEVAL_DATASET
+          --output-root $env:RETRIEVAL_ROOT
+      - name: Always preserve sanitized success or failure evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: retrieval-quality-${{ matrix.dataset }}-${{ github.sha }}
+          path: ${{ env.RETRIEVAL_ROOT }}/job-summary.json
+          if-no-files-found: error
+          retention-days: 30

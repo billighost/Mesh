@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mesh-context-layer"
-version = "0.8.3"
+version = "0.9.0"
 description = "High-speed shared semantic & hybrid memory layer for AI agents — MCP server, CLI, and Python library"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -22,6 +22,9 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
+    # A privately bundled patched SQLite is required for concurrent durable WAL.
+    "apsw>=3.51.3.0,<4",
+    "tomli>=2.0; python_version < '3.11'",
     "numpy>=1.24.0",
     "onnxruntime>=1.17.0",
     "tokenizers>=0.15.0",
@@ -53,6 +56,7 @@ legacy = [
 ]
 test = [
     "pytest>=8.0.0",
+    "pytest-xdist>=3.6.0",
     "pytest-asyncio>=0.23.0",
     "pytest-cov>=5.0.0",
     "hypothesis>=6.100.0",
@@ -69,6 +73,7 @@ dev = [
 
 [project.scripts]
 mesh = "mesh.cli:main"
+mesh-hook = "mesh.hooks:main"
 mesh-setup = "mesh.cli:setup_cmd"
 mesh-help = "mesh.cli:help_cmd"
 mesh-server = "mesh.mcp_server:run"
@@ -117,6 +122,45 @@ include = [
 include = [
     "/mesh",
     "/tests",
+    "/benchmark_all_surfaces.py",
+    "/benchmarks/concurrency_stress.py",
+    "/benchmarks/isolation.py",
+    "/benchmarks/sleep_guard.py",
+    "/benchmarks/production_bench.py",
+    "/benchmarks/production_transport.py",
+    "/benchmarks/production_runner.py",
+    "/benchmarks/production_ledger.py",
+    "/benchmarks/production_test_speed.py",
+    "/benchmarks/production_report.py",
+    "/benchmarks/freeze_production_dependencies.py",
+    "/benchmarks/provision_production_model.py",
+    "/benchmarks/production_retrieval.py",
+    "/benchmarks/prepare_retrieval_ci.py",
+    "/benchmarks/replay_retrieval.py",
+    "/benchmarks/retrieval_ci.py",
+    "/benchmarks/passage_retrieval.py",
+    "/benchmarks/check_passage_contract.py",
+    "/benchmarks/retrieval_c4.py",
+    "/benchmarks/retrieval_c4_model.py",
+    "/benchmarks/provision_retrieval_c4.py",
+    "/benchmarks/retrieval_fixtures/README.md",
+    "/benchmarks/retrieval_fixtures/prospective/manifest.json",
+    "/benchmarks/retrieval_fixtures/prospective/labels.json",
+    "/benchmarks/retrieval_fixtures/prospective/queries-selected.jsonl",
+    "/benchmarks/retrieval_fixtures/prospective/corpus.jsonl",
+    "/benchmarks/retrieval_fixtures/longtext-prospective/manifest.json",
+    "/benchmarks/retrieval_fixtures/longtext-prospective/labels.json",
+    "/benchmarks/retrieval_fixtures/longtext-prospective/queries-selected.jsonl",
+    "/benchmarks/retrieval_fixtures/longtext-prospective/corpus.jsonl",
+    "/benchmarks/retrieval_fixtures/longmemeval/manifest.json",
+    "/benchmarks/retrieval_fixtures/longmemeval/labels.json",
+    "/benchmarks/retrieval_fixtures/longmemeval/queries-selected.jsonl",
+    "/benchmarks/retrieval_fixtures/longmemeval/corpus-000.jsonl",
+    "/benchmarks/retrieval_fixtures/longmemeval/corpus-001.jsonl",
+    "/benchmarks/retrieval_fixtures/longmemeval/corpus-002.jsonl",
+    "/benchmarks/retrieval_fixtures/longmemeval/corpus-003.jsonl",
+    "/benchmarks/retrieval_fixtures/longmemeval/corpus-004.jsonl",
+    "/benchmarks/retrieval_fixtures/longmemeval/corpus-005.jsonl",
     "/README.md",
     "/LICENSE",
     "/CHANGELOG.md",
@@ -135,12 +179,16 @@ exclude = [
     "/landing",
     "/marketing",
     "/docs",
-    "/benchmarks",
+    "/benchmarks/data",
+    "/benchmarks/results",
+    "/benchmarks/models",
     "/assets",
     "/.github",
     "*.mp4",
     "*.mp3",
     "*.wav",
+    "*.onnx",
+    "*.safetensors",
 ]
 
 [tool.ruff]

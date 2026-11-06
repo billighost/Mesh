@@ -28,7 +28,7 @@ import json
 import os
 import secrets
 import shutil
-import sqlite3
+from .sqlite_runtime import sqlite3
 import stat
 import threading
 import time
@@ -535,14 +535,52 @@ def encrypt_namespace_db(
       2. Flush pending telemetry and evict cached connections.
       3. Checkpoint and truncate the WAL (`PRAGMA wal_checkpoint(TRUNCATE)`).
       4. Create atomic 0600 backups under `~/.mesh/backups/`.
-      5. Encrypt all plaintext fields in `memories`, `queries`, `contradictions`, and `audit_log`.
+      5. Encrypt plaintext memory, query, contradiction, task, task-event, and audit fields.
       6. Purge `memories_fts` so zero plaintext tokens remain in FTS5 shadow tables on disk.
       7. Run `VACUUM` on both databases so SQLite rewrites every page from scratch.
+
+    Retained pre-encryption backups intentionally contain plaintext. Active readers
+    that prevent WAL cleanup raise an error; retry after those readers finish.
     """
     from .namespaces import _evict_namespace_caches
-    from .store import NamespaceNotFoundError, flush_all_telemetry, namespace_write_lock
+    from .audit import AUDIT_SCHEMA_VERSION
+    from .store import SCHEMA_VERSION, MeshStore, NamespaceNotFoundError, _check_namespace_binding, flush_all_telemetry, namespace_write_lock
 
     clean_ns = validate_namespace(namespace)
+
+    def checkpoint(conn: sqlite3.Connection, *, committed: bool = False) -> None:
+        result = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        if result is None or int(result[0]) != 0:
+            if committed:
+                raise RuntimeError("Database encryption committed; physical cleanup is waiting for active readers. Retry 'mesh encrypt-db' after they finish.")
+            raise RuntimeError("Database encryption cannot begin while active readers prevent WAL cleanup. Retry after they finish.")
+
+    def check_owner(conn: sqlite3.Connection, tables: tuple[str, ...], schema_limit: int) -> None:
+        version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+        if version > schema_limit:
+            raise RuntimeError("Database schema is newer than supported; upgrade Mesh before encrypting it.")
+        _check_namespace_binding(conn, clean_ns)
+        existing = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if "mesh_meta" in existing:
+            row = conn.execute("SELECT value FROM mesh_meta WHERE key='schema_version'").fetchone()
+            if row is not None:
+                try:
+                    metadata_version = int(row[0])
+                except (TypeError, ValueError) as exc:
+                    raise RuntimeError("Database schema version is invalid; encryption was not started.") from exc
+                if metadata_version > schema_limit:
+                    raise RuntimeError("Database schema is newer than supported; upgrade Mesh before encrypting it.")
+        owners: set[str] = set()
+        for table in tables:
+            if table not in existing:
+                continue
+            columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+            if "namespace" in columns:
+                owners.update(str(row[0]) for row in conn.execute(f"SELECT DISTINCT namespace FROM {table} WHERE namespace IS NOT NULL LIMIT 2"))
+        if len(owners) > 1:
+            raise RuntimeError("Database contains multiple namespaces; isolate them before encrypting Mesh.")
+        if owners and owners != {clean_ns}:
+            raise ValueError("Namespace database contains rows owned by another namespace; use the original namespace or a distinct database.")
     flush_all_telemetry()
     enable_encryption_at_rest(passphrase=passphrase)
     key = get_active_master_key(passphrase=passphrase)
@@ -565,15 +603,22 @@ def encrypt_namespace_db(
     encrypted_contradictions = 0
     encrypted_audits = 0
 
+    main_tables = ("memories", "queries", "contradictions", "work_items", "work_events")
+    audit_tables = ("audit_log", "audit_events")
     with namespace_write_lock(clean_ns, timeout=30.0):
-        if db_path.exists():
-            reject_symlink(db_path)
-            conn = sqlite3.connect(db_path, timeout=10.0)
+        # Validate both files before changing either, including unbound legacy databases.
+        for path, tables, schema_limit in ((db_path, main_tables, int(SCHEMA_VERSION)), (audit_path, audit_tables, AUDIT_SCHEMA_VERSION)):
+            if not path.exists():
+                continue
+            reject_symlink(path)
+            conn = sqlite3.connect(path, timeout=10.0)
             try:
-                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                check_owner(conn, tables, schema_limit)
+                checkpoint(conn)
             finally:
                 conn.close()
 
+        if db_path.exists():
             bak_db = backup_dir / f"mesh_{clean_ns}.db.bak.{ts_label}"
             shutil.copy2(db_path, bak_db)
             secure_file_permissions(bak_db)
@@ -584,6 +629,7 @@ def encrypt_namespace_db(
                 conn.execute("PRAGMA secure_delete=ON")
                 conn.execute("BEGIN IMMEDIATE")
                 try:
+                    check_owner(conn, main_tables, int(SCHEMA_VERSION))
                     # 1. Encrypt memories
                     rows = conn.execute(
                         "SELECT id, content, tags, embedding FROM memories WHERE namespace = ?",
@@ -648,6 +694,9 @@ def encrypt_namespace_db(
                             )
                             encrypted_contradictions += 1
 
+                    # Encrypt task text with the same resolved key before publishing success.
+                    MeshStore._encrypt_work_tables_in_tx(conn, key=key)
+
                     # 4. Purge on-disk FTS5 table so no plaintext tokens remain in shadow tables
                     try:
                         conn.execute("DELETE FROM memories_fts")
@@ -656,6 +705,9 @@ def encrypt_namespace_db(
 
                     conn.execute(
                         "CREATE TABLE IF NOT EXISTS mesh_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+                    )
+                    conn.execute(
+                        "INSERT OR REPLACE INTO mesh_meta (key, value) VALUES ('work_encryption_cleanup_pending', '1')"
                     )
                     conn.execute(
                         "INSERT OR REPLACE INTO mesh_meta (key, value) VALUES ('encrypted_at_rest', '1')"
@@ -670,22 +722,17 @@ def encrypt_namespace_db(
                         conn.rollback()
                     raise
 
-                # 5. Rewrite all pages via VACUUM and truncate WAL
-                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                # 5. Rewrite all pages via VACUUM and truncate WAL.
+                checkpoint(conn, committed=True)
                 conn.execute("VACUUM")
-                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                checkpoint(conn, committed=True)
+                conn.execute("UPDATE mesh_meta SET value='0' WHERE key='work_encryption_cleanup_pending'")
+                conn.commit()
             finally:
                 conn.close()
             secure_file_permissions(db_path)
 
         if audit_path.exists():
-            reject_symlink(audit_path)
-            conn_a = sqlite3.connect(audit_path, timeout=10.0)
-            try:
-                conn_a.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            finally:
-                conn_a.close()
-
             bak_audit = backup_dir / f"audit_{clean_ns}.db.bak.{ts_label}"
             shutil.copy2(audit_path, bak_audit)
             secure_file_permissions(bak_audit)
@@ -696,6 +743,7 @@ def encrypt_namespace_db(
                 conn_a.execute("PRAGMA secure_delete=ON")
                 conn_a.execute("BEGIN IMMEDIATE")
                 try:
+                    check_owner(conn_a, audit_tables, AUDIT_SCHEMA_VERSION)
                     a_rows = conn_a.execute(
                         "SELECT id, query, content, top_result FROM audit_log WHERE namespace = ?",
                         (clean_ns,),
@@ -727,9 +775,9 @@ def encrypt_namespace_db(
                     if conn_a.in_transaction:
                         conn_a.rollback()
                     raise
-                conn_a.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                checkpoint(conn_a, committed=True)
                 conn_a.execute("VACUUM")
-                conn_a.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                checkpoint(conn_a, committed=True)
             finally:
                 conn_a.close()
             secure_file_permissions(audit_path)

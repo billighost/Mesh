@@ -326,13 +326,13 @@ def test_reembed_command(capsys, monkeypatch):
         # Seed memories with hash-384
         with store._connect() as conn:
             conn.execute(
-                "INSERT INTO memories (id, namespace, content, embedding_model, embedding, created_at, updated_at, accessed_at, access_count, local_only) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO memories (id, namespace, content, embedding_model, embedding, created_at, updated_at, accessed_at, access_count, local_only, incarnation) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, lower(hex(randomblob(16))))",
                 ("mem-re-1", ns, "Memory to reembed A", "hash-384", None, "2026-10-26T12:00:00Z", "2026-10-26T12:00:00Z", "2026-10-26T12:00:00Z", 0, 0),
             )
             conn.execute(
-                "INSERT INTO memories (id, namespace, content, embedding_model, embedding, created_at, updated_at, accessed_at, access_count, local_only) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO memories (id, namespace, content, embedding_model, embedding, created_at, updated_at, accessed_at, access_count, local_only, incarnation) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, lower(hex(randomblob(16))))",
                 ("mem-re-2", ns, "Memory to reembed B", "hash-384", None, "2026-10-26T12:00:00Z", "2026-10-26T12:00:00Z", "2026-10-26T12:00:00Z", 0, 0),
             )
             conn.commit()
@@ -390,8 +390,8 @@ def test_reembed_crash_safety_rollback_and_resume(capsys, monkeypatch):
         with store._connect() as conn:
             for i in range(1, 5):
                 conn.execute(
-                    "INSERT INTO memories (id, namespace, content, embedding_model, embedding, created_at, updated_at, accessed_at, access_count, local_only) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO memories (id, namespace, content, embedding_model, embedding, created_at, updated_at, accessed_at, access_count, local_only, incarnation) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, lower(hex(randomblob(16))))",
                     (f"mem-crash-{i}", ns, f"Memory {i} for crash safety test", "hash-384", None, "2026-10-26T12:00:00Z", "2026-10-26T12:00:00Z", "2026-10-26T12:00:00Z", 0, 0),
                 )
             conn.commit()
@@ -588,8 +588,8 @@ def test_reembed_backup_hardening(monkeypatch):
     try:
         with store._connect() as conn:
             conn.execute(
-                "INSERT INTO memories (id, namespace, content, embedding_model, embedding, created_at, updated_at, accessed_at, access_count, local_only) "
-                "VALUES ('mem-h-1', ?, 'Hardening test memory', 'hash-384', NULL, '2026-10-26T12:00:00Z', '2026-10-26T12:00:00Z', '2026-10-26T12:00:00Z', 0, 0)",
+                "INSERT INTO memories (id, namespace, content, embedding_model, embedding, created_at, updated_at, accessed_at, access_count, local_only, incarnation) "
+                "VALUES ('mem-h-1', ?, 'Hardening test memory', 'hash-384', NULL, '2026-10-26T12:00:00Z', '2026-10-26T12:00:00Z', '2026-10-26T12:00:00Z', 0, 0, lower(hex(randomblob(16))))",
                 (ns,),
             )
             conn.commit()

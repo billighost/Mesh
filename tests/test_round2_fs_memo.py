@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import argparse
 import os
-import sqlite3
+from mesh.sqlite_runtime import sqlite3
 import sys
 import time
 

@@ -8,18 +8,18 @@ Security & Integrity:
   - Uses `_compute_row_effective_confidence()` from `store.py` for a single unified staleness definition
   - Evicts all in-memory vector, connection, lock, audit, context, HTTP, MCP, and Dashboard caches on delete/rename
   - Cleans up advisory `.mesh_<ns>.lock` files and enforces atomic rollback on failed `rename_namespace()`
+  - Stages namespace publication and recovers durable rename journals before ordinary opens
   - Enforces 0600 POSIX file permissions and Windows owner ACLs on renamed SQLite databases
 """
 from __future__ import annotations
 
-from collections import Counter
 import gc
 import logging
-import shutil
-import sqlite3
+import os
+from .sqlite_runtime import sqlite3
 import sys
 import time
-from contextlib import ExitStack
+import uuid
 from pathlib import Path
 from typing import Any, Optional
 
@@ -28,8 +28,8 @@ from .audit import (
     ensure_secure_mesh_dir,
     evict_audit_cache,
     get_mesh_dir,
+    mesh_dir_context,
     reject_symlink,
-    secure_file_permissions,
     validate_namespace,
 )
 from .store import (
@@ -44,6 +44,7 @@ from .store import (
     _evict_vector_cache_for_db_path,
     _utc_now,
     close_store_connection,
+    close_store_readers,
     evict_namespace_write_lock,
     flush_all_telemetry,
     namespace_write_lock,
@@ -61,6 +62,10 @@ def _get_all_db_paths() -> list[Path]:
     if not mesh_dir.exists() or mesh_dir.is_symlink():
         return []
     resolved_base = mesh_dir.resolve()
+    if any(resolved_base.glob(".mesh-rename-*.json")):
+        from .namespace_maintenance import recover_namespace_renames
+
+        recover_namespace_renames(resolved_base)
     results: list[Path] = []
     for p in mesh_dir.glob("mesh_*.db"):
         if p.name.endswith(("-wal", "-shm")):
@@ -121,6 +126,15 @@ def _reject_namespace_collision(db_path: Path, clean_ns: str, action: str) -> No
     """
     Refuse a destructive operation when the database's rows do not belong to `clean_ns`.
     """
+    from .store import SCHEMA_VERSION, _check_namespace_binding
+
+    connection = sqlite3.connect(db_path.as_uri() + "?mode=ro", uri=True)
+    try:
+        if int(connection.execute("PRAGMA user_version").fetchone()[0]) > int(SCHEMA_VERSION):
+            raise RuntimeError("Database schema is newer than supported; namespace maintenance is refused.")
+        _check_namespace_binding(connection, clean_ns)
+    finally:
+        connection.close()
     names = _distinct_memory_namespaces(db_path)
     if not names:
         return
@@ -155,80 +169,73 @@ def _checkpoint_truncate_or_raise(conn: sqlite3.Connection, db_path: Path) -> No
         )
 
 
+def _sync_namespace_directory(root: Path) -> None:
+    if os.name == "posix":
+        descriptor = os.open(root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+
+def _rebind_namespace_database(conn: sqlite3.Connection, old: str, new: str, *, new_generation: Optional[str] = None) -> int:
+    """Rebind authoritative rows together; stale handles keep their old generation."""
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if new_generation is not None:
+        from .store import _validate_incarnation
+
+        _validate_incarnation(new_generation, "new_generation")
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        # Use a static allowlist: database-supplied identifiers are untrusted.
+        for table in ("memories", "queries", "contradictions", "work_items", "work_events", "embedding_jobs", "mutation_outbox", "operation_receipts"):
+            if table in tables:
+                conn.execute(f"UPDATE {table} SET namespace=? WHERE namespace=?", (new, old))
+        if "mesh_meta" in tables:
+            conn.execute("INSERT OR REPLACE INTO mesh_meta(key,value) VALUES('namespace_owner',?)", (new,))
+            conn.execute("UPDATE mesh_meta SET value=CAST(value AS INTEGER)+1 WHERE key='content_version'")
+            if conn.execute("SELECT 1 FROM mesh_meta WHERE key='store_generation'").fetchone():
+                conn.execute("UPDATE mesh_meta SET value=? WHERE key='store_generation'", (new_generation or uuid.uuid4().hex,))
+        if conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
+            raise sqlite3.IntegrityError("Namespace rename would leave inconsistent references.")
+        count = int(conn.execute("SELECT COUNT(*) FROM memories WHERE namespace=?", (new,)).fetchone()[0])
+        conn.commit()
+        return count
+    except BaseException:
+        conn.rollback()
+        raise
+
+
 def _evict_namespace_caches(namespace: str, db_path: Optional[Path] = None) -> None:
-    """
-    Clear all in-memory caches and close pooled SQLite connections for `namespace`
-    across store, audit, context_builder, http_server, mcp_server, and dashboard.
-    Only touches already-imported server modules in `sys.modules` to preserve lazy loading.
-    """
+    """Invalidate only the bound namespace and retire writer/reader handles."""
     clean_ns = validate_namespace(namespace)
-    if db_path is None:
-        base_dir = ensure_secure_mesh_dir().resolve()
-        db_path = _safe_mesh_db_path(base_dir, clean_ns)
-    resolved_db = db_path.resolve()
-
-    evict_namespace_write_lock(clean_ns)
-
-    with _CACHE_LOCK:
-        _evict_vector_cache_for_db_path(resolved_db)
-        _evict_vector_cache_for_db_path(db_path)
-        _INITIALIZED_DBS.pop(resolved_db, None)
-        _INITIALIZED_DBS.pop(db_path, None)
+    candidate = db_path or _safe_mesh_db_path(ensure_secure_mesh_dir().resolve(), clean_ns)
+    resolved_db = candidate.resolve()
+    with mesh_dir_context(resolved_db.parent):
+        evict_namespace_write_lock(clean_ns, data_root=resolved_db.parent)
+        with _CACHE_LOCK:
+            _evict_vector_cache_for_db_path(resolved_db)
+            _INITIALIZED_DBS.pop(resolved_db, None)
+            for key in [key for key in _TRANSIENT_EMBEDDINGS if key[0] == clean_ns]:
+                _TRANSIENT_EMBEDDINGS.pop(key, None)
+        # Closing native handles may wait for a checkout; keep registry locks short.
+        close_store_readers(resolved_db)
         close_store_connection(resolved_db)
-        close_store_connection(db_path)
-        stale_keys = [k for k in _TRANSIENT_EMBEDDINGS if k[0] == clean_ns]
-        for k in stale_keys:
-            _TRANSIENT_EMBEDDINGS.pop(k, None)
-
-    evict_audit_cache(clean_ns)
-
-    ctx_mod = sys.modules.get("mesh.context_builder")
-    if ctx_mod is not None and hasattr(ctx_mod, "evict_context_mesh_cache"):
-        try:
-            ctx_mod.evict_context_mesh_cache(clean_ns)
-        except Exception:
-            pass
-
-    http_mod = sys.modules.get("mesh.http_server")
-    if http_mod is not None and hasattr(http_mod, "evict_http_mesh_cache"):
-        try:
-            http_mod.evict_http_mesh_cache(clean_ns)
-        except Exception:
-            pass
-
-    mcp_mod = sys.modules.get("mesh.mcp_server")
-    if mcp_mod is not None and hasattr(mcp_mod, "evict_mcp_mesh_cache"):
-        try:
-            mcp_mod.evict_mcp_mesh_cache(clean_ns)
-        except Exception:
-            pass
-
-    dash_mod = sys.modules.get("mesh.dashboard")
-    if dash_mod is not None and hasattr(dash_mod, "evict_dashboard_mesh_cache"):
-        try:
-            dash_mod.evict_dashboard_mesh_cache(clean_ns)
-        except Exception:
-            pass
-
-    cli_mod = sys.modules.get("mesh.cli")
-    if cli_mod is not None and hasattr(cli_mod, "evict_cli_mesh_cache"):
-        try:
-            cli_mod.evict_cli_mesh_cache(clean_ns)
-        except Exception:
-            pass
-
-    mem_mod = sys.modules.get("mesh.memory")
-    if mem_mod is not None:
-        if hasattr(mem_mod, "evict_memory_namespace_cache"):
-            try:
-                mem_mod.evict_memory_namespace_cache(clean_ns)
-            except Exception:
-                pass
-        elif hasattr(mem_mod, "drain_reembed_worker"):
-            try:
-                mem_mod.drain_reembed_worker(timeout=1.0)
-            except Exception:
-                pass
+        evict_audit_cache(clean_ns)
+        for module_name, function_name in (
+            ('mesh.operations', 'evict_mesh_cache'),
+            ('mesh.context_builder', 'evict_context_mesh_cache'),
+            ('mesh.http_server', 'evict_http_mesh_cache'),
+            ('mesh.mcp_server', 'evict_mcp_mesh_cache'),
+            ('mesh.dashboard', 'evict_dashboard_mesh_cache'),
+            ('mesh.cli', 'evict_cli_mesh_cache'),
+            ('mesh.memory', 'evict_memory_namespace_cache'),
+        ):
+            module = sys.modules.get(module_name)
+            function = getattr(module, function_name, None)
+            if function is not None:
+                function(clean_ns)
 
 
 def evict_lru_namespace(exclude_namespace: Optional[str] = None) -> Optional[str]:
@@ -296,42 +303,10 @@ def list_namespaces() -> list[dict[str, Any]]:
             clean_ns = validate_namespace(namespace)
         except ValueError:
             continue
-        cached_entry = None
-        try:
-            with _CACHE_LOCK:
-                c = _VECTOR_CACHE.get((db_path, clean_ns))
-                if c is not None and c.rows_by_id:
-                    cached_entry = c
-        except Exception:
-            pass
-
-        if cached_entry is not None:
-            rows = cached_entry.rows_by_id
-            total = len(rows)
-            local_only = sum(1 for r in rows.values() if r.get("local_only"))
-            last_ts = max(
-                (
-                    str(r.get("updated_at") or r.get("accessed_at") or r.get("created_at") or "")
-                    for r in rows.values()
-                ),
-                default="never",
-            )
-            last_updated = last_ts if last_ts else "never"
-            results.append(
-                {
-                    "namespace": clean_ns,
-                    "memory_count": total,
-                    "local_only_count": local_only,
-                    "last_updated": last_updated,
-                    "updated_at": last_updated,
-                }
-            )
-            continue
-
         try:
             reject_symlink(db_path)
             store = MeshStore(namespace=clean_ns, create=False)
-            with store._connect() as conn:
+            with store._read_connect() as conn:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
                 cols = {r[1] for r in cursor.execute("PRAGMA table_info(memories)").fetchall()}
@@ -404,12 +379,27 @@ def list_namespaces() -> list[dict[str, Any]]:
 
 
 def delete_namespace(namespace: str) -> int:
+    """Delete a namespace while cooperating writers and maintenance are excluded."""
+    clean_ns = validate_namespace(namespace)
+    flush_all_telemetry()
+    root = ensure_secure_mesh_dir().resolve()
+    if any(root.glob(".mesh-rename-*.json")):
+        from .namespace_maintenance import recover_namespace_renames
+
+        recover_namespace_renames(root, clean_ns)
+    try:
+        with namespace_write_lock(clean_ns, data_root=root):
+            return _delete_namespace_locked(clean_ns)
+    finally:
+        evict_namespace_write_lock(clean_ns, data_root=root)
+
+
+def _delete_namespace_locked(namespace: str) -> int:
     """
     Delete a validated namespace and ALL its memories (plus its isolated audit trail DB and `.lock` file).
     Raises `NamespaceNotFoundError` (a `ValueError` subclass) if the namespace does not exist.
     """
     clean_ns = validate_namespace(namespace)
-    flush_all_telemetry()
     base_dir = ensure_secure_mesh_dir().resolve()
     db_path = _safe_mesh_db_path(base_dir, clean_ns)
     audit_db_path = _get_audit_db_path(clean_ns)
@@ -459,124 +449,24 @@ def delete_namespace(namespace: str) -> int:
     if db_path.exists():
         _remove_sqlite_files(db_path, strict=True)
 
+    _sync_namespace_directory(base_dir)
     evict_namespace_write_lock(clean_ns)
     return count
 
 
 def rename_namespace(old_name: str, new_name: str) -> int:
-    """
-    Rename a namespace safely with full validation, symlink rejection, cache eviction,
-    and atomic rollback on failure.
-    """
+    """Rename through staged, durable publication and validated restart recovery."""
     clean_old = validate_namespace(old_name)
     clean_new = validate_namespace(new_name)
     if clean_old == clean_new:
         raise ValueError(f"Old and new namespace names are identical ('{clean_old}').")
-
     flush_all_telemetry()
     base_dir = ensure_secure_mesh_dir().resolve()
-    old_db = _safe_mesh_db_path(base_dir, clean_old)
-    new_db = _safe_mesh_db_path(base_dir, clean_new)
-    old_audit = _get_audit_db_path(clean_old)
-    new_audit = _get_audit_db_path(clean_new)
+    from .namespace_maintenance import rename_namespace as rename_with_recovery
 
-    if not old_db.exists():
-        raise NamespaceNotFoundError(f"Namespace '{old_name}' does not exist")
-    if new_db.exists() or new_audit.exists():
-        raise ValueError(f"Namespace '{new_name}' already exists. Delete it first.")
-    _reject_namespace_collision(old_db, clean_old, "rename")
-
-    _evict_namespace_caches(clean_old, old_db)
-    _evict_namespace_caches(clean_new, new_db)
-
-    count = 0
-    lock_names = sorted({clean_old, clean_new})
-    with ExitStack() as stack:
-        for lock_ns in lock_names:
-            stack.enter_context(namespace_write_lock(lock_ns, timeout=30.0))
-
-        conn_old = sqlite3.connect(old_db, timeout=5.0)
-        try:
-            _checkpoint_truncate_or_raise(conn_old, old_db)
-        finally:
-            conn_old.close()
-
-        try:
-            reject_symlink(old_db)
-            reject_symlink(new_db)
-            shutil.copy2(old_db, new_db)
-            secure_file_permissions(new_db)
-
-            conn_new = sqlite3.connect(new_db, timeout=5.0)
-            try:
-                conn_new.execute("UPDATE memories SET namespace = ? WHERE namespace = ?", (clean_new, clean_old))
-                conn_new.execute("UPDATE queries SET namespace = ? WHERE namespace = ?", (clean_new, clean_old))
-                conn_new.execute(
-                    "UPDATE contradictions SET namespace = ? WHERE namespace = ?", (clean_new, clean_old)
-                )
-                tables = {
-                    r[0]
-                    for r in conn_new.execute(
-                        "SELECT name FROM sqlite_master WHERE type='table'"
-                    ).fetchall()
-                }
-                if "mesh_meta" in tables:
-                    conn_new.execute(
-                        "INSERT OR REPLACE INTO mesh_meta (key, value) VALUES ('content_version', COALESCE((SELECT CAST(value AS INTEGER) + 1 FROM mesh_meta WHERE key = 'content_version'), '1'))"
-                    )
-                conn_new.commit()
-                cur = conn_new.execute(
-                    "SELECT COUNT(*) FROM memories WHERE namespace = ?", (clean_new,)
-                )
-                row = cur.fetchone()
-                count = int(row[0]) if row else 0
-                cur.close()
-            finally:
-                conn_new.close()
-            secure_file_permissions(new_db)
-
-            if old_audit.exists():
-                reject_symlink(old_audit)
-                reject_symlink(new_audit)
-                conn_audit_old = sqlite3.connect(old_audit, timeout=5.0)
-                try:
-                    _checkpoint_truncate_or_raise(conn_audit_old, old_audit)
-                finally:
-                    conn_audit_old.close()
-
-                shutil.copy2(old_audit, new_audit)
-                secure_file_permissions(new_audit)
-                conn_audit_new = sqlite3.connect(new_audit, timeout=5.0)
-                try:
-                    conn_audit_new.execute(
-                        "UPDATE audit_log SET namespace = ? WHERE namespace = ?",
-                        (clean_new, clean_old),
-                    )
-                    conn_audit_new.commit()
-                finally:
-                    conn_audit_new.close()
-                secure_file_permissions(new_audit)
-        except Exception:
-            close_store_connection(new_db)
-            _remove_sqlite_files(new_db)
-            if new_audit.exists():
-                _remove_sqlite_files(new_audit)
-            raise
-
-        _evict_namespace_caches(clean_old, old_db)
-        if old_audit.exists():
-            evict_audit_cache(clean_old)
-        removed = _remove_sqlite_files(old_db, strict=True)
-        if old_audit.exists():
-            removed = _remove_sqlite_files(old_audit, strict=True) and removed
-        if not removed:
-            raise RuntimeError(
-                f"Renamed data to '{clean_new}', but could not fully remove the old namespace files. "
-                "Close the Mesh daemon and retry."
-            )
-
-    evict_namespace_write_lock(clean_old)
-    evict_namespace_write_lock(clean_new)
+    count = rename_with_recovery(clean_old, clean_new, base_dir)
+    evict_namespace_write_lock(clean_old, data_root=base_dir)
+    evict_namespace_write_lock(clean_new, data_root=base_dir)
     return count
 
 
@@ -594,59 +484,8 @@ def namespace_stats(namespace: str) -> dict[str, Any]:
         raise NamespaceNotFoundError(f"Namespace '{namespace}' does not exist")
 
     now = _utc_now()
-    cached_entry = None
-    try:
-        with _CACHE_LOCK:
-            c = _VECTOR_CACHE.get((db_path, clean_ns))
-            if c is not None and c.rows_by_id:
-                cached_entry = c
-    except Exception:
-        pass
-
-    if cached_entry is not None:
-        rows = list(cached_entry.rows_by_id.values())
-        total = len(rows)
-        local_only = sum(1 for r in rows if r.get("local_only"))
-        cached_type_breakdown = Counter(str(r.get("memory_type", "fact")) for r in rows)
-        avg_conf = (
-            round(sum(float(r.get("confidence", 1.0)) for r in rows) / total, 4)
-            if total > 0
-            else 0.0
-        )
-        total_recalls = sum(int(r.get("access_count") or 0) for r in rows)
-        created_times = [str(r.get("created_at") or "") for r in rows if r.get("created_at")]
-        oldest = min(created_times) if created_times else "none"
-        newest = max(created_times) if created_times else "none"
-        stale = 0
-        for r in rows:
-            _, is_stale = _compute_row_effective_confidence(r, now=now)
-            if is_stale:
-                stale += 1
-
-        total_searches = 0
-        try:
-            store = MeshStore(namespace=clean_ns, create=False)
-            with store._connect() as conn_q:
-                row_q = conn_q.execute("SELECT COUNT(*) FROM queries WHERE namespace = ?", (clean_ns,)).fetchone()
-                total_searches = int(row_q[0] or 0) if row_q else 0
-        except Exception:
-            total_searches = 0
-
-        return {
-            "memory_count": total,
-            "local_only_count": local_only,
-            "exportable_count": total - local_only,
-            "type_breakdown": dict(cached_type_breakdown),
-            "avg_confidence": avg_conf,
-            "total_recalls": total_recalls,
-            "total_searches": total_searches,
-            "oldest_memory": oldest,
-            "newest_memory": newest,
-            "stale_count": stale,
-        }
-
     store = MeshStore(namespace=clean_ns, create=False)
-    with store._connect() as conn:
+    with store._read_connect() as conn:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) as c FROM memories WHERE namespace = ?", (clean_ns,))
@@ -704,7 +543,7 @@ def namespace_stats(namespace: str) -> dict[str, Any]:
             (clean_ns,),
         )
         stale = 0
-        for r in cursor.fetchall():
+        for r in cursor:
             row_dict = {
                 "created_at": r[0],
                 "decay_start_at": r[1],

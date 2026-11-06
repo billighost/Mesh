@@ -22,7 +22,7 @@ import concurrent.futures
 import json
 import multiprocessing as mp
 import os
-import sqlite3
+from mesh.sqlite_runtime import sqlite3
 import subprocess
 import sys
 import tempfile

@@ -1,4 +1,4 @@
-# Mesh Developer Guide (v0.8.3)
+# Mesh Developer Guide (v0.9.0)
 
 How to work on Mesh safely: isolated setup, tests, benchmarks, documentation checks, extension points, release, and field-test reproduction.
 
@@ -33,7 +33,7 @@ Optional extras:
 | `[pytorch]`, `[fastembed]` | alternative embedding backends |
 | `[legacy]` | compatibility |
 
-Python support: 3.10–3.13 in CI; the 0.8.1b2 field test also ran on 3.14.0.
+Python support: 3.10–3.14 in CI; the 0.8.1b2 field test also ran on 3.14.0.
 
 ---
 
@@ -88,7 +88,7 @@ mesh doctor
 mesh status --json
 ```
 
-`doctor` must show the temporary data directory, 17 MCP tools, and the daemon not running. If it shows your real `~/.mesh`, stop and fix the environment.
+`doctor` must show the temporary data directory, 20 MCP tools, and the daemon not running. If it shows your real `~/.mesh`, stop and fix the environment.
 
 ---
 
@@ -119,6 +119,43 @@ mesh status --json
 
 ## 4. Tests, lint, and checks
 
+The isolated launcher configures temporary Mesh, home, and agent directories
+before pytest or plugins import application code. It uses two workers by default,
+keeps files together with `loadfile`, disables unrelated user plugins/options,
+and bounds BLAS/OpenMP threads per worker. Select one to four workers explicitly
+when comparing speed or controlling memory use; avoid `-n auto`.
+
+```bash
+python scripts/run_tests.py --workers 2 -- --cov=mesh --cov-report=term-missing -q
+python scripts/run_tests.py --workers 2 -- tests/test_memory.py -q
+python scripts/run_tests.py --workers 1 --report test-run.json -- --cov=mesh -q
+```
+
+All explicit test selection, property-test profiles, and coverage options are
+retained. The launcher does not force hash embeddings or lower Hypothesis example
+counts. A JSON report includes wall time and optional psutil resource samples.
+Summed process RSS may count shared pages repeatedly; sampled CPU can miss
+short-lived processes. Compare identical test selections, profiles, and coverage
+when evaluating changes.
+
+`scripts/run_ci_tests.py` runs the full suite with coverage and the CI Hypothesis
+profile. `MESH_TEST_WORKERS` selects one to four workers (default: two). The
+existing coverage threshold remains in `pyproject.toml`. CI preserves JUnit,
+coverage, wall time, and sampled resource reports under `.work/ci/`, while keeping
+only the last 150 output lines in memory for the failure summary.
+
+On a small development machine, run a focused smoke with one worker and use
+GitHub Actions for full suites, model evaluation, and concurrency matrices.
+The [production workflow](.github/workflows/production-performance.yml) qualifies
+the same commit before its measurements. Ordinary `ci/mesh-production-*` branches
+run qualification; `ci/mesh-production-run-*` branches also request the serial
+performance matrix and a one-versus-two-worker full-suite comparison. Manual
+dispatch can select those lanes individually. The speed comparison keeps the
+test selection and Hypothesis seed fixed and records any changed skips; it is
+one hosted-runner observation, with OS and cache variability.
+
+Direct pytest remains available after the isolated environment setup in section 2:
+
 ```bash
 pytest -q
 pytest tests/test_memory.py -q
@@ -129,7 +166,7 @@ python scripts/check_skill.py
 python scripts/check_docs.py
 ```
 
-CI (`.github/workflows/ci.yml`) runs ruff, `check_skill.py`, `check_docs.py`, bandit, and pytest on Ubuntu/macOS/Windows with Python 3.10–3.13, using an isolated `MESH_HOME` and `MESH_NO_AUTO_DAEMON=1`.
+CI (`.github/workflows/ci.yml`) runs ruff, `check_skill.py`, `check_docs.py`, bandit, and pytest on Ubuntu/macOS/Windows with Python 3.10–3.14, using isolated Mesh/home/configuration directories and `MESH_NO_AUTO_DAEMON=1`.
 
 Test rules:
 
@@ -227,7 +264,7 @@ Benchmarks need the ONNX model for representative numbers; `hash-384` results ar
 
 ### Add an agent lifecycle hook
 
-Agent lifecycle hooks allow agent runtimes (e.g. Claude Code, Antigravity) to automatically execute `mesh brief` on `SessionStart`.
+Agent lifecycle hooks invoke the bounded `mesh-hook brief` entry point through a verified connection profile. Claude Code uses `SessionStart`; Antigravity uses `PreInvocation`, which may run before each invocation. Codex lifecycle hooks remain unverified.
 To add hook support for a new agent adapter in `mesh/installer.py`:
 1. Implement `get_hooks_path(scope, project_dir)` returning the configuration file path (e.g. `.claude/settings.json`).
 2. Set `supports_hooks() -> bool: return True`.
@@ -330,8 +367,8 @@ Logging: `MESH_LOG_LEVEL=DEBUG`. Audit: `mesh why`, `mesh audit export --json`. 
 - Assuming `local_only` encrypts data. It does not.
 - Assuming quarantine is automatic. It is opt-in for capture.
 - Assuming `.mesh.toml` works. It is mentioned in the skill but not implemented.
-- Assuming `mesh task update` exists. The CLI has no such action in 0.8.1b2.
-- Assuming hooks exist. They do not (T-003).
+- Assuming `mesh task update` exists. Use `mesh call mesh_task_update` for structured updates or the task lifecycle subcommands.
+- Assuming every agent has a verified session-start hook. Claude Code uses `SessionStart`; Antigravity uses `PreInvocation`, and Codex hooks remain unverified.
 - Quoting old README benchmark numbers. Use `benchmarks/RESULTS.md` and state hardware/method.
 - Treating installer adapter code as proven third-party support. Label field-test status.
 - Forgetting that `hash-384` changes thresholds and retrieval quality.

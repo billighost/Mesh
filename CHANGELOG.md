@@ -6,9 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [0.9.0] - Unreleased
 
-Release consolidating pure-Python architecture, multi-format export, embedding-downgrade protections, hardened coding agent installer configurations, and formal empirical benchmark methodology.
+Release improving durable concurrent storage, natural-language retrieval, bounded resource use, and persistent context for agents sharing one machine. The Python API remains compatible; native SQLite is supplied by the APSW dependency.
 
 ### Added
+- **Patched SQLite runtime**: A lazy DB-API facade uses APSW's bundled SQLite for storage, audit, encryption helpers, backup, and maintenance. Runtime verification rejects vulnerable WAL versions and missing FTS5 or thread safety. Persistent transactions use `synchronous=FULL` by default.
+- **Durable indexing and mutation delivery**: Revision-bound embedding jobs and content-free mutation events commit with authoritative state. Durable operation receipts support reconciliation after a lost reply without replaying a write under a new ID.
+- **Guarded bulk ingestion and shared execution**: `learn_many` applies scalar validation, privacy, ownership, redaction, and encryption rules to bounded atomic batches. Optional group commits combine eligible server operations while retaining each operation's receipt and outcome. Async transports use bounded blocking-work admission.
+- **Reviewed connection profiles**: `mesh.client.MeshClient` and `mesh call` preserve namespace, store identity, agent attribution, and privacy policy across SDK and existing authenticated HTTP access. The packaged skill documents MCP, CLI, SDK, and HTTP fallback and requires topic recall before decisions.
+- **Expanded project briefs**: Select up to twenty current facts with IDs, bounded work and handoff context, omissions, and continuation metadata. Brief parameters and estimated Markdown budgets are consistent across supported surfaces.
+- **Isolated parallel testing and process benchmarks**: `scripts/run_tests.py` bounds workers, plugins, and math-library threads while retaining selected tests, CI property-test profiles, and coverage. Production benchmarks distinguish durable acceptance, verified indexing, real HTTP transport, receipts, and resource usage.
 - **Multi-Format Data Export (`mesh/io.py`, `mesh/cli.py`)**: Added full export support for JSON (complete round-trip), Markdown summaries, and spreadsheet CSV formats (`mesh export --format {json,markdown,csv}`). CSV export neutralizes formula injection attempts (CWE-1236) by escaping leading `=`, `+`, `-`, `@`, `	`, and `` characters.
 - **Embedding-Downgrade Protections & Re-Embedding CLI (`mesh reembed`, `mesh/memory.py`)**: Enforced dimension and model validation preventing high-dimensional ONNX vectors from being silently overwritten by lexical hash vectors. Added `mesh reembed` CLI command and API to explicitly drain and upgrade memory stores to target neural embedding models.
 - **Daemon Readiness Probe (`mesh/daemon.py`, `mesh/cli.py`)**: Added deterministic health and readiness endpoints (`/healthz`, `/readyz`) with keep-alive socket checks to confirm transformer model readiness before CLI query delegation.
@@ -17,9 +23,14 @@ Release consolidating pure-Python architecture, multi-format export, embedding-d
 
 ### Changed
 - **Installer Adaptations for Modern Coding Agents (`mesh/installer.py`)**: Aligned OpenAI Codex CLI adapter to TOML configuration (`~/.codex/config.toml`), Gemini CLI to `settings.json`, OpenCode to XDG `opencode.json`, and Windsurf to strictly user-scoped MCP configuration per upstream vendor specifications.
-- **Distribution Architecture**: Standardized package distribution exclusively as pure `py3-none-any.whl` without platform-specific binary wheel builds.
+- **Distribution Architecture**: Mesh's wheel remains `py3-none-any`; the required APSW dependency supplies a privately bundled native SQLite wheel for the target platform.
+- **Hybrid retrieval and caches**: Use verified neural query encoding when a model is ready, separate embedding caches by model space, combine dense and BM25 lexical candidates, and preserve exact lookup while indexing is pending. Bounded caches share repeated lexical data and use an explicit streaming path when their byte budget is exhausted.
 
 ### Fixed
+- **Atomic work history and encrypted privacy**: Task state and lifecycle events commit together; application encryption covers task fields and event notes. Briefs and task mutations enforce server privacy and enabled ownership rules.
+- **Stale asynchronous results**: Content revisions, memory incarnations, and store generations prevent old embeddings, access updates, or prepared mutations from modifying an edited, deleted, reused, or replaced memory.
+- **Crash recovery and namespace lifecycle**: Namespace renames use synchronized staged publication and a validated recovery journal. Connection, reader, audit, and writer registries retain in-flight ownership and retire unused state within configured limits.
+- **Unknown write outcomes**: CLI, SDK, MCP, and HTTP preserve operation IDs and distinguish pre-admission rejection from uncertain execution or serialization failures. Fallback does not silently replay an uncertain mutation.
 - **Cold Standalone Namespace Stats & Digest (`mesh/namespaces.py`, `mesh/digest.py`)**: Fixed `TypeError: tuple indices must be integers or slices, not str` when executing `mesh status` or generating digests on a cold standalone execution with unpopulated vector cache by enforcing `sqlite3.Row` row factory and safe positional tuple fallback.
 - **CLI Subprocess Timeout & Daemon Delegation**: Resolved cold ONNX model loading latency during CLI execution by automatically routing queries to resident background daemon over local keep-alive HTTP sockets.
 - **Namespace Connection Pooling & Lock Recovery**: Fixed SQLite database connection pooling under multi-process contention with improved busy-timeout retry handling.
@@ -339,7 +350,7 @@ This release fixes a set of privacy, concurrency, search-quality, and documentat
 
 ##  Historical Releases (0.1.0 – 0.6.2)
 
- 
+
 
 ### [0.6.2] - 2026-10-17
 

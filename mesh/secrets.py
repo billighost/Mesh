@@ -34,7 +34,7 @@ _KEYRING_LOCK = threading.Lock()
 _LOCAL_VAULT_CACHE: dict[Path, tuple[int, int, dict[str, str]]] = {}
 _LOCAL_VAULT_CACHE_LOCK = threading.Lock()
 
-_IS_CRED_CACHE: OrderedDict[str, bool] = OrderedDict()
+_IS_CRED_CACHE: OrderedDict[bytes, bool] = OrderedDict()
 _IS_CRED_LOCK = threading.Lock()
 _MAX_IS_CRED_CACHE = 2048
 
@@ -875,11 +875,12 @@ def is_credential(text: str) -> bool:
     if isinstance(text, str) and 0 < len(text.strip()) <= 16384 and guard_prescan(text):
         return False
 
-    if isinstance(text, str) and len(text) <= 4096:
+    cache_key = hashlib.sha256(text.encode("utf-8", "surrogatepass")).digest() if isinstance(text, str) and len(text) <= 4096 else None
+    if cache_key is not None:
         with _IS_CRED_LOCK:
-            cached = _IS_CRED_CACHE.get(text)
+            cached = _IS_CRED_CACHE.get(cache_key)
             if cached is not None:
-                _IS_CRED_CACHE.move_to_end(text)
+                _IS_CRED_CACHE.move_to_end(cache_key)
                 return cached
 
     norm = _normalize_for_detection(text)
@@ -928,11 +929,11 @@ def is_credential(text: str) -> bool:
                     res = True
                     break
 
-    if isinstance(text, str) and len(text) <= 4096:
+    if cache_key is not None:
         with _IS_CRED_LOCK:
             if len(_IS_CRED_CACHE) >= _MAX_IS_CRED_CACHE:
                 _IS_CRED_CACHE.popitem(last=False)
-            _IS_CRED_CACHE[text] = res
+            _IS_CRED_CACHE[cache_key] = res
 
     return res
 

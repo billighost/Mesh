@@ -14,7 +14,9 @@ Addresses Findings:
 from __future__ import annotations
 
 from collections import OrderedDict
+import hashlib
 import re
+import sys
 import threading
 import unicodedata
 from typing import Iterable, NamedTuple, Optional
@@ -27,18 +29,91 @@ from .secrets import (
     redact_secrets_local,
 )
 
-_GUARD_INGEST_CACHE: OrderedDict[tuple[str, bool], "GuardResult"] = OrderedDict()
-_POISON_CACHE: OrderedDict[str, bool] = OrderedDict()
-_TAGS_CACHE: OrderedDict[tuple[tuple[str, ...], bool], tuple[list[str], bool, tuple[str, ...]]] = OrderedDict()
+_GUARD_INGEST_CACHE: OrderedDict[tuple[bytes, bool, int], "GuardResult"] = OrderedDict()
+_POISON_CACHE: OrderedDict[bytes, bool] = OrderedDict()
+_TAGS_CACHE: OrderedDict[tuple[bytes, bool], tuple[list[str], bool, tuple[str, ...]]] = OrderedDict()
 _GUARD_CACHE_LOCK = threading.Lock()
 _MAX_GUARD_CACHE = 2048
+_MAX_GUARD_CACHE_BYTES = 4 * 1024 * 1024
+_MAX_TAGS_CACHE_BYTES = 2 * 1024 * 1024
+_GUARD_CACHE_BYTES = 0
+_TAGS_CACHE_BYTES = 0
 
 
 def clear_guard_caches() -> None:
+    global _GUARD_CACHE_BYTES, _TAGS_CACHE_BYTES
     with _GUARD_CACHE_LOCK:
         _GUARD_INGEST_CACHE.clear()
         _POISON_CACHE.clear()
         _TAGS_CACHE.clear()
+        _GUARD_CACHE_BYTES = _TAGS_CACHE_BYTES = 0
+
+
+def _text_digest(value: str) -> bytes:
+    return hashlib.sha256(value.encode("utf-8", "surrogatepass")).digest()
+
+
+def _guard_result_cost(key: tuple[bytes, bool, int], value: "GuardResult") -> int:
+    return (
+        128 + sys.getsizeof(key) + sys.getsizeof(key[0]) + sys.getsizeof(value)
+        + sys.getsizeof(value.content) + sys.getsizeof(value.reason) + sys.getsizeof(value.warnings)
+        + sum(sys.getsizeof(warning) for warning in value.warnings)
+    )
+
+
+def _cache_guard_result(key: tuple[bytes, bool, int], value: "GuardResult") -> None:
+    global _GUARD_CACHE_BYTES
+    # Rejected bodies have not been redacted and can still contain credentials.
+    if value.rejected:
+        return
+    cost = _guard_result_cost(key, value)
+    if cost > _MAX_GUARD_CACHE_BYTES:
+        return
+    with _GUARD_CACHE_LOCK:
+        previous = _GUARD_INGEST_CACHE.pop(key, None)
+        if previous is not None:
+            _GUARD_CACHE_BYTES -= _guard_result_cost(key, previous)
+        while _GUARD_INGEST_CACHE and (
+            len(_GUARD_INGEST_CACHE) >= _MAX_GUARD_CACHE or _GUARD_CACHE_BYTES + cost > _MAX_GUARD_CACHE_BYTES
+        ):
+            removed_key, removed = _GUARD_INGEST_CACHE.popitem(last=False)
+            _GUARD_CACHE_BYTES -= _guard_result_cost(removed_key, removed)
+        _GUARD_INGEST_CACHE[key] = value
+        _GUARD_CACHE_BYTES += cost
+
+
+def _tags_result_cost(key: tuple[bytes, bool], value: tuple[list[str], bool, tuple[str, ...]]) -> int:
+    return (
+        128 + sys.getsizeof(key) + sys.getsizeof(key[0]) + sys.getsizeof(value)
+        + sys.getsizeof(value[0]) + sys.getsizeof(value[2])
+        + sum(sys.getsizeof(text) for text in [*value[0], *value[2]])
+    )
+
+
+def _cache_tags_result(key: tuple[bytes, bool], value: tuple[list[str], bool, tuple[str, ...]]) -> None:
+    global _TAGS_CACHE_BYTES
+    cost = _tags_result_cost(key, value)
+    if cost > _MAX_TAGS_CACHE_BYTES:
+        return
+    with _GUARD_CACHE_LOCK:
+        previous = _TAGS_CACHE.pop(key, None)
+        if previous is not None:
+            _TAGS_CACHE_BYTES -= _tags_result_cost(key, previous)
+        while _TAGS_CACHE and (len(_TAGS_CACHE) >= _MAX_GUARD_CACHE or _TAGS_CACHE_BYTES + cost > _MAX_TAGS_CACHE_BYTES):
+            removed_key, removed = _TAGS_CACHE.popitem(last=False)
+            _TAGS_CACHE_BYTES -= _tags_result_cost(removed_key, removed)
+        _TAGS_CACHE[key] = value
+        _TAGS_CACHE_BYTES += cost
+
+
+def get_guard_cache_stats() -> dict[str, int]:
+    with _GUARD_CACHE_LOCK:
+        return {
+            "ingest_entries": len(_GUARD_INGEST_CACHE), "ingest_bytes": _GUARD_CACHE_BYTES,
+            "ingest_byte_limit": _MAX_GUARD_CACHE_BYTES, "tag_entries": len(_TAGS_CACHE),
+            "tag_bytes": _TAGS_CACHE_BYTES, "tag_byte_limit": _MAX_TAGS_CACHE_BYTES,
+            "poison_entries": len(_POISON_CACHE),
+        }
 
 _INVISIBLE_CHAR_CLASS = INVISIBLE_CHAR_CLASS
 _ZERO_WIDTH_RE = ZERO_WIDTH_RE
@@ -125,11 +200,12 @@ def is_poison_attempt(text: str) -> bool:
     if isinstance(text, str) and 0 < len(text.strip()) <= 16384 and guard_prescan(text):
         return False
 
-    if isinstance(text, str) and len(text) <= 4096:
+    cache_key = _text_digest(text) if isinstance(text, str) and len(text) <= 4096 else None
+    if cache_key is not None:
         with _GUARD_CACHE_LOCK:
-            res = _POISON_CACHE.get(text)
+            res = _POISON_CACHE.get(cache_key)
             if res is not None:
-                _POISON_CACHE.move_to_end(text)
+                _POISON_CACHE.move_to_end(cache_key)
                 return res
 
     norm = _normalize_for_poison_check(text)
@@ -138,11 +214,11 @@ def is_poison_attempt(text: str) -> bool:
     else:
         res = any(p.search(norm) for p in _COMPILED_POISON)
 
-    if isinstance(text, str) and len(text) <= 4096:
+    if cache_key is not None:
         with _GUARD_CACHE_LOCK:
             if len(_POISON_CACHE) >= _MAX_GUARD_CACHE:
                 _POISON_CACHE.popitem(last=False)
-            _POISON_CACHE[text] = res
+            _POISON_CACHE[cache_key] = res
     return res
 
 
@@ -187,7 +263,7 @@ def guard_ingest(content: str, local_only: bool = False) -> GuardResult:
             warnings=(),
         )
 
-    cache_key = (content, bool(local_only))
+    cache_key = (_text_digest(content), bool(local_only), _max_content_len()) if len(content) <= 4096 else None
     if len(content) <= 4096:
         with _GUARD_CACHE_LOCK:
             cached = _GUARD_INGEST_CACHE.get(cache_key)
@@ -204,11 +280,8 @@ def guard_ingest(content: str, local_only: bool = False) -> GuardResult:
             reason="Memory content cannot be empty or solely control characters.",
             warnings=(),
         )
-        if len(content) <= 4096:
-            with _GUARD_CACHE_LOCK:
-                if len(_GUARD_INGEST_CACHE) >= _MAX_GUARD_CACHE:
-                    _GUARD_INGEST_CACHE.popitem(last=False)
-                _GUARD_INGEST_CACHE[cache_key] = res
+        if cache_key is not None:
+            _cache_guard_result(cache_key, res)
         return res
 
     from .memory import MAX_CONTENT_LENGTH
@@ -224,11 +297,8 @@ def guard_ingest(content: str, local_only: bool = False) -> GuardResult:
             ),
             warnings=(),
         )
-        if len(content) <= 4096:
-            with _GUARD_CACHE_LOCK:
-                if len(_GUARD_INGEST_CACHE) >= _MAX_GUARD_CACHE:
-                    _GUARD_INGEST_CACHE.popitem(last=False)
-                _GUARD_INGEST_CACHE[cache_key] = res
+        if cache_key is not None:
+            _cache_guard_result(cache_key, res)
         return res
 
     if is_poison_attempt(sanitized):
@@ -239,11 +309,8 @@ def guard_ingest(content: str, local_only: bool = False) -> GuardResult:
             reason="Prompt injection or adversarial instruction pattern detected in memory content.",
             warnings=(),
         )
-        if len(content) <= 4096:
-            with _GUARD_CACHE_LOCK:
-                if len(_GUARD_INGEST_CACHE) >= _MAX_GUARD_CACHE:
-                    _GUARD_INGEST_CACHE.popitem(last=False)
-                _GUARD_INGEST_CACHE[cache_key] = res
+        if cache_key is not None:
+            _cache_guard_result(cache_key, res)
         return res
 
     warnings: list[str] = []
@@ -265,11 +332,8 @@ def guard_ingest(content: str, local_only: bool = False) -> GuardResult:
         reason=None,
         warnings=tuple(warnings),
     )
-    if len(content) <= 4096:
-        with _GUARD_CACHE_LOCK:
-            if len(_GUARD_INGEST_CACHE) >= _MAX_GUARD_CACHE:
-                _GUARD_INGEST_CACHE.popitem(last=False)
-            _GUARD_INGEST_CACHE[cache_key] = res
+    if cache_key is not None:
+        _cache_guard_result(cache_key, res)
     return res
 
 
@@ -284,14 +348,21 @@ def guard_tags(
     """
     if not tags:
         return [], bool(local_only), ()
+    if isinstance(tags, (list, tuple)) and len(tags) > 64:
+        raise ValueError("Memory tags cannot contain more than 64 entries.")
 
     tags_tuple: Optional[tuple[str, ...]] = None
-    cache_key: Optional[tuple[tuple[str, ...], bool]] = None
+    cache_key: Optional[tuple[bytes, bool]] = None
     if isinstance(tags, (list, tuple)):
         try:
             tags_tuple = tuple(str(t) for t in tags)
             if sum(len(t) for t in tags_tuple) <= 4096:
-                cache_key = (tags_tuple, bool(local_only))
+                digest = hashlib.sha256()
+                for tag in tags_tuple:
+                    encoded = tag.encode("utf-8", "surrogatepass")
+                    digest.update(len(encoded).to_bytes(4, "big"))
+                    digest.update(encoded)
+                cache_key = (digest.digest(), bool(local_only))
                 with _GUARD_CACHE_LOCK:
                     cached = _TAGS_CACHE.get(cache_key)
                     if cached is not None:
@@ -307,7 +378,9 @@ def guard_tags(
     final_local_only = bool(local_only)
     warnings: list[str] = []
 
-    for raw_tag in tags:
+    for index, raw_tag in enumerate(tags):
+        if index >= 64:
+            raise ValueError("Memory tags cannot contain more than 64 entries.")
         t = _CONTROL_CHAR_RE.sub("", str(raw_tag or "")).strip()
         if not t:
             continue
@@ -326,9 +399,6 @@ def guard_tags(
 
     warnings_tuple = tuple(warnings)
     if cache_key is not None:
-        with _GUARD_CACHE_LOCK:
-            if len(_TAGS_CACHE) >= _MAX_GUARD_CACHE:
-                _TAGS_CACHE.popitem(last=False)
-            _TAGS_CACHE[cache_key] = (list(clean_tags), final_local_only, warnings_tuple)
+        _cache_tags_result(cache_key, (list(clean_tags), final_local_only, warnings_tuple))
 
     return clean_tags, final_local_only, warnings_tuple

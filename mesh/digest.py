@@ -16,7 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import sqlite3
+from .sqlite_runtime import sqlite3
 import sys
 from datetime import timedelta
 from typing import Any

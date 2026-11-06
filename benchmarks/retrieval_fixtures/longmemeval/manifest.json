@@ -1,0 +1,25 @@
+{
+  "name": "longmemeval",
+  "inspection_status": "previously_inspected",
+  "source_manifest_sha256": "6e73794b4f78f7c1bffd3433afe802cdefba5719348f2bf5f0e32b4e71a29366",
+  "corpus_count": 191,
+  "query_count": 6,
+  "files": {
+    "corpus-000.jsonl": "763211a6fd123a46aab658938b4b2a69cbf56883802a80376fbc37f2f5ba9206",
+    "corpus-001.jsonl": "af62517b007664ab07bfdf1f525463bbeb17ca0df7809e82b27be136ead3c72d",
+    "corpus-002.jsonl": "7635c89e5cf18080ef817e923b48816d117d0f241d98072e85e64ebdb665af76",
+    "corpus-003.jsonl": "337ffdfc357a0b4cbf64bbd9408a2e77e0bd464a432c79df8dcfab3cad3cd8c2",
+    "corpus-004.jsonl": "571d9514b18d0ba632efd5a80926da346c6e0e10bd0865cc6f8c99d0d043aa49",
+    "corpus-005.jsonl": "b10bd8bddf9cf9404116391b3021f5601f4e6392a43f1381e61f8861e2dcb388",
+    "labels.json": "6a98f0d5a0d80adb6770bf2622f987197915f21d3e649acfa0068e2ebd7f1b06",
+    "queries-selected.jsonl": "a7f082f2e4f83cc1aa071729c0eae8708a8d7af08604e9b5fc69d3cf86253efe"
+  },
+  "scope": "Previously inspected bounded regression; source corpus and label bytes preserved; no independent held-out or full-benchmark claim.",
+  "labels_in_ranking_inputs": false,
+  "source_url": "https://github.com/xiaowu0162/LongMemEval",
+  "source_dataset_manifest_sha256": "c9052c8f8572b0028a439553c93672200db01ad34398244e9da09780e7cf1432",
+  "source_queries_sha256": "7f310f09a3cb5b2064c1fa7f84f1cdc787f047c76c003e4906a53cb04453fd51",
+  "question_selection": "First6 source questions in fixed original order; no new model scores used for fixture selection.",
+  "distractor_selection": "Previously frozen union of evenly spaced positions, literal-query overlap and exact annotated evidence turns; original order preserved.",
+  "annotation_method": "Exact source question, session, turn ordinal, role and body hash; exact-turn gold is scored separately from session hits."
+}

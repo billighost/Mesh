@@ -1,6 +1,6 @@
-# Mesh Architecture (v0.8.3)
+# Mesh Architecture (v0.9.0)
 
-This document describes how Mesh is put together: modules, data flows, storage schema, search, work items, the installer, concurrency, security boundaries, configuration, and known limitations. It reflects source at commit `5348d00` (2026-10-20). User-facing instructions are in [DOCS.md](DOCS.md); development workflows are in [DEVELOPER_GUIDE.md](DEVELOPER_GUIDE.md).
+This document describes the 0.9.0 source branch: modules, data flows, storage schema, search, work items, installation, concurrency, and security boundaries. Historical field-test evidence is versioned separately. User-facing instructions are in [DOCS.md](DOCS.md); development workflows are in [DEVELOPER_GUIDE.md](DEVELOPER_GUIDE.md).
 
 ---
 
@@ -10,6 +10,8 @@ Mesh is a Python package with one local engine and several front ends:
 
 - **Engine:** `Mesh` (`mesh/memory.py`) orchestrates validation, guardrails, embedding, deduplication, contradiction detection, recall ranking, and work items.
 - **Storage:** `MeshStore` (`mesh/store.py`) owns SQLite WAL, FTS5, the in-memory vector cache, and work-item tables.
+- **Runtime:** `mesh/sqlite_runtime.py` supplies one lazy DB-API facade over APSW's privately bundled patched SQLite. Storage, audit, encryption maintenance, backups, and inspection use this coherent driver; unsafe WAL engine versions are refused.
+- **Shared execution:** `mesh/operations.py` applies one logical operation contract; `mesh/execution.py` bounds async offloading, and `mesh/group_commit.py` optionally aggregates compatible writes in an existing local server.
 - **Interfaces:** MCP stdio (`mesh/mcp_server.py`), HTTP (`mesh/http_server.py`), dashboard (`mesh/dashboard.py`), CLI (`mesh/cli.py`), Python SDK (`Mesh`).
 - **Integration:** installer (`mesh/installer.py`), skill installer (`mesh/skill_installer.py`), daemon (`mesh/daemon.py`).
 - **Cross-cutting:** guards, secrets, crypto, audit, context builder, passive capture, export/import, namespaces.
@@ -24,7 +26,7 @@ flowchart TB
     end
 
     subgraph Interfaces
-        MCP[MCP stdio server<br/>17 tools]
+        MCP[MCP stdio server<br/>20 tools]
         HTTP[HTTP API<br/>127.0.0.1:7701]
         CLI[CLI / REPL]
         SDK[Python SDK]
@@ -74,6 +76,17 @@ mesh/
 ├── __init__.py              # Lazy public exports (PEP 562)
 ├── memory.py                # Mesh class, embeddings, recall, dedup, contradictions
 ├── store.py                 # SQLite schema, vector cache, hybrid query, work items, brief, log
+├── sqlite_runtime.py        # Lazy DB-API facade over bundled patched SQLite
+├── operations.py            # Shared logical calls, policy, receipts and preparation
+├── operation_contract.py    # Operation identity, digest and acknowledgement validation
+├── execution.py             # Bounded offloading with caller context
+├── group_commit.py          # Optional fair local write aggregation
+├── mutation_delivery.py     # Bounded discovery and durable audit-outbox delivery
+├── namespace_maintenance.py # Crash-recoverable namespace retirement and activation
+├── namespace_resolution.py # Shared project namespace convention
+├── client.py                # Verified connection profiles and SDK/HTTP access
+├── hooks.py                 # Bounded profile-bound session context
+├── output.py                # Per-context diagnostic routing for concurrent calls
 ├── guards.py                # Ingest validation, prompt-injection and secret-pattern checks
 ├── secrets.py               # Secret detection, redaction, keyring/vault helpers
 ├── crypto.py                # Optional at-rest encryption and key derivation
@@ -101,6 +114,8 @@ mesh/
 
 scripts/
 ├── check_docs.py            # Docs/CLI/MCP/link consistency
+├── run_tests.py             # Isolated homes and bounded parallel pytest workers
+├── schema_sources.py        # Stdlib-only literal schema extraction for checks
 └── check_skill.py           # Skill/rules/installer synchronization
 
 benchmarks/
@@ -128,11 +143,11 @@ model_status.json
 
 ## 3. Storage schema
 
-Schema version: **3** (`SCHEMA_VERSION` in `store.py`). A database with a newer schema is refused; migrations create a timestamped backup before DDL.
+Schema version: **5** (`SCHEMA_VERSION` in `store.py`). A database with a newer schema is refused; migrations create a timestamped backup before DDL. Schema 4 adds content revisions, required embedding jobs, mutation delivery, and operation receipts; schema 5 adds persistent database and memory identities.
 
 ### `memories`
 
-Core columns: `id` (UUID), `namespace`, `content`, `confidence`, `memory_type`, `source_agent`, `tags` (JSON), `created_at`, `updated_at`, `accessed_at`, `access_count`, `ttl_days`, `decay_start_at`, `local_only`, `embedding` (float32 BLOB), `embedding_model`, `trust_tier`, `quarantined`, `secret_ref`.
+Core columns: `id` (UUID), `namespace`, `content`, `confidence`, `memory_type`, `source_agent`, `tags` (JSON), `created_at`, `updated_at`, `accessed_at`, `access_count`, `ttl_days`, `decay_start_at`, `local_only`, `embedding` (float32 BLOB), `embedding_model`, `trust_tier`, `quarantined`, `secret_ref`, `revision`, `incarnation`. An incarnation stays stable during edits and changes when an ID is deleted and reused.
 
 ### `memories_fts`
 
@@ -156,7 +171,19 @@ Append-only lifecycle history: `id`, `item_id` (FK, cascade delete), `namespace`
 
 ### `mesh_meta`
 
-Key/value metadata, including `schema_version`.
+Key/value metadata, including `schema_version`, `namespace_owner`, `content_version`, the durable `store_generation`, and bounded-work counters. Opening a replaced or renamed database requires a new store instance.
+
+### `embedding_jobs`
+
+Required neural indexing work keyed by memory ID, namespace, content revision, incarnation, and target model. Publication checks all of those values and the store generation in the write transaction; stale or completed work cannot overwrite a current vector.
+
+### `mutation_outbox`
+
+Content-free mutation events with stable event IDs, object IDs, revisions, and delivery timestamps. They commit with authoritative effects and are delivered to the durable audit database with deduplication.
+
+### `operation_receipts`
+
+Content-free results keyed by namespace, approved producer scope, and operation ID. Replays compare the operation and canonical parameter digest and recheck authorization. IDs, revisions, incarnations, and the store generation describe the accepted effects.
 
 Indexes cover namespace, status/priority ordering, completion time, and work-item parent lookups. The exact DDL lives in `mesh/store.py` (`_apply_schema`).
 
@@ -224,9 +251,11 @@ sequenceDiagram
     else
         M->>S: store new row
     end
-    S->>D: INSERT/UPDATE + FTS sync + cache update
-    M->>M: local audit event
-    M-->>A: memory_id, status, deduplicated, conflict
+    S->>D: transaction: content + FTS + revision + required job/outbox/receipt
+    D-->>S: WAL FULL commit
+    S->>S: publish derived cache changes; release write locks
+    M->>M: wake indexing and content-free audit delivery
+    M-->>A: memory_id, revision, disposition, indexing_state
 ```
 
 Key facts:
@@ -238,6 +267,9 @@ Key facts:
 - A contradiction does not block the write. Both rows remain; the caller gets a conflict warning.
 - If an existing row is `local_only`, its text is redacted in conflict records.
 - Secret detection redacts and forces `local_only`; `--vault` stores the value in the keyring and keeps a pointer.
+- Scalar and bulk calls share guarded preparation and transaction-time ownership, privacy, dedup, and revision checks. Encoding and candidate preparation run before the write transaction. `learn_many` supports ordered per-item outcomes and all-or-nothing batches, with a 128-item public limit and bounded total work.
+- Durable acceptance can precede neural indexing. Acknowledged content is available through ID and lexical lookup; `wait_for_indexed` explicitly waits for semantic readiness and reports changed revisions, reused IDs, replaced stores, and missing memories.
+- A receipt-bearing logical operation stores its content-free receipt atomically with its effects. Replay checks operation name, canonical parameter digest, producer scope, and current authorization; it does not copy memory bodies into receipts. Receipts are bounded and have no automatic expiry policy.
 
 ---
 
@@ -253,31 +285,31 @@ sequenceDiagram
     participant D as SQLite
 
     A->>M: recall(query, n, filters)
-    M->>M: embed query (synonym blending for short queries)
+    M->>M: encode query in configured model space
     M->>S: hybrid_query(text, vector, filters)
     S->>C: pre-mask by type/tags/agent/privacy/staleness
     S->>C: dense cosine (matrix @ query)
     S->>F: BM25 lexical candidates
     S->>C: IDF + exact/stem/synonym scoring
-    S->>S: grounding floor + noise suppression
+    S->>S: union independent lexical, exact, and compatible dense candidates
     S-->>M: candidates with similarity and reasons
     M->>M: effective confidence + decay + stale flag
-    M->>M: composite score and sort
+    M->>M: bounded relevance ranking; current revision, incarnation, generation, and visibility check
     M->>D: access_count/accessed_at + query access tracking
     M-->>A: results + other_possible_memories
 ```
 
 ### Ranking
 
-- Lexical score: `0.65 * specific_coverage + 0.35 * idf_coverage + phrase_bonus + bm25_tf_norm`.
-- FTS BM25 column weights: `bm25(memories_fts, 0.0, 1.0, 0.8, 0.3, 0.2)` — content, tags, type, source.
-- Final composite: `0.72 * similarity + 0.22 * effective_confidence + 0.06 * usage_boost`.
-- Sort order: composite, similarity, effective confidence, access count.
+- Exact identifiers, lexical BM25, and dense cosine contribute independent bounded candidate sets. Native FTS5 participates for eligible public plaintext rows; protected in-memory lexical scoring supports application-encrypted/private rows under the caller's policy.
+- Eligibility and lexical statistics are computed for authorized rows. Private/quarantined rows do not affect public ranking statistics or enter unauthorized candidate pools.
+- `MESH_RECALL_FUSION=calibrated` is the default; `rrf` is an experimental ablation. Relevance/fusion scores remain separate from similarity and threshold contracts. Popularity does not receive the previous unconstrained second-pass composite boost.
+- Dense pruning masks incompatible model spaces before top-k selection. Equal dimensions alone do not establish compatibility.
 - Absolute similarity floor: 0.05; hash-embedding semantic-only floor: 0.18.
 - `is_stale` when effective confidence < 0.3 (decay factor × stored confidence).
-- Results carry match reasons; `other_possible_memories` exposes strong matches hidden by filters.
+- Results carry match reasons, candidate counts, IDs/revisions, memory incarnations, store generations, and bounded supporting excerpts with source offsets. `other_possible_memories` exposes authorized strong matches hidden by metadata filters and preserves the same identities.
 
-The in-memory cache pre-tokenizes content and caches document frequencies, so IDF lookup is O(|query|) instead of re-tokenizing the corpus. The ONNX model is optional; `hash-384` is a deterministic fallback with lower semantic quality. Model swaps are tracked with an embedding-model tag so a hash vector is never mislabeled as ONNX.
+The cache pre-tokenizes content and bounds vector, lexical, and snapshot allocations. If a namespace cannot fit its configured cache budget, retrieval scans bounded database pages and retains bounded candidate heaps rather than loading the entire namespace. Query encoding uses the verified local model when ready, independently of ingestion's fast hash stage. Query/embedding cache keys include backend identity and preprocessing role; hash and neural vectors are never mixed under one model tag.
 
 ---
 
@@ -317,16 +349,17 @@ stateDiagram-v2
 - `list_work_items`: filters by status (`open` = todo/in_progress/blocked; `closed` = done/cancelled), kind, parent; orders by priority then creation; caps at 1,000.
 - `get_work_events`: reverse chronological history.
 - Private work items are excluded from default lists and briefs.
+- Task state and its lifecycle event commit in one transaction. Application encryption covers task text, summaries, evidence, tags, and event notes; authorized reads decode these fields. Mutations enforce the same enabled ownership/privacy policy as memory writes.
 
 ### Brief
 
-`get_project_brief(max_tokens=500)`:
+`get_project_brief` defaults to a compact 500-token estimate; the agent skill requests `max_tokens=2000, max_facts=20` at session/project start.
 
-1. Fetches up to 10 open items; displays up to 5, priority first.
-2. Fetches up to 5 items completed in the last 48 hours; displays up to 4.
-3. Fetches up to 5 key memories of type `fact`, `decision`, `process`, `preference`; excludes quarantined and (by default) private; displays up to 4.
-4. Adds namespace health and a contradiction warning.
-5. Truncates to `max_tokens * 4` characters and appends a notice.
+1. Selects current fact/decision/process/preference memories, reserves fact space, and includes IDs and freshness.
+2. Adds bounded open work, recent public completions, a handoff, namespace health, and contradiction notices as the budget permits.
+3. Excludes unauthorized private, quarantined, and stale memories.
+4. Reports available/included/omitted fact counts, continuation offset, and a selection revision. A changed revision requires refreshing before combining pages.
+5. Caps `brief_markdown` at four characters per estimated token, including omission notices. `payload_estimated_tokens` reports the complete compact logical JSON payload, including its own estimate; it does not cap that payload. JSON-RPC wrappers, pretty printing, and CLI defense banners are additional transport framing. Selected memory bodies are compacted rather than returned in full. Token values are estimates, not a tokenizer guarantee.
 
 An empty namespace returns a distinct `new_or_empty` state with guidance.
 
@@ -341,11 +374,12 @@ An empty namespace returns a distinct `new_or_empty` state with guidance.
 - Primary: `all-MiniLM-L6-v2`, 384 dimensions, ONNX Runtime + tokenizer.
 - Model directory: `~/.mesh/models/all-MiniLM-L6-v2-onnx`.
 - Downloads are consent-gated, mirrored (Hugging Face and hf-mirror), revision-pinned, and checked against a SHA-256 allowlist. A 200 MB extraction cap applies.
-- `MESH_NO_MODEL_DOWNLOAD=1` forces `hash-384`.
+- `MESH_NO_MODEL_DOWNLOAD=1` disables downloading; installed verified model files remain usable.
 - `hash-384` is a deterministic feature-hash embedding used before the model is available and offline.
 - Optional backends: PyTorch (`[pytorch]`) and FastEmbed (`[fastembed]`).
-- `_EMBED_CACHE` is an LRU of `(vector, model_tag)`; default 1,024 entries.
-- Rows embedded with the fallback are tracked for background healing once ONNX is available.
+- Embedding/query LRUs have entry and byte budgets. They are invalidated across backend changes and preserve homogeneous model provenance in batches.
+- Fallback rows have durable revision-bound jobs. A body-free bounded queue supplies wakeup hints; losing a hint does not lose required indexing work. The worker processes bounded byte batches, backs off failures, and makes progress under continuous foreground traffic.
+- Long-text encoding aggregates token windows across the accepted text into one parent vector. Supporting excerpts retain source offsets. A persistent multi-vector chunk index remains an experiment in the [production plan](docs/PRODUCTION_PLAN.md).
 
 No embedding API is called.
 
@@ -364,7 +398,7 @@ No embedding API is called.
 ### HTTP
 
 - FastAPI/uvicorn. Loopback by default.
-- `GET /health` is unauthenticated; every other route requires Bearer or `X-Mesh-Token`.
+- `GET /health` and `GET /ready` are unauthenticated; data and engine routes require Bearer or `X-Mesh-Token`.
 - `Host` header validation and loopback CORS restrict browser-origin attacks.
 - Request size is bounded before body reads.
 - Routes cover memory CRUD, context, audit, brief, tasks, and log. There is no `/identity` route.
@@ -372,7 +406,7 @@ No embedding API is called.
 
 ### MCP
 
-- stdio server with **17 tools**.
+- stdio server with **20 tools**.
 - Proxies through the daemon when available; uses fresh connections for mutating tools.
 - Tool responses label memory content as untrusted reference data.
 - Server-side environment flags can remove model control over namespace and private-data overrides.
@@ -404,13 +438,13 @@ Safety:
 - Symlink rejection outside approved directories.
 - `--dry-run` diffs and `--json` plans.
 
-**Lifecycle Hooks:** `mesh install` supports optional lifecycle hooks via `--hooks` (or interactive confirmation). On supported runtimes (`ClaudeCodeAdapter` for Claude Code `.claude/settings.json` and `AntigravityAdapter` for Antigravity `.agents/hooks.json`), the installer configures a `SessionStart` command hook to run `mesh brief` when a session starts. Existing hooks and non-Mesh configurations are preserved, atomic backups are written, and `mesh uninstall` safely cleans up Mesh hook entries.
+**Lifecycle Hooks:** `mesh install` supports optional lifecycle hooks via `--hooks` (or interactive confirmation). Claude Code uses `SessionStart` in `.claude/settings.json`; Antigravity uses its existing `PreInvocation` event in `.agents/hooks.json`, which may run before every invocation. Both call `mesh-hook brief` through a verified project connection profile. The hook loads up to twenty facts and reports omitted facts within a budget; the skill requires topic recall before decisions. Codex lifecycle hooks remain unverified. Existing hooks and non-Mesh configuration are preserved, atomic backups are written, and uninstall removes only Mesh entries.
 
 ---
 
 ## 11. Audit
 
-`audit_<namespace>.db` stores operational events from MCP, CLI, HTTP, and SDK: timestamp, surface, action, tool name, latency, counts, status, agent ID. Memory text is not stored. `mesh why` reads human-oriented events; `mesh audit export` emits JSON. Retention is capped by `MESH_MAX_AUDIT_ROWS`. Updates/deletes scrub references to removed memory text.
+`audit_<namespace>.db` stores content-free operational events from MCP, CLI, HTTP, and SDK. Required mutations first append a durable event in the source transaction; bounded background discovery delivers it with a deduplicated event ID before acknowledging the source outbox. Failure retains the durable source event with bounded retry backoff. Read-access audit and query/access statistics use separately bounded, loss-tolerant queues whose drops are counted. `mesh why` reads events; `mesh audit export` emits JSON. Retention is capped by `MESH_MAX_AUDIT_ROWS`.
 
 There is no remote telemetry or phone-home mechanism.
 
@@ -418,13 +452,21 @@ There is no remote telemetry or phone-home mechanism.
 
 ## 12. Concurrency and caching
 
-- One SQLite database per namespace, WAL mode.
+- One SQLite database per namespace, WAL mode and `synchronous=FULL` on the verified patched runtime. Acknowledgements follow authoritative commits; derived cache publication happens afterward. Physical power-loss behavior still depends on storage honoring synchronization and needs hardware/filesystem testing.
 - A re-entrant in-process lock plus a cross-process file lock (`~/.mesh/.mesh_<ns>.lock`, 0600 on POSIX) serializes writes per namespace.
-- A bounded connection pool (global and per-namespace caps) serves readers.
-- The vector cache is copy-on-write for rows to avoid races with snapshot readers.
+- Bounded read-only connections provide short snapshots independently of the writer connection. Per-store state locks protect one namespace; global registry locks do not enclose cold connection creation, filesystem scans, or model work.
+- Vector/lexical snapshot allocations, transaction deltas, SQLite page caches, query/embedding caches, receipts, outboxes, pending jobs, and telemetry are bounded. Large namespaces use the streaming retrieval/export paths.
+- Async transports offload blocking work through a bounded executor with four workers and at most 32 admitted calls, so a normal burst from sixteen local agents can queue without creating more worker threads. Cancellation before execution releases admission when its queued runner settles; an admitted mutation keeps its receipt outcome for reconciliation after caller cancellation.
+- Optional local group commits reserve bounded items/bytes, prepare outside the writer transaction, schedule by namespace/producer, and isolate each operation with a savepoint. Success is delivered only after the shared FULL commit. Direct SDK access remains supported; the broker is not an exclusive-writer claim.
 - FTS updates use integer rowid lookups.
 - C-001 (SQLITE_MISUSE under thread contention) was fixed in 0.8.1b2 by reworking thread synchronization. Field test: 8 threads in 7.16 s with 0 errors; 16 threads in 17.11 s with 0 errors.
-- Writes are serialized per namespace; this is correctness, not parallel write throughput.
+- Many agents can share one authenticated server to reuse its model/cache and amortize FULL commits. Separate local processes can also cooperate through the same namespace file locks and runtime contract.
+
+Mesh writers update the content generation, FTS, revisions, durable jobs, and
+mutation history in the same transaction. Direct SQL that bypasses this protocol
+is unsupported: a row-count or file-stamp change cannot detect every same-size
+edit or reconstruct omitted indexes and events. Cross-process coherence tests use
+the public Mesh API. Read-only inspection uses the shared patched runtime.
 
 ---
 
@@ -484,7 +526,12 @@ Configuration is environment-variable based. The full user-facing table is in [D
 - capture/cloud: `MESH_ALLOW_LOG_SYNC`, `MESH_ENABLE_AUTO_SYNC`, `MESH_ALLOW_CLOUD_CAPTURE`, `MESH_ALLOW_CLOUD_SYNC`, `MESH_AI_PROVIDER`
 - updates: `MESH_CHECK_UPDATES`, `MESH_NO_UPDATE_CHECK`
 
-The skill's mention of `.mesh.toml` is **not implemented** in 0.8.1b2; namespace resolution is argument → `MESH_NAMESPACE` → `shared`.
+The shared namespace convention prefers an explicit argument, `MESH_NAMESPACE`,
+the nearest project `.mesh/namespace` marker, the Git origin repository name,
+then the project folder name, with `shared` as a last resort. Explicit names and
+markers preserve existing spelling; derived names are normalized. A verified
+connection profile binds its namespace and data root, and server locks still
+apply. `.mesh.toml` is not implemented.
 
 ---
 
@@ -522,7 +569,7 @@ The skill's mention of `.mesh.toml` is **not implemented** in 0.8.1b2; namespace
 ## 17. Testing and verification
 
 ```bash
-python -m pytest tests/ -q
+python scripts/run_tests.py --workers 2 -- -q
 python scripts/check_docs.py
 python scripts/check_skill.py
 python benchmarks/mesh_benchmark.py

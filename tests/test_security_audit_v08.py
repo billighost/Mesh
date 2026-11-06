@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
+from mesh.sqlite_runtime import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -541,7 +541,7 @@ def test_n1_n3_n4_n6_n7_n8_deep_dive_regressions(tmp_path, monkeypatch):
             json={"query": "test", "namespace": "shared", "agent_id": f"rot_agent_{i}"},
             headers=headers,
         )
-    assert any(k[0] == "ns_work" for k in __import__("mesh.http_server", fromlist=["_MESH_REGISTRY"])._MESH_REGISTRY)
+    assert any(k[1] == "ns_work" for k in __import__("mesh.http_server", fromlist=["_MESH_REGISTRY"])._MESH_REGISTRY)
 
     # N6: Symlinked `.db` in `MESH_HOME` is ignored by `list_namespaces()` and rejected on export
     outside_file = tmp_path / "outside.txt"
@@ -751,7 +751,7 @@ def test_failed_encryption_rolls_back_cleanly_without_partial_rows(tmp_path, mon
       4. Leaves the store in a healthy state for subsequent operations.
     """
     from unittest.mock import patch
-    import sqlite3
+    from mesh.sqlite_runtime import sqlite3
     from mesh.memory import Mesh
 
     monkeypatch.setenv("MESH_HOME", str(tmp_path))

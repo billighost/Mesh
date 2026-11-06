@@ -27,7 +27,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 
 WORKER_CODE = """
-import json, os, psutil, shutil, sqlite3, statistics, sys, tempfile, time, uuid
+import json, os, psutil, shutil, statistics, sys, tempfile, time, uuid
+from mesh.sqlite_runtime import sqlite3
 from pathlib import Path
 import numpy as np
 

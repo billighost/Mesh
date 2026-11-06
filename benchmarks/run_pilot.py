@@ -13,7 +13,7 @@ import math
 import os
 import re
 import shutil
-import sqlite3
+from mesh.sqlite_runtime import sqlite3
 import statistics
 import subprocess
 import sys
