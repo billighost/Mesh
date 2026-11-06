@@ -486,7 +486,9 @@ def test_real_mesh_group_commits_atomic_batch_and_scalar_receipts_once(tmp_path,
         original_commit, outer_commits = store_module._commit_write, []
 
         def record_commit(connection, marker):
-            if marker is None:
+            # Outbox delivery acknowledges events in a later transaction on
+            # another thread, potentially reusing this same pooled connection.
+            if marker is None and threading.current_thread() is coordinator._thread:
                 outer_commits.append({
                     "connection": id(connection),
                     "version": connection.execute("SELECT sqlite_version()").fetchone()[0],
@@ -501,6 +503,9 @@ def test_real_mesh_group_commits_atomic_batch_and_scalar_receipts_once(tmp_path,
             many = first_ticket.future.result(timeout=10)
             one = second_ticket.future.result(timeout=10)
             assert coordinator.close(cancel_pending=False)
+            stats = coordinator.stats()
+            assert stats["committed_batches"] == 1 and stats["executed_commands"] == 2
+            assert stats["failed_batches"] == 0
             assert len(outer_commits) == 1
             assert is_patched_sqlite(outer_commits[0]["version"])
             assert outer_commits[0]["synchronous"] == 2 and outer_commits[0]["journal"] == "wal"

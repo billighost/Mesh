@@ -75,11 +75,13 @@ def test_recall_still_works_before_and_after_upgrade(env):
     assert before and after and before[0] == after[0] == "Redis runs on port 6379"
 
 
-def test_edit_before_upgrade_never_gets_stale_vector(env, monkeypatch):
-    monkeypatch.setenv("MESH_BG_ONNX_IDLE_MS", "400")
-    m = mem.Mesh(namespace="s2e", agent_id="t", create=True, trusted_local=True)
-    mid = m.learn("old wording of the fact")["memory_id"]
-    m.update(mid, content="completely new wording")
+def test_edit_before_upgrade_never_gets_stale_vector(env):
+    # Hold encoding until the edit commits; slow filesystem writes can outlast
+    # any idle interval and otherwise let the worker encode the original row.
+    with mem._REEMBED_PROCESS_LOCK:
+        m = mem.Mesh(namespace="s2e", agent_id="t", create=True, trusted_local=True)
+        mid = m.learn("old wording of the fact")["memory_id"]
+        m.update(mid, content="completely new wording")
     mem.drain_reembed_worker(10.0)
     row = _row(m, mid)
     assert row["content"] == "completely new wording"
@@ -88,11 +90,11 @@ def test_edit_before_upgrade_never_gets_stale_vector(env, monkeypatch):
     assert "old wording of the fact" not in env  # the stale text was never encoded (queue is deduped by id)
 
 
-def test_forget_before_upgrade_is_safe_and_scrubbed(env, monkeypatch):
-    monkeypatch.setenv("MESH_BG_ONNX_IDLE_MS", "400")
-    m = mem.Mesh(namespace="s2f", agent_id="t", create=True, trusted_local=True)
-    mid = m.learn("temporary fact to forget")["memory_id"]
-    assert m.forget(mid) is True
+def test_forget_before_upgrade_is_safe_and_scrubbed(env):
+    with mem._REEMBED_PROCESS_LOCK:
+        m = mem.Mesh(namespace="s2f", agent_id="t", create=True, trusted_local=True)
+        mid = m.learn("temporary fact to forget")["memory_id"]
+        assert m.forget(mid) is True
     assert mem.drain_reembed_worker(10.0) is True
     assert _row(m, mid) is None
     assert "temporary fact to forget" not in env  # forgotten content is never sent through the model
