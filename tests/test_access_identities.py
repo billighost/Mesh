@@ -97,4 +97,3 @@ def test_access_failed_flush_does_not_overwrite_a_newer_incarnation_buffer(monke
     assert store.get("same-id")["access_count"] == 1
     store.flush_access_tracking()
     assert store.get("same-id")["access_count"] == 1
-
