@@ -78,6 +78,8 @@ _TEMPLATES = (
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _MAX_REPORT_BYTES = 64 * 1024 * 1024
 _MAX_JOURNAL_BYTES = 128 * 1024 * 1024
+_COORDINATOR_ROOT_ENV = "MESH_BENCHMARK_ROOT"
+_COORDINATOR_TEMP_ENV = "MESH_BENCHMARK_TEMP_PARENT"
 
 
 def stable_operation_id(config: dict[str, Any], indices: list[int]) -> str:
@@ -128,6 +130,19 @@ def _reject_links(path: Path) -> None:
             & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
         ):
             raise ValueError("Benchmark paths must not traverse links or reparse points.")
+
+
+def _checked_benchmark_root(root: Path, parent: Path) -> Path:
+    _reject_links(root)
+    _reject_links(parent)
+    if (
+        not root.is_absolute() or not parent.is_absolute()
+        or root.resolve(strict=True) != root or parent.resolve(strict=True) != parent
+        or root.parent != parent or not root.name.startswith("mesh-production-bench-")
+        or not root.is_dir()
+    ):
+        raise ValueError("Worker root must be a coordinator-created temporary benchmark directory.")
+    return root
 
 
 def _read_json(path: Path, maximum: int = _MAX_REPORT_BYTES) -> dict[str, Any]:
@@ -534,11 +549,13 @@ class ProcessTreeSampler:
 
 def worker_environment(root: Path, home: Path, backend: str, repo: Path,
                        group_commit: int = 0) -> dict[str, str]:
+    root = _checked_benchmark_root(root, Path(tempfile.gettempdir()).resolve(strict=True))
     # Benchmarks must not inherit the operator's Mesh policy, encryption key,
     # daemon endpoint or provider configuration. The explicit fixture is public.
     inherited = {key: value for key, value in os.environ.items() if not key.upper().startswith("MESH_")}
     environment = isolated_environment(home, inherited)
     environment.update({
+        _COORDINATOR_ROOT_ENV: str(root), _COORDINATOR_TEMP_ENV: str(root.parent),
         "MESH_HOME": str(root / "mesh"), "MESH_DIR": str(root / "mesh"),
         "MESH_NAMESPACE": NAMESPACE, "MESH_LOCKED_NAMESPACE": NAMESPACE,
         "MESH_LOCK_NAMESPACE": NAMESPACE, "MESH_NO_DAEMON_PROXY": "1",
@@ -591,8 +608,18 @@ def _validate_config(path: Path) -> dict[str, Any]:
     unresolved = Path(data["root"])
     _reject_links(unresolved)
     root = unresolved.resolve()
-    if root.parent != Path(tempfile.gettempdir()).resolve() or not root.name.startswith("mesh-production-bench-"):
-        raise ValueError("Worker root must be a coordinator-created temporary benchmark directory.")
+    # Child temp isolation changes gettempdir(); launch bindings retain the
+    # coordinator's independently validated allocation root.
+    bound_root = os.environ.get(_COORDINATOR_ROOT_ENV)
+    bound_parent = os.environ.get(_COORDINATOR_TEMP_ENV)
+    if bound_root is not None or bound_parent is not None:
+        if not bound_root or not bound_parent:
+            raise ValueError("Incomplete coordinator benchmark root binding.")
+        approved = _checked_benchmark_root(Path(bound_root), Path(bound_parent))
+        if root != approved:
+            raise ValueError("Worker root does not match its coordinator binding.")
+    else:
+        _checked_benchmark_root(root, Path(tempfile.gettempdir()).resolve(strict=True))
     if not path.resolve().is_relative_to(root):
         raise ValueError("Worker configuration is outside the benchmark directory.")
     marker = _read_json(root / "benchmark-only.json", 4096)
@@ -1398,6 +1425,7 @@ class Coordinator:
     def __init__(self, root: Path, repo: Path, backend: str, timeout: float,
                  expected_source: dict[str, str] | None = None, *, surface: str = "bare-sdk",
                  group_commit: int = 0, sampler: ProcessTreeSampler | None = None):
+        root = _checked_benchmark_root(root, Path(tempfile.gettempdir()).resolve(strict=True))
         self.root, self.repo, self.backend, self.timeout = root, repo, backend, timeout
         self.token = uuid.uuid4().hex
         self.processes: list[subprocess.Popen] = []

@@ -288,6 +288,65 @@ def test_neural_http_profile_never_claims_hash_query_encoding(monkeypatch):
     assert os.environ["MESH_QUERY_MODE"] == "neural"
 
 
+def test_worker_root_binding_preserves_child_temp_isolation_and_rejects_config_escapes(benchmark_root, monkeypatch):
+    monkeypatch.delenv(bench._COORDINATOR_ROOT_ENV, raising=False)
+    monkeypatch.delenv(bench._COORDINATOR_TEMP_ENV, raising=False)
+    config = _config(benchmark_root)
+    environment = bench.worker_environment(benchmark_root, benchmark_root / "worker-home", "hash", bench.REPO_ROOT)
+    with tempfile.TemporaryDirectory(prefix="mesh-production-bench-") as temporary:
+        other_root = Path(temporary).resolve(strict=True)
+        try:
+            _config(other_root)
+            escaped = other_root / "nested" / "config-0.json"
+            escaped.parent.mkdir()
+            bench.write_json(escaped, config)
+            script = (
+                "import json, sys, tempfile\n"
+                "from pathlib import Path\n"
+                "from benchmarks import production_bench as bench\n"
+                "accepted = []\n"
+                "for filename in sys.argv[1:]:\n"
+                "    try:\n"
+                "        bench._validate_config(Path(filename))\n"
+                "    except ValueError:\n"
+                "        accepted.append(False)\n"
+                "    else:\n"
+                "        accepted.append(True)\n"
+                "root = Path(sys.argv[1]).parent\n"
+                "temporary = Path(tempfile.gettempdir()).resolve(strict=True)\n"
+                "print(json.dumps({'accepted': accepted, 'isolated_temp': temporary != root.parent and temporary.is_relative_to(root),\n"
+                "                  'runtime_loaded': any(name == 'mesh' or name.startswith('mesh.') for name in sys.modules)}))\n"
+            )
+            process = subprocess.run(
+                [sys.executable, "-c", script, str(benchmark_root / "config-0.json"),
+                 str(other_root / "config-0.json"), str(escaped)],
+                cwd=bench.REPO_ROOT, env=environment, stdin=subprocess.DEVNULL,
+                capture_output=True, text=True, timeout=15,
+            )
+            assert process.returncode == 0
+            assert json.loads(process.stdout) == {
+                "accepted": [True, False, False], "isolated_temp": True, "runtime_loaded": False,
+            }
+        finally:
+            inventory = sorted(str(path.relative_to(other_root)) for path in other_root.rglob("*"))
+            assert all(not Path(name).is_absolute() for name in inventory)
+    assert bench._validate_config(benchmark_root / "config-0.json")["root"] == str(benchmark_root)
+    with monkeypatch.context() as unbound:
+        unbound.setattr(tempfile, "gettempdir", lambda: environment["TMPDIR"])
+        with pytest.raises(ValueError, match="coordinator-created temporary"):
+            bench._validate_config(benchmark_root / "config-0.json")
+
+
+def test_coordinator_rejects_unowned_roots_before_writing(benchmark_root):
+    root = benchmark_root / "mesh-production-bench-nested"
+    root.mkdir()
+    with pytest.raises(ValueError, match="coordinator-created temporary"):
+        bench.Coordinator(root, bench.REPO_ROOT, "hash", 15)
+    with pytest.raises(ValueError, match="coordinator-created temporary"):
+        bench.worker_environment(root, root / "worker-home", "hash", bench.REPO_ROOT)
+    assert list(root.iterdir()) == []
+
+
 def test_actual_http_worker_process_never_imports_mesh_or_model_runtime(benchmark_root):
     coordinator = bench.Coordinator(benchmark_root, bench.REPO_ROOT, "hash", 15)
     with _http_fixture(benchmark_root) as (profile, state):

@@ -23,7 +23,7 @@ from typing import Any
 
 import pytest
 
-from mesh.audit import export_content_free_audit, get_audit_log
+from mesh.audit import export_content_free_audit, get_audit_log, stop_audit_worker
 from mesh.cli import doctor_cmd
 from mesh.mcp_server import call_tool
 from mesh.memory import Mesh
@@ -459,9 +459,13 @@ def test_scenario_9_audit_export_timing_and_content_free(isolated_mesh_env):
         },
     )
 
-    # Export content-free audit records
+    # Join any claimed background batch before export flushes the remaining queue.
+    stop_audit_worker()
     events = export_content_free_audit(namespace=ns)
     assert len(events) >= 3
+    assert {"mesh_learn", "mesh_task_create", "mesh_task_complete"} <= {
+        event["tool_or_command"] for event in events if event["surface"] == "mcp"
+    }
 
     for ev in events:
         # 1. Must contain telemetry fields
