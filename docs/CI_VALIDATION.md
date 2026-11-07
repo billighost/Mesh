@@ -1,12 +1,14 @@
 # Remote qualification for Mesh 0.9.0
 
 The production changes and reviewed measurement utilities are published on
-`ci/mesh-production-run-c4-20261106`. The first remote run at commit `2b69222`
-passed lint, security, packaging, and installed-wheel validation, but failed the
-full suites and workflow validation. Repairs address isolated temporary paths,
-test environment leakage, outdated test contracts, and invalid workflow context
-bindings. Qualification of the repaired source remains pending; local contract
-checks do not establish full-suite, retrieval, or performance success.
+`ci/mesh-production-run-c4-20261106`. Windows primary and minimum qualification
+passed at commit `7c84f0f`, including full isolated suites, real process-crash
+recovery, coverage, and primary installed-wheel validation. Normal platform CI
+found an audit-log test timing issue; retrieval setup rejected Windows short
+temporary paths before any model phase ran. Follow-up repairs join the audit
+worker before checking its output and canonicalize only newly allocated
+supervisor roots. Final platform CI, retrieval quality, and performance evidence
+remain pending; local contract checks do not replace these gates.
 
 The development machine has 8 GiB RAM. Local work uses small isolated checks
 with one test worker and no model or corpus evaluation. Full suites, concurrent

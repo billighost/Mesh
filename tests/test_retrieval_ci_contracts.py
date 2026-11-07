@@ -252,6 +252,8 @@ class SupervisorContracts(unittest.TestCase):
             report = json.loads(text)
             self.assertEqual(report["status"], "failed")
             self.assertEqual(report["conditions"], {})
+            self.assertEqual(report["failure_details"]["stage"], "provision")
+            self.assertEqual(report["failure_details"]["exception_type"], "ValueError")
             self.assertTrue(any(phase["status"] == "not_run" for phase in report["phases"]))
             self.assertNotIn("SECRET_VALUE", text)
             self.assertNotIn("C:/Users", text)

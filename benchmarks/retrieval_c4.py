@@ -578,7 +578,7 @@ def run(args, helpers):
         args.model_directory = helpers.isolated_artifact_path(args.model_directory, args.repository)
         verify_fixture(args.model_directory, helpers)
         owned = tempfile.TemporaryDirectory(prefix="mesh-retrieval-ci-c4-")
-        temporary = Path(owned.name)
+        temporary = Path(owned.name).resolve(strict=True)
         helpers.configure_isolation(temporary)
         base = [sys.executable, str(helpers.safe_member(Path(args.repository) / "benchmarks", "retrieval_c4.py")), "measure",
                 "--repository", str(args.repository), "--source-run", str(args.source_run), "--passage-run", str(args.passage_run),

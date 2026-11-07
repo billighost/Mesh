@@ -31,6 +31,9 @@ QUALITY_TARGETS = {"prospective": 0.95, "longtext-prospective": 5 / 6, "longmeme
 C4_RESOURCE_LIMITS = {"total_rss_mib": 768, "delta_rss_mib": 128, "delta_p95_ms": 50, "delta_p99_ms": 100, "delta_cpu_ms": 50}
 C4_PAIRED_METRICS = ("hit_at_1", "hit_at_5", "hit_at_10", "mrr_at_10", "ndcg_at_10")
 C4_HIT_COUNT_FIELDS = ("answered_queries", "baseline_hits", "candidate_hits", "lost_baseline_hits", "gained_hits")
+FAILURE_TYPES = frozenset({"GateError", "ValueError", "TypeError", "KeyError", "AttributeError", "AssertionError",
+                           "OSError", "FileNotFoundError", "PermissionError", "RuntimeError", "ImportError",
+                           "ModuleNotFoundError", "TimeoutExpired", "KeyboardInterrupt", "SystemExit"})
 COUNTER_KEYS = {
     "accepted", "rejected", "missing", "private", "quarantined", "body_changed", "revision_advanced", "neural_indexed",
     "faithful_public", "input_boundary_trimmed", "submitted", "unique_accepted_memories", "pending_embedding_jobs",
@@ -46,6 +49,20 @@ COUNTER_KEYS = {
 
 class GateError(ValueError):
     pass
+
+
+def failure_details(exc, stage):
+    # Exception arguments and absolute filenames can contain paths or memory bodies.
+    known_sources = {*HARNESS_FILES, "retrieval_c4.py", "retrieval_c4_model.py", "provision_retrieval_c4.py"}
+    frames = []
+    trace = exc.__traceback__
+    while trace is not None:
+        name = Path(trace.tb_frame.f_code.co_filename).name
+        if name in known_sources:
+            frames.append({"source": name, "line": trace.tb_lineno})
+        trace = trace.tb_next
+    name = type(exc).__name__
+    return {"stage": stage, "exception_type": name if name in FAILURE_TYPES else "other", "source_frames": frames[-4:]}
 
 
 def hashes(repository):
@@ -436,12 +453,14 @@ def run(args, repository, root):
     summary = initial_summary(args.dataset, c4)
     summary["status"] = "running"
     save(root, summary)
+    stage = "qualification"
     try:
         runtime_files, harness = hashes(repository), harness_hashes(repository)
         summary.update(runtime_files=runtime_files, harness_files=harness)
         summary["qualification"] = qualify(repository, args.qualification_directory, args.floor_qualification_directory)
         summary["resource_limits"] = {"whole_run_wall_seconds": args.wall_seconds, "sampled_tree_rss_bytes": args.rss_mib * 1024**2,
                                       "sampled_accumulated_tree_cpu_seconds": args.cpu_seconds, "sample_period_seconds": 0.2}
+        stage = "commands"
         models = isolated_artifact_path(args.model_directory, repository)
         data = root / "data" / args.dataset
         protocol = root / "protocol.json"
@@ -476,12 +495,16 @@ def run(args, repository, root):
             })
         deadline, used_cpu = time.monotonic() + args.wall_seconds, 0.0
         manifests = {}
+        stage = "isolation"
         with tempfile.TemporaryDirectory(prefix="mesh-retrieval-ci-supervisor-") as owned:
-            configure_isolation(Path(owned))
+            # Only this factory-owned path may resolve system temp aliases.
+            supervisor_root = Path(owned).resolve(strict=True)
+            configure_isolation(supervisor_root)
             environment = dict(os.environ)
-            environment.update(TMPDIR=owned, TMP=owned, TEMP=owned, TOKENIZERS_PARALLELISM="false",
+            environment.update(TMPDIR=str(supervisor_root), TMP=str(supervisor_root), TEMP=str(supervisor_root), TOKENIZERS_PARALLELISM="false",
                                OMP_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1", MKL_NUM_THREADS="1", NUMEXPR_NUM_THREADS="1")
             for phase in summary["phases"]:
+                stage = phase["name"]
                 phase["status"] = "running"
                 save(root, summary)
                 if phase["name"] in C4_PHASES:
@@ -513,6 +536,7 @@ def run(args, repository, root):
                     if condition == "passages":
                         summary["quality_gates"] = quality_gates(args.dataset, summary["conditions"])
                     save(root, summary)
+            stage = "paired_validation"
             fixture = load_json(data, "manifest.json")
             baseline_hash = summary["conditions"]["guarded"]["run_manifest_sha256"]
             fixture_hash = digest_file(safe_member(data, "manifest.json"))
@@ -558,7 +582,8 @@ def run(args, repository, root):
                 summary["failure_reason"] = "quality_gate"
     except BaseException as exc:
         summary.update(status="failed", failure_reason="qualification_or_input" if not summary.get("qualification")
-                       else "interrupted" if isinstance(exc, (KeyboardInterrupt, SystemExit)) else "phase_or_contract")
+                       else "interrupted" if isinstance(exc, (KeyboardInterrupt, SystemExit)) else "phase_or_contract",
+                       failure_details=failure_details(exc, stage))
         for phase in summary["phases"]:
             if phase["status"] == "running":
                 phase.update(status="failed", reason="supervisor_or_contract")

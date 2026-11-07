@@ -43,7 +43,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from mesh import Mesh
-from mesh.audit import get_audit_log
+from mesh.audit import get_audit_log, stop_audit_worker
 from mesh.context_builder import _sanitize_prompt_text, build_context
 from mesh.crypto import (
     disable_encryption_at_rest,
@@ -505,6 +505,8 @@ def test_s12_recall_secret_query_redaction_and_clear_purges_audit(tmp_path, monk
     patterns_pub = mesh.patterns(include_private=False)
     assert secret_q.lower() not in json.dumps(patterns_pub).lower()
 
+    # Join any claimed batch before the audit read flushes the remaining queue.
+    stop_audit_worker()
     audit_entries = get_audit_log(ns)
     assert secret_q not in json.dumps(audit_entries)
 
