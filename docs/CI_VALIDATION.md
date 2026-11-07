@@ -1,5 +1,36 @@
 # Remote qualification for Mesh 0.9.0
 
+At `e353bc1`, [normal CI](https://github.com/billighost/Mesh/actions/runs/42378934838)
+passed, and [the production run](https://github.com/billighost/Mesh/actions/runs/42378934727)
+passed both full qualification suites, the concurrent-write matrix, and the
+same-selection test-speed comparison. The immutable SQLite snapshot repair is
+verified in native retrieval runs. [RESULTS.md](../benchmarks/RESULTS.md) records
+the tested source and retains earlier evidence.
+
+Retrieval qualification still fails. Compact native reranker conditions meet
+their own gates on the direct-fact and positional long-text fixtures, while the
+inspected LongMemEval conditions miss the accuracy target. Some full-length
+conditions exceed the incremental resource limits. Every public-corpus job
+exceeds the unchanged cumulative CPU budget; the completed SciFact passage
+condition attributes most worker CPU to queries. No profile qualifies across
+all evaluated datasets. Baseline failures, rejected profiles, and unscored
+phases remain visible; passing storage tests do not waive retrieval gates.
+
+The current cache repair omits redundant primary lexical terms only for complete
+validated long-parent passage generations, with a complete primary streaming
+fallback. Its focused tests pass; public cache admission, CPU use, and accuracy
+still require a source-bound Actions run. Post-export native reranker diagnostics
+record candidate ranks and input geometry after scoring, without exposing text
+or changing ranking inputs. They can identify an evidence-prefix limitation or
+an inside-prefix miss; they cannot infer answer-span containment from document
+relevance labels.
+
+Completed passage queries retain numeric cache charges and returned-result
+cache/streaming counts. Flushed query-resource rows and atomic provenance
+checkpoints also preserve partial work after process termination, including the
+fixed baseline and C4 roles. Supervisors read them after workers stop; progress
+remains unscored and cannot satisfy completion, accuracy, or resource gates.
+
 The production changes and reviewed measurement utilities are published on
 `ci/mesh-production-run-c4-20261106`. At `6060925`, [normal CI](https://github.com/billighost/Mesh/actions/runs/42338200399)
 passed all fifteen OS/Python combinations, packaging, security, documentation,

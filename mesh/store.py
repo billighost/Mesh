@@ -865,6 +865,24 @@ def _build_row_lexical_entry(content: str, tags_list: list[str]) -> dict[str, An
     }
 
 
+def _build_omitted_primary_lexical_entry(content: str) -> dict[str, Any]:
+    """Keep ownership and policy accounting without duplicating validated passage terms."""
+    empty: set[str] = set()
+    return {
+        "content_key": hashlib.sha256(" ".join(_clean_possessives(content).split()).encode("utf-8")).digest(),
+        "doc_len": 0,
+        "term_freq": Counter(),
+        "tag_tokens": empty,
+        "tag_stems": empty,
+        "tag_compacts": empty,
+        "all_doc_tokens": empty,
+        "all_doc_stems": empty,
+        "df_stems": empty,
+        "indexed_tokens": empty,
+        "primary_omitted": True,
+    }
+
+
 def _row_needs_healing(row_meta: dict[str, Any], vec: Optional[np.ndarray]) -> bool:
     emb_model = row_meta.get("embedding_model")
     if emb_model in ("hash-384", "needs-reembed", "unknown", None):
@@ -1480,7 +1498,7 @@ _CACHE_TOP_FIELDS = (
     "ids", "id_to_idx", "all_ids", "rows_by_id", "lexical_by_id", "stem_df",
     "stem_to_ids", "token_to_ids", "lexical_strings", "needs_healing_ids", "private_ids", "quarantine_ids",
     "model_ids", "type_ids", "tag_ids", "agent_ids", "content_ids", "visible_stem_df",
-    "_row_charges",
+    "_row_charges", "omitted_primary_lexical_ids",
 )
 _CACHE_TEXT_FIELDS = (
     "id", "namespace", "content", "tags", "memory_type", "source_agent", "created_at",
@@ -1630,6 +1648,7 @@ class _VectorCacheEntry:
         "passages",
         "passage_index_dirty",
         "passage_index_enabled",
+        "omitted_primary_lexical_ids",
     )
 
     def __init__(
@@ -1683,6 +1702,7 @@ class _VectorCacheEntry:
         self.passages = None
         self.passage_index_dirty = False
         self.passage_index_enabled = passage_index_enabled()
+        self.omitted_primary_lexical_ids: set[str] = set()
         self.needs_healing_ids: set[str] = (
             set(needs_healing_ids) if needs_healing_ids is not None else set()
         )
@@ -1777,6 +1797,8 @@ class _VectorCacheEntry:
         row_meta["_tags_low_set"] = frozenset(canonical.get(tag, tag) for tag in lowered_tags)
         self._ensure_lexical_posting_mode(new_lex)
         self._unindex_row_lexical(memory_id)
+        if new_lex.get("primary_omitted"):
+            self.omitted_primary_lexical_ids.add(memory_id)
         indexed_tokens = new_lex["indexed_tokens"]
         row_meta["_indexed_tokens"] = indexed_tokens
         for tok in indexed_tokens:
@@ -1815,6 +1837,7 @@ class _VectorCacheEntry:
             self.stem_to_ids.setdefault(s, set()).add(memory_id)
 
     def _unindex_row_lexical(self, memory_id: str) -> None:
+        self.omitted_primary_lexical_ids.discard(memory_id)
         old_lex = self.lexical_by_id.pop(memory_id, None)
         if old_lex is not None:
             equal_members = self.content_ids.get(old_lex["content_key"])
@@ -2035,7 +2058,10 @@ class _VectorCacheEntry:
             tags = prepared.get("tags_list") or _parse_tags_json(prepared.get("tags") or "[]")
             prepared["tags_list"] = tags
             text = str(prepared.get("content", ""))
-            prepared["_prepared_lexical"] = _build_row_lexical_entry(text, tags)
+            if prepared.pop("_omit_primary_lexical", False):
+                prepared["_prepared_lexical"] = _build_omitted_primary_lexical_entry(text)
+            else:
+                prepared["_prepared_lexical"] = _build_row_lexical_entry(text, tags)
             self._canonicalize_row_lexical(prepared["_prepared_lexical"])
             if "indexed_tokens" not in prepared["_prepared_lexical"]:
                 prepared["_prepared_search_tokens"] = _extract_search_tokens(f"{text} {' '.join(tags)}" if tags else text)
@@ -4435,6 +4461,14 @@ class MeshStore:
                             vector = None
                             model = "needs-reembed"
                         meta["embedding_model"] = model
+                        if passage_index_mode and type(meta.get("passage_count")) is int and meta["passage_count"] > 0:
+                            from .passage_search import passage_metadata
+
+                            # Both validation and passage loading use this reader
+                            # snapshot, so omitted primary terms cannot outlive
+                            # the complete derived generation that replaces them.
+                            if passage_metadata(conn, meta):
+                                meta["_omit_primary_lexical"] = True
                         if not entry._upsert_vector(meta["id"], vector, row_meta=meta):
                             raise RuntimeError("Unable to construct a valid namespace vector cache.")
                     cursor.close()
@@ -6154,6 +6188,21 @@ class MeshStore:
                 if results is not None:
                     return results
             except CacheBudgetExceededError:
+                self._invalidate_cache()
+                cache = None
+        if cache is not None:
+            with cache.read_snapshot():
+                primary_eligible = self._query_eligible_ids(
+                    cache, memory_type=memory_type, tags=tags, source_agent=source_agent,
+                    include_private=include_private, include_quarantined=include_quarantined,
+                    include_stale=include_stale, min_confidence=min_confidence, now=ref_now,
+                )
+                incomplete_primary = any(identifier in primary_eligible for identifier in cache.omitted_primary_lexical_ids)
+            del primary_eligible
+            if incomplete_primary:
+                # Primary DF and postings must cover the whole authorized
+                # corpus. Release partial passage caches before streaming the
+                # primary scorer when derived evidence cannot answer this query.
                 self._invalidate_cache()
                 cache = None
         # Active exception tracebacks can retain an abandoned cache generation

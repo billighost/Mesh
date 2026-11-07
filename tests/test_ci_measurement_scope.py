@@ -43,6 +43,16 @@ def test_documentation_scope_rejects_retrieval_changes():
     scope.validate_changed_paths("qualification", ["benchmarks/results/example.json", "docs/CI_VALIDATION.md"])
 
 
+def test_native_retrieval_diagnostics_scope_still_rejects_runtime_changes():
+    diagnostic_paths = ["benchmarks/runtime_rerank_c4.py", "tests/test_runtime_reranker_ci.py",
+                        "tests/test_runtime_reranker_diagnostics.py"]
+    scope.validate_changed_paths("retrieval", diagnostic_paths)
+    with pytest.raises(ValueError, match="unchanged runtime"):
+        scope.validate_changed_paths("retrieval", [*diagnostic_paths, "mesh/passage_search.py"])
+    with pytest.raises(ValueError, match="unchanged runtime"):
+        scope.validate_changed_paths("qualification", diagnostic_paths)
+
+
 @pytest.mark.parametrize("path", ["../README.md", "docs/../README.md", "/docs/example.md", "docs\\example.md", "docs//example.md"])
 def test_unsafe_changed_paths_are_rejected(path):
     with pytest.raises(ValueError, match="Invalid changed path"):

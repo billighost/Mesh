@@ -24,6 +24,8 @@ Release improving durable concurrent storage, natural-language retrieval, bounde
 - **Release Documentation & Security Gate (`scripts/check_docs.py --release`)**: Automated release gate enforcing resolution of external reviewer findings and sign-offs in `docs/REVIEWS.md` prior to packaging.
 
 ### Changed
+- **Passage cache layout**: Validated long-parent passages share a metered lexical generation without redundant whole-body primary terms. Short, pending, malformed, and model-incompatible cases retain a complete primary fallback. Native CPU and accuracy qualification remains required.
+- **Retrieval diagnostics**: Offline scoring can publish content-free candidate ranks, finite reranker scores, and input geometry after complete fixed exports are verified. It distinguishes evidence outside the four-parent cap from inside-cap misses while preserving source hashes and ranking inputs.
 - **Installer Adaptations for Modern Coding Agents (`mesh/installer.py`)**: Aligned OpenAI Codex CLI adapter to TOML configuration (`~/.codex/config.toml`), Gemini CLI to `settings.json`, OpenCode to XDG `opencode.json`, and Windsurf to strictly user-scoped MCP configuration per upstream vendor specifications.
 - **Distribution Architecture**: Mesh's wheel remains `py3-none-any`; the required APSW dependency supplies a privately bundled native SQLite wheel for the target platform.
 - **Hybrid retrieval and caches**: Use verified neural query encoding when a model is ready, separate embedding caches by model space, combine dense and BM25 lexical candidates, and preserve exact lookup while indexing is pending. Bounded caches share repeated lexical data and use an explicit streaming path when their byte budget is exhausted.

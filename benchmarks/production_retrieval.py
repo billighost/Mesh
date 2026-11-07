@@ -25,12 +25,16 @@ from pathlib import Path
 from replay_retrieval import (checked_path, compact_results, configure_isolation, digest_file,
                               freeze_runtime, isolated_artifact_path, isolated_source_home, read_jsonl,
                               safe_member, verify_exports, write_json)
+from retrieval_telemetry import checkpoint_manifest, checkpoint_query_provenance, query_observation
 
 MODEL_TAG = "onnx-minilm-l6-v2"
 PASSAGE_REPRESENTATION = "paragraph-sentences-v1"
 PASSAGE_BATCH_LIMIT = 32
 PASSAGE_SNAPSHOT_FOLDER = "mesh-frozen-quality-passage-snapshot"
 PASSAGE_SNAPSHOT_CONFIGURATION = "prequery-original-parent-passages-v1"
+RERANK_DIAGNOSTICS_FILE = "reranker-diagnostics.json"
+RERANK_INPUT_INTEGERS = ("start", "end", "query_tokens", "kept_query_tokens", "removed_query_characters",
+                         "passage_tokens", "kept_passage_tokens", "removed_passage_characters", "pair_tokens")
 WORKER_FAILURE_SOURCES = frozenset({"production_retrieval.py", "passage_retrieval.py", "replay_retrieval.py",
                                     "retrieval_c4.py", "retrieval_c4_model.py", "memory.py", "store.py",
                                     "passage_search.py", "passages.py", "runtime_rerank_c4.py", "local_rerank.py"})
@@ -264,6 +268,230 @@ def candidate_document(row: dict) -> str | None:
     # Relevance labels must never choose which source ID a deduplicated row receives.
     ids = row.get("faithful_document_ids", [])
     return ids[0] if ids else None
+
+
+def _diagnostic_digest(value):
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
+        raise ValueError("Invalid reranker diagnostic provenance")
+    return value
+
+
+def reranker_diagnostic_provenance(manifest, run_hash, labels_hash, scorer_hash):
+    from runtime_rerank_c4 import MODEL, POLICY, effective_limits
+
+    configuration = manifest.get("runtime_reranker", {})
+    if not isinstance(configuration, dict):
+        raise ValueError("Invalid native reranker diagnostic configuration")
+    profile = configuration.get("profile")
+    limits = effective_limits(profile)
+    if (manifest.get("status") != "complete" or manifest.get("all_queries_accounted") is not True
+            or manifest.get("labels_in_ranking_inputs") is not False or manifest.get("resource_qualified") is not True
+            or configuration.get("configuration") != "c4-minilm-runtime-recall" or configuration.get("phase") != "c4"
+            or configuration.get("model") != MODEL or configuration.get("policy") != POLICY
+            or configuration.get("effective_limits") != limits
+            or configuration.get("parent_identity_scores_spans_and_tail_verified") is not True
+            or configuration.get("top_one_matches_top_ten") is not True
+            or configuration.get("labels_in_ranking_inputs") is not False):
+        raise ValueError("Invalid native reranker diagnostic condition")
+    sources = manifest.get("runtime_files")
+    if not isinstance(sources, dict) or not sources:
+        raise ValueError("Invalid reranker diagnostic source manifest")
+    for name, digest in sources.items():
+        if not isinstance(name, str) or not re.fullmatch(r"mesh/(?:[A-Za-z0-9_]+/)*[A-Za-z0-9_]+\.py", name):
+            raise ValueError("Invalid reranker diagnostic source manifest")
+        _diagnostic_digest(digest)
+    values = {"run_manifest_sha256": run_hash, "labels_sha256": labels_hash, "scorer_sha256": scorer_hash,
+              "producer_harness_sha256": manifest["harness_sha256"], "dataset_manifest_sha256": manifest["dataset_manifest_sha256"],
+              "base_protocol_sha256": manifest["protocol_sha256"], "runtime_c4_protocol_sha256": manifest["runtime_c4_protocol_sha256"],
+              "source_run_manifest_sha256": manifest["source_run_manifest_sha256"],
+              "baseline_run_manifest_sha256": manifest["runtime_passage_run_manifest_sha256"],
+              "baseline_results_sha256": manifest["runtime_passage_results_sha256"],
+              "candidate_results_sha256": manifest["output_sha256"]["results-default.jsonl"],
+              "ingestion_fidelity_sha256": manifest["output_sha256"]["ingestion-fidelity.jsonl"],
+              "embedding_model_sha256": manifest["model_file_sha256"]["onnx_sha256"],
+              "embedding_tokenizer_sha256": manifest["model_file_sha256"]["tokenizer_sha256"],
+              "reranker_model_sha256": MODEL["model_sha256"], "reranker_tokenizer_sha256": MODEL["tokenizer_sha256"]}
+    return {key: _diagnostic_digest(value) for key, value in values.items()} | {
+        "runtime_files": dict(sources), "profile": profile, "parent_cap": limits["parent_cap"]}
+
+
+def _reranker_input_diagnostic(row, query_characters, identity, limits, profile):
+    account = row.get("rerank_input")
+    expected = {"source", *RERANK_INPUT_INTEGERS} | ({"profile"} if profile != "full-256" else set())
+    if (not isinstance(account, dict) or set(account) != expected
+            or profile != "full-256" and account.get("profile") != profile
+            or any(type(account.get(key)) is not int or account[key] < 0 for key in RERANK_INPUT_INTEGERS)
+            or not 0 <= account["start"] < account["end"] <= identity["stored_characters"]
+            or not account["kept_query_tokens"] <= min(account["query_tokens"], limits["maximum_query_tokens"])
+            or not 0 < account["kept_passage_tokens"] <= min(account["passage_tokens"], limits["maximum_passage_tokens"])
+            or not account["kept_query_tokens"] + account["kept_passage_tokens"] + 3 <= account["pair_tokens"] <= limits["maximum_pair_tokens"]
+            or account["removed_query_characters"] > query_characters):
+        raise ValueError("Invalid reranker diagnostic input accounting")
+    selected = row["selected_passage_ordinal"] is not None
+    span = row["supporting_spans"][0]
+    start, end = (span["start"], span["end"]) if selected else (0, identity["stored_characters"])
+    exact = "exact_selected_source_span" if selected else "accepted_original_body"
+    excerpt = "verbatim_selected_source_excerpt" if selected else "verbatim_original_body_excerpt"
+    if profile == "full-256":
+        valid = (account["source"] == exact and account["start"] == start
+                 and account["removed_passage_characters"] == end - account["end"]
+                 and (not selected or account["end"] == end and account["passage_tokens"] == account["kept_passage_tokens"]))
+    else:
+        shortened = account["passage_tokens"] > account["kept_passage_tokens"]
+        valid = (start <= account["start"] < account["end"] <= end
+                 and account["removed_passage_characters"] == end - start - (account["end"] - account["start"])
+                 and account["source"] == (excerpt if shortened else exact)
+                 and (account["removed_passage_characters"] > 0 if shortened else account["start"] == start and account["end"] == end))
+    if not valid:
+        raise ValueError("Invalid reranker diagnostic source geometry")
+    return dict(account)
+
+
+def build_reranker_diagnostics(manifest, rows, queries, records, labels, provenance):
+    """Describe fixed native inputs after scoring; labels never influence ranking."""
+    from runtime_rerank_c4 import RERANK_FIELDS, effective_limits
+
+    try:
+        qrels, unanswered = labels["qrels"], labels.get("unanswered_query_ids", [])
+        query_ids = [query["id"] for query in queries]
+        if (not isinstance(qrels, dict) or not isinstance(unanswered, list)
+                or any(not isinstance(identifier, str) or not identifier for identifier in (*query_ids, *qrels, *unanswered))
+                or len(set(query_ids)) != len(query_ids) or len(set(unanswered)) != len(unanswered)
+                or set(qrels) | set(unanswered) != set(query_ids)
+                or any(not isinstance(query.get("query"), str) or not isinstance(query.get("corpus", "complete"), str) for query in queries)
+                or any(not isinstance(gold, dict) or any(not isinstance(identifier, str) or not identifier
+                    or type(grade) is not int or grade < 1 for identifier, grade in gold.items()) for gold in qrels.values())
+                or any(bool(qrels.get(identifier)) == (identifier in unanswered) for identifier in query_ids)
+                or len(rows) != len(query_ids) or {row["query_id"] for row in rows} != set(query_ids)):
+            raise ValueError("Invalid reranker diagnostic query or label accounting")
+        by_query = {row["query_id"]: row for row in rows}
+        identities = runtime_parent_identities(records)
+        for identity in identities.values():
+            ids = identity["faithful_document_ids"]
+            if not isinstance(ids, list) or any(not isinstance(identifier, str) or not identifier for identifier in ids):
+                raise ValueError("Invalid reranker diagnostic faithful source IDs")
+        profile, cap = provenance["profile"], provenance["parent_cap"]
+        limits = effective_limits(profile)
+        if cap != limits["parent_cap"] or manifest["query_target"] != len(query_ids):
+            raise ValueError("Invalid reranker diagnostic candidate bound")
+        diagnostic = {"version": 1, "configuration": "native-c4-postscore-v1", "provenance": provenance,
+                      "answer_span_containment": "unavailable_document_qrels_only", "queries": []}
+        for query in queries:
+            row, gold = by_query[query["id"]], qrels.get(query["id"], {})
+            before, after = row["original_sdk_top10"], row["final_sdk_top10"]
+            if row.get("corpus_id") != query.get("corpus", "complete"):
+                raise ValueError("Invalid reranker diagnostic corpus accounting")
+            validate_runtime_parent_results(before, identities)
+            validate_runtime_parent_results(after, identities)
+            count = min(cap, len(before))
+            if (len(before) != len(after) or {item["id"] for item in before[:count]} != {item["id"] for item in after[:count]}
+                    or any({key: value for key, value in item.items() if key not in RERANK_FIELDS} != original
+                           for item, original in zip(after[count:], before[count:]))
+                    or any(item.get("rerank_status") != "outside_parent_cap" or any(key in item for key in RERANK_FIELDS[1:])
+                           for item in after[count:])):
+                raise ValueError("Invalid reranker diagnostic parent prefix or tail")
+            positions = {item["id"]: (rank, item) for rank, item in enumerate(after, 1)}
+
+            def first_gold(items):
+                return next((rank for rank, item in enumerate(items, 1) if candidate_document(item) in gold), None)
+
+            reference = digest_text(json.dumps([provenance["dataset_manifest_sha256"], query.get("corpus", "complete"), query["id"]], separators=(",", ":")))
+            entry = {"query_ref": reference, "query_characters": len(query["query"]), "answered": bool(gold),
+                     "baseline_first_primary_gold_rank": first_gold(before), "final_first_primary_gold_rank": first_gold(after), "head": []}
+            for original_rank, original in enumerate(before[:count], 1):
+                final_rank, item = positions[original["id"]]
+                if {key: value for key, value in item.items() if key not in RERANK_FIELDS} != original:
+                    raise ValueError("Invalid reranker diagnostic original parent identity")
+                status, score, account = item.get("rerank_status"), item.get("rerank_score"), None
+                if count < 2:
+                    if status != "insufficient_candidates" or any(key in item for key in RERANK_FIELDS[1:]):
+                        raise ValueError("Invalid reranker diagnostic insufficient-candidate status")
+                else:
+                    if (status != "applied" or type(score) not in {int, float} or not math.isfinite(score)
+                            or type(item.get("rerank_original_rank")) is not int or item["rerank_original_rank"] != original_rank):
+                        raise ValueError("Invalid reranker diagnostic applied score")
+                    account = _reranker_input_diagnostic(item, len(query["query"]), identities[item["id"]], limits, profile)
+                span = item["supporting_spans"][0]
+                entry["head"].append({"original_rank": original_rank, "final_rank": final_rank,
+                    "primary_id_is_gold": candidate_document(item) in gold,
+                    "any_faithful_id_is_gold": bool(set(item["faithful_document_ids"]) & set(gold)),
+                    "rerank_status": status, "rerank_score": score, "rerank_input": account,
+                    "parent_characters": identities[item["id"]]["stored_characters"],
+                    "selected_passage_ordinal": item["selected_passage_ordinal"],
+                    "supporting_span": {"start": span["start"], "end": span["end"]},
+                    "selected_span_contains_annotated_evidence": None, "excerpt_contains_annotated_evidence": None})
+            diagnostic["queries"].append(entry)
+        return project_reranker_diagnostics(diagnostic, provenance, len(queries))
+    except (KeyError, TypeError, AttributeError, OverflowError):
+        raise ValueError("Invalid native reranker diagnostic input") from None
+
+
+def project_reranker_diagnostics(value, provenance, query_count, *, expected_query_refs=None):
+    """Reject unknown/free-text fields before admitting a public CI artifact."""
+    from runtime_rerank_c4 import effective_limits
+
+    try:
+        limits = effective_limits(provenance["profile"])
+        if (set(value) != {"version", "configuration", "provenance", "answer_span_containment", "queries"}
+                or type(value["version"]) is not int or value["version"] != 1
+                or value["configuration"] != "native-c4-postscore-v1" or value["provenance"] != provenance
+                or value["answer_span_containment"] != "unavailable_document_qrels_only"
+                or not isinstance(value["queries"], list) or len(value["queries"]) != query_count):
+            raise ValueError("Invalid public reranker diagnostic envelope")
+        refs = set()
+        for query in value["queries"]:
+            if (set(query) != {"query_ref", "query_characters", "answered", "baseline_first_primary_gold_rank", "final_first_primary_gold_rank", "head"}
+                    or type(query["answered"]) is not bool or _diagnostic_digest(query["query_ref"]) in refs
+                    or type(query["query_characters"]) is not int or query["query_characters"] < 0
+                    or any(rank is not None and (type(rank) is not int or not 1 <= rank <= 10)
+                           for rank in (query["baseline_first_primary_gold_rank"], query["final_first_primary_gold_rank"]))
+                    or not isinstance(query["head"], list) or len(query["head"]) > limits["parent_cap"]):
+                raise ValueError("Invalid public reranker diagnostic query")
+            refs.add(query["query_ref"])
+            count = len(query["head"])
+            if {row["final_rank"] for row in query["head"]} != set(range(1, count + 1)):
+                raise ValueError("Invalid public reranker diagnostic ranks")
+            for rank, row in enumerate(query["head"], 1):
+                if (set(row) != {"original_rank", "final_rank", "primary_id_is_gold", "any_faithful_id_is_gold", "rerank_status", "rerank_score",
+                                "rerank_input", "parent_characters", "selected_passage_ordinal", "supporting_span",
+                                "selected_span_contains_annotated_evidence", "excerpt_contains_annotated_evidence"}
+                        or type(row["original_rank"]) is not int or row["original_rank"] != rank
+                        or type(row["final_rank"]) is not int or not 1 <= row["final_rank"] <= count
+                        or any(type(row[key]) is not bool for key in ("primary_id_is_gold", "any_faithful_id_is_gold"))
+                        or row["primary_id_is_gold"] and not row["any_faithful_id_is_gold"]
+                        or type(row["parent_characters"]) is not int or row["parent_characters"] < 1
+                        or row["selected_passage_ordinal"] is not None and (type(row["selected_passage_ordinal"]) is not int or row["selected_passage_ordinal"] < 0)
+                        or set(row["supporting_span"]) != {"start", "end"}
+                        or any(type(row["supporting_span"][key]) is not int for key in ("start", "end"))
+                        or not 0 <= row["supporting_span"]["start"] < row["supporting_span"]["end"] <= row["parent_characters"]
+                        or row["selected_span_contains_annotated_evidence"] is not None or row["excerpt_contains_annotated_evidence"] is not None):
+                    raise ValueError("Invalid public reranker diagnostic parent")
+                if count < 2:
+                    if row["rerank_status"] != "insufficient_candidates" or row["rerank_score"] is not None or row["rerank_input"] is not None:
+                        raise ValueError("Invalid public reranker diagnostic fallback")
+                else:
+                    if row["rerank_status"] != "applied" or type(row["rerank_score"]) not in {int, float} or not math.isfinite(row["rerank_score"]):
+                        raise ValueError("Invalid public reranker diagnostic score")
+                    synthetic = {"selected_passage_ordinal": row["selected_passage_ordinal"], "supporting_spans": [row["supporting_span"]],
+                                 "rerank_input": row["rerank_input"]}
+                    _reranker_input_diagnostic(synthetic, query["query_characters"], {"stored_characters": row["parent_characters"]}, limits, provenance["profile"])
+            if count >= 2:
+                ordered = sorted(query["head"], key=lambda row: row["final_rank"])
+                if ordered != sorted(query["head"], key=lambda row: (-row["rerank_score"], row["original_rank"])):
+                    raise ValueError("Invalid public reranker diagnostic logit order")
+            primary = [row for row in query["head"] if row["primary_id_is_gold"]]
+            for key, field in (("baseline_first_primary_gold_rank", "original_rank"), ("final_first_primary_gold_rank", "final_rank")):
+                inside = min((row[field] for row in primary), default=None)
+                if (query[key] is not None and query[key] <= count) != bool(primary) or inside is not None and query[key] != inside:
+                    raise ValueError("Invalid public reranker diagnostic gold accounting")
+            if not query["answered"] and (primary or any(row["any_faithful_id_is_gold"] for row in query["head"])
+                    or query["baseline_first_primary_gold_rank"] is not None or query["final_first_primary_gold_rank"] is not None):
+                raise ValueError("Invalid public reranker diagnostic no-answer accounting")
+        if expected_query_refs is not None and refs != expected_query_refs:
+            raise ValueError("Invalid public reranker diagnostic query identities")
+        return json.loads(json.dumps(value, allow_nan=False))
+    except (KeyError, TypeError, AttributeError, OverflowError):
+        raise ValueError("Invalid public reranker diagnostic shape") from None
 
 def query_metrics(candidates: list[dict], gold: dict[str, int], cutoffs=(1, 5, 10, 64)) -> dict[str, float]:
     documents = [candidate_document(row) for row in candidates]
@@ -861,7 +1089,8 @@ def index_runtime_passages(mesh, records, memory_module, readiness, resources):
 
 
 def fresh_queries(mesh, queries, records, streams, metadata, memory_module, *,
-                  original_sdk_top10=None, resource_stream=None, resources=None, experiment=None):
+                  original_sdk_top10=None, resource_stream=None, resources=None, experiment=None, cache_stats=None,
+                  progress_resource_stream=None):
     runtime_passages = original_sdk_top10 is not None
     if runtime_passages and (resource_stream is None or resources is None):
         raise ValueError("Runtime passage queries require resource accounting")
@@ -913,9 +1142,14 @@ def fresh_queries(mesh, queries, records, streams, metadata, memory_module, *,
                        "final_sdk_top10": exported}
             if runtime_passages:
                 payload["original_sdk_top10"] = original_sdk_top10[query["id"]]
-                append_jsonl(resource_stream, {"query_ordinal": previous_calls + index, "elapsed_ms": elapsed_ms,
-                                               "process_cpu_ms": (time.process_time() - cpu_started) * 1000,
-                                               "sampled_owned_process_rss_bytes": resources.sample()})
+                resource_row = {"query_ordinal": previous_calls + index, "elapsed_ms": elapsed_ms,
+                                "process_cpu_ms": (time.process_time() - cpu_started) * 1000,
+                                "sampled_owned_process_rss_bytes": resources.sample()}
+                if cache_stats is not None:
+                    resource_row.update(query_observation(results, cache_stats()))
+                append_jsonl(resource_stream, resource_row)
+                if progress_resource_stream is not None:
+                    append_jsonl(progress_resource_stream, resource_row)
             if experiment is not None:
                 experiment.observe(query, results, payload, elapsed_ms, (time.process_time() - cpu_started) * 1000)
             append_jsonl(streams[96], payload)
@@ -937,7 +1171,7 @@ def fresh_queries(mesh, queries, records, streams, metadata, memory_module, *,
         experiment.after_namespace(mesh, queries, records, memory_module)
 
 
-def run_retrieval(args, *, experiment=None, passage_snapshot=None):
+def run_retrieval(args, *, experiment=None, passage_snapshot=None, query_progress_directory=None):
     runtime_passages = getattr(args, "runtime_passages", False)
     if passage_snapshot is not None and (runtime_passages is not True or experiment is None or args.command != "query-only"):
         raise ValueError("Passage snapshot reuse requires an explicit native passage query experiment")
@@ -1010,6 +1244,13 @@ def run_retrieval(args, *, experiment=None, passage_snapshot=None):
     if output.exists():
         raise ValueError("Refusing to overwrite an existing run")
     output.mkdir(parents=True)
+    if query_progress_directory is not None:
+        if not runtime_passages or experiment is None:
+            raise ValueError("Persistent query progress requires an explicit native passage experiment")
+        query_progress_directory = isolated_artifact_path(query_progress_directory, repository)
+        if query_progress_directory.exists():
+            raise ValueError("Refusing to overwrite native query progress")
+        query_progress_directory.mkdir(parents=True)
     metadata = {
         "status": "running", "dataset": args.dataset, "query_target": len(queries),
         "started_at_utc": datetime.now(timezone.utc).isoformat(), "dataset_manifest_sha256": digest_file(fixture_path),
@@ -1033,7 +1274,8 @@ def run_retrieval(args, *, experiment=None, passage_snapshot=None):
         metadata["source_fidelity_sha256"] = source_manifest["output_sha256"]["ingestion-fidelity.jsonl"]
         metadata["document_inference_invoked"] = False
     if runtime_passages:
-        metadata.update(scope="Current-source actual runtime passage index on original guarded parents; separate optional quality evaluation.",
+        metadata.update(query_telemetry_version=1,
+                        scope="Current-source actual runtime passage index on original guarded parents; separate optional quality evaluation.",
                         baseline_provenance="Original-parent runtime passages paired with the hash-verified ordinary fresh-default SDK export.",
                         runtime_passage_index=dict(pairing, representation=PASSAGE_REPRESENTATION,
                                                   backend="direct-onnx", manual_worker=True),
@@ -1049,6 +1291,7 @@ def run_retrieval(args, *, experiment=None, passage_snapshot=None):
     fidelity = (output / "ingestion-fidelity.jsonl").open("w", encoding="utf-8", newline="\n")
     vectors = None if query_only else (output / "query-vectors.jsonl").open("w", encoding="utf-8", newline="\n")
     resource_stream = (output / "query-resources.jsonl").open("w", encoding="utf-8", newline="\n") if runtime_passages else None
+    progress_resource_stream = (query_progress_directory / "query-resources.jsonl").open("w", encoding="utf-8", newline="\n") if query_progress_directory is not None else None
     resources = None
     try:
         with contextlib.ExitStack() as cleanup:
@@ -1117,6 +1360,9 @@ def run_retrieval(args, *, experiment=None, passage_snapshot=None):
                             append_jsonl(fidelity, record)
                         if runtime_passages:
                             readiness = metadata["runtime_passage_readiness"].setdefault(corpus_id, {})
+                            checkpoint_manifest(output / "run-manifest.json", metadata)
+                            if query_progress_directory is not None:
+                                checkpoint_query_provenance(query_progress_directory / "run-manifest.json", metadata)
                             if snapshot is not None:
                                 reuse_runtime_passages(mesh, records, memory_module, readiness, resources)
                             else:
@@ -1126,9 +1372,14 @@ def run_retrieval(args, *, experiment=None, passage_snapshot=None):
                                 # Freeze before default recall can update access statistics.
                                 metadata["runtime_passage_snapshot"]["corpora"][corpus_id] = freeze_runtime_passage_snapshot(
                                     mesh, records, snapshot_root, store_module)
+                            checkpoint_manifest(output / "run-manifest.json", metadata)
+                            if query_progress_directory is not None:
+                                checkpoint_query_provenance(query_progress_directory / "run-manifest.json", metadata)
                         fresh_queries(mesh, group, records, streams, metadata, memory_module,
                                       original_sdk_top10=original_sdk_top10, resource_stream=resource_stream,
-                                      resources=resources, experiment=experiment)
+                                      resources=resources, experiment=experiment,
+                                      cache_stats=store_module.get_vector_cache_stats if runtime_passages else None,
+                                      progress_resource_stream=progress_resource_stream)
                         if runtime_passages and guarded_database_fingerprint(source_home, namespace) != source_fingerprint:
                             raise ValueError("Guarded source database changed during runtime passage evaluation")
                         if snapshot is not None:
@@ -1176,7 +1427,8 @@ def run_retrieval(args, *, experiment=None, passage_snapshot=None):
     finally:
         if experiment is not None:
             experiment.close()
-        for stream in (*streams.values(), fidelity, *((vectors,) if vectors else ()), *((resource_stream,) if resource_stream else ())):
+        for stream in (*streams.values(), fidelity, *((vectors,) if vectors else ()),
+                       *((resource_stream,) if resource_stream else ()), *((progress_resource_stream,) if progress_resource_stream else ())):
             stream.close()
         if resources is not None:
             metadata["runtime_passage_resource_diagnostics"] = resources.summary()
@@ -1193,12 +1445,16 @@ def score_run(args):
     run = args.run_directory.resolve()
     data = args.dataset_directory.resolve()
     manifest_path = run / "run-manifest.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest_bytes = manifest_path.read_bytes()
+    manifest = json.loads(manifest_bytes)
+    run_hash = hashlib.sha256(manifest_bytes).hexdigest()
     if manifest["status"] != "complete" or digest_file(data / "manifest.json") != manifest["dataset_manifest_sha256"]:
         raise ValueError("Refusing to score an incomplete run or mismatched fixture")
     verify_manifest(data / "manifest.json")
     verify_exports(run, manifest)
+    labels_hash = digest_file(data / "labels.json")
     labels = json.loads((data / "labels.json").read_text(encoding="utf-8"))
+    query_hash = digest_file(data / "queries-selected.jsonl")
     queries = list(read_jsonl(data / "queries-selected.jsonl"))
     query_ids = [query["id"] for query in queries]
     if len(query_ids) != manifest["query_target"] or len(set(query_ids)) != len(query_ids):
@@ -1208,7 +1464,12 @@ def score_run(args):
     if set(qrels) | unanswered != set(query_ids):
         raise ValueError("Gold/no-answer accounting differs from selected queries")
     retained_by_corpus = defaultdict(set)
+    configuration = manifest.get("runtime_reranker", {})
+    native_c4 = isinstance(configuration, dict) and configuration.get("configuration") == "c4-minilm-runtime-recall" and configuration.get("phase") == "c4"
+    native_records, native_rows = [], None
     for record in read_jsonl(run / "ingestion-fidelity.jsonl"):
+        if native_c4:
+            native_records.append(record)
         if record["faithful_public"]:
             retained_by_corpus[record["corpus_id"]].add(record["document_id"])
     retained = {query["id"]: retained_by_corpus[query.get("corpus", "complete")] for query in queries}
@@ -1220,8 +1481,8 @@ def score_run(args):
         "retained_gold_documents": sum(len(set(qrels.get(identifier, {})) & retained[identifier]) for identifier in query_ids),
     }
     result = {
-        "dataset": manifest["dataset"], "query_count": len(query_ids), "run_manifest_sha256": digest_file(manifest_path),
-        "labels_sha256": digest_file(data / "labels.json"), "scorer_sha256": digest_file(Path(__file__)),
+        "dataset": manifest["dataset"], "query_count": len(query_ids), "run_manifest_sha256": run_hash,
+        "labels_sha256": labels_hash, "scorer_sha256": digest_file(Path(__file__)),
         "baseline_provenance": manifest["baseline_provenance"], "ingestion": manifest["ingestion"],
         "gold_survival": survival, "cells": {},
         "definitions": {
@@ -1238,6 +1499,8 @@ def score_run(args):
         if "-rerank-" in path.stem:
             continue
         rows = list(read_jsonl(path))
+        if native_c4 and path.name == "results-default.jsonl":
+            native_rows = rows
         ids = [row["query_id"] for row in rows]
         if len(ids) != len(query_ids) or len(set(ids)) != len(ids) or set(ids) != set(query_ids):
             raise ValueError("Rank export omits or duplicates selected queries")
@@ -1265,6 +1528,20 @@ def score_run(args):
         result["cells"][path.stem] = cell
     if not result["cells"]:
         raise ValueError("No accounted rank cell to score")
+    if native_c4:
+        if native_rows is None:
+            raise ValueError("Missing fixed native reranker rank export")
+        provenance = reranker_diagnostic_provenance(manifest, run_hash, labels_hash, result["scorer_sha256"])
+        diagnostic = build_reranker_diagnostics(manifest, native_rows, queries, native_records, labels, provenance)
+        # Keep diagnostics outside output_sha256: ranked exports and their manifest
+        # were fixed before labels were opened and must remain immutable.
+        verify_exports(run, manifest)
+        if (digest_file(manifest_path) != run_hash or digest_file(data / "manifest.json") != manifest["dataset_manifest_sha256"]
+                or digest_file(data / "labels.json") != labels_hash or digest_file(data / "queries-selected.jsonl") != query_hash):
+            raise ValueError("Fixed scoring inputs changed before reranker diagnostics")
+        diagnostic_path = safe_member(run, RERANK_DIAGNOSTICS_FILE, must_exist=False)
+        write_json(diagnostic_path, diagnostic)
+        result["reranker_diagnostics"] = {"file": RERANK_DIAGNOSTICS_FILE, "sha256": digest_file(diagnostic_path)}
     write_json(run / "score-summary.json", result)
     print(json.dumps({"dataset": result["dataset"], "query_count": len(query_ids), "gold_survival": survival,
                       "sdk_hit_at_1": {name: cell["final_sdk_top10"]["unconditional"]["hit_at_1"] for name, cell in result["cells"].items()}}), flush=True)
@@ -1344,7 +1621,7 @@ def main():
             command.add_argument("--source-home", type=Path, help="Named isolated source home when its manifest is sanitized")
             command.add_argument("--runtime-passages", action="store_true", help="Opt in to the actual schema-6 passage index on a guarded database copy; manually build and verify original-parent readiness")
             command.add_argument("--fresh-default-run", type=Path, help="Required with --runtime-passages: complete hash-verified fresh-default SDK export from the same guarded source")
-    score = commands.add_parser("score", help="Read relevance labels only after a completed, hash-verified retrieval export")
+    score = commands.add_parser("score", help="Read labels only after fixed retrieval exports; emit content-free native-reranker diagnostics")
     score.add_argument("run_directory", type=Path)
     score.add_argument("--dataset-directory", required=True, type=Path)
     report = commands.add_parser("report", help="Export only path-free aggregate metrics and provenance")

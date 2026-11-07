@@ -250,7 +250,9 @@ def test_schema_six_fake_runtime_completes_worker_and_controller_projection(sche
         mesh.recall = recall
         module.Mesh = lambda **kwargs: mesh
         store_module = types.SimpleNamespace(SCHEMA_VERSION=schema, sqlite3=sqlite3,
-                                            validate_namespace=lambda value: value, get_vector_cache_stats=lambda: {})
+            validate_namespace=lambda value: value, get_vector_cache_stats=lambda: {
+                "limit_bytes": 256 * 1024**2, "charged_bytes": 0, "cached_generations": 0,
+                "live_generations_and_builds": 0, "oversized_versions": 0})
 
         def import_runtime(owned, *_args):
             mesh.store.db_path = owned / "mesh-home/mesh_fixture.db"

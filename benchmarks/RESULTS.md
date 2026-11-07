@@ -2,6 +2,77 @@
 
 This document provides empirical latency, throughput, memory, and scaling benchmarks for **Mesh** (`mesh-context-layer`). All tests measure real end-to-end execution paths including SQLite WAL transactions, token budgeting, FTS5 lexical matching, and ONNX SIMD cosine vector ranking.
 
+## Mesh 0.9.0 completed qualification checkpoint (2026-11-07, `e353bc1`)
+
+[Normal CI](https://github.com/billighost/Mesh/actions/runs/42378934838) passed the supported platform/Python checks. [The production run](https://github.com/billighost/Mesh/actions/runs/42378934727) passed both full primary/minimum qualification suites, same-source process-crash recovery, coverage, installed-wheel validation, the registered concurrency matrix and test-speed observation. The production run remains failed because retrieval does not qualify. [Provenance](results/production_20261107_e353bc1_provenance.json) binds these new numerical artifacts to the tested commit; the earlier `6060925` results remain below.
+
+### Windows production matrix — Mesh 0.9.0 (2026-11-07)
+
+A preregistered single serial pass on Windows 2025Server, 4 logical CPUs, 15.99 GiB RAM; Python 3.14.0, APSW 3.54.1.0, SQLite 3.54.1, ONNX Runtime 1.31.1. Each primary cell uses 512 measured facts plus twelve anchors; atomic calls contain eight facts. The receipt SDK and authenticated HTTP use the same public fixture, ownership policy and WAL/FULL durability. The process-tree RSS cap was 4.00 GiB, with 2 GiB available-RAM headroom for resource qualification.
+
+The tested source is Mesh 0.9.0 commit `e353bc1`. Its Windows checkout bytes are identified by the relative source and harness manifests in [the numerical ledger](results/production_performance_20261107_e353bc1.json) (`runtime_source_sha256` and `harness_source_sha256`); these measurements apply to that commit. The ledger also binds the local model files, fixture digests and qualification reports.
+
+Acknowledged measured facts per second, excluding anchors and process close:
+
+| Backend | Surface | Call | Group | 1 agent | 4 agents | 8 agents | 16 agents |
+| --- | --- | --- | --- | ---: | ---: | ---: | ---: |
+| Hash | Receipt SDK | Scalar | 0 | 236.5 | 33.7 | 33.1 | 34.0 |
+| Hash | HTTP | Scalar | 0 | 139.0 | 136.6 | 129.6 | 138.8 |
+| Hash | HTTP | Scalar | 1 | 51.6 | 149.3 | 157.4 | 160.0 |
+| Hash | Receipt SDK | Atomic 8 | 0 | 352.4 | 187.9 | 104.9 | 84.4 |
+| Hash | HTTP | Atomic 8 | 0 | 295.3 | 312.4 | 299.8 | 269.0 |
+| Hash | HTTP | Atomic 8 | 1 | 244.9 | 311.7 | 305.1 | 273.7 |
+| Neural | Receipt SDK | Scalar | 0 | 208.4 | 31.8 | 34.4 | deferred(resource) |
+| Neural | HTTP | Scalar | 0 | 125.2 | 108.4 | 128.3 | 129.1 |
+| Neural | HTTP | Scalar | 1 | 61.5 | 119.7 | 152.7 | 143.9 |
+| Neural | Receipt SDK | Atomic 8 | 0 | 228.1 | 142.4 | 79.1 | deferred(resource) |
+| Neural | HTTP | Atomic 8 | 0 | 207.7 | 272.5 | 259.7 | 254.8 |
+| Neural | HTTP | Atomic 8 | 1 | 159.5 | 220.7 | 275.7 | 270.6 |
+
+Primary coverage: 48 planned; 46 completed, 0 failed, 2 deferred, 0 unavailable. Known accounting: 23,552 attempted, 23,552 acknowledged, 0 failed acknowledgements, 0 unknown outcomes and 0 observed committed facts without acknowledgement. All completed cells passed independent ID/content/revision, receipt, integrity, policy, resource and cleanup checks. Every missing cell retains its planned dimensions and reason in the ledger; failed rates are diagnostic.
+
+The separate sixteen-agent HTTP scalar scale extension uses 10,000 measured facts plus twelve anchors:
+
+| Backend | Group | Status | Acknowledged facts/s | Indexed facts/s | Peak summed RSS MiB |
+| --- | --- | --- | ---: | ---: | ---: |
+| Hash | 0 | completed | 115.2 | — | 942.2 |
+| Hash | 1 | completed | 138.6 | — | 942.6 |
+| Neural | 0 | completed | 100.9 | 71.1 | 1,097.5 |
+| Neural | 1 | completed | 113.6 | 77.1 | 1,097.7 |
+
+Five planned 128-fact resource pilots are recorded separately and excluded from primary and scale rates. The ledger preserves independently verified insertion rates, neural indexing boundaries, successful scalar or batch-call p50/p95/p99, first/repeated public recall latency, per-anchor Recall@1/@5, actual group coalescing counters and RSS/CPU by phase and role, plus the post-close footprint. Summed RSS can double-count shared pages; sampling can miss short-lived processes and phase CPU attribution is approximate. One pass establishes coverage, with no run-to-run repeatability claim. The twelve anchors are functional retrieval checks; they do not establish held-out competitor superiority. Same-source crash tests establish process recovery, without establishing physical power-loss durability.
+
+### Full-suite test speed — Mesh 0.9.0 (`e353bc1`)
+
+The same 1,691-test selection, fixed Hypothesis seed and CI profile completed with zero failures/errors in both observations, with 4 skips. One worker took 204.027 seconds; two took 125.953 seconds (observed 1.62× wall ratio). Sampled peak summed process-tree RSS was 970.7 MiB and 1,230.5 MiB, respectively. This is one fixed-order observation on a four-CPU Windows hosted runner. Cache/order effects and sampled process accounting prevent a generalized speedup claim. [The comparison](results/production_test_speed_20261107_e353bc1.json) preserves source, selection, dependency and cleanup accounting.
+
+### Retrieval qualification — Mesh 0.9.0 (`e353bc1`)
+
+[The sanitized aggregate](results/production_retrieval_20261107_e353bc1.json) preserves all fifteen dataset/profile jobs, source/model/protocol/dataset hashes, original evidence accounting, scored conditions, failed gates and phases that did not run. All fifteen jobs failed overall. Five bounded native C4 cells pass their own required gates; no profile is qualified across the complete grid. `complete` records execution; scored metrics and qualification gates are reported separately.
+
+| Bounded fixture, Mesh 0.9.0 `e353bc1` | Answerable queries | Fresh-default Hit@1 | Runtime-passages Hit@1 | Native C4 result |
+| --- | ---: | ---: | ---: | --- |
+| Direct facts | 16 | 13/16 | 13/16 | 16/16; all three profiles pass their native gates |
+| Early/middle/late long text | 6 | 0/6 | 2/6 | Compact-96 and compact-128: 6/6 and native gates pass; full-256 resource rejected, unscored |
+| Inspected LongMemEval exact-turn subset | 6 | 3/6 | 3/6 | Both compact profiles: 4/6, below required 5/6; full-256 resource rejected, unscored |
+
+The unchanged baseline/passage gates remain failed: direct-fact Hit@1 requires 95%, and both six-query fixtures require 5/6. Full-256 exceeds native added p99 on long text and added p95/p99/CPU on LongMemEval. Later legacy child-memory C4 runs also exceed their RSS cap on both compact LongMemEval jobs. Their failure is separate from the scored native quality miss. All nine bounded runtime-passage conditions now complete, including verification of immutable SQLite snapshots; this is a harness-correctness result rather than a retrieval speedup.
+
+All six public NFCorpus/SciFact jobs exhaust the unchanged 3,600 sampled accumulated process-tree CPU-second limit. Five stop during runtime passage indexing/queries; SciFact compact-96 completes that condition and then stops during native C4 measurement. No public native C4 condition has a scored or qualified result. Selecting a C4 input profile does not alter its preceding passage-index/query phase, so the one completed passage run does not establish a compact-profile speedup.
+
+The completed SciFact passage condition on Mesh 0.9.0 `e353bc1` has 5,183 original parents and 12,166 passage rows. Backfill/readiness takes 204.102 wall seconds and 346.891 worker CPU seconds; 300 fresh SDK passage queries take 2,119.335 elapsed seconds and 2,106.859 worker CPU seconds. Queries account for about 86% of the worker's recorded CPU. These are loaded development diagnostics, with no quiet-latency or production-SLO claim; the exact cached/streaming mechanism is not exposed in this sanitized result.
+
+| SciFact metric, 300 answered queries; Mesh 0.9.0 `e353bc1` | Fresh default | Runtime passages |
+| --- | ---: | ---: |
+| Hit@1 | 56.00% | 57.33% |
+| Hit@5 | 78.33% | 79.67% |
+| Hit@10 | 84.67% | 83.67% |
+| MRR@10 | 0.657718 | 0.667353 |
+| nDCG@10 | 0.695711 | 0.704664 |
+| Document recall@10 | 0.832722 | 0.826222 |
+
+Top-one paired accounting is 168 baseline hits, 172 passage hits, 21 lost baseline hits and 25 gained hits. The net gain of four does not establish zero per-query loss. Six exported passage candidates have no faithful source association and remain unscored. The existing passage nDCG/document-recall nonregression gates pass their unchanged −0.01 thresholds; they do not replace native C4's separate zero-loss and resource gates. These bounded fixtures and failed public experiments establish no competitor superiority, full LongMemEval result, generated-answer accuracy or physical power-cut validation. Both optional features require further qualification before use as defaults.
+
 ## Mesh 0.9.0 production qualification (2026-11-07, `6060925`)
 
 [Normal CI](https://github.com/billighost/Mesh/actions/runs/42338200399) passed all fifteen OS/Python combinations (Ubuntu, macOS, Windows; Python 3.10–3.14), security, documentation, skills, packaging and installed-wheel checks. [Production qualification](https://github.com/billighost/Mesh/actions/runs/42338200383) passed the full isolated primary and minimum suites, process-crash recovery, coverage and primary installed-wheel validation on the same source. [Provenance](results/production_20261107_provenance.json) binds the exported numerical evidence. Retrieval and the subsequent schema-6 passage candidate still require qualification.

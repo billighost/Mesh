@@ -74,15 +74,25 @@ def test_cached_lexical_values_and_aliases_preserved(generation):
 
 
 def test_generation_owns_strings_after_parent_pool_retirement(generation):
-    _, cache, vector = generation
+    store, _, vector = generation
+    body = "unique0 belongs to the materialized primary source."
+    store.upsert("short-owner", body, vector, {"embedding_model": MODEL, "source_agent": "test-agent", "local_only": True})
+    parent = store.get("short-owner")
+    assert store.publish_embedding("short-owner", vector, expected_revision=parent["revision"],
+                                   expected_incarnation=parent["incarnation"], expected_store_generation=parent["store_generation"],
+                                   embedding_model=MODEL, target_representation=passages.PASSAGE_FORMAT_VERSION,
+                                   passage_spans=[(0, len(body))])
+    cache = store._get_vector_cache(force_refresh=True)
+    assert cache.omitted_primary_lexical_ids == {"parent-0", "parent-1"}
+    assert "short-owner" not in cache.omitted_primary_lexical_ids
     index = cache.passages
     token = index.lexical_strings["unique0"]
     pool_charge = index.allocated_bytes
     assert cache.lexical_strings["unique0"] is token
-    updated = dict(cache.rows_by_id["parent-0"])
+    updated = dict(cache.rows_by_id["short-owner"])
     updated.update(content="Different replacement body.", revision=updated["revision"] + 1,
                    passage_format_version="", passage_count=0)
-    assert cache._upsert_vector("parent-0", vector, row_meta=updated)
+    assert cache._upsert_vector("short-owner", vector, row_meta=updated)
     assert cache.passage_index_dirty
     assert "unique0" not in cache.lexical_strings
     assert index.lexical_strings["unique0"] is token

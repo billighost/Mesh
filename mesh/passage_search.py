@@ -190,7 +190,7 @@ def load_passage_cache(store, connection, cache, capacity):
                 index.lexical[offset] = None
             position = first
     for parent in cache.rows_by_id.values():
-        if parent["tags_list"]:
+        if parent["tags_list"] and parent["id"] not in index.ranges:
             lexical = _cache_lexical_entry(cache, index, parent["content"])
             charge = _passage_lexical_charge(index, lexical) + 128
             cache._lease.resize(base + index.allocated_bytes + charge + cache._build_peak_bytes)
@@ -243,6 +243,11 @@ def passage_query(store, spec, *, cache, n, memory_type, tags, source_agent, inc
                     include_private=include_private, include_quarantined=include_quarantined,
                     include_stale=include_stale, min_confidence=min_confidence, now=now,
                 )
+                if any(identifier in eligible and (
+                    cache.passages is None or identifier not in cache.passages.ranges
+                    or (query_embedding_model is not None and cache.rows_by_id[identifier]["embedding_model"] != query_embedding_model)
+                ) for identifier in cache.omitted_primary_lexical_ids):
+                    return None
                 if cache.passages is None or not any(
                     identifier in eligible and (query_embedding_model is None or cache.rows_by_id[identifier]["embedding_model"] == query_embedding_model)
                     for identifier in itertools.chain(cache.passages.ranges, cache.passages.ready_primary_ids)
@@ -317,7 +322,9 @@ def passage_query(store, spec, *, cache, n, memory_type, tags, source_agent, inc
                 if cache is not None:
                     position = cache.id_to_idx.get(parent["id"])
                     vector = cache._matrix_buf[position] if compatible and position is not None and cache._matrix_buf is not None else None
-                    lexical = cache.passages.implicit_lexical.get(parent["id"], cache.lexical_by_id[parent["id"]])
+                    lexical = cache.passages.implicit_lexical.get(parent["id"])
+                    if lexical is None:
+                        lexical = cache.lexical_by_id[parent["id"]]
                 else:
                     vector = store._stream_row_vector(parent, blob, query_embedding_model) if not statistics else None
                     lexical = _build_row_lexical_entry(parent["content"], [])

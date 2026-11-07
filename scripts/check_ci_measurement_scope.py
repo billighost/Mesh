@@ -20,11 +20,14 @@ RETRIEVAL_SOURCES = {
     "benchmarks/retrieval_c4.py", "benchmarks/retrieval_c4_model.py",
     "benchmarks/provision_retrieval_c4.py", "benchmarks/prepare_retrieval_ci.py",
     "benchmarks/check_passage_contract.py", ".github/workflows/retrieval-quality.yml",
+    "benchmarks/runtime_rerank_c4.py", "benchmarks/retrieval_telemetry.py",
     ".github/workflows/production-performance.yml", "scripts/check_ci_measurement_scope.py",
     "tests/test_ci_measurement_scope.py", "tests/test_retrieval_ci_contracts.py",
     "tests/test_retrieval_c4_contracts.py", "tests/test_retrieval_scoring_contracts.py",
     "tests/test_passage_retrieval_contracts.py", "tests/test_runtime_passage_retrieval_contracts.py",
     "tests/test_production_retrieval.py",
+    "tests/test_runtime_reranker_ci.py", "tests/test_runtime_reranker_diagnostics.py",
+    "tests/test_retrieval_query_telemetry.py",
 }
 
 

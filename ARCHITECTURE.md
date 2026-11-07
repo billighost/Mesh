@@ -330,6 +330,14 @@ entry's strings, so it does not copy the corpus vocabulary for each passage.
 Cache admission failures bind to content version and passage mode; disabling the
 optional index can retry a fitting primary cache without a data mutation.
 
+When a long parent has a complete validated passage generation in the reader
+snapshot, its primary cache entry keeps equality and policy metadata without
+duplicating whole-body lexical terms. Short and pending parents retain primary
+lexical entries. Omitted parent IDs and passage strings remain charged to their
+owning generation. A primary-only or incompatible-model query retires an
+incomplete primary cache and uses bounded streaming with complete authorized
+corpus statistics. Malformed passage metadata preserves the primary fallback.
+
 The optional local reranker in `mesh/local_rerank.py` is off by default.
 `MESH_RERANK_ENABLED=1` requests one lazy shared CPU session using separately
 supplied, hash-verified model files. Recall retains four authorized parents before

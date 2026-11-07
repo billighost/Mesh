@@ -16,12 +16,15 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from prepare_retrieval_ci import BOUNDED_DATASETS, DATASETS, MODEL
-from production_retrieval import (MODEL_TAG, PASSAGE_BATCH_LIMIT, PASSAGE_REPRESENTATION,
+from production_retrieval import (MODEL_TAG, PASSAGE_BATCH_LIMIT, PASSAGE_REPRESENTATION, RERANK_DIAGNOSTICS_FILE,
                                   WORKER_FAILURE_SOURCES, WORKER_FAILURE_TYPES,
+                                  digest_text, project_reranker_diagnostics, reranker_diagnostic_provenance,
                                   runtime_parent_identities, runtime_passage_snapshot_metadata, runtime_passage_snapshot_reuse_metadata,
                                   validate_runtime_parent_results, validate_runtime_passage_schema)
 from replay_retrieval import (FIELDS, checked_path, configure_isolation, digest_file,
                               isolated_artifact_path, read_jsonl, safe_member, verify_exports)
+from retrieval_telemetry import (cache_observations_projection, matched_progress_after_stop, progress_expectation, progress_from_run,
+                                 project_progress, query_resources_projection)
 
 DATASET_NAMES = (*DATASETS, *BOUNDED_DATASETS)
 CONDITIONS = ("guarded", "replay", "fresh-default", "passages")
@@ -33,7 +36,7 @@ RUNTIME_C4_PHASES = ("runtime-c4-freeze", "runtime-c4-provision", "runtime-c4", 
 RUNTIME_RERANK_PROFILES = ("full-256", "compact-128", "compact-96")
 HARNESS_FILES = ("production_retrieval.py", "replay_retrieval.py", "prepare_retrieval_ci.py",
                  "retrieval_ci.py", "passage_retrieval.py", "provision_production_model.py",
-                 "production_runner.py", "production_ledger.py", "runtime_rerank_c4.py")
+                 "production_runner.py", "production_ledger.py", "runtime_rerank_c4.py", "retrieval_telemetry.py")
 QUALITY_TARGETS = {"prospective": 0.95, "longtext-prospective": 5 / 6, "longmemeval": 5 / 6}
 C4_RESOURCE_LIMITS = {"total_rss_mib": 768, "delta_rss_mib": 128, "delta_p95_ms": 50, "delta_p99_ms": 100, "delta_cpu_ms": 50}
 C4_PAIRED_METRICS = ("hit_at_1", "hit_at_5", "hit_at_10", "mrr_at_10", "ndcg_at_10")
@@ -336,6 +339,54 @@ def qualify(repository, primary, floor):
             "same_runtime_sources": True, "same_primary_python_and_packages": True}
 
 
+def reranker_diagnostic_evidence(directory, manifest, score, fixture, rank_rows, records):
+    reference = score.get("reranker_diagnostics")
+    if reference is None:
+        return None
+    try:
+        verify_exports(directory, manifest)
+        if (not isinstance(reference, dict) or set(reference) != {"file", "sha256"}
+                or reference["file"] != RERANK_DIAGNOSTICS_FILE
+                or not isinstance(reference["sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", reference["sha256"])):
+            raise GateError("InvalidNativeRerankerDiagnosticReference")
+        path = safe_member(directory, RERANK_DIAGNOSTICS_FILE)
+        if digest_file(path) != reference["sha256"]:
+            raise GateError("NativeRerankerDiagnosticChanged")
+        labels = fixture["files"]["labels.json"]
+        labels_hash = labels["sha256"] if isinstance(labels, dict) else labels
+        scorer_hash = digest_file(Path(__file__).with_name("production_retrieval.py"))
+        if score.get("labels_sha256") != labels_hash or score.get("scorer_sha256") != scorer_hash:
+            raise GateError("NativeRerankerDiagnosticScorerOrLabelsMismatch")
+        provenance = reranker_diagnostic_provenance(
+            manifest, digest_file(safe_member(directory, "run-manifest.json")), labels_hash, scorer_hash)
+        query_refs = {digest_text(json.dumps([manifest["dataset_manifest_sha256"], row["corpus_id"], row["query_id"]], separators=(",", ":")))
+                      for row in rank_rows}
+        projected = project_reranker_diagnostics(json.loads(path.read_text(encoding="utf-8")), provenance,
+                                                fixture["query_count"], expected_query_refs=query_refs)
+        by_reference = {digest_text(json.dumps([manifest["dataset_manifest_sha256"], row["corpus_id"], row["query_id"]], separators=(",", ":"))): row
+                        for row in rank_rows}
+        identities = runtime_parent_identities(records)
+        for query in projected["queries"]:
+            exported = by_reference[query["query_ref"]]
+            before, after = exported["original_sdk_top10"], exported["final_sdk_top10"]
+            if len(query["head"]) != min(provenance["parent_cap"], len(before)):
+                raise GateError("NativeRerankerDiagnosticPrefixMismatch")
+            positions = {row["id"]: (rank, row) for rank, row in enumerate(after, 1)}
+            for original_rank, (shown, original) in enumerate(zip(query["head"], before), 1):
+                final_rank, candidate = positions[original["id"]]
+                span = candidate["supporting_spans"][0]
+                expected = {"original_rank": original_rank, "final_rank": final_rank,
+                            "rerank_status": candidate.get("rerank_status"), "rerank_score": candidate.get("rerank_score"),
+                            "rerank_input": candidate.get("rerank_input"), "parent_characters": identities[original["id"]]["stored_characters"],
+                            "selected_passage_ordinal": candidate["selected_passage_ordinal"],
+                            "supporting_span": {"start": span["start"], "end": span["end"]}}
+                if any(shown[key] != value for key, value in expected.items()):
+                    raise GateError("NativeRerankerDiagnosticInputMismatch")
+        return {"sha256": reference["sha256"], "diagnostic": projected}
+    except (ValueError, OSError, KeyError, TypeError, AttributeError):
+        raise GateError("InvalidNativeRerankerDiagnosticEvidence") from None
+
+
 def condition_evidence(directory, fixture, runtime_files, model, protocol_hash, *, scored, runtime_passages=False,
                        runtime_c4=False, runtime_rerank_profile=None, guarded_source=None):
     manifest = load_json(directory, "run-manifest.json")
@@ -413,10 +464,13 @@ def condition_evidence(directory, fixture, runtime_files, model, protocol_hash, 
                 raise GateError("InvalidPublicFidelity")
             faithful.setdefault(identifier, []).append(record["document_id"])
     unfaithful_public_candidates = 0
+    native_rank_rows = None
     for relative in manifest["output_sha256"]:
         if not relative.startswith("results-"):
             continue
         rows = list(read_jsonl(safe_member(directory, relative)))
+        if runtime_c4 and relative == "results-default.jsonl":
+            native_rank_rows = rows
         if len(rows) != fixture["query_count"] or len({row["query_id"] for row in rows}) != len(rows):
             raise GateError("IncompleteRanks")
         for row in rows:
@@ -445,6 +499,10 @@ def condition_evidence(directory, fixture, runtime_files, model, protocol_hash, 
                   protocol_sha256=protocol_hash, dataset_manifest_sha256=manifest["dataset_manifest_sha256"],
                   score_summary_sha256=digest_file(safe_member(directory, "score-summary.json")))
     result["unfaithful_public_exported_candidates"] = unfaithful_public_candidates
+    if runtime_c4:
+        diagnostic = reranker_diagnostic_evidence(directory, manifest, score, fixture, native_rank_rows, records)
+        if diagnostic is not None:
+            result["reranker_diagnostics"] = diagnostic
     if "passage_ingestion" in manifest:
         result["passage_ingestion"] = counters(manifest["passage_ingestion"])
         # The passage harness records the requested budget with its fixed parameters.
@@ -517,24 +575,22 @@ def runtime_passage_evidence(directory, manifest, records):
     resources = list(read_jsonl(safe_member(directory, "query-resources.jsonl")))
     if len(resources) != manifest["query_target"]:
         raise GateError("RuntimePassageQueryResourcesIncomplete")
-    for ordinal, row in enumerate(resources, 1):
-        if (set(row) != {"query_ordinal", "elapsed_ms", "process_cpu_ms", "sampled_owned_process_rss_bytes"}
-                or type(row["query_ordinal"]) is not int or row["query_ordinal"] != ordinal
-                or any(type(row[key]) not in {int, float} or not math.isfinite(row[key]) or row[key] < 0
-                       for key in ("elapsed_ms", "process_cpu_ms", "sampled_owned_process_rss_bytes"))
-                or row["sampled_owned_process_rss_bytes"] <= 0):
-            raise GateError("RuntimePassageQueryResourcesInvalid")
+    try:
+        query_resources, telemetry = query_resources_projection(resources, manifest["query_target"], complete=True,
+                                                                version=manifest.get("query_telemetry_version"))
+    except ValueError as exc:
+        raise GateError("RuntimePassageQueryResourcesInvalid") from exc
     result = {"schema_version": schema_version,
             "runtime_passage_index": {"representation": PASSAGE_REPRESENTATION, "backend": "direct-onnx", "manual_worker": True},
             "runtime_passage_readiness": projected, "guarded_source_immutable": True,
             "guarded_source_database_fingerprints": fingerprints,
             "runtime_passage_resource_diagnostics": runtime_resource_projection(manifest.get("runtime_passage_resource_diagnostics")),
-            "runtime_passage_query_resources": {"query_count": len(resources),
-                "elapsed_ms_total": sum(row["elapsed_ms"] for row in resources),
-                "elapsed_ms_max": max(row["elapsed_ms"] for row in resources),
-                "process_cpu_ms_total": sum(row["process_cpu_ms"] for row in resources),
-                "sampled_owned_process_rss_bytes_max": max(row["sampled_owned_process_rss_bytes"] for row in resources)},
+            "runtime_passage_query_resources": query_resources,
             "original_parent_identity_model_and_supporting_spans_verified": True}
+    if telemetry is not None:
+        result["runtime_passage_query_telemetry"] = telemetry
+    if "cache_observations" in manifest:
+        result["runtime_cache_observations"] = cache_observations_projection(manifest["cache_observations"])
     if "runtime_passage_snapshot" in manifest:
         result["runtime_passage_snapshot"] = runtime_passage_snapshot_metadata(manifest, records)
     if "runtime_passage_snapshot_reuse" in manifest:
@@ -772,11 +828,18 @@ def runtime_c4_evidence(directory, manifest, *, expected_profile=None):
     if (len(expected_queries) != target or len(actual) != len(samples) or actual != expected
             or len(samples) < LIMITS["minimum_resource_samples_per_cell"]):
         raise GateError("RuntimeC4ResourceSamplesIncomplete")
-    return {"configuration": "c4-minilm-runtime-recall", "model": MODEL, "limits": LIMITS,
+    result = {"configuration": "c4-minilm-runtime-recall", "model": MODEL, "limits": LIMITS,
             "profile": profile, "effective_limits": limits,
             "resource_passes": passes, "resource_sample_count": len(samples),
             "native_counts": {key: numeric(value) for key, value in counts.items()},
             "parent_identity_scores_spans_and_tail_verified": True, "top_one_matches_top_ten": True}
+    if "matched_query_progress" in manifest:
+        progress = manifest["matched_query_progress"]
+        if not isinstance(progress, dict) or set(progress) != {"baseline", "c4"}:
+            raise GateError("RuntimeC4MatchedQueryProgressInvalid")
+        expected = progress_expectation(manifest, manifest["source_run_manifest_sha256"])
+        result["matched_query_progress"] = {name: project_progress(item, expected) for name, item in progress.items()}
+    return result
 
 
 def runtime_c4_pairing(root, manifests, conditions):
@@ -916,6 +979,12 @@ def run(args, repository, root):
                     if phase["name"] in RUNTIME_PASSAGE_PHASES:
                         summary["optional_runtime_passage_index"] = "failed_or_unavailable"
                         try:
+                            source = load_json(root / "guarded", "run-manifest.json")
+                            expected = progress_expectation(source, digest_file(safe_member(root / "guarded", "run-manifest.json")))
+                            summary["runtime_passage_failed_query_progress"] = progress_from_run(root / "runtime-passages", expected)
+                        except (ValueError, OSError, KeyError, TypeError):
+                            pass
+                        try:
                             partial = load_json(root / "runtime-passages", "run-manifest.json")
                             summary["runtime_passage_failed_resource_diagnostics"] = runtime_resource_projection(
                                 partial.get("runtime_passage_resource_diagnostics"))
@@ -930,6 +999,14 @@ def run(args, repository, root):
                             pass
                     if phase["name"] in RUNTIME_C4_PHASES:
                         summary["optional_runtime_c4"] = "failed_or_unavailable"
+                        try:
+                            source = load_json(root / "guarded", "run-manifest.json")
+                            expected = progress_expectation(source, digest_file(safe_member(root / "guarded", "run-manifest.json")))
+                            projected = matched_progress_after_stop(root / "runtime-c4", expected)
+                            if projected:
+                                summary["runtime_c4_failed_matched_query_progress"] = projected
+                        except (ValueError, OSError, KeyError, TypeError):
+                            pass
                         try:
                             partial = load_json(root / "runtime-c4", "run-manifest.json")
                             summary["quality_gates"].extend(c4_resource_gates(partial, prefix="runtime_c4"))

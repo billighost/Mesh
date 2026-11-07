@@ -5,6 +5,26 @@ Inspected branch: feat/ci-evidence, HEAD 61ec16de97a5604a19a81c6396f8bfc46d982c4
 
 ## Implementation checkpoint
 
+The latest completed source is `e353bc1`: normal CI, both full qualification
+suites, the concurrent-write matrix, and the test-speed comparison passed in
+[Actions](https://github.com/billighost/Mesh/actions/runs/42378934727).
+The native snapshot repair holds. Retrieval remains unqualified: compact
+rerankers meet their own direct-fact and positional long-text gates, but the
+inspected LongMemEval fixture misses its target and the public-corpus runs
+exceed the cumulative CPU budget. Completed public evidence identifies passage
+queries as the main CPU cost. The source-bound observations and failures are
+recorded in [RESULTS.md](../benchmarks/RESULTS.md). Current follow-up work targets
+the query cache layout and post-export diagnostics; those changes require their
+own review and native qualification before a retrieval default can be selected.
+
+The cache layout repair and content-free post-export diagnostics have completed
+independent source review. Long parents with valid passage bundles avoid
+redundant primary lexical storage; incomplete or incompatible primary lookups
+use the complete bounded streaming path. Native diagnostic exports preserve
+the fixed ranks and distinguish primary evidence IDs from faithful aliases.
+Current default retrieval accuracy remains unfinished while passage retrieval
+and reranking await complete quality and resource qualification.
+
 The approved safety, storage, query, bounded-execution, transport, brief, and
 packaged-agent instruction changes are implemented in the working tree. Patched
 APSW supplies one SQLite driver, WAL uses FULL synchronization, and schema 6
@@ -397,14 +417,14 @@ Required handoff checks: ruff check ., python scripts/check_skill.py, python scr
 | Choice | Recommendation and reason | Status |
 |---|---|---|
 | Deployment | Many agents on one machine, because it is the realistic user workload. | Approved. |
-| Durability | FULL and verified patched SQLite, because recent acknowledged memories must survive crash/power loss. | Approved requirement; runtime packaging still needs validation. |
-| Language | Keep Python/SQLite first; allow selective native work only after end-to-end profiling. Current logical defects and fsync costs survive a rewrite. | Recommended in this plan. |
+| Durability | FULL and verified patched SQLite, because recent acknowledged memories must survive crash/power loss. | Implemented with bundled APSW; platform/package and process-crash checks passed at `e353bc1`. Physical power-cut validation remains unperformed. |
+| Language | Keep Python/SQLite first; allow selective native work only after end-to-end profiling. Current logical defects and fsync costs survive a rewrite. | Python retained; the latest measured passage-query cost is being addressed through cache layout before adding another native dependency. |
 | Reranker | Evaluate an optional local model with bounded work and explicit budgets; select by measured first-result gains. | Evaluation approved; default/model choice gated by evidence. |
-| Query mode | Neural when the verified configured model is ready, explicit degraded fallback otherwise. A ready model currently does not guarantee neural search. | Recommended. |
-| Startup facts | Twenty useful current facts within a 2,000-token explicit startup budget, with compact/continuation options. An unbounded dump can overwhelm context. | Recommended. |
-| Task ownership | Apply enabled ownership/privacy enforcement consistently to tasks and memories; trusted-owner administration remains an explicit policy role. | Recommended. |
-| Broker | Optional local group-commit aggregator with supported direct access and shared authority; exclusive-writer claims require fencing. | Recommended. |
-| New store / APSW / ANN | Conditional experiments after the direct path and accurate baselines; adopt only when deployment or scale evidence justifies them. | Deferred selection. |
+| Query mode | Neural when the verified configured model is ready, explicit degraded fallback otherwise. | Implemented; query caches are bound to model space and encoding role. |
+| Startup facts | Twenty useful current facts within a 2,000-token explicit startup budget, with compact/continuation options. An unbounded dump can overwhelm context. | Implemented with estimated prompt budgets, omission counts, and continuation checks. |
+| Task ownership | Apply enabled ownership/privacy enforcement consistently to tasks and memories; trusted-owner administration remains an explicit policy role. | Implemented and covered across transport surfaces. |
+| Broker | Optional local group-commit aggregator with supported direct access and shared authority; exclusive-writer claims require fencing. | Implemented as optional shared batching; no exclusive-writer claim. |
+| New store / APSW / ANN | Use one coherent bundled driver because supported Python builds can carry vulnerable SQLite. Select another store or ANN only when measured scale justifies it. | Bundled APSW approved and implemented; a new store and ANN remain unselected experiments. |
 
 Approval authorizes the staged work and evidence-gated experiments, not an unconditional language/database/model replacement. Return to the maintainer if a measured result requires a material change in durability, local operation, API compatibility, model resource budget, installation requirements, or the agreed targets.
 

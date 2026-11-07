@@ -320,7 +320,14 @@ def test_hidden_only_derived_publication_cannot_change_public_scorer(local_encod
                 context.setenv("MESH_PASSAGE_INDEX", "0")
                 before = [public_result(streaming) for streaming in (False, True)]
     after = [public_result(streaming) for streaming in (False, True)]
-    assert after == before
+    # A primary-only query may now stream because compatible long parents no
+    # longer retain redundant primary terms. Its scoring and policy are exact.
+    execution_fields = {"retrieval_mode", "retrieval_degradation_reason"}
+    projection = lambda results: [{key: value for key, value in result.items() if key not in execution_fields} for result in results]
+    assert projection(after) == projection(before)
+    assert before[0]["retrieval_mode"] == "cached"
+    assert after[0]["retrieval_mode"] == ("streaming" if hidden == "model" and not reuse_primary else "cached")
+    assert before[1]["retrieval_mode"] == after[1]["retrieval_mode"] == "streaming"
     assert all("selected_passage_ordinal" not in result for result in after)
 
 
@@ -366,8 +373,10 @@ def test_invalid_late_sibling_and_hidden_model_fallback_have_parity(local_encode
 
 def test_actual_cache_budget_fallback_releases_failed_and_retired_generations(local_encoder, monkeypatch):
     store = MeshStore("passage-byte-budget")
-    for ordinal in range(16):
+    # Leave sufficient space for one streamed row even as retained caches shrink.
+    for ordinal in range(24):
         put(store, f"parent-{ordinal}")
+    run_jobs(store)
     run_jobs(store)
     run_jobs(store)
     warm = query(store)
@@ -375,16 +384,25 @@ def test_actual_cache_budget_fallback_releases_failed_and_retired_generations(lo
     projected = [{key: row[key] for key in fields} for row in warm]
     cache = store._get_vector_cache()
     cache_bytes = cache._cache_bytes
-    assert cache_bytes > 1_500_000
+    index = cache.passages
+    owned = storage._object_graph_bytes((
+        *(getattr(cache, name) for name in storage._CACHE_TOP_FIELDS),
+        cache._matrix_buf, cache._hash_matrix_buf, index.matrix, index.offsets,
+        index.lexical, index.ranges, index.ready_primary_ids, index.implicit_lexical, index.lexical_strings,
+    ))
+    assert cache_bytes >= owned
+    del index
+    budget = cache_bytes - 65536
+    assert budget > 0
     del cache, warm
     store._invalidate_cache()
     gc.collect()
     baseline = storage.get_vector_cache_stats()["charged_bytes"]
-    monkeypatch.setenv("MESH_MAX_VECTOR_CACHE_BYTES", "1500000")
+    monkeypatch.setenv("MESH_MAX_VECTOR_CACHE_BYTES", str(budget))
     streamed = query(store)
     assert all(row["retrieval_mode"] == "streaming" for row in streamed)
     assert [{key: row[key] for key in fields} for row in streamed] == projected
-    assert storage.get_vector_cache_stats()["charged_bytes"] <= 1_500_000
+    assert storage.get_vector_cache_stats()["charged_bytes"] <= budget
     del streamed
     gc.collect()
     assert storage.get_vector_cache_stats()["charged_bytes"] == baseline
@@ -401,17 +419,27 @@ def test_actual_cache_budget_fallback_releases_failed_and_retired_generations(lo
     assert storage.get_vector_cache_stats()["charged_bytes"] == baseline
 
 
-@pytest.mark.parametrize("invalid", ["fractional", "outside"])
-def test_invalid_stored_offsets_never_establish_readiness_or_staged_integrity(local_encoder, invalid):
+@pytest.mark.parametrize("invalid", ["fractional", "outside", "count-text"])
+def test_invalid_stored_offsets_never_establish_readiness_or_staged_integrity(local_encoder, monkeypatch, invalid):
     store = MeshStore("passage-offsets")
     parent = put(store)
     run_jobs(store)
     with store.atomic_write(), store._connect() as connection:
-        connection.execute("UPDATE memory_passages SET end=? WHERE parent_id=? AND ordinal=2", (len(parent["content"]) + (0.5 if invalid == "fractional" else 1), parent["id"]))
+        if invalid == "count-text":
+            connection.execute("UPDATE memories SET passage_count=? WHERE id=?", ("invalid-count", parent["id"]))
+        else:
+            connection.execute("UPDATE memory_passages SET end=? WHERE parent_id=? AND ordinal=2", (len(parent["content"]) + (0.5 if invalid == "fractional" else 1), parent["id"]))
         store._bump_content_version_in_tx(connection)
         store._invalidate_cache()
     assert store.get_indexing_status([parent["id"]])[parent["id"]]["passage_indexing_state"] == "pending"
-    assert "selected_passage_ordinal" not in query(store)[0]
+    assert parent["id"] not in store._get_vector_cache().omitted_primary_lexical_ids
+    cached = query(store)
+    assert "selected_passage_ordinal" not in cached[0]
+    with monkeypatch.context() as context:
+        context.setattr(store, "_get_vector_cache", lambda *args, **kwargs: (_ for _ in ()).throw(CacheBudgetExceededError("forced")))
+        streamed = query(store)
+    fields = ("id", "rank_score", "similarity", "lexical_score", "bm25_score", "supporting_spans")
+    assert [{key: row[key] for key in fields} for row in cached] == [{key: row[key] for key in fields} for row in streamed]
     with store._read_connect() as connection, pytest.raises(RuntimeError, match="passage"):
         verify_passage_rows(connection)
 

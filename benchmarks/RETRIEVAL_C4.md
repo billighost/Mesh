@@ -1,5 +1,15 @@
 # Optional C4 retrieval evaluation
 
+Native passage query exports retain numeric cached/streaming/unreported result
+counts, cache allocation charges and loaded query resources. Completed sanitized
+conditions include these counters and both native C4 worker observations. Fixed
+role-specific numeric checkpoints also survive abrupt native worker termination.
+The supervisor reads unfinished rows only after stopping the worker tree, binds
+them to the expected runtime, model, dataset and protocol, ignores an unfinished
+final JSONL record, and labels the result `unscored_progress`. Such progress does
+not establish ingestion identity, answer accuracy or resource qualification.
+Older exports without telemetry retain their existing resource contract.
+
 The legacy default-off CI experiment scores the first four distinct authorized
 parents from the immutable no-reranker passage result. It uses the previously
 pinned MiniLM cross-encoder and introduces no production model catalog entry,
@@ -126,6 +136,20 @@ fixture and protocol separately, and `paired_original_condition` is
 All exported JSONL filenames fit the reviewed wrapper's existing allowlist.
 
 The separate scorer may open labels only after candidate exports are fixed.
+For completed native C4 exports, the score command also writes
+`reranker-diagnostics.json` and binds its SHA-256 in `score-summary.json`.
+The supervisor verifies that digest, the labels/scorer/source/model/protocol
+provenance and opaque query references before adding a strict content-free
+projection to `conditions.runtime-c4.reranker_diagnostics` in the existing Actions
+artifact. It records original/final primary-gold ranks, primary versus alternate
+faithful-source gold membership in the fixed prefix, finite logits, numeric token
+accounting and supporting-span geometry. Query text, parent IDs, bodies and span
+text are excluded. Answer-span containment remains explicitly unavailable because
+document qrels do not annotate answer ranges. The diagnostic adds no inference,
+changes no ranks or gates, and remains absent for non-native-C4 scores and older
+scores without a diagnostic reference. Ranked exports and their manifests remain
+immutable; repeated scoring of the same inputs produces the same diagnostic.
+
 The frozen C4 quality policy requires zero paired loss in parent `hit_at_1`,
 `hit_at_5`, `hit_at_10`, `mrr_at_10` and `ndcg_at_10`, separately for C64 and C96
 on the public corpora. Each paired mean uses all selected answered queries with

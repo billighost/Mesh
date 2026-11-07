@@ -350,8 +350,11 @@ def measure(args, helpers):
         source_run=args.source_run, source_home=None, source_namespace=source["namespace"] if args.dataset != "longmemeval" else None,
         runtime_passages=True, fresh_default_run=args.fresh_default_run)
     try:
-        production.run_retrieval(options, experiment=observer, passage_snapshot={
-            "directory": args.runtime_passage_run, "home": getattr(args, "runtime_passage_home", None)})
+        arguments = {"experiment": observer, "passage_snapshot": {
+            "directory": args.runtime_passage_run, "home": getattr(args, "runtime_passage_home", None)}}
+        if getattr(args, "query_progress_root", None) is not None:
+            arguments["query_progress_directory"] = args.query_progress_root / args.phase
+        production.run_retrieval(options, **arguments)
     except BaseException as exc:
         manifest_path = helpers.safe_member(args.output, "run-manifest.json", must_exist=False)
         if manifest_path.exists():
@@ -399,6 +402,7 @@ def run(args, helpers):
         helpers.verify_exports(args.source_run, source)
         helpers.verify_exports(args.runtime_passage_run, comparator)
         from retrieval_ci import runtime_passage_evidence
+        from retrieval_telemetry import progress_expectation, progress_from_run
 
         records = list(helpers.read_jsonl(helpers.safe_member(args.source_run, "ingestion-fidelity.jsonl")))
         source_queries = {row["query_id"]: row for row in helpers.read_jsonl(helpers.safe_member(args.source_run, "query-vectors.jsonl"))}
@@ -412,6 +416,7 @@ def run(args, helpers):
         metadata.update(runtime_passage_run_manifest_sha256=helpers.digest_file(comparator_path),
                         runtime_passage_results_sha256=comparator["output_sha256"]["results-default.jsonl"],
                         runtime_c4_protocol_sha256=helpers.digest_file(args.protocol))
+        expected_progress = progress_expectation(source, helpers.digest_file(source_path))
         owned = tempfile.TemporaryDirectory(prefix="mesh-retrieval-ci-runtime-c4-")
         temporary = Path(owned.name).resolve(strict=True)
         helpers.configure_isolation(temporary)
@@ -422,6 +427,7 @@ def run(args, helpers):
         if args.dependency_directory:
             base += ["--dependency-directory", str(args.dependency_directory)]
         base += ["--profile", profile]
+        base += ["--query-progress-root", str(output / "query-progress")]
         phases = {}
         for phase in ("baseline", "c4"):
             active_phase = phase
@@ -482,6 +488,12 @@ def run(args, helpers):
     finally:
         if owned is not None:
             root = Path(owned.name)
+            for phase in ("baseline", "c4"):
+                try:
+                    progress = progress_from_run(output / "query-progress" / phase, expected_progress)
+                    metadata.setdefault("matched_query_progress", {})[phase] = progress
+                except (ValueError, OSError, KeyError, TypeError):
+                    pass
             metadata["owned_cleanup_files"] = sorted(path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_file())
             owned.cleanup()
         helpers.write_json(output / "run-manifest.json", metadata)
@@ -505,6 +517,7 @@ def main(argv=None):
         command.add_argument("--runtime-passage-home", type=Path, help="Explicit named isolated prequery passage snapshot home when its comparator manifest is sanitized")
         if name == "measure":
             command.add_argument("--phase", choices=("baseline", "c4"), required=True)
+            command.add_argument("--query-progress-root", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if os.environ.get("GITHUB_ACTIONS") != "true":
         raise C4Unavailable("RemoteActionsRequired")
