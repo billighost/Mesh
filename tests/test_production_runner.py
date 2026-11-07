@@ -137,6 +137,13 @@ def test_public_projection_excludes_bodies_paths_and_unknown_fields():
         "cases": [{"agents": 1, "backend": "hash", "mode": "scalar", "surface": "receipt-sdk",
                    "group_commit_requested": 0, "status": "failed", "model_manifest": None,
                    "profile_policy": ledger.POLICY, "writes": {"submitted_rows": 128},
+                    "readiness_and_retrieval": {"operation_receipts": {
+                        "status": "failed", "errors": {"TransportUnavailable": 2},
+                        "transport_errors": {"cause_type_counts": {"OSError": 2, "PRIVATE_UNSAFE_BODY": 3},
+                                             "errno_counts": {"10048": 2, "999999": 1, "C:/Users/PRIVATE_USER": 1},
+                                             "winerror_counts": {"10048": 2, "-1": 1, "10055": True},
+                                             "unknown_private_object": private},
+                    }},
                    "error_stage": "C:/Users/PRIVATE_USER/error.json", "unknown_private_object": private,
                    "worker_metadata": [{"sqlite_version": "3.54.1", "schema_version": "5",
                                         "synchronous": "FULL", "journal_mode": "wal", "query_model_tag": "hash-384"}]}],
@@ -151,6 +158,10 @@ def test_public_projection_excludes_bodies_paths_and_unknown_fields():
     assert projected["native_runtime"]["sqlite_versions"] == ["3.54.1"]
     assert projected["checks"]["wal_full_verified"] is True
     assert projected["headline_eligible"] is False
+    assert projected["verification"]["receipt_status"] == "failed"
+    assert projected["verification"]["receipt_transport_errors"] == {
+        "cause_type_counts": {"OSError": 2, "other": 3}, "errno_counts": {"10048": 2}, "winerror_counts": {"10048": 2},
+    }
 
 
 def test_no_completed_baseline_cannot_be_reported_as_success(isolated_plan, monkeypatch):

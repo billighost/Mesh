@@ -14,7 +14,10 @@ clients thin: they use `MeshClient` with an explicit HTTP transport, verify the
 configured store's HMAC identity on every call, and never import `Mesh` or load a
 model. Before writes, the same challenge also proves the signed receipt-version
 capability; missing support prevents submission. Successful mutation replies
-must match the operation ID, namespace, receipt and result identity. A real
+must match the operation ID, namespace, receipt and result identity. Each worker
+reuses one bounded client connection and closes it before exiting. Connections
+are replaced after 512 successful calls or 60 seconds; identity proofs remain
+fresh on every call, and mutations are never automatically replayed. A real
 uvicorn server owns the model, caches, and background document
 indexing. It binds an ephemeral loopback socket and never invokes interactive
 daemon startup or model installation.

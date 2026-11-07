@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import pathlib
 import re
 import sys
@@ -511,11 +512,16 @@ def check_review_markers(errors: list[str] | None = None, release_mode: bool = F
         )
         tracked_rel_paths = [p.strip() for p in tracked_output.splitlines() if p.strip()]
     except Exception:
-        tracked_rel_paths = [
-            str(p.relative_to(REPO_ROOT))
-            for p in REPO_ROOT.rglob("*")
-            if p.is_file() and not any(part.startswith(".") for part in p.parts)
-        ]
+        # An isolated checkout may lack Git's user-level ownership settings.
+        # Prune generated trees and compare paths relative to this source root:
+        # a hidden ancestor must not suppress checks on published files.
+        tracked_rel_paths = []
+        generated = {"build", "dist", "node_modules", "__pycache__", "scratch"}
+        for base, directories, filenames in os.walk(REPO_ROOT):
+            directories[:] = [name for name in directories if not name.startswith(".") and name not in generated]
+            for name in filenames:
+                if not name.startswith("."):
+                    tracked_rel_paths.append(str((pathlib.Path(base) / name).relative_to(REPO_ROOT)))
 
     for rel_str in tracked_rel_paths:
         norm_rel = rel_str.replace("\\", "/")

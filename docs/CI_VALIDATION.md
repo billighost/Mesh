@@ -1,14 +1,24 @@
 # Remote qualification for Mesh 0.9.0
 
 The production changes and reviewed measurement utilities are published on
-`ci/mesh-production-run-c4-20261106`. Windows primary and minimum qualification
-passed at commit `7c84f0f`, including full isolated suites, real process-crash
-recovery, coverage, and primary installed-wheel validation. Normal platform CI
-found an audit-log test timing issue; retrieval setup rejected Windows short
-temporary paths before any model phase ran. Follow-up repairs join the audit
-worker before checking its output and canonicalize only newly allocated
-supervisor roots. Final platform CI, retrieval quality, and performance evidence
-remain pending; local contract checks do not replace these gates.
+`ci/mesh-production-run-c4-20261106`. Normal CI passed all fifteen OS/Python
+combinations at `256d232`. Windows primary and minimum qualification also passed
+at `1fc2bb6`, including full isolated suites, real process-crash recovery,
+coverage, and primary installed-wheel validation. Its normal CI exposed one
+scheduling-sensitive foreground test; its test-speed run exposed generated-file
+and background-delivery interference in two tests.
+
+The next repair batch replaces the timing assumption with held-inference progress,
+isolates the documentation fixture, preserves source checks when Git is absent,
+and stops unrelated delivery during intentional closed-file deletion. Reviewed
+HTTP clients now reuse bounded connections while proving identity afresh on
+every call, including rejecting a closed identity connection before token dispatch.
+
+Retrieval now reaches native scoring on the bounded datasets. Further repairs
+preserve legitimate empty-cohort intervals, read the passage harness's declared
+budget, and pin generated labels to their canonical LF bytes without changing
+query or relevance values. Final same-source platform, retrieval, performance and
+test-speed gates remain pending; focused checks do not replace them.
 
 The development machine has 8 GiB RAM. Local work uses small isolated checks
 with one test worker and no model or corpus evaluation. Full suites, concurrent

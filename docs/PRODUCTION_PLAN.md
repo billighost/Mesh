@@ -18,11 +18,12 @@ installed-wheel smoke do not replace final CI. The
 [production Actions workflow](../.github/workflows/production-performance.yml)
 records full qualification and runs its measurements against that same source.
 The maintainer authorized publication of `ci/mesh-production-run-c4-20261106`.
-Windows primary and minimum qualification passed at `7c84f0f`, including full
-suites, process-crash recovery, coverage, and primary wheel validation. The
-remaining normal-CI audit timing issue and retrieval supervisor short-path
-failure have focused repairs. Final supported-platform and retrieval gates
-remain pending while source-bound storage measurements run remotely.
+Normal CI passed all fifteen OS/Python combinations at `256d232`; Windows primary
+and minimum qualification passed at `1fc2bb6`, including full suites, process-crash
+recovery, coverage, and primary wheel validation. A subsequent foreground timing
+failure, test-speed fixture interference, HTTP connection exhaustion, and
+retrieval preparation/projection errors have focused repairs. Final same-source
+supported-platform, performance, retrieval and test-speed gates remain pending.
 
 The reviewed retrieval and optional four-candidate reranker harnesses are now
 integrated as CI utilities. The production workflow calls the five-dataset

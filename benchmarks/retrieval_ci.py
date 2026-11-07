@@ -214,6 +214,23 @@ def counters(value):
     return result
 
 
+def interval_projection(interval):
+    if not isinstance(interval, dict) or type(interval.get("n")) is not int or interval["n"] < 0:
+        raise GateError("InvalidMetricInterval")
+    mean, bounds, count = interval.get("mean"), interval.get("ci95"), interval["n"]
+    if count == 0:
+        if mean is not None or bounds is not None:
+            raise GateError("InvalidEmptyMetricInterval")
+        return {"mean": None, "n": 0, "ci95": None}
+    if (type(mean) not in {int, float} or not isinstance(bounds, list) or len(bounds) != 2
+            or any(type(bound) not in {int, float} for bound in bounds)):
+        raise GateError("InvalidMetricInterval")
+    projected = {"mean": numeric(mean), "n": count, "ci95": [numeric(bound) for bound in bounds]}
+    if projected["ci95"][0] > projected["ci95"][1]:
+        raise GateError("InvalidMetricInterval")
+    return projected
+
+
 def metric_projection(cells):
     result = {}
     for cell, values in cells.items():
@@ -230,14 +247,12 @@ def metric_projection(cells):
                 for name, interval in metrics.items():
                     if not re.fullmatch(r"(?:hit|document_recall|mrr|ndcg)_at_(?:1|5|10|64)", name):
                         raise GateError("UnknownMetric")
-                    selected[field][cohort][name] = {"mean": numeric(interval["mean"]), "n": numeric(interval["n"]),
-                                                    "ci95": [numeric(bound) for bound in interval["ci95"]]}
+                    selected[field][cohort][name] = interval_projection(interval)
         if "gold_session_hits" in values:
             selected["gold_session_hits"] = metric_projection({cell: values["gold_session_hits"]})[cell]
         if "candidate_minus_original_sdk" in values:
             selected["candidate_minus_original_sdk"] = {
-                metric: {"mean": numeric(interval["mean"]), "n": numeric(interval["n"]),
-                         "ci95": [numeric(bound) for bound in interval["ci95"]]}
+                metric: interval_projection(interval)
                 for metric, interval in values["candidate_minus_original_sdk"].items() if metric in C4_PAIRED_METRICS}
         if "candidate_hit_at_1_regressions" in values:
             selected["candidate_hit_at_1_regressions"] = {
@@ -341,7 +356,11 @@ def condition_evidence(directory, fixture, runtime_files, model, protocol_hash, 
                   score_summary_sha256=digest_file(safe_member(directory, "score-summary.json")))
     if "passage_ingestion" in manifest:
         result["passage_ingestion"] = counters(manifest["passage_ingestion"])
-        if manifest["parent_budget"] != 96:
+        # The passage harness records the requested budget with its fixed parameters.
+        parameters = manifest.get("fixed_parameters", {})
+        if not isinstance(parameters, dict) or type(parameters.get("requested_parent_budget")) is not int:
+            raise GateError("UndeclaredParentBudget")
+        if parameters["requested_parent_budget"] != 96:
             raise GateError("UndeclaredParentBudget")
         result["parent_budget"] = 96
         result["parent_caps"] = [64, 96]

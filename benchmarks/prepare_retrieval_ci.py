@@ -35,7 +35,7 @@ DATASETS = {
             "queries.jsonl": "d024e6621b84925d485ae473d316a0c3af31c62c8068a59fb29d22f7613aef2a",
             "qrels/test.tsv": "f8fba6ef3d4dd9c3a242a8ba4ae38276fc3622fce7dcbae764766d564542fd2a",
             "queries-selected.jsonl": "20c4349031851471dd1353e480e6f1d2f4444a1191010a60a2a0ae584c147779",
-            "labels.json": "1d0a7a65c473ef8dfd98ae1e8b223d211d98fcdc2b8fa6090523eb2de6a2f5df",
+            "labels.json": "2e779079b4053d605230d98964ebee355b3fe387c9611d98c51f2b271a325600",
         },
     },
     "scifact": {
@@ -46,7 +46,7 @@ DATASETS = {
             "queries.jsonl": "8ff84a7c903f722981cd8d595c022660140c51867b27608a6d4910db86080313",
             "qrels/test.tsv": "0864bb985e0ca2367ba217977e72004d549054b2b06666ed9d4825ac7c21284c",
             "queries-selected.jsonl": "20ded7eef653593fde34060aee46700e3f4e9d043e84004e581488aae5a85b45",
-            "labels.json": "f08cc4d6ad884892ce990b2d235ff2db984e91bbd073ca56b1572052d1baa9f8",
+            "labels.json": "9306bf40a0ff5f3bec248a2aef0b0f0631e8ab89dcfc1da6b8fb90e3c7993857",
         },
     },
 }

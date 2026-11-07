@@ -275,5 +275,6 @@ class ReceiptSurface:
         return checked_group_stats(authenticated_stats(self.client.profile, timeout=self.client.timeout), enabled)
 
     def close(self) -> None:
+        self.client.close()
         if self.managed_mesh is not None:
             self.managed_mesh.close()

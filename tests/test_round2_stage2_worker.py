@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import threading
 import time
 from pathlib import Path
 
@@ -144,19 +145,42 @@ def test_close_does_not_load_a_model_by_default(env, monkeypatch):
 
 
 def test_foreground_is_not_blocked_by_a_slow_forward_pass(env, monkeypatch):
+    entered, release, foreground_done = threading.Event(), threading.Event(), threading.Event()
+    failures = []
+
     def slow_encode(texts):
-        time.sleep(0.4)
+        entered.set()
+        assert release.wait(10.0), "test inference was not released"
         return np.vstack([_fake_vec(t) for t in texts]), ONNX
 
     monkeypatch.setattr(mem, "_encode_texts_with_tag", slow_encode)
     m = mem.Mesh(namespace="s2p", agent_id="t", create=True, trusted_local=True)
     m.learn("first")
-    time.sleep(0.05)  # worker is now inside the 0.4 s "forward pass"
-    worst = 0.0
-    for i in range(15):
-        t0 = time.perf_counter()
-        m.learn(f"foreground memory number {i}")
-        m.recall("foreground memory")
-        worst = max(worst, time.perf_counter() - t0)
-    assert worst < 0.15, worst
-    assert mem.drain_reembed_worker(20.0) is True
+
+    def foreground():
+        try:
+            for i in range(3):
+                m.learn(f"foreground memory number {i}")
+                assert m.recall("foreground memory")
+        except BaseException as exc:
+            failures.append(exc)
+        finally:
+            foreground_done.set()
+
+    worker = None
+    try:
+        assert entered.wait(5.0), "background inference never started"
+        worker = threading.Thread(target=foreground)
+        worker.start()
+        # Prove progress while inference remains held; per-call wall time mostly
+        # measures shared CI scheduling and can pass without inference overlap.
+        assert foreground_done.wait(5.0), "foreground blocked on background inference"
+        assert not failures
+        assert not release.is_set()
+    finally:
+        release.set()
+        if worker is not None:
+            worker.join(10.0)
+        assert mem.drain_reembed_worker(20.0) is True
+        if worker is not None:
+            assert not worker.is_alive()

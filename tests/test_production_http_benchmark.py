@@ -65,7 +65,7 @@ def _http_fixture(root):
     token = "FAKE_BENCHMARK_TOKEN"
     token_file = mesh_home / "auth_token"
     token_file.write_text(token, encoding="utf-8")
-    state = {"calls": [], "requests": [], "receipts": {}, "writes": 0, "mcp_status": 200,
+    state = {"calls": [], "requests": [], "connections": set(), "receipts": {}, "writes": 0, "mcp_status": 200,
              "wrong_identity": False, "omit_receipt": False, "inspect_rows": [], "recall_rows": [],
              "group": {"enabled": False, "committed_batches": 0, "executed_commands": 0}}
     class Handler(BaseHTTPRequestHandler):
@@ -80,6 +80,7 @@ def _http_fixture(root):
             self.end_headers()
             self.wfile.write(body)
         def do_GET(self):
+            state["connections"].add(self.client_address)
             parsed = urlsplit(self.path)
             state["requests"].append(("GET", parsed.path))
             if parsed.path == "/identity":
@@ -459,6 +460,44 @@ def test_native_receipt_scope_and_revision_must_match_the_public_acknowledgement
                            operation_receipt=lambda *args: {"operation": "mesh_learn", "result": _ack("fixture-one")})
     report = bench._verify_receipts(mesh, {"surface": "http"}, [entry])
     assert report["status"] == "failed" and report["errors"]["NativeReceiptAcknowledgementMismatch"] == 1
+
+
+def test_receipt_transport_cause_codes_are_content_free_and_do_not_confirm_receipts():
+    from mesh.client import TransportUnavailable
+
+    operation_id = "bench-" + "a" * 64
+    entry = {**bench.acknowledgement(_ack("fixture-one"), 0), "operation_id": operation_id, "tool_name": "mesh_learn"}
+    rows = [(operation_id, "local-user", "mesh_learn", "b" * 64, json.dumps(_ack("fixture-one")))]
+
+    def unavailable(_operation_id):
+        cause = OSError(10048, "FAKE_SECRET_VALUE C:/Users/EXAMPLE/private.json")
+        cause.winerror = 10048
+        raise TransportUnavailable("FAKE_SECRET_VALUE") from cause
+
+    mesh = SimpleNamespace(store=SimpleNamespace(_connect=lambda: nullcontext(SimpleNamespace(execute=lambda *args: rows))),
+                           operation_receipt=unavailable)
+    report = bench._verify_receipts(mesh, {"surface": "http"}, [entry])
+    assert report["status"] == "failed" and report["publicly_confirmed_receipts"] == 0
+    assert report["native_receipts"] == report["expected_operation_ids"] == 1
+    assert report["errors"]["TransportUnavailable"] == 1
+    assert report["transport_errors"] == {"cause_type_counts": {"OSError": 1}, "errno_counts": {"10048": 1},
+                                          "winerror_counts": {"10048": 1}}
+    assert "FAKE_SECRET_VALUE" not in json.dumps(report)
+    assert "C:/Users" not in json.dumps(report)
+
+
+def test_http_receipt_reads_reuse_one_authenticated_connection_and_close_it(benchmark_root):
+    from mesh.client import MeshClient
+
+    with _http_fixture(benchmark_root) as (profile, state):
+        with MeshClient(profile, transport="http", timeout=2) as client:
+            client.call("mesh_learn", {"content": "fake fact", "deduplicate": False}, operation_id="stable-id")
+            for _ in range(3):
+                reply = client.call("mesh_operation_get", {"operation_id": "stable-id"})
+                assert reply["receipt"]["operation_id"] == "stable-id"
+            assert len(state["connections"]) == 1
+            assert [method for method, _ in state["requests"]] == ["GET", "POST"] * 4
+        assert client._http_connection is None
 
 
 def test_missing_server_startup_publication_does_not_wait_until_the_full_deadline(benchmark_root):

@@ -15,6 +15,8 @@ import os
 import re
 import secrets
 import socket
+import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -28,6 +30,8 @@ _MAX_ARGUMENT_BYTES = 262144
 _POLICY_FIELDS = {"include_private", "read_only", "enforce_agent_ownership", "allow_namespace_override"}
 _PROFILE_FIELDS = {"version", "namespace", "mesh_home", "agent_id", "policy", "endpoint", "token_file", "producer_scope"}
 _OPERATION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+_HTTP_CONNECTION_MAX_CALLS = 512
+_HTTP_CONNECTION_MAX_SECONDS = 60.0
 
 
 class ProfileError(ValueError):
@@ -183,10 +187,69 @@ class MeshClient:
         self.profile = profile
         self.transport = transport
         self.timeout = timeout
+        self._http_lock = threading.Lock()
+        self._http_connection = None
+        self._http_binding = None
+        self._http_created = 0.0
+        self._http_calls = 0
+        self._closed = False
+
+    def _discard_http_connection(self) -> None:
+        connection = getattr(self, "_http_connection", None)
+        self._http_connection = None
+        self._http_binding = None
+        self._http_created = 0.0
+        self._http_calls = 0
+        if connection is not None:
+            try:
+                connection.close()
+            except Exception:
+                # Cleanup cannot replace a confirmed acknowledgement or its ID.
+                pass
+
+    def close(self) -> None:
+        with self._http_lock:
+            self._closed = True
+            self._discard_http_connection()
+
+    def __enter__(self) -> MeshClient:
+        if self._closed:
+            raise RuntimeError("The Mesh client is closed.")
+        return self
+
+    def __exit__(self, *exc_info: Any) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        self._discard_http_connection()
+
+    def _get_http_connection(self):
+        binding = (self.profile, self.timeout)
+        now = time.monotonic()
+        connection = self._http_connection
+        if connection is not None and (
+            binding != self._http_binding
+            or self._http_calls >= _HTTP_CONNECTION_MAX_CALLS
+            or now - self._http_created >= _HTTP_CONNECTION_MAX_SECONDS
+            or getattr(connection, "sock", connection) is None
+        ):
+            self._discard_http_connection()
+            connection = None
+        reused = connection is not None
+        if connection is None:
+            parsed = urlsplit(self.profile.endpoint)
+            kind = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
+            connection = kind(parsed.hostname, parsed.port, timeout=self.timeout)
+            self._http_connection = connection
+            self._http_binding = binding
+            self._http_created = now
+        return connection, reused
 
     def call(
         self, tool_name: str, arguments: dict[str, Any] | None = None, operation_id: str | None = None
     ) -> dict[str, Any]:
+        if self._closed:
+            raise RuntimeError("The Mesh client is closed.")
         if not isinstance(tool_name, str) or not tool_name.startswith("mesh_") or len(tool_name) > 64:
             raise ValueError("Expected a Mesh tool name.")
         if arguments is not None and not isinstance(arguments, dict):
@@ -281,6 +344,18 @@ class MeshClient:
     def _call_http(
         self, name: str, arguments: dict[str, Any], operation_id: str | None, mutating: bool
     ) -> dict[str, Any]:
+        with self._http_lock:
+            if self._closed:
+                raise RuntimeError("The Mesh client is closed.")
+            try:
+                return self._call_http_locked(name, arguments, operation_id, mutating)
+            except BaseException:
+                self._discard_http_connection()
+                raise
+
+    def _call_http_locked(
+        self, name: str, arguments: dict[str, Any], operation_id: str | None, mutating: bool
+    ) -> dict[str, Any]:
         if self.profile.endpoint is None or self.profile.token_file is None:
             raise TransportUnavailable("No existing authenticated HTTP endpoint is configured in the profile.")
         token_path = _checked_path(self.profile.token_file, self.profile.mesh_home)
@@ -289,15 +364,32 @@ class MeshClient:
         token = token_path.read_text(encoding="utf-8").strip()
         if not token or len(token) > 512 or re.search(r"[\x00-\x20\x7f]", token):
             raise ProfileError("Invalid token pointer target.")
-        parsed = urlsplit(self.profile.endpoint)
-        connection_type = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
-        conn = connection_type(parsed.hostname, parsed.port, timeout=self.timeout)
+        conn, reused = self._get_http_connection()
         possibly_sent = False
         try:
-            nonce = secrets.token_hex(24)
-            conn.request("GET", "/identity?nonce=" + nonce)
-            response = conn.getresponse()
-            raw = response.read(16385)
+            identity_deadline = time.monotonic() + self.timeout
+            for attempt in range(2):
+                try:
+                    remaining = identity_deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError("HTTP identity verification timed out.")
+                    conn.timeout = remaining
+                    if getattr(conn, "sock", None) is not None:
+                        conn.sock.settimeout(remaining)
+                    nonce = secrets.token_hex(24)
+                    conn.request("GET", "/identity?nonce=" + nonce)
+                    response = conn.getresponse()
+                    raw = response.read(16385)
+                    break
+                except (OSError, http.client.HTTPException):
+                    # A stale keep-alive may reconnect only before any POST.
+                    if not reused or attempt or time.monotonic() >= identity_deadline:
+                        raise
+                    self._discard_http_connection()
+                    conn, reused = self._get_http_connection()
+            if getattr(response, "will_close", False) or getattr(conn, "sock", conn) is None:
+                # HTTPConnection would otherwise reopen before sending the bearer.
+                raise TransportUnavailable("HTTP endpoint closed the identity connection.")
             if response.status != 200 or len(raw) > 16384:
                 raise ProfileError("HTTP endpoint identity verification failed.")
             identity = json.loads(raw)
@@ -326,6 +418,9 @@ class MeshClient:
                     "enforce_agent_ownership": policy.enforce_agent_ownership,
                 },
             }
+            conn.timeout = self.timeout
+            if getattr(conn, "sock", None) is not None:
+                conn.sock.settimeout(self.timeout)
             possibly_sent = True
             conn.request(
                 "POST",
@@ -356,18 +451,15 @@ class MeshClient:
                     raise UnknownOutcome(operation_id)
                 raise RuntimeError("HTTP endpoint returned an invalid tool result.")
             if mutating:
-                return validate_mutation_acknowledgement(
+                result = validate_mutation_acknowledgement(
                     result, operation_id, arguments["namespace"], operation=name,
                     producer_scope=self.profile.producer_scope,
                 )
+            self._http_calls += 1
+            if getattr(response, "will_close", False) or getattr(conn, "sock", conn) is None:
+                self._discard_http_connection()
             return result
         except (OSError, socket.timeout, http.client.HTTPException, json.JSONDecodeError, UnicodeError) as exc:
             if possibly_sent and mutating:
                 raise UnknownOutcome(operation_id) from exc
             raise TransportUnavailable("The configured HTTP endpoint is unavailable.") from exc
-        finally:
-            try:
-                conn.close()
-            except Exception:
-                # Cleanup cannot replace a confirmed acknowledgement or its ID.
-                pass

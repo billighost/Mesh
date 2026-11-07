@@ -610,10 +610,17 @@ an existing configured HTTP endpoint if the SDK dependency is absent; `sdk` and
 from mesh.client import ConnectionProfile, MeshClient
 
 profile = ConnectionProfile.from_file(".mesh/connection.json")
-client = MeshClient(profile)
-result = client.call("mesh_recall", {"query": "Which port serves the fake API?"})
-receipt = client.call("mesh_operation_get", {"operation_id": "example-write-1"})
+with MeshClient(profile) as client:
+    result = client.call("mesh_recall", {"query": "Which port serves the fake API?"})
+    receipt = client.call("mesh_operation_get", {"operation_id": "example-write-1"})
 ```
+
+For repeated HTTP calls, reuse one client and close it when finished, either with
+the context manager above or `client.close()`. Calls on a client serialize access
+to its HTTP connection; it replaces that connection after 512 successful calls
+or 60 seconds. Every call reads the token pointer and verifies a fresh identity
+challenge before dispatch. A closed identity connection is rejected before
+sending the token, and dispatched mutations are never automatically replayed.
 
 Profile version 1 requires `version`, `namespace`, `mesh_home`, `agent_id`, and
 `policy`. Relative paths resolve against the profile file. Unknown fields,

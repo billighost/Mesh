@@ -209,17 +209,32 @@ def test_check_docs_detects_review_placeholders(tmp_path):
     """Verify check_no_review_placeholders_in_published_files detects placeholders."""
     from scripts.check_docs import check_no_review_placeholders_in_published_files
 
-    # Clean run on real repo files should pass
-    clean_errors = check_no_review_placeholders_in_published_files()
-    assert len(clean_errors) == 0, f"Unexpected placeholders in repo: {clean_errors}"
-
-    # Verify that a placeholder in a scanned file is flagged
     bad_file = tmp_path / "README.md"
-    bad_file.write_text("Audit report: [REPORT_LINK]", encoding="utf-8")
-    with patch("scripts.check_docs.REPO_ROOT", tmp_path):
+    bad_file.write_text("Audit report: https://example.org/fake-report", encoding="utf-8")
+    # The real repository check runs separately in CI. Keep this regression
+    # independent of Git ownership settings and generated package artifacts.
+    with patch("scripts.check_docs.REPO_ROOT", tmp_path), patch("subprocess.check_output", return_value="README.md\n"):
+        assert check_no_review_placeholders_in_published_files() == []
+        bad_file.write_text("Audit report: [REPORT_LINK]", encoding="utf-8")
         errors = check_no_review_placeholders_in_published_files()
         assert len(errors) > 0
         assert any("[REPORT_LINK]" in err for err in errors)
+
+
+def test_review_placeholder_fallback_checks_hidden_source_root_and_ignores_builds(tmp_path):
+    from scripts.check_docs import check_no_review_placeholders_in_published_files
+
+    root = tmp_path / ".isolated" / "source"
+    root.mkdir(parents=True)
+    (root / "README.md").write_text("Audit report: [REPORT_LINK]", encoding="utf-8")
+    for directory in ("build", "dist", ".work"):
+        generated = root / directory
+        generated.mkdir()
+        (generated / "README.md").write_text("Audit report: [REPORT_LINK]", encoding="utf-8")
+    with patch("scripts.check_docs.REPO_ROOT", root), patch("subprocess.check_output", side_effect=OSError("Git unavailable")):
+        errors = check_no_review_placeholders_in_published_files()
+    assert len(errors) == 1
+    assert errors[0].startswith("[README.md]")
 
 
 # ==============================================================================

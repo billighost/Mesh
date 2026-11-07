@@ -509,6 +509,9 @@ def test_h6_http_mcp_endpoint_error_semantics(tmp_path, monkeypatch):
 
 def test_h7_stale_cached_mesh_revalidated_after_out_of_band_delete(tmp_path, monkeypatch):
     monkeypatch.setenv("MESH_HOME", str(tmp_path))
+    # This test deliberately removes a closed database. Delivery concurrency is
+    # covered separately; an audit worker can reopen it between close and unlink.
+    monkeypatch.setenv("MESH_NO_OUTBOX_WORKER", "1")
     http_app.dependency_overrides[verify_request_auth] = lambda: None
     client = TestClient(http_app, base_url="http://127.0.0.1:7701")
     ns = "stale_cache_ns"
@@ -520,8 +523,11 @@ def test_h7_stale_cached_mesh_revalidated_after_out_of_band_delete(tmp_path, mon
         # 2. Delete the namespace out-of-band without clearing http_server._MESH_REGISTRY
         db_file = tmp_path / f"mesh_{ns}.db"
         store_mod.close_store_connection(db_file.resolve())
-        for suffix in ("", "-wal", "-shm"):
-            Path(f"{db_file}{suffix}").unlink(missing_ok=True)
+        delete_paths = [Path(f"{db_file}{suffix}") for suffix in ("", "-wal", "-shm")]
+        print({"owned_namespace_delete_files": [path.name for path in delete_paths if path.exists()]})
+        for path in delete_paths:
+            assert path.resolve().parent == tmp_path.resolve()
+            path.unlink(missing_ok=True)
 
         # 3. Subsequent /learn must detect the missing DB, recreate it, and succeed
         r_learn = client.post("/learn", json={"content": "Recreated fact", "namespace": ns})

@@ -861,6 +861,13 @@ def _verify_receipts(mesh: Any, config: dict[str, Any], entries: list[dict[str, 
             return {"status": "failed", "errors": {"MissingAcknowledgedOperationIdentity": 1}}
         expected.setdefault(operation_id, []).append(entry)
     failures: Counter[str] = Counter()
+    transport_causes: Counter[str] = Counter()
+    transport_errno: Counter[str] = Counter()
+    transport_winerror: Counter[str] = Counter()
+    allowed_causes = {"OSError", "ConnectionError", "ConnectionAbortedError", "ConnectionRefusedError",
+                      "ConnectionResetError", "BrokenPipeError", "TimeoutError", "HTTPException",
+                      "RemoteDisconnected", "BadStatusLine", "IncompleteRead", "ResponseNotReady",
+                      "CannotSendRequest", "JSONDecodeError", "UnicodeDecodeError"}
     native: dict[str, dict[str, Any]] = {}
     with mesh.store._connect() as connection:
         for operation_id, scope, operation, digest, result_json in connection.execute(
@@ -899,10 +906,20 @@ def _verify_receipts(mesh: Any, config: dict[str, Any], entries: list[dict[str, 
             latencies.append((time.perf_counter_ns() - before) / 1e6)
         except Exception as exc:
             failures[type(exc).__name__] += 1
+            if type(exc).__name__ == "TransportUnavailable":
+                cause = exc.__cause__
+                name = type(cause).__name__
+                transport_causes[name if name in allowed_causes else "other"] += 1
+                for attribute, counts in (("errno", transport_errno), ("winerror", transport_winerror)):
+                    code = getattr(cause, attribute, None)
+                    if type(code) is int and 0 < code <= 65535:
+                        counts[str(code)] += 1
     return {"status": "confirmed" if not any(failures.values()) else "failed", "errors": dict(failures),
             "expected_operation_ids": len(expected), "native_receipts": len(native),
             "publicly_confirmed_receipts": confirmed, "unacknowledged_receipt_ids": unacknowledged,
-            "public_receipt_lookup": latency_summary(latencies), "producer_scope": "local-user"}
+            "public_receipt_lookup": latency_summary(latencies), "producer_scope": "local-user",
+            "transport_errors": {"cause_type_counts": dict(transport_causes), "errno_counts": dict(transport_errno),
+                                 "winerror_counts": dict(transport_winerror)}}
 
 
 def _lexical_index_readiness(mesh: Any, targets: dict[int, str]) -> dict[str, Any]:

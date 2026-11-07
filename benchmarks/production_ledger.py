@@ -32,6 +32,11 @@ ERROR_CODES = frozenset({
     "HttpServerExitedBeforeBarrier", "ReadinessBarrierTimedOut", "ServerShutdownFailed",
     "ResourceLimitExceeded",
 })
+TRANSPORT_CAUSES = frozenset({
+    "OSError", "ConnectionError", "ConnectionAbortedError", "ConnectionRefusedError", "ConnectionResetError",
+    "BrokenPipeError", "TimeoutError", "HTTPException", "RemoteDisconnected", "BadStatusLine", "IncompleteRead",
+    "ResponseNotReady", "CannotSendRequest", "JSONDecodeError", "UnicodeDecodeError",
+})
 STAGES = frozenset({
     "verify_model_copy", "verify_runtime_source", "import_runtime",
     "construct_http_client", "construct_mesh", "runtime_readiness",
@@ -85,6 +90,20 @@ def counters(value: Any, allowed: frozenset[str] = ERROR_CODES) -> dict[str, int
         safe_key = key if key in allowed else "other"
         result[safe_key] = result.get(safe_key, 0) + count
     return result
+
+
+def transport_errors(value: Any) -> dict[str, Any]:
+    source = value if isinstance(value, dict) else {}
+
+    def codes(value: Any) -> dict[str, int]:
+        if not isinstance(value, dict):
+            return {}
+        return {key: count for key, count in value.items()
+                if isinstance(key, str) and re.fullmatch(r"[1-9][0-9]{0,4}", key) and int(key) <= 65535
+                and type(count) is int and count >= 0}
+
+    return {"cause_type_counts": counters(source.get("cause_type_counts"), TRANSPORT_CAUSES),
+            "errno_counts": codes(source.get("errno_counts")), "winerror_counts": codes(source.get("winerror_counts"))}
 
 
 def safe_tag(value: Any) -> str | None:
@@ -352,6 +371,7 @@ def result_projection(report: dict[str, Any], cell: dict[str, Any], plan: dict[s
                 "expected_operation_ids", "native_receipts", "publicly_confirmed_receipts",
             )),
             "receipt_error_counts": counters(receipts.get("errors")),
+            "receipt_transport_errors": transport_errors(receipts.get("transport_errors")),
             "receipt_lookup_latency": latency(receipts.get("public_receipt_lookup")),
             "dense": {
                 "status": dense.get("status") if dense.get("status") in {"indexed", "not_ready", "unavailable"} else "unobserved",

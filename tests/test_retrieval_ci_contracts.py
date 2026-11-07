@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import io
 import json
 import os
@@ -119,6 +120,35 @@ class IsolationContracts(unittest.TestCase):
             with mock.patch.dict(preparation.DATASETS, {"nfcorpus": pin}), self.assertRaisesRegex(ValueError, "Unsafe"):
                 preparation.prepare_dataset("nfcorpus", root, local_only=True)
             self.assertFalse((root / "escape").exists())
+
+    def test_preparation_checks_canonical_lf_generated_inputs(self):
+        files = {
+            "corpus.jsonl": b'{"_id": "d", "title": "", "text": "synthetic fact"}\n',
+            "queries.jsonl": b'{"_id": "q", "text": "synthetic query"}\n',
+            "qrels/test.tsv": b"query-id\tcorpus-id\tscore\nq\td\t1\n",
+        }
+        selected = b'{"id": "q", "query": "synthetic query"}\n'
+        labels = (b'{\n  "qrels": {\n    "q": {\n      "d": 1\n    }\n  },\n'
+                  b'  "query_ids": [\n    "q"\n  ]\n}\n')
+        with tempfile.TemporaryDirectory(prefix="mesh-retrieval-ci-contract-") as temporary:
+            root = Path(temporary)
+            (root / "archives").mkdir()
+            archive = root / "archives/nfcorpus.zip"
+            with zipfile.ZipFile(archive, "w") as output:
+                for name, content in files.items():
+                    output.writestr("nfcorpus/" + name, content)
+            pin = {"archive_sha256": preparation.digest(archive), "corpus_count": 1, "query_count": 1,
+                   "positive_judgments": 1, "files": {
+                       name: hashlib.sha256(content).hexdigest()
+                       for name, content in {**files, "queries-selected.jsonl": selected, "labels.json": labels}.items()}}
+            with mock.patch.dict(preparation.DATASETS, {"nfcorpus": pin}), mock.patch.object(preparation.urllib.request, "urlopen") as network:
+                destination = preparation.prepare_dataset("nfcorpus", root, local_only=True)
+                network.assert_not_called()
+            self.assertEqual((destination / "queries-selected.jsonl").read_bytes(), selected)
+            self.assertEqual((destination / "labels.json").read_bytes(), labels)
+            manifest = json.loads((destination / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["positive_judgments"], 1)
+            self.assertEqual(manifest["query_count"], 1)
 
 
 class IdentityContracts(unittest.TestCase):
@@ -257,6 +287,78 @@ class SupervisorContracts(unittest.TestCase):
             self.assertTrue(any(phase["status"] == "not_run" for phase in report["phases"]))
             self.assertNotIn("SECRET_VALUE", text)
             self.assertNotIn("C:/Users", text)
+
+
+class EvidenceProjectionContracts(unittest.TestCase):
+    @staticmethod
+    def fields():
+        return {"final_sdk_top10": {
+            cohort: {"hit_at_1": production.mean_interval([]) if cohort != "unconditional"
+                     else {"mean": 1.0, "ci95": [1.0, 1.0], "n": 1}}
+            for cohort in ("unconditional", "any_gold_survived", "all_gold_survived", "retained_gold_denominator")}}
+
+    def test_empty_document_and_session_cohorts_preserve_zero_denominators(self):
+        fields = self.fields()
+        values = {**fields, "gold_session_hits": copy.deepcopy(fields)}
+        projected = ci.metric_projection({"results-C64": values})["results-C64"]
+        self.assertEqual(projected, values)
+        empty = projected["gold_session_hits"]["final_sdk_top10"]["any_gold_survived"]["hit_at_1"]
+        self.assertEqual(empty, {"mean": None, "n": 0, "ci95": None})
+
+    def test_invalid_intervals_fail_without_exporting_values(self):
+        invalid = (
+            {"mean": 1, "n": 0, "ci95": None}, {"mean": None, "n": 1, "ci95": None},
+            {"mean": 1, "n": True, "ci95": [1, 1]}, {"mean": True, "n": 1, "ci95": [1, 1]},
+            {"mean": 1, "n": 1, "ci95": [1]}, {"mean": 1, "n": 1, "ci95": [1, 0]},
+            {"mean": float("nan"), "n": 1, "ci95": [0, 1]},
+            {"mean": "FAKE_BODY", "n": 1, "ci95": [0, 1]},
+        )
+        for interval in invalid:
+            fields = self.fields()
+            fields["final_sdk_top10"]["unconditional"]["hit_at_1"] = interval
+            with self.subTest(interval=interval), self.assertRaises(ci.GateError) as rejected:
+                ci.metric_projection({"results-C64": fields})
+            self.assertNotIn("FAKE_BODY", str(rejected.exception))
+
+    def scored_passage(self, directory, budget):
+        directory.mkdir(parents=True)
+        record = {"acceptance": {"memory_id": "m"}, "document_id": "d", "current_revision": 1,
+                  "current_incarnation": "b" * 32, "store_generation": "c" * 32, "faithful_public": True,
+                  "private": False, "quarantined": False, "body_changed": False}
+        candidate = {"id": "m", "faithful_document_ids": ["d"], "local_only": False, "quarantined": False}
+        exports = {"ingestion-fidelity.jsonl": [record],
+                   "results-C64.jsonl": [{"query_id": "q", "final_sdk_top10": [candidate]}]}
+        for name, rows in exports.items():
+            (directory / name).write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+        runtime, protocol = {"mesh/store.py": "a" * 64}, "d" * 64
+        model = preparation.MODEL
+        manifest = {"status": "complete", "all_queries_accounted": True, "query_target": 1,
+                    "labels_in_ranking_inputs": False, "runtime_files": runtime,
+                    "output_sha256": {name: replay.digest_file(directory / name) for name in exports},
+                    "model_revision": model["revision"], "query_model_space_tag": production.MODEL_TAG,
+                    "model_file_sha256": {key: model[key] for key in ("onnx_sha256", "tokenizer_sha256")},
+                    "protocol_sha256": protocol, "dataset_manifest_sha256": "e" * 64,
+                    "passage_ingestion": {"complete": {"submitted_passages": 1}},
+                    "fixed_parameters": {} if budget is None else {"requested_parent_budget": budget}}
+        (directory / "run-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        score = {"run_manifest_sha256": replay.digest_file(directory / "run-manifest.json"), "query_count": 1,
+                 "cells": {"results-C64": self.fields()}, "gold_survival": {"answered_queries": 1},
+                 "ingestion": {"complete": {"accepted": 1}}}
+        (directory / "score-summary.json").write_text(json.dumps(score), encoding="utf-8")
+        return ci.condition_evidence(directory, {"query_count": 1, "corpus_count": 1}, runtime, model, protocol, scored=True)
+
+    def test_scored_passage_reads_actual_fixed_parameter_budget(self):
+        with tempfile.TemporaryDirectory(prefix="mesh-retrieval-ci-contract-") as temporary:
+            _manifest, report = self.scored_passage(Path(temporary) / "condition", 96)
+        self.assertEqual(report["parent_budget"], 96)
+        self.assertEqual(report["parent_caps"], [64, 96])
+        self.assertTrue(report["privacy_and_canonical_source_ids_verified"])
+
+    def test_scored_passage_rejects_missing_wrong_or_boolean_budget(self):
+        for budget in (None, 64, True, 96.0):
+            with self.subTest(budget=budget), tempfile.TemporaryDirectory(prefix="mesh-retrieval-ci-contract-") as temporary:
+                with self.assertRaisesRegex(ci.GateError, "UndeclaredParentBudget"):
+                    self.scored_passage(Path(temporary) / "condition", budget)
 
 
 class QualityContracts(unittest.TestCase):
