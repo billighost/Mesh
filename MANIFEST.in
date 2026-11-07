@@ -33,6 +33,7 @@ include benchmarks/retrieval_ci.py
 include benchmarks/passage_retrieval.py
 include benchmarks/check_passage_contract.py
 include benchmarks/retrieval_c4.py
+include benchmarks/runtime_rerank_c4.py
 include benchmarks/retrieval_c4_model.py
 include benchmarks/provision_retrieval_c4.py
 include benchmarks/retrieval_fixtures/README.md

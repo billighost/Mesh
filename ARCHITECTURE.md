@@ -323,6 +323,19 @@ A completed zero-child generation is also activation evidence: its valid compati
 
 The cache pre-tokenizes content and bounds vector, lexical, and snapshot allocations. If a namespace cannot fit its configured cache budget, retrieval scans bounded database pages and retains bounded candidate heaps rather than loading the entire namespace. Query encoding uses the verified local model when ready, independently of ingestion's fast hash stage. Query/embedding cache keys include backend identity and preprocessing role; hash and neural vectors are never mixed under one model tag.
 
+The optional local reranker in `mesh/local_rerank.py` is off by default.
+`MESH_RERANK_ENABLED=1` requests one lazy shared CPU session using separately
+supplied, hash-verified model files. Recall retains four authorized parents before
+applying the requested result limit, including `n=1`, and reorders only those
+parents. Original similarity, evidence spans, complete identities and the order
+after the first four remain intact; cross-encoder logits have separate metadata.
+Policy and identity are checked before and after inference. Nonblocking admission,
+invalid or unavailable model files, and invalid spans preserve the base order
+with a content-free status. The existing idle watchdog covers both models;
+active embedding work, passage backfill and reranking finish before unloading,
+and each completion restarts the idle timer. See [DOCS.md](DOCS.md) for setup,
+input bounds and fallback statuses.
+
 ---
 
 ## 6. Update and forget

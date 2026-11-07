@@ -34,6 +34,15 @@ scalar mismatch before passage indexing. The benchmark-only repair now accepts
 the exact canonical string or integer schema 6 and emits a consistent numeric
 manifest. Corrected native quality/resource qualification remains pending.
 
+At `7ee42afb`, all fifteen platform/Python combinations and both full production
+qualification suites passed. The production run failed retrieval qualification,
+with genuine first-result misses and stalled public-corpus passage backfill.
+The reviewed default-off production reranker and its actual `Mesh.recall`
+qualification are now integrated. Active passage backfill and reranker inference
+retain their models until completion and restart the existing idle timer.
+Independent review and a small integrated Python 3.10 check passed; the new
+source still requires native quality and resource qualification in Actions.
+
 The reviewed retrieval and optional four-candidate reranker harnesses are now
 integrated as CI utilities. The production workflow calls the five-dataset
 retrieval workflow after primary and minimum qualification; source hashes,
@@ -41,7 +50,8 @@ dependency constraints, exact evidence IDs, and failure artifacts bind each
 result to the source tested. [CI_VALIDATION.md](CI_VALIDATION.md) describes the
 remote checks and remaining evidence requirements. These harnesses have passed
 small local contract checks; native scoring has exposed the metadata repair
-above. The production retrieval default has no experimental reranker.
+above. Production reranking is available only through explicit configuration
+and separately supplied pinned local files; the default remains off.
 
 The maintainer's current machine has 8 GiB RAM and four logical CPUs. Development
 verification now stays limited to small, isolated, one-worker smokes; full tests,
@@ -60,8 +70,9 @@ The current evidence shows
 both representation weakness in long memories and short-query errors involving
 qualifiers or answerless references. General paragraph/sentence boundaries and
 maximum joint passage scoring are being evaluated against original parent IDs.
-A separate optional four-candidate local reranker must meet the declared accuracy,
-CPU, RAM, and latency gates. Neither experiment is a validated production default.
+A separate optional four-candidate local reranker is implemented and must meet
+the declared accuracy, CPU, RAM, and latency gates through actual SDK calls.
+Neither feature is a validated production default.
 The historical field-test archive remains unchanged.
 
 ## Roadmap (not implemented)

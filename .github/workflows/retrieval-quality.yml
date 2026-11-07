@@ -9,7 +9,7 @@ name: Retrieval quality
         type: string
         default: ""
       run_c4:
-        description: "Separate optional four-parent passage cross-encoder experiment"
+        description: "Optional C4 experiment and actual Mesh.recall qualification when runtime passages are requested"
         required: false
         type: boolean
         default: false
@@ -25,7 +25,7 @@ name: Retrieval quality
         required: true
         type: string
       run_c4:
-        description: "Run the separate optional C4 experiment after core conditions"
+        description: "Run optional C4; with runtime passages, qualify actual Mesh.recall before legacy experiments"
         required: false
         type: boolean
         default: false
@@ -98,6 +98,7 @@ jobs:
           }
           New-Item -ItemType Directory -Force -Path $env:MESH_HOME,$env:HOME,$env:APPDATA,$env:LOCALAPPDATA,$env:XDG_CONFIG_HOME,$env:XDG_CACHE_HOME,$env:XDG_DATA_HOME,$env:CODEX_HOME,$env:CLAUDE_CONFIG_DIR | Out-Null
           $taskRetrievalInitArgs = @("benchmarks/retrieval_ci.py", "init", $env:RETRIEVAL_DATASET, "--output-root", $env:RETRIEVAL_ROOT)
+          if ($env:RETRIEVAL_RUN_C4 -eq "true") { $taskRetrievalInitArgs += @("--reranker-experiment", "c4") }
           if ($env:RETRIEVAL_RUN_RUNTIME_PASSAGES -eq "true") { $taskRetrievalInitArgs += "--runtime-passages" }
           python @taskRetrievalInitArgs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

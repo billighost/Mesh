@@ -25,6 +25,29 @@ from retrieval_c4_model import LIMITS, MODEL, POLICY, RESOURCE_MAXIMA
 
 IMPLEMENTATIONS = ("retrieval_c4.py", "retrieval_c4_model.py", "provision_retrieval_c4.py",
                    "passage_retrieval.py", "production_retrieval.py", "replay_retrieval.py")
+C4_FAILURE_CODES = frozenset({
+    "AcceptedParentBodyOrIdentityChanged", "AmbiguousSourceIdentity", "BaselineUnexpectedlyLoadedCE",
+    "C4OutputCandidateCapOrTailChanged", "C4PairCapExceeded", "CandidatePrivacyFlagSet",
+    "DuplicateImmutableQuery", "EmptySupportingPassage", "FrozenC4ProtocolMismatch", "FrozenProtocolAlreadyExists",
+    "HelperUnavailable", "ImmutableCellQueriesChanged", "ImmutableParentOrderOrSpanChanged",
+    "ImmutableQueryAccountingChanged", "IncompleteC4Export", "IncompleteMeasuredQueries",
+    "IncompleteOrMismatchedPassageComparator", "InferenceCounterAccountingChanged", "InferenceCounterCapExceeded",
+    "InsufficientResourceSamples", "Interrupted", "InvalidProcessTreePeak", "InvalidRelevanceLogits",
+    "InvalidResourceSamples", "InvalidScoredPairAccounting", "LinkedHelper", "LinkedRepositoryAncestor",
+    "MeasuredSubprocessFailed", "MissingProcessTreeSamples", "OutputAlreadyExists", "PairTokenCapExceeded",
+    "ParentCapExceeded", "ParentFullIdentityChanged", "ParentIdentifierChanged", "ParentNamespaceChanged",
+    "ParentPrivacyChanged", "PassageSourceVectorsOrModelChanged", "PhaseWallDeadlineExceeded",
+    "PinnedFixtureHashMismatch", "PinnedFixtureMissing", "ProcessTreeRSSLimitExceeded", "RemoteActionsRequired",
+    "RepositoryTraversal", "ResourceGateRejected", "RuntimeSourceHashMismatch", "SelectedPassageExceedsTokenLimit",
+    "SourceChangedDuringInference", "SourceChangedDuringWarmupInference", "SourceNamespaceChanged",
+    "SupportingSpanBytesChanged", "SupportingSpanCountChanged", "SupportingSpanIdentityChanged",
+    "TokenizerPrefixBoundFailed", "UnauthorizedParent", "UnexpectedHelperImport", "UnexpectedModelInputOrProvider",
+    "UnexpectedModelOutputCount", "UnexpectedPairSpecialTokens", "UnexpectedSessionReloadCount",
+    "UnknownSupportingSource", "UnpairedResourceSamples",
+    "RuntimeRerankerConfigurationChanged", "RuntimeRerankerFallback", "RuntimeRerankerInputAccountingChanged",
+    "RuntimeRerankerParentSetChanged", "RuntimeRerankerQueryEncodingChanged", "RuntimeRerankerTopOneChanged",
+})
+C4_FAILURE_TYPES = frozenset({"C4Failure", "C4Unavailable", "C4Aborted"})
 
 
 class C4Failure(RuntimeError):
@@ -41,6 +64,70 @@ class C4Unavailable(C4Failure):
 
 class C4Aborted(C4Failure):
     pass
+
+
+def failure_projection(manifest, stage="c4", *, include_child=True):
+    from production_retrieval import WORKER_FAILURE_SOURCES, WORKER_FAILURE_TYPES
+
+    status = manifest.get("status")
+    if type(status) is not str or status not in {"failed", "aborted", "unavailable"}:
+        return {"stage": stage, "exception_type": "other", "source_frames": []}
+    details = manifest.get("failure_details", {})
+    if not isinstance(details, dict):
+        details = {}
+    code = details.get("failure_code", manifest.get("c4_failure_code", manifest.get("failure_type")))
+    code = code if type(code) is str and code in C4_FAILURE_CODES else None
+    name = details.get("exception_type", manifest.get("failure_type"))
+    if type(name) is not str or name not in WORKER_FAILURE_TYPES | C4_FAILURE_TYPES:
+        name = {"aborted": "C4Aborted", "unavailable": "C4Unavailable"}.get(status, "C4Failure") if code else "other"
+    frames = details.get("source_frames", [])
+    selected = []
+    if isinstance(frames, list):
+        for frame in frames[-4:]:
+            if (isinstance(frame, dict) and type(frame.get("source")) is str and frame["source"] in WORKER_FAILURE_SOURCES
+                    and type(frame.get("line")) is int and frame["line"] > 0):
+                selected.append({"source": frame["source"], "line": frame["line"]})
+    result = {"stage": stage, "exception_type": name, "source_frames": selected}
+    if code:
+        result["failure_code"] = code
+    measured_phase = details.get("measured_phase", manifest.get("measured_phase"))
+    if type(measured_phase) is str and measured_phase in {"baseline", "c4"}:
+        result["measured_phase"] = measured_phase
+    evidence = details.get("failure_evidence", manifest.get("failure_evidence", {}))
+    if not isinstance(evidence, dict):
+        evidence = {}
+    projected = {}
+    for key in ("process_tree_peak_rss_bytes", "process_tree_sample_count", "rss_limit_bytes", "child_returncode"):
+        value = evidence.get(key)
+        if type(value) is int and (key == "child_returncode" or value >= 0):
+            projected[key] = value
+    wall = evidence.get("phase_wall_seconds")
+    if type(wall) in {int, float} and (type(wall) is int or math.isfinite(wall)) and wall >= 0:
+        projected["phase_wall_seconds"] = wall
+    if projected:
+        result["failure_evidence"] = projected
+    if include_child:
+        child = details.get("child_failure_diagnostics", evidence.get("child_failure_diagnostics"))
+        if isinstance(child, dict):
+            result["child_failure_diagnostics"] = failure_projection(
+                {"status": "failed", "failure_details": child}, stage, include_child=False)
+        elif type(evidence.get("child_failure_type")) is str:
+            result["child_failure_diagnostics"] = failure_projection(
+                {"status": "failed", "failure_type": evidence["child_failure_type"]}, stage, include_child=False)
+    return result
+
+
+def failure_details(exc, *, measured_phase=None):
+    from production_retrieval import worker_failure_details
+
+    details = worker_failure_details(exc, "c4")
+    if type(exc).__name__ in C4_FAILURE_TYPES:
+        details["exception_type"] = type(exc).__name__
+    if isinstance(exc, C4Failure) and len(exc.args) == 1 and type(exc.args[0]) is str and exc.args[0] in C4_FAILURE_CODES:
+        details["failure_code"] = exc.args[0]
+    return failure_projection({"status": "failed", "failure_details": details,
+                               "failure_evidence": exc.evidence if isinstance(exc, C4Failure) else {},
+                               "measured_phase": measured_phase})
 
 
 def checked_helpers(repository):
@@ -443,29 +530,37 @@ def verify_protocol(args, helpers):
 
 
 def measure(args, helpers):
-    verify_protocol(args, helpers)
-    for name in ("source_run", "passage_run", "dataset_directory", "embedding_model_directory"):
-        setattr(args, name, helpers.isolated_artifact_path(getattr(args, name), args.repository, must_exist=True))
-    args.model_directory = helpers.isolated_artifact_path(args.model_directory, args.repository)
-    from passage_retrieval import main as passage_main
-    import passage_retrieval
-
-    observer = PassageObserver(args, helpers, passage_retrieval)
-    argv = ["--repository", str(args.repository), "--source-run", str(args.source_run),
-            "--dataset-directory", str(args.dataset_directory), "--protocol", str(args.base_protocol),
-            "--model-directory", str(args.embedding_model_directory), "--helper-directory", str(Path(args.repository) / "benchmarks"),
-            "--parent-budget", "96", "--output", str(args.output)]
-    if args.dependency_directory:
-        argv += ["--dependency-directory", str(args.dependency_directory)]
+    output = helpers.isolated_artifact_path(args.output, args.repository)
+    existed, observer = output.exists(), None
     try:
+        verify_protocol(args, helpers)
+        for name in ("source_run", "passage_run", "dataset_directory", "embedding_model_directory"):
+            setattr(args, name, helpers.isolated_artifact_path(getattr(args, name), args.repository, must_exist=True))
+        args.model_directory = helpers.isolated_artifact_path(args.model_directory, args.repository)
+        from passage_retrieval import main as passage_main
+        import passage_retrieval
+
+        observer = PassageObserver(args, helpers, passage_retrieval)
+        argv = ["--repository", str(args.repository), "--source-run", str(args.source_run),
+                "--dataset-directory", str(args.dataset_directory), "--protocol", str(args.base_protocol),
+                "--model-directory", str(args.embedding_model_directory), "--helper-directory", str(Path(args.repository) / "benchmarks"),
+                "--parent-budget", "96", "--output", str(args.output)]
+        if args.dependency_directory:
+            argv += ["--dependency-directory", str(args.dependency_directory)]
         passage_main(argv, experiment=observer)
     except BaseException as exc:
-        manifest_path = helpers.safe_member(args.output, "run-manifest.json", must_exist=False)
-        if manifest_path.exists():
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            manifest.update(c4_failure_code=str(exc) if isinstance(exc, C4Failure) else type(exc).__name__,
-                            c4_inference=dict(observer.counts), completed_measured_queries=len(observer.measurements),
-                            completed_quality_query_cells=sum(row["quality_export"] for row in observer.measurements))
+        # Preserve setup failures too; never overwrite a pre-existing output.
+        if not existed:
+            output.mkdir(parents=True, exist_ok=True)
+            manifest_path = helpers.safe_member(output, "run-manifest.json", must_exist=False)
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {}
+            details = failure_details(exc)
+            manifest.update(status="unavailable" if isinstance(exc, C4Unavailable) else "aborted" if isinstance(exc, (C4Aborted, KeyboardInterrupt)) else "failed",
+                            failure_type=details.get("failure_code", details["exception_type"]), failure_details=details,
+                            c4_failure_code=details.get("failure_code", details["exception_type"]))
+            if observer is not None:
+                manifest.update(c4_inference=dict(observer.counts), completed_measured_queries=len(observer.measurements),
+                                completed_quality_query_cells=sum(row["quality_export"] for row in observer.measurements))
             helpers.write_json(manifest_path, manifest)
         raise
 
@@ -515,11 +610,11 @@ def supervised_measure(command, repository, rss_limit, phase_output, helpers):
             time.sleep(0.01)
         if process.returncode != 0:
             manifest_path = helpers.safe_member(phase_output, "run-manifest.json", must_exist=False)
-            failure = None
+            failure = {}
             if manifest_path.exists():
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-                failure = manifest.get("c4_failure_code", manifest.get("failure_type"))
-            raise C4Failure("MeasuredSubprocessFailed", evidence={"child_failure_type": failure,
+                failure = failure_projection(manifest)
+            raise C4Failure("MeasuredSubprocessFailed", evidence={"child_failure_diagnostics": failure,
                 "child_returncode": process.returncode, "process_tree_peak_rss_bytes": peak,
                 "process_tree_sample_count": samples})
         if not samples:
@@ -541,7 +636,7 @@ def run(args, helpers):
                 "resource_gates": {name: {"observed": None, "maximum": maximum} for name, maximum in RESOURCE_MAXIMA.items()},
                 "unscored_queries": None, "labels_in_ranking_inputs": False, "failure_type": None}
     helpers.write_json(output / "run-manifest.json", metadata)
-    owned = None
+    owned, active_phase = None, None
     try:
         verify_protocol(args, helpers)
         for name in ("source_run", "passage_run", "dataset_directory", "embedding_model_directory"):
@@ -592,8 +687,10 @@ def run(args, helpers):
             limit = RESOURCE_MAXIMA["total_rss_mib"] * 1024**2
             if phase == "c4":
                 limit = min(limit, phases["baseline"]["process_tree_peak_rss_bytes"] + RESOURCE_MAXIMA["delta_rss_mib"] * 1024**2)
+            active_phase = phase
             phases[phase] = supervised_measure(base + ["--phase", phase, "--output", str(phase_output)],
                 args.repository, limit, phase_output, helpers)
+            active_phase = None
             phases[phase]["run_manifest_sha256"] = helpers.digest_file(helpers.safe_member(phase_output, "run-manifest.json"))
             metadata["matched_resource_phases"] = phases
             helpers.write_json(output / "run-manifest.json", metadata)
@@ -633,11 +730,13 @@ def run(args, helpers):
         metadata["status"] = "complete"
         metadata["quality_scoring_status"] = "exports_fixed_ready_for_separate_scorer"
     except BaseException as exc:
+        details = failure_details(exc, measured_phase=active_phase)
         metadata.update(status="unavailable" if isinstance(exc, C4Unavailable) else "aborted" if isinstance(exc, (C4Aborted, KeyboardInterrupt)) else "failed",
-                        failure_type=str(exc) if isinstance(exc, C4Failure) else type(exc).__name__, all_queries_accounted=False)
+                        failure_type=details.get("failure_code", details["exception_type"]), failure_details=details,
+                        all_queries_accounted=False)
         metadata["quality_scoring_status"] = "not_run_optional_configuration_failed"
-        if isinstance(exc, C4Failure) and exc.evidence is not None:
-            metadata["failure_evidence"] = exc.evidence
+        if "failure_evidence" in details:
+            metadata["failure_evidence"] = details["failure_evidence"]
         raise
     finally:
         if owned is not None:

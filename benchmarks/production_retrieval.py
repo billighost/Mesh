@@ -31,7 +31,7 @@ PASSAGE_REPRESENTATION = "paragraph-sentences-v1"
 PASSAGE_BATCH_LIMIT = 32
 WORKER_FAILURE_SOURCES = frozenset({"production_retrieval.py", "passage_retrieval.py", "replay_retrieval.py",
                                     "retrieval_c4.py", "retrieval_c4_model.py", "memory.py", "store.py",
-                                    "passage_search.py", "passages.py"})
+                                    "passage_search.py", "passages.py", "runtime_rerank_c4.py", "local_rerank.py"})
 WORKER_FAILURE_TYPES = frozenset({"ValueError", "TypeError", "KeyError", "AttributeError", "AssertionError",
                                   "OSError", "FileNotFoundError", "PermissionError", "RuntimeError", "ImportError",
                                   "ModuleNotFoundError", "KeyboardInterrupt", "SystemExit", "TimeoutExpired",
@@ -668,7 +668,7 @@ def index_runtime_passages(mesh, records, memory_module, readiness, resources):
 
 
 def fresh_queries(mesh, queries, records, streams, metadata, memory_module, *,
-                  original_sdk_top10=None, resource_stream=None, resources=None):
+                  original_sdk_top10=None, resource_stream=None, resources=None, experiment=None):
     runtime_passages = original_sdk_top10 is not None
     if runtime_passages and (resource_stream is None or resources is None):
         raise ValueError("Runtime passage queries require resource accounting")
@@ -677,6 +677,8 @@ def fresh_queries(mesh, queries, records, streams, metadata, memory_module, *,
     for record in records:
         if record["acceptance"].get("memory_id"):
             by_memory[record["acceptance"]["memory_id"]].append(record)
+    if experiment is not None:
+        experiment.before_namespace(mesh, queries, records, memory_module)
     original = memory_module._embed_query_with_tag
     original_document_encoder = memory_module._encode_texts_with_tag
     original_worker = memory_module._process_reembed_batch
@@ -721,6 +723,8 @@ def fresh_queries(mesh, queries, records, streams, metadata, memory_module, *,
                 append_jsonl(resource_stream, {"query_ordinal": previous_calls + index, "elapsed_ms": elapsed_ms,
                                                "process_cpu_ms": (time.process_time() - cpu_started) * 1000,
                                                "sampled_owned_process_rss_bytes": resources.sample()})
+            if experiment is not None:
+                experiment.observe(query, results, payload, elapsed_ms, (time.process_time() - cpu_started) * 1000)
             append_jsonl(streams[96], payload)
             if previous_calls + index <= 6:
                 diagnostics.append({"query_ordinal": previous_calls + index, "elapsed_ms": elapsed_ms, "result_count": len(results)})
@@ -736,9 +740,11 @@ def fresh_queries(mesh, queries, records, streams, metadata, memory_module, *,
         memory_module._embed_query_with_tag = original
         memory_module._encode_texts_with_tag = original_document_encoder
         memory_module._process_reembed_batch = original_worker
+    if experiment is not None:
+        experiment.after_namespace(mesh, queries, records, memory_module)
 
 
-def run_retrieval(args):
+def run_retrieval(args, *, experiment=None):
     runtime_passages = getattr(args, "runtime_passages", False)
     if runtime_passages and (args.command != "query-only" or not getattr(args, "fresh_default_run", None)):
         raise ValueError("Runtime passages are a query-only opt-in paired with an explicit fresh-default run")
@@ -852,6 +858,8 @@ def run_retrieval(args):
             install_model(root, args.model_directory, protocol, query_only=query_only, repository=repository)
             if runtime_passages:
                 os.environ["MESH_PASSAGE_INDEX"] = "1"
+            if experiment is not None:
+                experiment.configure()
             hashes, audit_module, memory_module, store_module = import_runtime(
                 root, repository, checked_path(args.dependency_directory, must_exist=True, directory=True) if args.dependency_directory else None, cleanup)
             metadata["runtime_files"] = hashes
@@ -896,7 +904,8 @@ def run_retrieval(args):
                             index_runtime_passages(mesh, records, memory_module, readiness, resources)
                             metadata["document_inference_invoked"] |= bool(readiness["passage_encoded_rows"])
                         fresh_queries(mesh, group, records, streams, metadata, memory_module,
-                                      original_sdk_top10=original_sdk_top10, resource_stream=resource_stream, resources=resources)
+                                      original_sdk_top10=original_sdk_top10, resource_stream=resource_stream,
+                                      resources=resources, experiment=experiment)
                         if runtime_passages and guarded_database_fingerprint(source_home, namespace) != source_fingerprint:
                             raise ValueError("Guarded source database changed during runtime passage evaluation")
                     else:
@@ -923,12 +932,16 @@ def run_retrieval(args):
                         or digest_file(safe_member(fresh_path, "results-default.jsonl")) != pairing["fresh_default_results_sha256"]):
                     raise ValueError("Fresh-default pair changed during runtime passage evaluation")
                 metadata["guarded_source_immutable"] = True
+            if experiment is not None:
+                experiment.finish(metadata, output)
             metadata["status"] = "complete"
     except BaseException as exc:
         metadata.update(status="failed", failure_type=type(exc).__name__,
                         failure_details=worker_failure_details(exc, "runtime-passages" if runtime_passages else args.command))
         raise
     finally:
+        if experiment is not None:
+            experiment.close()
         for stream in (*streams.values(), fidelity, *((vectors,) if vectors else ()), *((resource_stream,) if resource_stream else ())):
             stream.close()
         if resources is not None:

@@ -1250,7 +1250,9 @@ def ask_cmd() -> None:
         "ask",
         "Search memories with hybrid semantic + keyword search.\n"
         "MESH_PASSAGE_INDEX=1 enables the opt-in paragraph-sentences-v1 index (default: 0).\n"
-        "SDK passage readiness: wait_for_indexed(..., target_representation='paragraph-sentences-v1').",
+        "SDK passage readiness: wait_for_indexed(..., target_representation='paragraph-sentences-v1').\n"
+        "MESH_RERANK_ENABLED=1 optionally reranks four results using pinned local files in MESH_RERANK_MODEL_DIR.\n"
+        "Default: off. Verify supplied files offline: python -m mesh.local_rerank verify <directory>.",
         [
             ('mesh ask "how do we deploy?"', "natural-language search"),
             ('mesh ask "database" --type decision -n 10', "only decisions, up to 10"),

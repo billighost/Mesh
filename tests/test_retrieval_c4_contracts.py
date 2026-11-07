@@ -5,10 +5,12 @@ from collections import Counter
 import contextlib
 import copy
 import io
+import json
 import os
 from pathlib import Path
 import re
 import sys
+import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest import mock
@@ -16,6 +18,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).absolute().parents[1] / "benchmarks"))
 import passage_retrieval as passage
 import retrieval_c4 as c4
+import retrieval_ci as ci
 from retrieval_c4_model import LIMITS, MODEL, RESOURCE_MAXIMA
 
 
@@ -277,6 +280,112 @@ class Contracts(unittest.TestCase):
                          LIMITS["maximum_pair_tokens"])
         self.assertEqual(LIMITS["parent_cap"], 4)
         self.assertEqual(LIMITS["batch_items"], 4)
+
+    def test_aborted_c4_code_and_numeric_evidence_reach_controller(self):
+        manifest = {"status": "aborted", "failure_type": "ProcessTreeRSSLimitExceeded", "failure_evidence": {
+            "process_tree_peak_rss_bytes": 300, "process_tree_sample_count": 2, "rss_limit_bytes": 250,
+            "exception_text": "FAKE_PRIVATE_BODY_NOT_EXPORTED"}}
+        projected = ci.worker_failure_projection(manifest, "c4")
+        self.assertEqual(projected["exception_type"], "C4Aborted")
+        self.assertEqual(projected["failure_code"], "ProcessTreeRSSLimitExceeded")
+        self.assertEqual(projected["failure_evidence"], {
+            "process_tree_peak_rss_bytes": 300, "process_tree_sample_count": 2, "rss_limit_bytes": 250})
+        self.assertEqual(projected["source_frames"], [])
+        self.assertNotIn("FAKE_PRIVATE_BODY_NOT_EXPORTED", json.dumps(projected))
+        self.assertTrue(all(row["observed"] is None and not row["passed"] for row in ci.c4_resource_gates(manifest)))
+
+    def test_unavailable_and_unknown_failure_values_are_projected_safely(self):
+        unavailable = ci.worker_failure_projection({"status": "unavailable", "failure_type": "PinnedFixtureMissing"}, "c4")
+        self.assertEqual(unavailable["exception_type"], "C4Unavailable")
+        self.assertEqual(unavailable["failure_code"], "PinnedFixtureMissing")
+        for status in ("failed", "aborted", "running", [], None):
+            with self.subTest(status=status):
+                projected = c4.failure_projection({"status": status, "failure_type": "FAKE_PRIVATE_BODY_NOT_EXPORTED",
+                    "failure_details": {"exception_type": "FAKE_PRIVATE_BODY_NOT_EXPORTED", "failure_code": []}})
+                self.assertEqual(projected["exception_type"], "other")
+                self.assertNotIn("FAKE_PRIVATE_BODY_NOT_EXPORTED", json.dumps(projected))
+
+    def test_failure_projection_bounds_child_frames_and_rejects_invalid_numbers(self):
+        child = {"exception_type": "C4Failure", "failure_code": "SupportingSpanBytesChanged", "source_frames": [
+            {"source": "retrieval_c4.py", "line": 198, "body": "FAKE_PRIVATE_BODY_NOT_EXPORTED"},
+            {"source": "FAKE_PRIVATE_PATH_NOT_EXPORTED", "line": 2},
+            {"source": "retrieval_c4.py", "line": True}],
+            "child_failure_diagnostics": {"failure_code": "FAKE_PRIVATE_BODY_NOT_EXPORTED"}}
+        error = c4.C4Failure("MeasuredSubprocessFailed", evidence={
+            "child_returncode": -9, "process_tree_peak_rss_bytes": True, "process_tree_sample_count": -1,
+            "rss_limit_bytes": "FAKE_PRIVATE_BODY_NOT_EXPORTED", "phase_wall_seconds": float("inf"),
+            "child_failure_diagnostics": child})
+        projected = c4.failure_details(error, measured_phase="c4")
+        self.assertEqual(projected["exception_type"], "C4Failure")
+        self.assertEqual(projected["failure_code"], "MeasuredSubprocessFailed")
+        self.assertEqual(projected["measured_phase"], "c4")
+        self.assertEqual(projected["failure_evidence"], {"child_returncode": -9})
+        self.assertEqual(projected["child_failure_diagnostics"], {
+            "stage": "c4", "exception_type": "C4Failure", "failure_code": "SupportingSpanBytesChanged",
+            "source_frames": [{"source": "retrieval_c4.py", "line": 198}]})
+        self.assertNotIn("FAKE_PRIVATE", json.dumps(projected))
+
+    def test_c4_measure_setup_failure_publishes_typed_source_diagnostics(self):
+        with tempfile.TemporaryDirectory(prefix="mesh-retrieval-ci-contract-") as temporary:
+            root = Path(temporary)
+            args = SimpleNamespace(repository=root, output=root / "measure")
+            helpers = SimpleNamespace(isolated_artifact_path=lambda path, _repository: Path(path),
+                safe_member=lambda path, name, **_kwargs: Path(path) / name,
+                write_json=lambda path, value: path.write_text(json.dumps(value), encoding="utf-8"))
+            with mock.patch.object(c4, "verify_protocol", side_effect=c4.C4Failure("FrozenC4ProtocolMismatch")):
+                with self.assertRaisesRegex(c4.C4Failure, "FrozenC4ProtocolMismatch"):
+                    c4.measure(args, helpers)
+            manifest = json.loads((args.output / "run-manifest.json").read_text(encoding="utf-8"))
+            projected = ci.worker_failure_projection(manifest, "c4")
+            self.assertEqual(projected["failure_code"], "FrozenC4ProtocolMismatch")
+            self.assertEqual(projected["exception_type"], "C4Failure")
+            self.assertTrue(any(row["source"] == "retrieval_c4.py" and row["line"] > 0 for row in projected["source_frames"]))
+            original = (args.output / "run-manifest.json").read_bytes()
+            with mock.patch.object(c4, "verify_protocol", side_effect=TypeError("FAKE_PRIVATE_BODY_NOT_EXPORTED")):
+                with self.assertRaises(TypeError):
+                    c4.measure(args, helpers)
+            self.assertEqual((args.output / "run-manifest.json").read_bytes(), original)
+
+    def test_c4_run_failure_manifest_keeps_type_code_and_source(self):
+        with tempfile.TemporaryDirectory(prefix="mesh-retrieval-ci-contract-") as temporary:
+            root = Path(temporary)
+            args = SimpleNamespace(repository=root, output=root / "run")
+            helpers = SimpleNamespace(isolated_artifact_path=lambda path, _repository: Path(path),
+                write_json=lambda path, value: path.write_text(json.dumps(value), encoding="utf-8"))
+            error = c4.C4Aborted("ProcessTreeRSSLimitExceeded", evidence={"process_tree_peak_rss_bytes": 300,
+                "process_tree_sample_count": 1, "rss_limit_bytes": 250})
+            with mock.patch.object(c4, "verify_protocol", side_effect=error):
+                with self.assertRaises(c4.C4Aborted):
+                    c4.run(args, helpers)
+            manifest = json.loads((args.output / "run-manifest.json").read_text(encoding="utf-8"))
+            projected = ci.worker_failure_projection(manifest, "c4")
+            self.assertEqual(manifest["status"], "aborted")
+            self.assertEqual(projected["failure_code"], "ProcessTreeRSSLimitExceeded")
+            self.assertEqual(projected["exception_type"], "C4Aborted")
+            self.assertTrue(any(row["source"] == "retrieval_c4.py" for row in projected["source_frames"]))
+
+    def test_failed_measured_child_propagates_its_safe_code_and_frame(self):
+        with tempfile.TemporaryDirectory(prefix="mesh-retrieval-ci-contract-") as temporary:
+            output = Path(temporary)
+            manifest = {"status": "failed", "failure_details": {"exception_type": "C4Failure",
+                "failure_code": "SupportingSpanBytesChanged", "source_frames": [{"source": "retrieval_c4.py", "line": 198}]}}
+            (output / "run-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            polls = iter((None, 1))
+            child = SimpleNamespace(pid=123, returncode=1, poll=lambda: next(polls))
+            process = SimpleNamespace(children=lambda **_kwargs: [], memory_info=lambda: SimpleNamespace(rss=100))
+            psutil = SimpleNamespace(Process=lambda *_args: process, NoSuchProcess=ProcessLookupError)
+            helpers = SimpleNamespace(safe_member=lambda path, name, **_kwargs: Path(path) / name)
+            with mock.patch.dict(sys.modules, {"psutil": psutil}), mock.patch.object(c4.subprocess, "Popen", return_value=child), \
+                    mock.patch.object(c4, "terminate_tree") as terminate, mock.patch.object(c4.time, "sleep"):
+                with self.assertRaises(c4.C4Failure) as raised:
+                    c4.supervised_measure(["FAKE_PROCESS_NOT_LAUNCHED"], output, 500, output, helpers)
+            terminate.assert_called_once()
+            projected = c4.failure_details(raised.exception, measured_phase="baseline")
+            self.assertEqual(projected["failure_code"], "MeasuredSubprocessFailed")
+            self.assertEqual(projected["measured_phase"], "baseline")
+            self.assertEqual(projected["failure_evidence"]["child_returncode"], 1)
+            self.assertEqual(projected["child_failure_diagnostics"]["failure_code"], "SupportingSpanBytesChanged")
+            self.assertEqual(projected["child_failure_diagnostics"]["source_frames"], [{"source": "retrieval_c4.py", "line": 198}])
 
 
 if __name__ == "__main__":

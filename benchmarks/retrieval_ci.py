@@ -28,9 +28,10 @@ PHASES = ("provision", "prepare", "guarded", "score-guarded", "replay", "fresh-d
           "passages", "score-passages")
 C4_PHASES = ("c4-freeze", "c4-provision", "c4", "score-c4")
 RUNTIME_PASSAGE_PHASES = ("runtime-passages", "score-runtime-passages")
+RUNTIME_C4_PHASES = ("runtime-c4-freeze", "runtime-c4-provision", "runtime-c4", "score-runtime-c4")
 HARNESS_FILES = ("production_retrieval.py", "replay_retrieval.py", "prepare_retrieval_ci.py",
                  "retrieval_ci.py", "passage_retrieval.py", "provision_production_model.py",
-                 "production_runner.py", "production_ledger.py")
+                 "production_runner.py", "production_ledger.py", "runtime_rerank_c4.py")
 QUALITY_TARGETS = {"prospective": 0.95, "longtext-prospective": 5 / 6, "longmemeval": 5 / 6}
 C4_RESOURCE_LIMITS = {"total_rss_mib": 768, "delta_rss_mib": 128, "delta_p95_ms": 50, "delta_p99_ms": 100, "delta_cpu_ms": 50}
 C4_PAIRED_METRICS = ("hit_at_1", "hit_at_5", "hit_at_10", "mrr_at_10", "ndcg_at_10")
@@ -73,6 +74,10 @@ def failure_details(exc, stage):
 
 
 def worker_failure_projection(manifest, stage):
+    if stage in {"c4", "runtime-c4"}:
+        from retrieval_c4 import failure_projection
+
+        return failure_projection(manifest, stage)
     details = manifest.get("failure_details", {}) if manifest.get("status") == "failed" else {}
     if not isinstance(details, dict):
         details = {}
@@ -118,6 +123,9 @@ def initial_summary(dataset, c4=False, runtime_passages=False):
     if runtime_passages:
         insertion = phases.index("score-fresh-default") + 1
         phases[insertion:insertion] = RUNTIME_PASSAGE_PHASES
+        if c4:
+            insertion = phases.index("score-runtime-passages") + 1
+            phases[insertion:insertion] = RUNTIME_C4_PHASES
     phases.extend(C4_PHASES if c4 else ())
     return {"artifact_version": 1, "status": "not_started", "dataset": dataset,
             "conditions": {}, "quality_gates": [],
@@ -125,7 +133,8 @@ def initial_summary(dataset, c4=False, runtime_passages=False):
             "labels_in_ranking_inputs": False, "default_changed": False,
             "claims": {"full_longmemeval": False, "competitor_superiority": False, "quiet_performance": False},
             "optional_c4_cross_encoder": "requested_separate_experiment" if c4 else "not_run_separate_manual_experiment",
-            "optional_runtime_passage_index": "requested_separate_experiment" if runtime_passages else "not_run_separate_manual_experiment"}
+            "optional_runtime_passage_index": "requested_separate_experiment" if runtime_passages else "not_run_separate_manual_experiment",
+            "optional_runtime_c4": "requested_actual_mesh_recall" if c4 and runtime_passages else "not_run_separate_manual_experiment"}
 
 
 class TreeUsage:
@@ -330,7 +339,7 @@ def condition_evidence(directory, fixture, runtime_files, model, protocol_hash, 
     if manifest["labels_in_ranking_inputs"] is not False or manifest["runtime_files"] != runtime_files:
         raise GateError("ConditionPrivacyOrRuntimeMismatch")
     verify_exports(directory, manifest)
-    if any(not re.fullmatch(r"(?:results-(?:C64|C96|default)|ingestion-fidelity|query-vectors|passage-ingestion-fidelity|parent-passage-coverage|query-resources)\.jsonl", name)
+    if any(not re.fullmatch(r"(?:results-(?:C64|C96|default)|ingestion-fidelity|query-vectors|passage-ingestion-fidelity|parent-passage-coverage|query-resources|runtime-reranker-resources)\.jsonl", name)
            for name in manifest["output_sha256"]):
         raise GateError("UnknownPublicExportName")
     result = {"status": "complete", "query_count": manifest["query_target"],
@@ -604,7 +613,7 @@ def quality_gates(dataset, conditions):
     return gates
 
 
-def c4_resource_gates(manifest):
+def c4_resource_gates(manifest, *, prefix="c4"):
     """Missing measurements remain visibly unqualified; reported booleans cannot waive limits."""
     reported = manifest.get("resource_gates", {})
     result = []
@@ -613,11 +622,11 @@ def c4_resource_gates(manifest):
         observed = numeric(entry.get("observed"))
         qualified = (type(observed) in {int, float} and entry.get("maximum") == maximum
                      and observed <= maximum and (name != "total_rss_mib" or observed > 0))
-        result.append({"name": "c4_" + name, "passed": qualified, "observed": observed, "maximum": maximum})
+        result.append({"name": prefix + "_" + name, "passed": qualified, "observed": observed, "maximum": maximum})
     return result
 
 
-def c4_quality_gates(dataset, condition, matching_passages):
+def c4_quality_gates(dataset, condition, matching_passages, *, cells_required=("results-C64", "results-C96"), prefix="c4"):
     """C4's zero-loss policy uses every answered query and its exact passage baseline."""
     def mapping(value):
         return value if isinstance(value, dict) else {}
@@ -641,9 +650,9 @@ def c4_quality_gates(dataset, condition, matching_passages):
     answered = mapping(condition.get("gold_survival")).get("answered_queries")
     matching_answered = mapping(matching_passages.get("gold_survival")).get("answered_queries")
     denominator_valid = type(answered) is int and answered > 0 and type(matching_answered) is int and matching_answered == answered
-    complete = set(cells) == {"results-C64", "results-C96"} and set(matching) == {"results-C64", "results-C96"}
-    gates = [{"name": "c4_paired_cells_and_answered_denominator", "passed": complete and denominator_valid}]
-    for cell in ("results-C64", "results-C96"):
+    complete = set(cells) == set(cells_required) and set(matching) == set(cells_required)
+    gates = [{"name": prefix + "_paired_cells_and_answered_denominator", "passed": complete and denominator_valid}]
+    for cell in cells_required:
         report = mapping(cells.get(cell))
         original = mapping(mapping(report.get("original_sdk_top10")).get("unconditional"))
         candidate = mapping(mapping(report.get("final_sdk_top10")).get("unconditional"))
@@ -657,7 +666,7 @@ def c4_quality_gates(dataset, condition, matching_passages):
             provenance = (denominator_valid and paired_valid and original_valid and candidate_valid and baseline_valid
                           and math.isclose(before, matched, rel_tol=0, abs_tol=1e-12)
                           and math.isclose(difference, after - before, rel_tol=0, abs_tol=1e-12))
-            gates.append({"name": "c4_paired_zero_loss_" + cell + "_" + metric,
+            gates.append({"name": prefix + "_paired_zero_loss_" + cell + "_" + metric,
                           "passed": provenance and difference >= 0, "observed_delta": difference, "minimum_delta": 0,
                           "paired_accounting_verified": provenance})
         counts = mapping(report.get("candidate_hit_at_1_regressions"))
@@ -672,12 +681,95 @@ def c4_quality_gates(dataset, condition, matching_passages):
                         and before_valid and after_valid
                         and math.isclose(before, counts["baseline_hits"] / answered, rel_tol=0, abs_tol=1e-12)
                         and math.isclose(after, counts["candidate_hits"] / answered, rel_tol=0, abs_tol=1e-12))
-        gates.append({"name": "c4_paired_hit_at_1_count_accounting_" + cell, "passed": balanced})
+        gates.append({"name": prefix + "_paired_hit_at_1_count_accounting_" + cell, "passed": balanced})
         if dataset in QUALITY_TARGETS:
             lost = counts.get("lost_baseline_hits")
-            gates.append({"name": "c4_no_new_exact_evidence_hit_at_1_regressions_" + cell,
+            gates.append({"name": prefix + "_no_new_exact_evidence_hit_at_1_regressions_" + cell,
                           "passed": balanced and lost == 0,
                           "observed_regressions": lost if type(lost) is int else None, "maximum_regressions": 0})
+    return gates
+
+
+def runtime_c4_evidence(directory, manifest):
+    from retrieval_c4_model import LIMITS, MODEL
+    from runtime_rerank_c4 import POLICY
+
+    configuration = manifest.get("runtime_reranker", {})
+    counts = configuration.get("native_counts", {})
+    target = manifest["query_target"]
+    passes = max(1, math.ceil(LIMITS["minimum_resource_samples_per_cell"] / target)) if type(target) is int and target > 0 else None
+    if (configuration.get("configuration") != "c4-minilm-runtime-recall" or configuration.get("phase") != "c4"
+            or configuration.get("policy") != POLICY or configuration.get("model") != MODEL
+            or configuration.get("limits") != LIMITS or type(configuration.get("resource_passes")) is not int
+            or configuration.get("resource_passes") != passes
+            or configuration.get("parent_identity_scores_spans_and_tail_verified") is not True
+            or configuration.get("top_one_matches_top_ten") is not True
+            or configuration.get("labels_in_ranking_inputs") is not False or not isinstance(counts, dict)):
+        raise GateError("RuntimeC4NativeConfigurationMismatch")
+    integer_keys = ("quality_native_calls", "top_one_native_calls", "resource_repeat_native_calls", "warmup_native_calls",
+                    "session_load_attempts", "session_load_count", "inference_attempted_batches", "inference_attempted_pairs",
+                    "inference_returned_batches", "inference_returned_pairs", "document_inference_attempts")
+    if (set(counts) - {*integer_keys, "cold_load_ms"}
+            or any(type(counts.get(key, 0)) is not int or counts.get(key, 0) < 0 for key in integer_keys)
+            or counts.get("quality_native_calls") != target or counts.get("top_one_native_calls") != target
+            or counts.get("resource_repeat_native_calls", 0) != target * (passes - 1)
+            or not 0 < counts.get("warmup_native_calls", 0) <= target
+            or counts.get("session_load_count") != 1 or counts.get("session_load_attempts") != 1
+            or counts.get("document_inference_attempts", 0) != 0
+            or type(counts.get("cold_load_ms")) not in {int, float} or not math.isfinite(counts["cold_load_ms"]) or counts["cold_load_ms"] < 0):
+        raise GateError("RuntimeC4NativeCallAccountingMismatch")
+    calls = sum(counts.get(key, 0) for key in integer_keys[:4])
+    batches, pairs = counts.get("inference_returned_batches", 0), counts.get("inference_returned_pairs", 0)
+    if (not 0 < batches <= calls or not batches * 2 <= pairs <= batches * LIMITS["parent_cap"]
+            or counts.get("inference_attempted_batches") != batches or counts.get("inference_attempted_pairs") != pairs):
+        raise GateError("RuntimeC4NativeInferenceAccountingMismatch")
+    samples = list(read_jsonl(safe_member(directory, "runtime-reranker-resources.jsonl")))
+    expected_queries = {row["query_id"] for row in read_jsonl(safe_member(directory, "results-default.jsonl"))}
+    expected = {(query_id, resource_pass) for query_id in expected_queries for resource_pass in range(passes)}
+    actual = set()
+    for row in samples:
+        if (set(row) != {"query_id", "resource_pass", "wall_ms", "process_cpu_ms", "quality_export"}
+                or type(row.get("query_id")) is not str or type(row.get("resource_pass")) is not int
+                or type(row.get("quality_export")) is not bool or row["quality_export"] != (row["resource_pass"] == 0)
+                or any(type(row.get(key)) not in {int, float} or not math.isfinite(row[key]) or row[key] < 0
+                       for key in ("wall_ms", "process_cpu_ms"))):
+            raise GateError("RuntimeC4ResourceSamplesInvalid")
+        actual.add((row["query_id"], row["resource_pass"]))
+    if (len(expected_queries) != target or len(actual) != len(samples) or actual != expected
+            or len(samples) < LIMITS["minimum_resource_samples_per_cell"]):
+        raise GateError("RuntimeC4ResourceSamplesIncomplete")
+    return {"configuration": "c4-minilm-runtime-recall", "model": MODEL, "limits": LIMITS,
+            "resource_passes": passes, "resource_sample_count": len(samples),
+            "native_counts": {key: numeric(value) for key, value in counts.items()},
+            "parent_identity_scores_spans_and_tail_verified": True, "top_one_matches_top_ten": True}
+
+
+def runtime_c4_pairing(root, manifests, conditions):
+    experiment, baseline = manifests["runtime-c4"], manifests["runtime-passages"]
+    if (experiment.get("paired_original_condition") != "runtime_passages"
+            or experiment.get("runtime_passage_run_manifest_sha256") != conditions["runtime-passages"]["run_manifest_sha256"]
+            or experiment.get("runtime_passage_results_sha256") != baseline["output_sha256"]["results-default.jsonl"]
+            or experiment.get("source_run_manifest_sha256") != conditions["guarded"]["run_manifest_sha256"]):
+        raise GateError("RuntimeC4PairSourceMismatch")
+    original = list(read_jsonl(safe_member(root / "runtime-passages", "results-default.jsonl")))
+    candidate = list(read_jsonl(safe_member(root / "runtime-c4", "results-default.jsonl")))
+    if len(original) != len(candidate):
+        raise GateError("RuntimeC4PairQueryCountMismatch")
+    for before, after in zip(original, candidate):
+        if (any(before.get(key) != after.get(key) for key in ("query_id", "corpus_id", "candidate_cap", "query_embedding_model"))
+                or after.get("original_sdk_top10") != before["final_sdk_top10"]):
+            raise GateError("RuntimeC4PairRankMismatch")
+    conditions["runtime-c4"]["runtime_reranker"] = runtime_c4_evidence(root / "runtime-c4", experiment)
+    conditions["runtime-c4"]["original_runtime_passage_ranks_verified"] = True
+
+
+def runtime_c4_quality_gates(dataset, condition, baseline):
+    gates = c4_quality_gates(dataset, condition, baseline, cells_required=("results-default",), prefix="runtime_c4")
+    if dataset in QUALITY_TARGETS:
+        observed = condition.get("metrics", {}).get("results-default", {}).get("final_sdk_top10", {}).get("unconditional", {}).get("hit_at_1", {}).get("mean")
+        valid = type(observed) in {int, float} and math.isfinite(observed)
+        gates.append({"name": "runtime_c4_exact_evidence_hit_at_1", "passed": valid and observed >= QUALITY_TARGETS[dataset],
+                      "observed": observed if valid else None, "minimum": QUALITY_TARGETS[dataset]})
     return gates
 
 
@@ -734,6 +826,22 @@ def run(args, repository, root):
                        "--protocol", str(c4_protocol), "--model-directory", str(c4_models), "--embedding-model-directory", str(models), "--output", str(root / "c4")],
                 "score-c4": [python, production, "score", str(root / "c4"), "--dataset-directory", str(data)],
             })
+            if runtime_passages:
+                runtime_reranker = str(repository / "benchmarks/runtime_rerank_c4.py")
+                runtime_protocol = root / "runtime-c4-protocol.json"
+                commands.update({
+                    "runtime-c4-freeze": [python, runtime_reranker, "freeze", "--repository", str(repository),
+                                          "--base-protocol", str(protocol), "--output", str(runtime_protocol)],
+                    "runtime-c4-provision": [python, str(repository / "benchmarks/provision_retrieval_c4.py"),
+                                             "--repository", str(repository), "--directory", str(c4_models)],
+                    "runtime-c4": [python, runtime_reranker, "run", args.dataset, "--repository", str(repository),
+                                   "--source-run", str(root / "guarded"), "--runtime-passage-run", str(root / "runtime-passages"),
+                                   "--fresh-default-run", str(root / "fresh-default"), "--dataset-directory", str(data),
+                                   "--base-protocol", str(protocol), "--protocol", str(runtime_protocol),
+                                   "--model-directory", str(c4_models), "--embedding-model-directory", str(models),
+                                   "--output", str(root / "runtime-c4")],
+                    "score-runtime-c4": [python, production, "score", str(root / "runtime-c4"), "--dataset-directory", str(data)],
+                })
         deadline, used_cpu = time.monotonic() + args.wall_seconds, 0.0
         manifests = {}
         stage = "isolation"
@@ -760,7 +868,7 @@ def run(args, repository, root):
                 used_cpu += observed["sampled_tree_cpu_seconds"]
                 save(root, summary)
                 if observed["status"] != "passed":
-                    if phase["name"] in {"guarded", "fresh-default", "passages", "runtime-passages", "c4"}:
+                    if phase["name"] in {"guarded", "fresh-default", "passages", "runtime-passages", "c4", "runtime-c4"}:
                         try:
                             partial = load_json(root / phase["name"], "run-manifest.json")
                             summary["failed_worker_diagnostics"] = worker_failure_projection(partial, phase["name"])
@@ -781,6 +889,13 @@ def run(args, repository, root):
                             summary["quality_gates"].extend(c4_resource_gates(partial))
                         except (ValueError, OSError, KeyError, TypeError):
                             pass
+                    if phase["name"] in RUNTIME_C4_PHASES:
+                        summary["optional_runtime_c4"] = "failed_or_unavailable"
+                        try:
+                            partial = load_json(root / "runtime-c4", "run-manifest.json")
+                            summary["quality_gates"].extend(c4_resource_gates(partial, prefix="runtime_c4"))
+                        except (ValueError, OSError, KeyError, TypeError):
+                            pass
                     raise GateError("PhaseFailed")
                 condition = "replay" if phase["name"] == "replay" else phase["name"][6:] if phase["name"].startswith("score-") else None
                 if condition:
@@ -788,18 +903,28 @@ def run(args, repository, root):
                     protocol_hash = digest_file(safe_member(root, "protocol.json"))
                     manifests[condition], summary["conditions"][condition] = condition_evidence(
                         root / condition, fixture, runtime_files, MODEL, protocol_hash, scored=condition != "replay",
-                        runtime_passages=condition == "runtime-passages",
+                        runtime_passages=condition in {"runtime-passages", "runtime-c4"},
                         guarded_source=root / "guarded" if condition == "passages" else None)
                     if condition == "passages":
                         summary["quality_gates"] = quality_gates(args.dataset, summary["conditions"])
                         if "runtime-passages" in summary["conditions"]:
                             summary["quality_gates"].extend(runtime_passage_quality_gates(
                                 args.dataset, summary["conditions"]["runtime-passages"], summary["conditions"]["fresh-default"]))
+                        if "runtime-c4" in summary["conditions"]:
+                            summary["quality_gates"].extend(c4_resource_gates(manifests["runtime-c4"], prefix="runtime_c4"))
+                            summary["quality_gates"].extend(runtime_c4_quality_gates(
+                                args.dataset, summary["conditions"]["runtime-c4"], summary["conditions"]["runtime-passages"]))
                     if condition == "runtime-passages":
                         runtime_passage_pairing(root, manifests, summary["conditions"])
                         summary["quality_gates"].extend(runtime_passage_quality_gates(
                             args.dataset, summary["conditions"][condition], summary["conditions"]["fresh-default"]))
                         summary["optional_runtime_passage_index"] = "complete"
+                    if condition == "runtime-c4":
+                        runtime_c4_pairing(root, manifests, summary["conditions"])
+                        summary["optional_runtime_c4"] = "complete"
+                        summary["quality_gates"].extend(c4_resource_gates(manifests[condition], prefix="runtime_c4"))
+                        summary["quality_gates"].extend(runtime_c4_quality_gates(
+                            args.dataset, summary["conditions"][condition], summary["conditions"]["runtime-passages"]))
                     save(root, summary)
             stage = "paired_validation"
             fixture = load_json(data, "manifest.json")
@@ -825,6 +950,12 @@ def run(args, repository, root):
                 summary["optional_runtime_passage_index"] = "complete"
                 summary["quality_gates"].extend(runtime_passage_quality_gates(
                     args.dataset, summary["conditions"]["runtime-passages"], summary["conditions"]["fresh-default"]))
+                if c4:
+                    runtime_c4_pairing(root, manifests, summary["conditions"])
+                    summary["optional_runtime_c4"] = "complete"
+                    summary["quality_gates"].extend(c4_resource_gates(manifests["runtime-c4"], prefix="runtime_c4"))
+                    summary["quality_gates"].extend(runtime_c4_quality_gates(
+                        args.dataset, summary["conditions"]["runtime-c4"], summary["conditions"]["runtime-passages"]))
             if c4:
                 experiment = manifests["c4"]
                 if (experiment.get("paired_original_condition") != "no_reranker_passages"

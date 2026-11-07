@@ -22,6 +22,8 @@ Performance & Security Architecture:
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 import contextvars
 import difflib
 import gc
@@ -116,6 +118,7 @@ _model: Optional[Any] = None
 _torch: Optional[Any] = None
 _model_backend: Optional[str] = None
 _last_model_use_ts: float = 0.0
+_active_model_uses: int = 0
 _watchdog_started: bool = False
 _MODEL_NAME = "all-MiniLM-L6-v2"
 
@@ -682,6 +685,10 @@ class _DirectOnnxEmbedding:
     def _encode_raw_batches(self, texts: list[str], batch_size: int = 32) -> np.ndarray:
         if not texts:
             return np.empty((0, EMBEDDING_DIM), dtype=np.float32)
+        with _using_model():
+            return self._encode_raw_batches_active(texts, batch_size)
+
+    def _encode_raw_batches_active(self, texts: list[str], batch_size: int) -> np.ndarray:
         all_batches: list[np.ndarray] = []
         for start in range(0, len(texts), batch_size):
             batch = texts[start : start + batch_size]
@@ -1511,7 +1518,9 @@ def _recover_reembed_hints(limit: int = 32) -> list[_ReembedHint]:
 
 def _process_reembed_batch(items: list[_ReembedHint]) -> None:
     """Publish only matching revisions/model targets; failed jobs remain durable."""
-    with _REEMBED_PROCESS_LOCK:
+    if not items:
+        return
+    with _REEMBED_PROCESS_LOCK, _using_model():
         by_store: dict[tuple[str, str], dict[str, _ReembedHint]] = {}
         for hint in items:
             group = by_store.setdefault((hint.data_root, hint.namespace), {})
@@ -1758,27 +1767,42 @@ def set_idle_unload_seconds(seconds: float) -> None:
 
 
 def unload_model() -> bool:
+    return _unload_models(idle_only=False)
+
+
+def _unload_models(*, idle_only: bool) -> bool:
     global _model, _torch, _model_backend, _EMBED_CACHE_BYTES, _NORM_QUERY_CACHE_BYTES
+    with _MODEL_LOCK:
+        if _active_model_uses:
+            return False
+        if idle_only and (_IDLE_UNLOAD_SECONDS <= 0 or _last_model_use_ts <= 0
+                          or time.monotonic() - _last_model_use_ts < _IDLE_UNLOAD_SECONDS):
+            return False
+        # Recheck expiry and retire coherent model/tag state under the same lock.
+        # The reranker gate is nonblocking, so an active recall cannot deadlock.
+        reranker = sys.modules.get("mesh.local_rerank")
+        reranker_unloaded = reranker.unload_reranker() if reranker is not None else False
+        model_unloaded = _model is not None
+        torch_ref = None
+        if model_unloaded:
+            _model = None
+            _model_backend = None
+            torch_ref = _torch
+            _torch = None
     with _EMBED_CACHE_LOCK:
         _EMBED_CACHE.clear()
         _EMBED_CACHE_BYTES = 0
     with _NORM_QUERY_CACHE_LOCK:
         _NORM_QUERY_CACHE.clear()
         _NORM_QUERY_CACHE_BYTES = 0
-    with _MODEL_LOCK:
-        if _model is None:
-            return False
-        _model = None
-        _model_backend = None
-        torch_ref = _torch
-        _torch = None
     try:
         if torch_ref is not None and hasattr(torch_ref, "cuda") and torch_ref.cuda.is_available():
             torch_ref.cuda.empty_cache()
     except Exception:
         pass
-    gc.collect()
-    return True
+    if model_unloaded or reranker_unloaded:
+        gc.collect()
+    return model_unloaded or reranker_unloaded
 
 
 def get_engine_status() -> dict[str, Any]:
@@ -1823,6 +1847,27 @@ def get_engine_status() -> dict[str, Any]:
     }
 
 
+def _touch_model_usage() -> None:
+    global _last_model_use_ts
+    with _MODEL_LOCK:
+        _last_model_use_ts = time.monotonic()
+    _ensure_idle_watchdog()
+
+
+@contextmanager
+def _using_model():
+    global _active_model_uses, _last_model_use_ts
+    with _MODEL_LOCK:
+        _active_model_uses += 1
+        _last_model_use_ts = time.monotonic()
+    try:
+        yield
+    finally:
+        with _MODEL_LOCK:
+            _active_model_uses -= 1
+            _last_model_use_ts = time.monotonic()
+
+
 def _idle_watchdog_loop() -> None:
     while True:
         sleep_step = 15.0
@@ -1831,13 +1876,15 @@ def _idle_watchdog_loop() -> None:
         time.sleep(sleep_step)
         if _IDLE_UNLOAD_SECONDS <= 0:
             continue
+        reranker = sys.modules.get("mesh.local_rerank")
+        reranker_loaded = reranker is not None and reranker.is_loaded()
         with _MODEL_LOCK:
-            if _model is None or _last_model_use_ts <= 0:
+            if _active_model_uses or (_model is None and not reranker_loaded) or _last_model_use_ts <= 0:
                 continue
             elapsed = time.monotonic() - _last_model_use_ts
             if elapsed < _IDLE_UNLOAD_SECONDS:
                 continue
-        unload_model()
+        _unload_models(idle_only=True)
 
 
 def _ensure_idle_watchdog() -> None:
@@ -2040,6 +2087,13 @@ def _encode_uncached_texts_with_tag(
     texts: list[str],
     *,
     model_context: Optional[tuple[Any, Optional[str]]] = None,
+) -> tuple[np.ndarray, str]:
+    with _using_model():
+        return _encode_uncached_texts_with_tag_active(texts, model_context=model_context)
+
+
+def _encode_uncached_texts_with_tag_active(
+    texts: list[str], *, model_context: Optional[tuple[Any, Optional[str]]] = None,
 ) -> tuple[np.ndarray, str]:
     global _last_model_use_ts
     model, backend = model_context if model_context is not None else _get_model()
@@ -3575,6 +3629,20 @@ class Mesh:
             tags=_parse_tags(tags) if tags else None, source_agent=source_agent,
         )
         memories.sort(key=lambda x: (-x["rank_score"], -x["similarity"], x["id"]))
+        if env_bool("MESH_RERANK_ENABLED", False):
+            from .local_rerank import rerank
+
+            def revalidate_rerank(rows):
+                _check_agent_scope(self.agent_id, self.namespace, write=False, trusted_local=self.trusted_local)
+                return self.store.revalidate_query_results(
+                    rows, include_private=bool(actual_include_private and _resolve_sdk_include_private(include_private)),
+                    include_quarantined=include_quarantined, include_stale=include_stale,
+                    min_confidence=min_confidence, memory_type=memory_type,
+                    tags=_parse_tags(tags) if tags else None, source_agent=source_agent,
+                )
+
+            # Candidate collection already retains at least 32 results, including n=1.
+            memories = rerank(clean_query, memories, revalidate=revalidate_rerank)
         memories = memories[:n]
 
         # Finding S12: Redact credential queries and mark private_query=True even on 0 results

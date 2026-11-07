@@ -385,6 +385,39 @@ Hybrid search.
 
 Flags: `--count/-n/--n`, `--namespace`, `--type`, `--tags`, `--min-confidence`, `--min-similarity`, `--no-stale`, `--no-other`, `--no-private`, `--include-quarantined`, `--json`.
 
+The optional local reranker is off by default. With `MESH_RERANK_ENABLED=1`, it reorders the first four authorized parent results using one pinned CPU cross encoder. Candidate collection retains four results before trimming even for `-n 1`. Existing similarity thresholds, primary/passage vectors, original IDs, revisions, incarnations, store generations and supporting spans remain intact. The reranker is separate from query embedding mode: forcing hash embeddings alone never enables it.
+
+Supply these two files separately from [`Xenova/ms-marco-MiniLM-L-6-v2`](https://huggingface.co/Xenova/ms-marco-MiniLM-L-6-v2/tree/a09144355adeed5f58c8ed011d209bf8ee5a1fec), revision `a09144355adeed5f58c8ed011d209bf8ee5a1fec`. Copy `onnx/model_quantized.onnx` into an ordinary local directory as `model.onnx`, alongside `tokenizer.json`. Mesh verifies the fixed sizes and SHA-256 hashes before loading. Linked directories/files and mismatched files are rejected. Runtime and the verifier never download files or contact a provider.
+
+| Local filename | Bytes | SHA-256 |
+|---|---:|---|
+| `model.onnx` | 23143499 | `e9d8ebf845c413e981c175bfe49a3bfa9b3dcce2a3ba54875ee5df5a58639fbe` |
+| `tokenizer.json` | 711396 | `d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66` |
+
+Verify an offline copy without loading a model:
+
+```bash
+python -m mesh.local_rerank verify models/minilm-reranker
+```
+
+Set both variables in the SDK/server process, or for a CLI invocation:
+
+```bash
+MESH_RERANK_MODEL_DIR=models/minilm-reranker MESH_RERANK_ENABLED=1 mesh ask "How do we deploy?" --json
+```
+
+In PowerShell:
+
+```powershell
+$env:MESH_RERANK_MODEL_DIR = "models/minilm-reranker"
+$env:MESH_RERANK_ENABLED = "1"
+mesh ask "How do we deploy?" --json
+```
+
+The query uses its original-source prefix of at most 29 reranker tokens. A selected derived passage must fit verbatim within 224 tokens; original parents use a deterministic original-source prefix at that limit. Pair inputs have at most 256 tokens and never truncate silently. `rerank_score` is a separate, uncalibrated relevance logit; `rerank_original_rank` records base order, and `rerank_input` records the actual source range, original/kept token counts and removed character counts. Original supporting spans still describe base retrieval evidence. Privacy, filters and complete parent identity are checked before and after inference.
+
+The process shares one lazy CPU session and tokenizer across namespaces, with one inference batch of at most four pairs and no query/body cache. Busy inference, unavailable or invalid files, and oversized/invalid selected spans retain base order with a content-free `rerank_status`. Results beyond four retain their order and report `outside_parent_cap`; default-off results have no reranker fields. The existing idle watchdog uses `MESH_IDLE_UNLOAD_SECONDS` for both models, including a reranker used with hash embeddings. Active inference and passage backfill finish before unloading, and idle time restarts after that work; `mesh.unload_model()` also releases idle sessions. Broader independent quality/resource qualification is required before changing the default.
+
 #### `mesh inspect`
 
 Browse recent memories. Flags: `--limit`, `--type`, `--tag`, `--no-private`, `--quarantined`, `--namespace`, `--json`. `mesh i` is an alias for `mesh inspect`.
@@ -941,8 +974,10 @@ It binds loopback by default. Non-loopback binding requires an explicit `--host`
 | `MESH_QUERY_MODE` | `auto` (default) uses the configured verified neural model when ready and reports fallback when unavailable; `neural` requires that model; `hash` forces hash queries. This is separate from fast-stage ingestion. |
 | `MESH_RECALL_FUSION` | Hybrid ranking mode: `calibrated` (default) or experimental `rrf`. Scores from fusion are separate from cosine similarity. |
 | `MESH_PASSAGE_INDEX` | `1` enables the schema-6 passage candidate in the active SDK/server process; default `0`. Text queries require an authorized, complete compatible passage generation. Ready compatible long memories use original paragraph/sentence spans, while single-window and pending memories retain a primary representation. Completed zero-child generations also activate the authorized body-only scorer. Vector-only learning lookups keep primary vectors. Quality/resource qualification is pending. |
+| `MESH_RERANK_ENABLED` | `1` enables the optional local four-parent CPU reranker in the active SDK/server process; default `0`. Requires separately supplied pinned files. Existing similarity thresholds and evidence stay intact; unavailable/busy inference keeps base order with `rerank_status`. |
+| `MESH_RERANK_MODEL_DIR` | Explicit local directory containing the pinned `model.onnx` and `tokenizer.json` described under [`mesh ask`](#mesh-ask-query). No default discovery, automatic download, cloud provider or per-namespace model copy. |
 | `MESH_RECALL_CANDIDATES` | Candidate-pool target for independent dense and lexical channels. Default 96, range 16–512; at least the requested result count. |
-| `MESH_IDLE_UNLOAD_SECONDS` | Idle seconds before unloading the model; `0` never unloads. |
+| `MESH_IDLE_UNLOAD_SECONDS` | Idle seconds before the shared watchdog unloads embedding and optional reranker models; `0` never unloads automatically. |
 
 ### Storage and limits
 

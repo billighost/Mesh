@@ -34,6 +34,17 @@ the retrieval experiment before passage indexing. The repaired benchmark boundar
 accepts only canonical schema 6 and records its numeric form consistently.
 Focused checks do not replace corrected native quality and resource gates.
 
+At `7ee42afb`, [normal CI](https://github.com/billighost/Mesh/actions/runs/42346677047)
+and both full qualification suites in
+[the production run](https://github.com/billighost/Mesh/actions/runs/42346677098)
+passed. That production run failed retrieval qualification: the bounded fixtures
+retained first-result misses, and passage backfill stalled on both public corpora.
+The latest reviewed changes add a default-off production reranker and actual
+`Mesh.recall` qualification paired with the ordinary runtime passage results.
+They also protect active passage backfill and reranker inference from idle model
+unloading. A small integrated Python 3.10 check passed; native quality and resource
+qualification of these changes remains pending.
+
 The development machine has 8 GiB RAM. Local work uses small isolated checks
 with one test worker and no model or corpus evaluation. Full suites, concurrent
 workloads, and model evaluations run on GitHub-hosted runners.

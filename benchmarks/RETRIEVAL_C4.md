@@ -1,15 +1,30 @@
 # Optional C4 retrieval evaluation
 
-This separate, default-off CI experiment scores the first four distinct authorized
+The legacy default-off CI experiment scores the first four distinct authorized
 parents from the immutable no-reranker passage result. It uses the previously
 pinned MiniLM cross-encoder and introduces no production model catalog entry,
-runtime ranking change, dependency, cloud LLM call or local download. The original
+runtime ranking change, dependency, cloud LLM call or local download. The separate
+production implementation is explicitly enabled as described in [DOCS.md](../DOCS.md).
+The original
 long-memory runner and the C64 MiniLM and TinyBERT evidence remain untouched.
 
-The [runner](retrieval_c4.py), [fixed fixture metadata](retrieval_c4_model.py)
+The legacy [runner](retrieval_c4.py), [fixed fixture metadata](retrieval_c4_model.py)
 and [remote provisioner](provision_retrieval_c4.py) use the shared
-[passage harness](passage_retrieval.py). They are benchmark utilities;
-the optional cross-encoder is not loaded by the normal Mesh runtime.
+[passage harness](passage_retrieval.py). They are benchmark utilities. The normal
+Mesh runtime keeps local reranking disabled unless explicitly configured.
+
+When both `run_c4` and `run_runtime_passages` are requested, the separate
+[runtime qualification](runtime_rerank_c4.py) runs before the legacy child-memory
+experiment. It calls actual `Mesh.recall` on the actual schema-6 passage index,
+paired with the hash-verified ordinary runtime-passage export. Matched native
+subprocesses preserve parent identities, base scores, exact supporting spans,
+first-four membership and tail order. Every query also gets a separately recorded
+`n=1` check against its `n=10` first result. Native session, inference and fresh
+query encoding calls are counted. A single default configuration uses at least
+100 matched resource samples and the same C4 resource maxima below; cold loading
+of verified model bytes contributes to the process-tree RSS measurement. The
+separate scorer requires zero paired metric loss and the declared bounded exact
+evidence targets. Earlier failed or unqualified conditions remain visible.
 
 The CI API is `retrieval_c4.py freeze`, `provision_retrieval_c4.py`, then
 `retrieval_c4.py run`. The run requires separate `--model-directory` and
@@ -61,6 +76,13 @@ when measurement was unavailable. Missing or mismatched fixtures, failed source
 fences, resource rejection and interruption produce content-free typed evidence.
 They stop optional scoring, clean owned processes/files and never select a default.
 
+Failed, aborted and unavailable C4 workers retain their fixed failure code,
+exception type and at most four source filenames with line numbers in the
+sanitized job summary. Diagnostics identify a failed `baseline` or `c4` measured
+phase and preserve finite numeric abort evidence and one child failure when
+available. Exception text, absolute paths and unknown fields are omitted. A
+`null` resource observation remains unavailable; it does not establish an overrun.
+
 Complete output manifests retain the base embedding revision, model hashes,
 runtime hashes and base protocol hash for the existing scorer. They record the CE
 fixture and protocol separately, and `paired_original_condition` is
@@ -92,4 +114,6 @@ mocks and synthetic data. Local validation covered 20 contracts, AST parsing and
 focused lint. No native retrieval, model inference, model download, daemon,
 provider call or full test suite was run locally. Remote quality and resource
 evaluation remains unrun; the implemented harness and its passing mocked checks
-are not evidence of model quality or performance qualification.
+are not evidence of model quality or performance qualification. Legacy native
+results and failures remain attached to their tested source in Actions; the
+new actual-runtime reranker requires its own native qualification.
