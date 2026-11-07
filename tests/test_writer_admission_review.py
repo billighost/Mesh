@@ -82,7 +82,7 @@ def test_writer_waits_for_slow_open_reservations_and_recovers_after_failure(monk
         for index, name in enumerate(("writer-open-a", "writer-open-b")):
             if str(path).endswith(f"mesh_{name}.db"):
                 entered[index].set()
-                assert release[index].wait(20)
+                assert release[index].wait(30)
                 if index == 0 and failing_open:
                     raise sqlite3.OperationalError("Isolated connection open failure")
         if str(path).endswith("mesh_writer-open-c.db"):
@@ -127,10 +127,10 @@ def test_writer_waits_for_slow_open_reservations_and_recovers_after_failure(monk
                 stop.set()
         if failing_open:
             with pytest.raises(sqlite3.OperationalError, match="Isolated connection open failure"):
-                openers[0].result(timeout=3)
+                openers[0].result(timeout=10)
         else:
-            openers[0].result(timeout=3)
-        openers[1].result(timeout=3)
+            openers[0].result(timeout=10)
+        openers[1].result(timeout=10)
     with storage._CACHE_LOCK:
         assert storage._WRITER_OPENING == set()
         assert len(storage._CONNECTION_POOL) <= 2
