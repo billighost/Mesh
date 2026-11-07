@@ -13,7 +13,7 @@ from .passages import PASSAGE_FORMAT_VERSION, validate_spans
 from .store import (
     EMBEDDING_DIM, _FRAMING_TOKENS, _MEMORY_COLUMNS, _CacheBudgetLease,
     _blob_to_vector, _build_row_lexical_entry, _build_row_lexical_statistics,
-    _cache_row_peak_bytes, _keep_best_scored_id, _object_graph_bytes, np,
+    _cache_row_peak_bytes, _keep_best_scored_id, _object_graph_bytes, _VectorCacheEntry, np,
 )
 
 _PASSAGE_IDENTITY = (
@@ -101,6 +101,34 @@ def primary_reuse_ready(connection, parent, vector):
     ).fetchone() is not None
 
 
+def _passage_lexical_charge(index, lexical):
+    # The generation owns these strings even after a parent retires its pool.
+    # Scratch is bounded by this entry; never copy the whole corpus vocabulary.
+    seen = {id(token) for token in lexical["indexed_tokens"]
+            if index.lexical_strings.get(token) is token}
+    return _object_graph_bytes(lexical, seen)
+
+
+def _cache_lexical_entry(cache, index, content):
+    lexical = _build_row_lexical_entry(content, [])
+    fresh = [cache.lexical_strings.get(token, token) for token in lexical["indexed_tokens"]
+             if token not in index.lexical_strings]
+    if fresh:
+        before_size = sys.getsizeof(index.lexical_strings)
+        owned = sum(sys.getsizeof(token) for token in fresh)
+        # Reserve both dictionary generations before growth. New strings can
+        # alias parent storage, but independently retain their passage charge.
+        growth_peak = 4 * before_size + max(256, len(fresh) * 128)
+        cache._lease.resize(cache._cache_bytes + index.allocated_bytes + owned + growth_peak + cache._build_peak_bytes)
+        for token in fresh:
+            index.lexical_strings[token] = token
+        index.allocated_bytes += owned + sys.getsizeof(index.lexical_strings) - before_size
+    else:
+        cache._lease.resize(cache._cache_bytes + index.allocated_bytes + cache._build_peak_bytes)
+    _VectorCacheEntry._canonicalize_row_lexical(index, lexical)
+    return lexical
+
+
 class PassageCacheIndex:
     """One float32 matrix and compact offsets; lexical entries contain no body copies."""
 
@@ -112,12 +140,13 @@ class PassageCacheIndex:
         self.ranges = {}
         self.ready_primary_ids = set()
         self.implicit_lexical = {}
-        self.allocated_bytes = 2048 + capacity * (EMBEDDING_DIM * 4 + 16 + 128)
+        self.lexical_strings = {}
+        self.allocated_bytes = 2048 + capacity * (EMBEDDING_DIM * 4 + 16 + 128) + sys.getsizeof(self.lexical_strings)
 
 
 def load_passage_cache(store, connection, cache, capacity):
     base = cache._cache_bytes
-    initial = 2048 + capacity * (EMBEDDING_DIM * 4 + 16 + 128)
+    initial = 2048 + capacity * (EMBEDDING_DIM * 4 + 16 + 128) + sys.getsizeof({})
     cache._lease.resize(base + initial + cache._build_peak_bytes)
     index = PassageCacheIndex(capacity)
     position = 0
@@ -143,8 +172,8 @@ def load_passage_cache(store, connection, cache, capacity):
             if vector.shape != (EMBEDDING_DIM,) or not np.isfinite(vector).all():
                 valid = False
                 break
-            lexical = _build_row_lexical_entry(parent["content"][start:end], [])
-            charge = _object_graph_bytes(lexical)
+            lexical = _cache_lexical_entry(cache, index, parent["content"][start:end])
+            charge = _passage_lexical_charge(index, lexical)
             cache._lease.resize(base + index.allocated_bytes + charge + cache._build_peak_bytes)
             index.matrix[position] = vector
             index.offsets[position] = (start, end)
@@ -157,13 +186,13 @@ def load_passage_cache(store, connection, cache, capacity):
             # An incomplete derived bundle contributes no evidence; its parent
             # remains searchable through the existing primary representation.
             for offset in range(first, position):
-                index.allocated_bytes -= _object_graph_bytes(index.lexical[offset])
+                index.allocated_bytes -= _passage_lexical_charge(index, index.lexical[offset])
                 index.lexical[offset] = None
             position = first
     for parent in cache.rows_by_id.values():
         if parent["tags_list"]:
-            lexical = _build_row_lexical_entry(parent["content"], [])
-            charge = _object_graph_bytes(lexical) + 128
+            lexical = _cache_lexical_entry(cache, index, parent["content"])
+            charge = _passage_lexical_charge(index, lexical) + 128
             cache._lease.resize(base + index.allocated_bytes + charge + cache._build_peak_bytes)
             index.implicit_lexical[parent["id"]] = lexical
             index.allocated_bytes += charge

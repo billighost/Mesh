@@ -2183,7 +2183,7 @@ _DB_PATH_NAMESPACES: dict[Path, str] = {}
 _VECTOR_CACHE: OrderedDict[tuple[Path, str], _VectorCacheEntry] = OrderedDict()
 _CACHE_BUDGET_BYTES = 0
 _CACHE_BUDGET_LEASES: dict[str, int] = {}
-_CACHE_REJECTIONS: OrderedDict[tuple[Path, str], tuple[Optional[int], int]] = OrderedDict()
+_CACHE_REJECTIONS: OrderedDict[tuple[Path, str], tuple[Optional[int], int, bool]] = OrderedDict()
 _STORE_COORDINATORS: weakref.WeakValueDictionary[tuple[Path, str], "_StoreCoordinator"] = weakref.WeakValueDictionary()
 _READER_CONDITION = threading.Condition(threading.RLock())
 _READER_CONNECTION_POOL: OrderedDict[tuple[Path, int], _PooledConnection] = OrderedDict()
@@ -4361,6 +4361,7 @@ class MeshStore:
             if synced is not None:
                 return synced
         key = (self.db_path, self.namespace)
+        passage_index_mode = passage_index_enabled()
         evicted: list[tuple[Path, Optional[_PooledConnection], Optional[str]]] = []
         with self._cache_lock:
             if not force_refresh:
@@ -4381,7 +4382,8 @@ class MeshStore:
                     with _CACHE_LOCK:
                         rejected = _CACHE_REJECTIONS.get(key)
                     limit = _get_max_vector_cache_bytes()
-                    if rejected is not None and rejected[0] == cv and rejected[1] > limit:
+                    if (rejected is not None and rejected[0] == cv
+                            and rejected[1] > limit and rejected[2] == passage_index_mode):
                         raise CacheBudgetExceededError(
                             "Namespace version exceeds the cache allocation budget; use bounded streaming retrieval.",
                             required_bytes=rejected[1],
@@ -4394,7 +4396,7 @@ class MeshStore:
                         (self.namespace,),
                     ).fetchone()
                     count, vector_count, text_chars, max_chars = map(int, summary)
-                    passage_count = int(conn.execute("SELECT COUNT(*) FROM memory_passages WHERE namespace=?", (self.namespace,)).fetchone()[0]) if passage_index_enabled() else 0
+                    passage_count = int(conn.execute("SELECT COUNT(*) FROM memory_passages WHERE namespace=?", (self.namespace,)).fetchone()[0]) if passage_index_mode else 0
                     matrix_bytes = vector_count * EMBEDDING_DIM * 4
                     minimum = 4096 + matrix_bytes + count * 2048 + text_chars * 4 + passage_count * (EMBEDDING_DIM * 4 + 16 + 512)
                     if minimum > limit:
@@ -4411,6 +4413,7 @@ class MeshStore:
                         data_version=dv, content_version=cv, needs_healing_ids=set(),
                         owned_matrix=True, budget_lease=lease,
                     )
+                    entry.passage_index_enabled = passage_index_mode
                     del matrix
                     entry._build_peak_bytes = peak
                     # Keep a single SQL row and vector live. No full fetchall,
@@ -4435,7 +4438,7 @@ class MeshStore:
                         if not entry._upsert_vector(meta["id"], vector, row_meta=meta):
                             raise RuntimeError("Unable to construct a valid namespace vector cache.")
                     cursor.close()
-                    if passage_index_enabled():
+                    if passage_index_mode:
                         from .passage_search import load_passage_cache
 
                         entry.passages = load_passage_cache(self, conn, entry, passage_count)
@@ -4451,7 +4454,7 @@ class MeshStore:
             except CacheBudgetExceededError as exc:
                 if exc.required_bytes > _get_max_vector_cache_bytes():
                     with _CACHE_LOCK:
-                        _CACHE_REJECTIONS[key] = (cv, exc.required_bytes)
+                        _CACHE_REJECTIONS[key] = (cv, exc.required_bytes, passage_index_mode)
                         _CACHE_REJECTIONS.move_to_end(key)
                         while len(_CACHE_REJECTIONS) > _get_max_namespaces():
                             _CACHE_REJECTIONS.popitem(last=False)

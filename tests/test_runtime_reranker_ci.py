@@ -357,8 +357,12 @@ def test_runtime_c4_original_comparator_keeps_identity_privacy_and_span_bounds_s
         ci.condition_evidence(tmp_path, *arguments, scored=True, runtime_passages=True, runtime_c4=True)
 
 
-@pytest.fixture
-def passage_snapshot_fixture():
+@pytest.fixture(params=("stdlib", "patched"))
+def passage_snapshot_fixture(request):
+    snapshot_sqlite = sqlite3
+    if request.param == "patched":
+        from mesh.sqlite_runtime import sqlite3 as snapshot_sqlite
+
     with tempfile.TemporaryDirectory(prefix="mesh-frozen-quality-snapshot-contract-") as temporary:
         root = Path(temporary).resolve()
         home, run = root / "mesh-home", root / "runtime-passages"
@@ -372,7 +376,8 @@ def passage_snapshot_fixture():
         records = [dict(record, corpus_id="complete", body_changed=False)
                    for group in observer.by_memory.values() for record in group]
         database = home / "mesh_fixture.db"
-        with contextlib.closing(sqlite3.connect(database)) as connection, connection:
+        with contextlib.closing(snapshot_sqlite.connect(database)) as connection, connection:
+            connection.execute("PRAGMA journal_mode=WAL")
             connection.execute("CREATE TABLE memories(id TEXT,namespace TEXT,content TEXT,revision INTEGER,local_only INTEGER,quarantined INTEGER,embedding_model TEXT,embedding BLOB,incarnation TEXT,access_count INTEGER)")
             connection.execute("CREATE TABLE mesh_meta(key TEXT PRIMARY KEY,value TEXT)")
             connection.execute("INSERT INTO mesh_meta VALUES('store_generation',?)", ("b" * 32,))
@@ -384,14 +389,14 @@ def passage_snapshot_fixture():
                 connection.execute("INSERT INTO passages VALUES(?,?,?,?,?,?,?,?)",
                     (row["id"], row["revision"], row["incarnation"], row["store_generation"], production.MODEL_TAG,
                      0, len(row["content"]), b"model-free passage"))
-        store_module = SimpleNamespace(sqlite3=sqlite3, validate_namespace=lambda value: value)
+        store_module = SimpleNamespace(sqlite3=snapshot_sqlite, validate_namespace=lambda value: value)
         store = SimpleNamespace(db_path=database, store_generation="b" * 32,
                                 embedding_job_stats=lambda: {"pending_count": 0})
 
         @contextlib.contextmanager
         def read_connect():
-            with contextlib.closing(sqlite3.connect(store.db_path)) as connection:
-                connection.row_factory = sqlite3.Row
+            with contextlib.closing(snapshot_sqlite.connect(store.db_path)) as connection:
+                connection.row_factory = snapshot_sqlite.Row
                 yield connection
 
         store._read_connect = read_connect
@@ -403,6 +408,7 @@ def passage_snapshot_fixture():
 
         mesh = SimpleNamespace(namespace="fixture", store=store, wait_for_indexed=wait)
         item = production.freeze_runtime_passage_snapshot(mesh, records, snapshot_root, store_module)
+        assert item["fingerprint"]["wal_sha256"] is None
         snapshot_metadata = {"configuration": production.PASSAGE_SNAPSHOT_CONFIGURATION, "copy_method": "sqlite_backup",
                              "frozen_before_queries": True, "immutable": True, "corpora": {"complete": item}}
         exported = observer.frozen[query["id"]]
@@ -447,16 +453,20 @@ def test_snapshot_backup_freezes_prequery_access_state_and_preserves_two_copy_pa
     snapshot = state.load()
     with contextlib.closing(sqlite3.connect(state.mesh.store.db_path)) as connection, connection:
         connection.execute("UPDATE memories SET access_count=access_count+1")
+    source_fingerprint = production.guarded_database_fingerprint(state.home, "fixture")
     copied = []
     for phase in ("baseline", "c4"):
         root = state.root / phase
         (root / "mesh-home").mkdir(parents=True)
         production.copy_runtime_passage_snapshot(snapshot, "complete", "fixture", root, state.records, state.store_module)
         with contextlib.closing(sqlite3.connect(root / "mesh-home/mesh_fixture.db")) as connection:
+            assert connection.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+            assert connection.execute("PRAGMA synchronous").fetchone()[0] == 2
             copied.append((connection.execute("SELECT * FROM memories ORDER BY id").fetchall(),
                            connection.execute("SELECT * FROM passages ORDER BY memory_id").fetchall(),
                            connection.execute("SELECT value FROM mesh_meta WHERE key='store_generation'").fetchone()))
     assert copied[0] == copied[1]
+    assert production.guarded_database_fingerprint(state.home, "fixture") == source_fingerprint
     assert all(row[-1] == 0 for row in copied[0][0])
     production.verify_runtime_passage_snapshot(snapshot)
     templates = {row["id"]: row for row in state.original}

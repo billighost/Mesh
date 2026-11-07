@@ -33,6 +33,11 @@ and fully indexed passages. The paired phases reuse the verified stored vectors;
 primary or passage document inference during these phases rejects the run.
 The source database and its immutable ordinary passage export stay unchanged.
 
+The owned frozen backup is finalized in DELETE journal mode and closed before
+its fingerprint is recorded. This prevents a later read-only backup from creating
+an empty WAL beside the immutable source. Query copies restore the production
+WAL/FULL configuration; database and WAL tampering still reject the run.
+
 The actual runtime supports three explicit input profiles:
 
 | `MESH_RERANK_PROFILE` | Query tokens | Passage tokens | Maximum pair tokens |

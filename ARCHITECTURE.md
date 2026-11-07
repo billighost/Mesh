@@ -323,6 +323,13 @@ A completed zero-child generation is also activation evidence: its valid compati
 
 The cache pre-tokenizes content and bounds vector, lexical, and snapshot allocations. If a namespace cannot fit its configured cache budget, retrieval scans bounded database pages and retains bounded candidate heaps rather than loading the entire namespace. Query encoding uses the verified local model when ready, independently of ingestion's fast hash stage. Query/embedding cache keys include backend identity and preprocessing role; hash and neural vectors are never mixed under one model tag.
 
+Passage generations own a canonical token-string pool. Equal strings share storage,
+and the passage generation independently retains their allocation charge when a
+parent row changes or leaves its own pool. Entry accounting visits only that
+entry's strings, so it does not copy the corpus vocabulary for each passage.
+Cache admission failures bind to content version and passage mode; disabling the
+optional index can retry a fitting primary cache without a data mutation.
+
 The optional local reranker in `mesh/local_rerank.py` is off by default.
 `MESH_RERANK_ENABLED=1` requests one lazy shared CPU session using separately
 supplied, hash-verified model files. Recall retains four authorized parents before

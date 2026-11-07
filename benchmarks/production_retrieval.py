@@ -593,8 +593,20 @@ def freeze_runtime_passage_snapshot(mesh, records, snapshot_root, store_module):
     if {row["store_generation"] for row in identities.values()} != {mesh.store.store_generation}:
         raise ValueError("Runtime passage snapshot original generation changed")
     copy_guarded_corpus(None, source_home, namespace, snapshot_root, records, store_module)
+    database = safe_member(home, "mesh_" + namespace + ".db")
+    connection = store_module.sqlite3.connect(database)
+    try:
+        # A read-only open of a WAL-mode backup can create an empty WAL. Finish
+        # this owned snapshot before hashing; query copies restore runtime WAL.
+        if connection.execute("PRAGMA journal_mode=DELETE").fetchone()[0] != "delete":
+            raise ValueError("Runtime passage snapshot journal finalization failed")
+    finally:
+        connection.close()
+    fingerprint = guarded_database_fingerprint(home, namespace)
+    if fingerprint["wal_sha256"] is not None:
+        raise ValueError("Runtime passage snapshot still has a WAL")
     return {"namespace": namespace, "store_generation": mesh.store.store_generation,
-            "original_parent_count": len(identities), "fingerprint": guarded_database_fingerprint(home, namespace)}
+            "original_parent_count": len(identities), "fingerprint": fingerprint}
 
 
 def runtime_passage_snapshot_metadata(manifest, records, source_queries=None):
