@@ -14,14 +14,19 @@ The foreground-progress and test-fixture interference repairs are qualified.
 Reviewed HTTP clients reuse bounded connections while proving identity afresh on
 every call, including rejecting a closed identity connection before token dispatch.
 
-Retrieval reached native scoring. Two supervisor projection contracts still
-require repair: the legacy child experiment omitted local model hashes, and
-source-accounted public parents with no faithful source alias must retain their
-rank with zero relevance credit. The schema-6 production passage candidate has
-focused coverage and a separate opt-in fresh-query evaluation, with exact parent,
-model, original-span and source pairing checks. Final same-source passage,
-retrieval and supported-platform qualification remains pending; focused checks
-do not replace those gates.
+At `ecd96b5`, [normal CI](https://github.com/billighost/Mesh/actions/runs/42342135569)
+also passed all fifteen combinations, and [production qualification](https://github.com/billighost/Mesh/actions/runs/42342135644)
+passed the primary and minimum suites, crash recovery and primary package checks.
+Native scoring exposed optional-ordinal metadata incompatibility in the legacy
+child experiment. The latest focused repairs preserve absent-ordinal semantics
+and record content-free worker diagnostics. Completed zero-child primary
+generations now activate the same authorized scorer as long-parent generations.
+
+The production passage condition runs after its fresh-default pair and before
+legacy experiments; its evidence survives a later experimental failure. Exact
+parent, model, span, readiness and source pairing checks remain required. Final
+same-source passage, retrieval and supported-platform qualification of these
+latest repairs remains pending; focused checks do not replace those gates.
 
 The development machine has 8 GiB RAM. Local work uses small isolated checks
 with one test worker and no model or corpus evaluation. Full suites, concurrent

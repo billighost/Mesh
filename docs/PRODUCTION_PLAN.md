@@ -24,9 +24,11 @@ and primary wheel validation. The source-bound production matrix and same-select
 test-speed observations also completed successfully; [RESULTS.md](../benchmarks/RESULTS.md)
 preserves their measurements and resource deferrals. Foreground progress,
 test-fixture interference and HTTP connection exhaustion repairs are qualified.
-Legacy passage-model and source-fidelity projection contracts still need repair.
-Final same-source supported-platform and retrieval qualification of the subsequent
-schema-6 passage changes remains pending.
+At `ecd96b5`, the schema-6 platform matrix and both full qualification suites
+also passed. Subsequent focused repairs cover all-short scorer activation,
+absent-ordinal legacy metadata and content-free worker failure diagnostics.
+Final same-source supported-platform and retrieval qualification of these
+latest changes remains pending.
 
 The reviewed retrieval and optional four-candidate reranker harnesses are now
 integrated as CI utilities. The production workflow calls the five-dataset
@@ -34,7 +36,7 @@ retrieval workflow after primary and minimum qualification; source hashes,
 dependency constraints, exact evidence IDs, and failure artifacts bind each
 result to the source tested. [CI_VALIDATION.md](CI_VALIDATION.md) describes the
 remote checks and remaining evidence requirements. These harnesses have passed
-small local contract checks; native scoring has exposed the projection repairs
+small local contract checks; native scoring has exposed the metadata repair
 above. The production retrieval default has no experimental reranker.
 
 The maintainer's current machine has 8 GiB RAM and four logical CPUs. Development

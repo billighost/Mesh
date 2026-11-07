@@ -29,10 +29,30 @@ from replay_retrieval import (checked_path, compact_results, configure_isolation
 MODEL_TAG = "onnx-minilm-l6-v2"
 PASSAGE_REPRESENTATION = "paragraph-sentences-v1"
 PASSAGE_BATCH_LIMIT = 32
+WORKER_FAILURE_SOURCES = frozenset({"production_retrieval.py", "passage_retrieval.py", "replay_retrieval.py",
+                                    "retrieval_c4.py", "retrieval_c4_model.py", "memory.py", "store.py",
+                                    "passage_search.py", "passages.py"})
+WORKER_FAILURE_TYPES = frozenset({"ValueError", "TypeError", "KeyError", "AttributeError", "AssertionError",
+                                  "OSError", "FileNotFoundError", "PermissionError", "RuntimeError", "ImportError",
+                                  "ModuleNotFoundError", "KeyboardInterrupt", "SystemExit", "TimeoutExpired",
+                                  "CacheBudgetExceededError", "StaleStoreError"})
 
 
 def digest_text(value):
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def worker_failure_details(exc, stage):
+    # Keep only fixed source names and line numbers, never exception arguments.
+    frames, trace = [], exc.__traceback__
+    while trace is not None:
+        source = Path(trace.tb_frame.f_code.co_filename).name
+        if source in WORKER_FAILURE_SOURCES:
+            frames.append({"source": source, "line": trace.tb_lineno})
+        trace = trace.tb_next
+    name = type(exc).__name__
+    return {"stage": stage, "exception_type": name if name in WORKER_FAILURE_TYPES else "other",
+            "source_frames": frames[-4:]}
 
 
 def decorate_results(results, records_by_memory):
@@ -899,7 +919,8 @@ def run_retrieval(args):
                 metadata["guarded_source_immutable"] = True
             metadata["status"] = "complete"
     except BaseException as exc:
-        metadata.update(status="failed", failure_type=type(exc).__name__)
+        metadata.update(status="failed", failure_type=type(exc).__name__,
+                        failure_details=worker_failure_details(exc, "runtime-passages" if runtime_passages else args.command))
         raise
     finally:
         for stream in (*streams.values(), fidelity, *((vectors,) if vectors else ()), *((resource_stream,) if resource_stream else ())):

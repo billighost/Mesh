@@ -17,6 +17,7 @@ from pathlib import Path
 
 from prepare_retrieval_ci import BOUNDED_DATASETS, DATASETS, MODEL
 from production_retrieval import (MODEL_TAG, PASSAGE_BATCH_LIMIT, PASSAGE_REPRESENTATION,
+                                  WORKER_FAILURE_SOURCES, WORKER_FAILURE_TYPES,
                                   runtime_parent_identities, validate_runtime_parent_results)
 from replay_retrieval import (FIELDS, checked_path, configure_isolation, digest_file,
                               isolated_artifact_path, read_jsonl, safe_member, verify_exports)
@@ -71,6 +72,22 @@ def failure_details(exc, stage):
     return {"stage": stage, "exception_type": name if name in FAILURE_TYPES else "other", "source_frames": frames[-4:]}
 
 
+def worker_failure_projection(manifest, stage):
+    details = manifest.get("failure_details", {}) if manifest.get("status") == "failed" else {}
+    if not isinstance(details, dict):
+        details = {}
+    name = details.get("exception_type", manifest.get("failure_type"))
+    frames = details.get("source_frames", [])
+    selected = []
+    if isinstance(frames, list):
+        for frame in frames[-4:]:
+            if (isinstance(frame, dict) and frame.get("source") in WORKER_FAILURE_SOURCES
+                    and type(frame.get("line")) is int and frame["line"] > 0):
+                selected.append({"source": frame["source"], "line": frame["line"]})
+    return {"stage": stage, "exception_type": name if isinstance(name, str) and name in WORKER_FAILURE_TYPES else "other",
+            "source_frames": selected}
+
+
 def hashes(repository):
     return {path.relative_to(repository).as_posix(): digest_file(checked_path(path, root=repository, must_exist=True))
             for path in sorted((repository / "mesh").rglob("*.py"))}
@@ -97,10 +114,14 @@ def save(root, summary):
 
 
 def initial_summary(dataset, c4=False, runtime_passages=False):
+    phases = list(PHASES)
+    if runtime_passages:
+        insertion = phases.index("score-fresh-default") + 1
+        phases[insertion:insertion] = RUNTIME_PASSAGE_PHASES
+    phases.extend(C4_PHASES if c4 else ())
     return {"artifact_version": 1, "status": "not_started", "dataset": dataset,
             "conditions": {}, "quality_gates": [],
-            "phases": [{"name": phase, "status": "not_run"} for phase in (
-                *PHASES, *(RUNTIME_PASSAGE_PHASES if runtime_passages else ()), *(C4_PHASES if c4 else ()))],
+            "phases": [{"name": phase, "status": "not_run"} for phase in phases],
             "labels_in_ranking_inputs": False, "default_changed": False,
             "claims": {"full_longmemeval": False, "competitor_superiority": False, "quiet_performance": False},
             "optional_c4_cross_encoder": "requested_separate_experiment" if c4 else "not_run_separate_manual_experiment",
@@ -737,6 +758,12 @@ def run(args, repository, root):
                 used_cpu += observed["sampled_tree_cpu_seconds"]
                 save(root, summary)
                 if observed["status"] != "passed":
+                    if phase["name"] in {"guarded", "fresh-default", "passages", "runtime-passages", "c4"}:
+                        try:
+                            partial = load_json(root / phase["name"], "run-manifest.json")
+                            summary["failed_worker_diagnostics"] = worker_failure_projection(partial, phase["name"])
+                        except (ValueError, OSError, KeyError, TypeError):
+                            pass
                     if phase["name"] in RUNTIME_PASSAGE_PHASES:
                         summary["optional_runtime_passage_index"] = "failed_or_unavailable"
                         try:
@@ -763,10 +790,14 @@ def run(args, repository, root):
                         guarded_source=root / "guarded" if condition == "passages" else None)
                     if condition == "passages":
                         summary["quality_gates"] = quality_gates(args.dataset, summary["conditions"])
+                        if "runtime-passages" in summary["conditions"]:
+                            summary["quality_gates"].extend(runtime_passage_quality_gates(
+                                args.dataset, summary["conditions"]["runtime-passages"], summary["conditions"]["fresh-default"]))
                     if condition == "runtime-passages":
                         runtime_passage_pairing(root, manifests, summary["conditions"])
                         summary["quality_gates"].extend(runtime_passage_quality_gates(
                             args.dataset, summary["conditions"][condition], summary["conditions"]["fresh-default"]))
+                        summary["optional_runtime_passage_index"] = "complete"
                     save(root, summary)
             stage = "paired_validation"
             fixture = load_json(data, "manifest.json")

@@ -197,6 +197,13 @@ quarantined, unknown or identity-mismatched parents remain rejected. Legacy
 child manifests may inherit missing model-file hashes only from their
 independently verified, matching guarded source.
 
+When requested, the production runtime condition runs immediately after the
+fresh-default pair and before legacy child-passage experiments. Its scored
+metrics and gates survive a later legacy or C4 failure; the final combined
+status still applies every requested gate and the same whole-run resource
+limits. Worker failures retain only a fixed stage, exception type and source
+line numbers, so diagnostics expose no memory bodies or exception arguments.
+
 ## Optional C4 experiment
 
 The optional `run_c4: true` / `--reranker-experiment c4` hook is separate and off

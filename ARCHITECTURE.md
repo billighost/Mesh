@@ -319,6 +319,8 @@ sequenceDiagram
 
 The effective corpus contains compatible ready passages and implicit short/pending parents. It does not merge a separate original-primary long-parent ranking, so the earlier CI child experiment does not qualify this configuration. Standard `wait_for_indexed` remains document readiness; `target_representation="paragraph-sentences-v1"` additionally requires the complete source-bound passage generation. Import/export omit derived rows and rebuild them. Encryption activation converts existing passage vectors on store initialization; `mesh encrypt-db` also converts them in its full existing-data workflow.
 
+A completed zero-child generation is also activation evidence: its valid compatible primary vector, current identity, representation and absence of derived rows are verified. All-short ready corpora therefore use the same body-only scorer as corpora containing ready long parents. Adding a parent may change ordinary corpus statistics and ranks; it does not change the scoring mode. The zero-capacity passage index, ready-primary IDs and body lexical entries are charged to the same cache lease.
+
 The cache pre-tokenizes content and bounds vector, lexical, and snapshot allocations. If a namespace cannot fit its configured cache budget, retrieval scans bounded database pages and retains bounded candidate heaps rather than loading the entire namespace. Query encoding uses the verified local model when ready, independently of ingestion's fast hash stage. Query/embedding cache keys include backend identity and preprocessing role; hash and neural vectors are never mixed under one model tag.
 
 ---

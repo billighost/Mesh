@@ -2072,7 +2072,11 @@ class _VectorCacheEntry:
         vec: Optional[np.ndarray],
         row_meta: Optional[dict[str, Any]] = None,
     ) -> bool:
-        if self.passages is not None and memory_id in self.passages.ranges:
+        if self.passages is not None and (
+            memory_id in self.passages.ranges or memory_id in self.passages.ready_primary_ids
+            or memory_id in self.passages.implicit_lexical
+            or (row_meta is not None and (row_meta.get("tags_list") or row_meta.get("passage_format_version") == PASSAGE_FORMAT_VERSION))
+        ):
             self.passage_index_dirty = True
         self.all_ids.add(memory_id)
         if row_meta is not None:
@@ -2142,7 +2146,10 @@ class _VectorCacheEntry:
         self._delete_vector_unmetered(memory_id)
 
     def _delete_vector_unmetered(self, memory_id: str) -> None:
-        if self.passages is not None and memory_id in self.passages.ranges:
+        if self.passages is not None and (
+            memory_id in self.passages.ranges or memory_id in self.passages.ready_primary_ids
+            or memory_id in self.passages.implicit_lexical
+        ):
             self.passage_index_dirty = True
         self.all_ids.discard(memory_id)
         self.needs_healing_ids.discard(memory_id)
@@ -3545,7 +3552,7 @@ class MeshStore:
             if not document_pending_passages:
                 conn.execute("DELETE FROM embedding_jobs WHERE namespace=? AND memory_id=? AND revision=? AND incarnation=? AND target_model=? AND target_representation=?", (self.namespace, memory_id, expected_revision, expected_incarnation, model, target_representation))
             version = self._bump_content_version_in_tx(conn)
-            if count or row[4]:
+            if count or row[4] or published_format == PASSAGE_FORMAT_VERSION:
                 self._invalidate_cache()
             else:
                 self._queue_cache_delta("upsert", memory_id, vector, self.get(memory_id), version)
@@ -4428,7 +4435,7 @@ class MeshStore:
                         if not entry._upsert_vector(meta["id"], vector, row_meta=meta):
                             raise RuntimeError("Unable to construct a valid namespace vector cache.")
                     cursor.close()
-                    if passage_count:
+                    if passage_index_enabled():
                         from .passage_search import load_passage_cache
 
                         entry.passages = load_passage_cache(self, conn, entry, passage_count)
@@ -5717,12 +5724,12 @@ class MeshStore:
         if not ids or not self.db_path.exists():
             return {}
         placeholders = ",".join("?" for _ in ids)
-        from .passage_search import passage_metadata
+        from .passage_search import passage_metadata, primary_reuse_ready
 
         result = {}
         with self._read_connect() as conn:
             rows = conn.execute(
-                f"SELECT id,namespace,content,revision,embedding_model,local_only,embedding IS NOT NULL AS has_vector,incarnation,passage_format_version,passage_count FROM memories WHERE namespace=? AND id IN ({placeholders})",
+                f"SELECT id,namespace,content,revision,embedding_model,local_only,embedding,embedding IS NOT NULL AS has_vector,incarnation,passage_format_version,passage_count FROM memories WHERE namespace=? AND id IN ({placeholders})",
                 (self.namespace, *ids),
             ).fetchall()
             for raw in rows:
@@ -5733,7 +5740,7 @@ class MeshStore:
                 complete = False
                 if indexed and parent["passage_format_version"] == PASSAGE_FORMAT_VERSION:
                     parent["content"] = decrypt_text_if_encrypted(parent["content"])
-                    complete = parent["passage_count"] == 0 or len(passage_metadata(conn, parent)) == parent["passage_count"]
+                    complete = primary_reuse_ready(conn, parent, _blob_to_vector(parent["embedding"])) if parent["passage_count"] == 0 else len(passage_metadata(conn, parent)) == parent["passage_count"]
                 mid = parent["id"]
                 result[mid] = {"id": mid, "revision": int(parent["revision"]), "incarnation": parent["incarnation"], "store_generation": self.store_generation,
                                "embedding_model": parent["embedding_model"], "indexing_state": "indexed" if indexed else "pending",

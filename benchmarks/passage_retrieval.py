@@ -163,8 +163,9 @@ class _ParentHeapEntry:
 
 
 def _same_parent_quality(row):
+    ordinal = row.get("selected_passage_ordinal")
     return (float(row["rank_score"]), float(row["similarity"]),
-            -int(row.get("selected_passage_ordinal", -1)))
+            -int(-1 if ordinal is None else ordinal))
 
 
 class _BoundedParents:
@@ -628,7 +629,8 @@ def main(argv=None, experiment=None):
                 experiment.finish(manifest, output)
             manifest["status"] = "complete"
     except BaseException as exc:
-        manifest.update(status="failed", failure_type=type(exc).__name__, inference=dict(inference))
+        manifest.update(status="failed", failure_type=type(exc).__name__, inference=dict(inference),
+                        failure_details=helpers.worker_failure_details(exc, "passages"))
         raise
     finally:
         for stream in (*streams.values(), fidelity, coverage):

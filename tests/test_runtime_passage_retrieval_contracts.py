@@ -357,11 +357,71 @@ def test_runtime_phases_are_optional_and_keep_child_and_c4_conditions_separate()
     default = ci.initial_summary("prospective")
     requested = ci.initial_summary("prospective", c4=True, runtime_passages=True)
     assert [phase["name"] for phase in default["phases"]] == list(ci.PHASES)
-    assert [phase["name"] for phase in requested["phases"]] == [*ci.PHASES, *ci.RUNTIME_PASSAGE_PHASES, *ci.C4_PHASES]
+    insertion = ci.PHASES.index("score-fresh-default") + 1
+    assert [phase["name"] for phase in requested["phases"]] == [
+        *ci.PHASES[:insertion], *ci.RUNTIME_PASSAGE_PHASES, *ci.PHASES[insertion:], *ci.C4_PHASES]
     assert requested["default_changed"] is False
     workflow = (BENCHMARKS.parent / ".github/workflows/retrieval-quality.yml").read_text(encoding="utf-8")
     assert workflow.count("run_runtime_passages:") == 2
     assert workflow.count('if ($env:RETRIEVAL_RUN_RUNTIME_PASSAGES -eq "true")') == 2
+
+
+@pytest.mark.parametrize("failed_phase", ["passages", "c4-freeze"])
+def test_scored_runtime_evidence_and_failed_gates_survive_later_experiment_failure(failed_phase):
+    with tempfile.TemporaryDirectory(prefix="mesh-retrieval-ci-contract-") as temporary, mock.patch.dict(os.environ):
+        repository = Path(temporary)
+        benchmark = repository / "benchmarks"
+        benchmark.mkdir()
+        for name in (*ci.HARNESS_FILES, "retrieval_c4.py", "retrieval_c4_model.py", "provision_retrieval_c4.py"):
+            (benchmark / name).write_text("# synthetic harness\n", encoding="utf-8")
+        root = repository / ".work/run"
+        (root / "data/prospective").mkdir(parents=True)
+        (root / "data/prospective/manifest.json").write_text("{}\n", encoding="utf-8")
+        (root / "protocol.json").write_text("{}\n", encoding="utf-8")
+        phases, limits = [], []
+
+        def supervise(command, **kwargs):
+            script = Path(command[1]).name
+            if script == "production_retrieval.py":
+                phase = "score-" + Path(command[3]).name if command[2] == "score" else Path(command[command.index("--output") + 1]).name
+            elif script == "retrieval_c4.py":
+                phase = "c4-" + command[2]
+            else:
+                phase = {"provision_production_model.py": "provision", "prepare_retrieval_ci.py": "prepare",
+                         "replay_retrieval.py": "replay", "passage_retrieval.py": "passages"}[script]
+            phases.append(phase)
+            limits.append((kwargs["rss_bytes"], kwargs["cpu_seconds"]))
+            return {"status": "failed" if phase == failed_phase else "passed", "returncode": 1 if phase == failed_phase else 0,
+                    "wall_seconds": 0.01, "sampled_tree_cpu_seconds": 0.0, "sampled_tree_peak_rss_bytes": 1024}
+
+        def load(_directory, name):
+            return {"query_count": 1, "corpus_count": 1} if name == "manifest.json" else {
+                "status": "failed", "failure_type": "TypeError", "failure_details": {
+                    "exception_type": "TypeError", "source_frames": [{"source": "passage_retrieval.py", "line": 1}]}}
+
+        runtime_gates = [{"name": "runtime_passages_resource_accounting", "passed": True},
+                         {"name": "runtime_passages_quality", "passed": False}]
+        args = argparse.Namespace(dataset="prospective", model_directory=repository / ".work/models",
+            qualification_directory=root, floor_qualification_directory=root, wall_seconds=600, rss_mib=64, cpu_seconds=600,
+            runtime_passages=True, reranker_experiment="c4" if failed_phase == "c4-freeze" else "off")
+        with mock.patch.object(ci, "hashes", return_value={}), mock.patch.object(ci, "harness_hashes", return_value={}), \
+                mock.patch.object(ci, "qualify", return_value={"same_runtime_sources": True}), \
+                mock.patch.object(ci, "supervise", side_effect=supervise), mock.patch.object(ci, "load_json", side_effect=load), \
+                mock.patch.object(ci, "condition_evidence", side_effect=lambda *_args, **_kwargs: ({}, {"status": "complete"})), \
+                mock.patch.object(ci, "runtime_passage_pairing"), \
+                mock.patch.object(ci, "quality_gates", return_value=[{"name": "legacy_quality", "passed": False}]), \
+                mock.patch.object(ci, "runtime_passage_quality_gates", side_effect=lambda *_args: copy.deepcopy(runtime_gates)):
+            assert ci.run(args, repository, root) == 1
+        summary = json.loads((root / "job-summary.json").read_text(encoding="utf-8"))
+        assert phases.index("score-runtime-passages") == phases.index("score-fresh-default") + 2
+        assert phases.index("score-runtime-passages") < phases.index("passages")
+        assert "runtime-passages" in summary["conditions"]
+        assert summary["optional_runtime_passage_index"] == "complete"
+        assert all(gate in summary["quality_gates"] for gate in runtime_gates)
+        assert summary["status"] == "failed"
+        assert all(limit == (64 * 1024**2, 600) for limit in limits)
+        if failed_phase == "passages":
+            assert summary["failed_worker_diagnostics"]["exception_type"] == "TypeError"
 
 
 def scored_condition(directory, records, results, *, child=False, missing_model=False):

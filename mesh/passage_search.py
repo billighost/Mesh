@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import contextlib
 import heapq
+import itertools
 import math
+import sys
 import weakref
 
 from .crypto import decrypt_text_if_encrypted
@@ -81,6 +83,24 @@ def passage_metadata(connection, parent):
     return records
 
 
+def primary_reuse_ready(connection, parent, vector):
+    """Validate a zero-row generation against its authoritative primary identity."""
+    model = parent.get("embedding_model")
+    if parent.get("passage_format_version") != PASSAGE_FORMAT_VERSION or type(parent.get("passage_count")) is not int or parent["passage_count"] != 0:
+        return False
+    if not isinstance(model, str) or not model or model in ("hash-384", "unknown", "needs-reembed"):
+        return False
+    if vector is None or vector.shape != (EMBEDDING_DIM,) or not np.isfinite(vector).all():
+        return False
+    return connection.execute(
+        "SELECT 1 FROM memories m WHERE m.id=? AND m.namespace=? AND m.revision=? "
+        "AND m.incarnation=? AND m.embedding_model=? AND m.passage_format_version=? "
+        "AND m.passage_count=0 AND NOT EXISTS(SELECT 1 FROM memory_passages p "
+        "WHERE p.parent_id=m.id AND p.namespace=m.namespace)",
+        (parent["id"], parent["namespace"], parent["revision"], parent["incarnation"], model, PASSAGE_FORMAT_VERSION),
+    ).fetchone() is not None
+
+
 class PassageCacheIndex:
     """One float32 matrix and compact offsets; lexical entries contain no body copies."""
 
@@ -90,19 +110,28 @@ class PassageCacheIndex:
         self.offsets = np.empty((capacity, 2), dtype=np.int64)
         self.lexical = [None] * capacity
         self.ranges = {}
+        self.ready_primary_ids = set()
         self.implicit_lexical = {}
         self.allocated_bytes = 2048 + capacity * (EMBEDDING_DIM * 4 + 16 + 128)
 
 
 def load_passage_cache(store, connection, cache, capacity):
-    if not capacity:
-        return None
     base = cache._cache_bytes
     initial = 2048 + capacity * (EMBEDDING_DIM * 4 + 16 + 128)
     cache._lease.resize(base + initial + cache._build_peak_bytes)
     index = PassageCacheIndex(capacity)
     position = 0
     for parent in cache.rows_by_id.values():
+        primary_index = cache.id_to_idx.get(parent["id"])
+        primary = cache._matrix_buf[primary_index] if primary_index is not None and cache._matrix_buf is not None else None
+        if primary_reuse_ready(connection, parent, primary):
+            before_size = sys.getsizeof(index.ready_primary_ids)
+            charge = _object_graph_bytes(parent["id"])
+            # Set growth can keep the old bucket array live during allocation.
+            cache._lease.resize(base + index.allocated_bytes + charge + 4 * before_size + cache._build_peak_bytes)
+            index.ready_primary_ids.add(parent["id"])
+            index.allocated_bytes += charge + sys.getsizeof(index.ready_primary_ids) - before_size
+            continue
         records = passage_metadata(connection, parent)
         if not records:
             continue
@@ -187,24 +216,29 @@ def passage_query(store, spec, *, cache, n, memory_type, tags, source_agent, inc
                 )
                 if cache.passages is None or not any(
                     identifier in eligible and (query_embedding_model is None or cache.rows_by_id[identifier]["embedding_model"] == query_embedding_model)
-                    for identifier in cache.passages.ranges
+                    for identifier in itertools.chain(cache.passages.ranges, cache.passages.ready_primary_ids)
                 ):
                     return None
             lease.resize(base)
             if streaming:
-                ready_where = where + " AND passage_format_version=? AND passage_count>0"
+                ready_where = where + " AND passage_format_version=? AND passage_count>=0"
                 ready_params = (*params, PASSAGE_FORMAT_VERSION)
                 if query_embedding_model is not None:
                     ready_where += " AND embedding_model=?"
                     ready_params = (*ready_params, query_embedding_model)
-                for raw in connection.execute(f"SELECT {_MEMORY_COLUMNS} FROM memories WHERE {ready_where}", ready_params):
+                for raw in connection.execute(f"SELECT {_MEMORY_COLUMNS},embedding FROM memories WHERE {ready_where}", ready_params):
                     lease.resize(base + _cache_row_peak_bytes(raw))
-                    parent = store._deserialize_memory_row(dict(raw))
-                    if store._stream_row_eligible(parent, tag_set=tag_set, include_stale=include_stale, min_confidence=min_confidence, now=now) and passage_metadata(connection, parent):
+                    data = dict(raw)
+                    blob = data.pop("embedding")
+                    parent = store._deserialize_memory_row(data)
+                    if not store._stream_row_eligible(parent, tag_set=tag_set, include_stale=include_stale, min_confidence=min_confidence, now=now):
+                        continue
+                    primary = _blob_to_vector(blob) if parent["passage_count"] == 0 else None
+                    if primary_reuse_ready(connection, parent, primary) or passage_metadata(connection, parent):
                         break
                 else:
                     return None
-                raw = parent = None
+                raw = data = blob = parent = primary = None
                 lease.resize(base)
 
             def parents():

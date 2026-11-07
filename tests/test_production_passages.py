@@ -122,6 +122,93 @@ def test_short_reuse_and_original_late_span(local_encoder):
     assert (span["revision"], span["incarnation"], span["store_generation"]) == (parent["revision"], parent["incarnation"], parent["store_generation"])
 
 
+@pytest.mark.parametrize("mode", ["calibrated", "rrf"])
+def test_all_short_ready_reuse_uses_body_only_scoring_before_and_after_long_parent(local_encoder, monkeypatch, mode):
+    monkeypatch.setenv("MESH_RECALL_FUSION", mode)
+    store = MeshStore("passage-ready-short")
+    parent = put(store, "short", "Unrelated source remains intact.", tags=["aurora", "blue", "retention"])
+    assert query(store)[0]["lexical_score"] > 0.0
+    run_jobs(store)
+    assert store.get_indexing_status(["short"])["short"]["passage_indexing_state"] == "indexed"
+    assert local_encoder[1] == [] and passage_rows(store) == []
+    cache = store._get_vector_cache()
+    assert cache.passages.matrix.shape == (0, 384) and cache.passages.offsets.shape == (0, 2)
+    assert cache.passages.ready_primary_ids == {"short"}
+    assert cache.passages.allocated_bytes >= storage._object_graph_bytes(cache.passages.ready_primary_ids) + storage._object_graph_bytes(cache.passages.implicit_lexical)
+    assert storage.get_vector_cache_stats()["charged_bytes"] >= cache._cache_bytes
+    del cache
+
+    def checked_result(streaming):
+        with monkeypatch.context() as context:
+            if streaming:
+                context.setattr(store, "_get_vector_cache", lambda *args, **kwargs: (_ for _ in ()).throw(CacheBudgetExceededError("forced")))
+            result = next(row for row in query(store) if row["id"] == "short")
+        assert result["lexical_score"] == result["bm25_score"] == 0.0
+        assert result["supporting_spans"][0]["text"] == parent["content"]
+        return {key: value for key, value in result.items() if key not in ("retrieval_mode", "retrieval_degradation_reason", "candidate_count")}
+
+    before = [checked_result(streaming) for streaming in (False, True)]
+    assert before[0] == before[1]
+    put(store, "long", long_content("Another unrelated source remains intact."))
+    run_jobs(store)
+    assert len(passage_rows(store)) == 3
+    after = [checked_result(streaming) for streaming in (False, True)]
+    assert after[0] == after[1]
+    # An additional eligible parent can change RRF channel ranks.
+    ignored = {"rank_score"} if mode == "rrf" else set()
+    assert [{key: value for key, value in row.items() if key not in ignored} for row in after] == [{key: value for key, value in row.items() if key not in ignored} for row in before]
+
+
+@pytest.mark.parametrize("invalid", ["pending", "missing", "malformed", "unknown", "hash-384", "needs-reembed", "orphan"])
+def test_incomplete_or_corrupt_primary_reuse_cannot_activate_passage_scoring(local_encoder, monkeypatch, invalid):
+    store = MeshStore("passage-bad-reuse")
+    parent = put(store, "short", "Unrelated source remains intact.", tags=["aurora", "blue", "retention"])
+    run_jobs(store)
+    with store.atomic_write(), store._connect() as connection:
+        if invalid == "pending":
+            connection.execute("UPDATE memories SET passage_format_version='' WHERE id='short'")
+        elif invalid in ("missing", "malformed"):
+            connection.execute("UPDATE memories SET embedding=? WHERE id='short'", (None if invalid == "missing" else b"bad",))
+        elif invalid == "orphan":
+            connection.execute("INSERT INTO memory_passages VALUES(?,?,?,?,?,?,?,?,?,?)", (parent["id"], store.namespace, parent["revision"], parent["incarnation"], 0, 0, len(parent["content"]), MODEL, PASSAGE_FORMAT_VERSION, memory._hash_embed_384(parent["content"]).tobytes()))
+        else:
+            # A dense unknown vector would otherwise be inferred as neural in cache.
+            vector = storage._normalize_vector(np.ones(384, dtype=np.float32))
+            connection.execute("UPDATE memories SET embedding_model=?,embedding=? WHERE id='short'", (invalid, vector.tobytes()))
+        store._bump_content_version_in_tx(connection)
+        store._invalidate_cache()
+    assert store.get_indexing_status(["short"])["short"]["passage_indexing_state"] == "pending"
+    for streaming in (False, True):
+        with monkeypatch.context() as context:
+            if streaming:
+                context.setattr(store, "_get_vector_cache", lambda *args, **kwargs: (_ for _ in ()).throw(CacheBudgetExceededError("forced")))
+            context.setenv("MESH_PASSAGE_INDEX", "0")
+            expected_result = query(store)
+            context.setenv("MESH_PASSAGE_INDEX", "1")
+            actual = query(store)
+        assert actual == expected_result and actual[0]["lexical_score"] > 0.0
+
+
+def test_warm_reuse_cache_tracks_added_pending_tags_completion_and_deletion(local_encoder, monkeypatch):
+    store = MeshStore("passage-reuse-deltas")
+    put(store, "ready", "First unrelated source.")
+    run_jobs(store)
+    put(store, "pending", "Second unrelated source.")
+    query(store)
+    store.update("pending", tags=["aurora", "blue", "retention"])
+    cached = query(store)
+    assert all(row["lexical_score"] == row["bm25_score"] == 0.0 for row in cached)
+    with monkeypatch.context() as context:
+        context.setattr(store, "_get_vector_cache", lambda *args, **kwargs: (_ for _ in ()).throw(CacheBudgetExceededError("forced")))
+        streamed = query(store)
+    fields = ("id", "similarity", "lexical_score", "bm25_score", "rank_score", "supporting_spans")
+    assert [{key: row[key] for key in fields} for row in cached] == [{key: row[key] for key in fields} for row in streamed]
+    run_jobs(store)
+    assert store._get_vector_cache().passages.ready_primary_ids == {"ready", "pending"}
+    assert store.delete("ready") and store.delete("pending")
+    assert store._get_vector_cache().passages.ready_primary_ids == set()
+
+
 def test_boundaries_repeated_paragraphs_ignored_characters_and_short_normalization():
     tokenizer = WordTokenizer()
     content = "§ " + " ".join(f"word{i}" for i in range(480)) + " §\n\n" + "Late support remains intact."
@@ -190,7 +277,8 @@ def test_winning_dense_sibling_reports_its_own_zero_bm25(local_encoder, monkeypa
 
 
 @pytest.mark.parametrize("hidden", ["private", "quarantine", "agent", "type", "tags", "expired", "confidence", "model", "invalid"])
-def test_hidden_only_derived_publication_cannot_change_public_scorer(local_encoder, monkeypatch, hidden):
+@pytest.mark.parametrize("reuse_primary", [False, True])
+def test_hidden_only_derived_publication_cannot_change_public_scorer(local_encoder, monkeypatch, hidden, reuse_primary):
     store = MeshStore("passage-hidden-gate")
     put(store, "public", "Aurora retention requires blue envelopes.", tags=["visible"])
     metadata = {"tags": ["visible"]}
@@ -205,7 +293,8 @@ def test_hidden_only_derived_publication_cannot_change_public_scorer(local_encod
         "model": {"embedding_model": "other-local-model"},
         "invalid": {},
     }[hidden])
-    parent = put(store, "hidden", long_content("Unrelated source remains intact."), **metadata)
+    content = "Unrelated source remains intact." if reuse_primary else long_content("Unrelated source remains intact.")
+    parent = put(store, "hidden", content, **metadata)
     filters = {"tags": ["visible"], "memory_type": "fact", "source_agent": "test-agent", "include_stale": False, "min_confidence": 0.5}
 
     def public_result(streaming):
@@ -218,12 +307,18 @@ def test_hidden_only_derived_publication_cannot_change_public_scorer(local_encod
     spans = split_passages(parent["content"], local_encoder[0].window_tokenizer)
     vectors = np.vstack([memory._hash_embed_384(parent["content"][start:end]) for start, end in spans])
     assert store.publish_embedding(parent["id"], memory._hash_embed_384(parent["content"]), embedding_model=parent["embedding_model"],
-                                   target_representation=PASSAGE_FORMAT_VERSION, passage_spans=spans, passage_embeddings=vectors, **expected(parent))
+                                   target_representation=PASSAGE_FORMAT_VERSION, passage_spans=spans, passage_embeddings=None if reuse_primary else vectors, **expected(parent))
     if hidden == "invalid":
         with store.atomic_write(), store._connect() as connection:
-            connection.execute("UPDATE memory_passages SET embedding=? WHERE parent_id='hidden' AND ordinal=2", (np.full(384, np.nan, dtype=np.float32).tobytes(),))
+            statement = "UPDATE memories SET embedding=? WHERE id='hidden'" if reuse_primary else "UPDATE memory_passages SET embedding=? WHERE parent_id='hidden' AND ordinal=2"
+            connection.execute(statement, (np.full(384, np.nan, dtype=np.float32).tobytes(),))
             store._bump_content_version_in_tx(connection)
             store._invalidate_cache()
+        if reuse_primary:
+            # Removing a corrupt primary legitimately changes candidate admission.
+            with monkeypatch.context() as context:
+                context.setenv("MESH_PASSAGE_INDEX", "0")
+                before = [public_result(streaming) for streaming in (False, True)]
     after = [public_result(streaming) for streaming in (False, True)]
     assert after == before
     assert all("selected_passage_ordinal" not in result for result in after)
