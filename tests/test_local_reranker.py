@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 import hashlib
 import json
 from pathlib import Path
@@ -20,6 +21,7 @@ class Tokenizer:
     def __init__(self):
         self.pairs = []
         self.padding = False
+        self.vocabulary = {}
 
     def no_truncation(self):
         pass
@@ -37,7 +39,9 @@ class Tokenizer:
     def encode(self, text, add_special_tokens=False):
         assert not add_special_tokens
         offsets = [match.span() for match in re.finditer(r"\S+", text)]
-        return SimpleNamespace(ids=[1] * len(offsets), offsets=offsets)
+        ids = [self.vocabulary.setdefault(text[start:end].casefold(), len(self.vocabulary) + 1)
+               for start, end in offsets]
+        return SimpleNamespace(ids=ids, offsets=offsets)
 
     def encode_batch(self, pairs):
         assert self.padding
@@ -94,6 +98,7 @@ def isolated(monkeypatch):
     monkeypatch.setenv("MESH_BG_ONNX", "0")
     monkeypatch.setenv("MESH_FORCE_HASH_EMBED", "1")
     monkeypatch.setenv("MESH_RERANK_ENABLED", "0")
+    monkeypatch.delenv("MESH_RERANK_PROFILE", raising=False)
     monkeypatch.setattr(memory, "_trigger_background_bootstrap", lambda: None)
     monkeypatch.setattr(memory, "_ensure_idle_watchdog", lambda: None)
     monkeypatch.setattr(memory, "_get_model", lambda: (memory._hash_embed_384, "hash-fallback"))
@@ -584,3 +589,229 @@ def test_production_metadata_matches_frozen_c4_fixture():
     assert namespace["LIMITS"]["maximum_query_tokens"] == rerank.QUERY_TOKENS
     assert namespace["LIMITS"]["maximum_passage_tokens"] == rerank.PASSAGE_TOKENS
     assert namespace["LIMITS"]["maximum_pair_tokens"] == rerank.PAIR_TOKENS
+
+
+@pytest.mark.parametrize("profile,passage_limit,pair_limit", [("compact-128", 96, 128), ("compact-96", 64, 96)])
+def test_compact_profile_has_independent_query_passage_and_pair_caps(profile, passage_limit, pair_limit):
+    engine = encoder()
+    query = " ".join(f"query{index}" for index in range(40))
+    body = " ".join(f"source{index}" for index in range(250))
+    arrays, accounting = engine.prepare(query, [row(content=body)], profile=profile)
+    account = accounting[0]
+    assert arrays["input_ids"].shape == (1, pair_limit)
+    assert account["profile"] == profile
+    assert (account["query_tokens"], account["kept_query_tokens"]) == (40, 29)
+    assert (account["passage_tokens"], account["kept_passage_tokens"]) == (250, passage_limit)
+    assert account["source"] == "verbatim_original_body_excerpt"
+    assert body[account["start"]:account["end"]] == engine.tokenizer.pairs[0][1]
+    assert account["removed_passage_characters"] == len(body) - len(engine.tokenizer.pairs[0][1])
+    assert (rerank.QUERY_TOKENS, rerank.PASSAGE_TOKENS, rerank.PAIR_TOKENS) == (29, 224, 256)
+
+
+@pytest.mark.parametrize("profile", ["compact-128", "compact-96"])
+@pytest.mark.parametrize("position", [0, 120, 239])
+def test_compact_selected_excerpt_preserves_unicode_source_span_and_context(profile, position):
+    words = [f"texte{index}" for index in range(240)]
+    words[position] = "Café"
+    source = " ".join(words)
+    prefix, suffix = "Préface \U0001f30d. ", " Fin Ω."
+    candidate = row(content=prefix + source + suffix)
+    candidate["selected_passage_ordinal"] = 2
+    span = {key: candidate[key] for key in ("revision", "incarnation", "store_generation")}
+    span.update(memory_id=candidate["id"], start=len(prefix), end=len(prefix) + len(source), text=source)
+    candidate["supporting_spans"] = [span]
+    original = deepcopy(candidate)
+    engine = encoder()
+    arrays, accounting = engine.prepare("CAFÉ", [candidate], profile=profile)
+    account = accounting[0]
+    excerpt = engine.tokenizer.pairs[0][1]
+    assert candidate == original
+    assert account["source"] == "verbatim_selected_source_excerpt"
+    assert span["start"] <= account["start"] < account["end"] <= span["end"]
+    assert candidate["content"][account["start"]:account["end"]] == excerpt
+    assert "Café" in excerpt.split()
+    assert account["removed_passage_characters"] == len(source) - len(excerpt)
+    assert account["passage_tokens"] == 240
+    assert account["kept_passage_tokens"] == rerank.INPUT_PROFILES[profile][0]
+    assert arrays["input_ids"].shape[1] <= rerank.INPUT_PROFILES[profile][1]
+    if position == 0:
+        assert account["start"] == span["start"]
+    elif position == 239:
+        assert account["end"] == span["end"]
+    else:
+        before, after = excerpt.split("Café")
+        assert before.strip() and after.strip()
+
+
+def test_compact_no_match_selects_the_same_original_prefix():
+    engine = encoder()
+    source = " \n" + " ".join(f"mot{index}" for index in range(120))
+    first = engine.prepare("absent", [row(content=source)], profile="compact-96")
+    second = engine.prepare("absent", [row(content=source)], profile="compact-96")
+    assert first[1] == second[1]
+    account = first[1][0]
+    assert account["start"] == 0
+    assert source[:account["end"]] == source[:source.index(" mot64")]
+    assert engine.tokenizer.pairs[-1][1] == source[:account["end"]]
+
+
+def test_compact_long_source_materialization_stays_linear():
+    class CopyingTokenizer(Tokenizer):
+        materialized_values = 0
+
+        def encode(self, text, add_special_tokens=False):
+            original = super().encode(text, add_special_tokens=add_special_tokens)
+            owner = self
+
+            class Encoding:
+                @property
+                def ids(self):
+                    owner.materialized_values += len(original.ids)
+                    return list(original.ids)
+
+                @property
+                def offsets(self):
+                    owner.materialized_values += 2 * len(original.offsets)
+                    return list(original.offsets)
+
+            return Encoding()
+
+    tokenizer = CopyingTokenizer()
+    source = " ".join(["noise"] * 1000 + ["needle"] + ["noise"] * 1000)
+    query_ids = set(tokenizer.encode("needle").ids)
+    excerpt, count, kept, start = rerank._bounded_excerpt(source, tokenizer, 64, query_ids)
+    assert count == 2001 and kept == 64 and "needle" in excerpt.split()
+    assert excerpt == source[start:start + len(excerpt)]
+    assert tokenizer.materialized_values <= 8 * count
+
+
+@pytest.mark.parametrize("profile", ["", "compact-64", "COMPACT-128"])
+def test_compact_invalid_environment_profile_is_visible_without_model_loading(monkeypatch, profile):
+    monkeypatch.setenv("MESH_RERANK_PROFILE", profile)
+    monkeypatch.setattr(rerank, "_get_engine", lambda: pytest.fail("invalid profile loaded a model"))
+    candidates = [row(0), row(1)]
+    result = rerank.rerank("query", candidates, revalidate=lambda rows: rows)
+    assert [item["id"] for item in result] == [item["id"] for item in candidates]
+    assert all(item["rerank_status"] == "profile_invalid" for item in result)
+
+
+@pytest.mark.parametrize("profile", [None, 128, "invalid"])
+def test_compact_invalid_prepare_profile_is_rejected_before_tokenization(profile):
+    engine = encoder()
+    with pytest.raises(rerank.RerankUnavailable, match="^profile_invalid$"):
+        engine.prepare("query", [row()], profile=profile)
+    assert not engine.tokenizer.pairs
+
+
+def test_compact_selected_source_bounds_are_checked_before_excerpt_selection():
+    candidate = row(content="Préface \U0001f30d. " + " ".join(["preuve"] * 120))
+    candidate["selected_passage_ordinal"] = 0
+    span = {key: candidate[key] for key in ("revision", "incarnation", "store_generation")}
+    span.update(memory_id=candidate["id"], start=0, end=len(candidate["content"]) + 1, text=candidate["content"])
+    candidate["supporting_spans"] = [span]
+    engine = encoder()
+    with pytest.raises(rerank.RerankUnavailable, match="^selected_span_invalid$"):
+        engine.prepare("preuve", [candidate], profile="compact-96")
+    assert not engine.tokenizer.pairs
+
+
+def test_compact_wordpiece_boundary_is_rechecked_as_a_verbatim_substring():
+    class Wordpieces:
+        encodings = {
+            "abcdefghij klm nop": ([11, 12, 13, 14, 15], [(0, 3), (3, 6), (6, 10), (11, 14), (15, 18)]),
+            "defghij": ([20, 21, 22], [(0, 2), (2, 4), (4, 7)]),
+            "defg": ([20, 21], [(0, 2), (2, 4)]),
+        }
+
+        def encode(self, text, add_special_tokens=False):
+            assert not add_special_tokens
+            ids, offsets = self.encodings[text]
+            return SimpleNamespace(ids=ids, offsets=offsets)
+
+    source = "abcdefghij klm nop"
+    excerpt, original, kept, start = rerank._bounded_excerpt(source, Wordpieces(), 2, {13})
+    assert (excerpt, original, kept, start) == ("defg", 5, 2, 3)
+    assert excerpt == source[start:start + len(excerpt)]
+
+
+def test_compact_reranking_uses_one_batch_and_preserves_original_span_scores_and_tail(monkeypatch):
+    source = " ".join([f"word{index}" for index in range(120)] + ["lookup"] + [f"tail{index}" for index in range(120)])
+    candidates = [row(index, "Préface \U0001f30d. " + source + " End.") for index in range(4)]
+    for candidate in candidates:
+        candidate["selected_passage_ordinal"] = 1
+        start = candidate["content"].index(source)
+        span = {key: candidate[key] for key in ("revision", "incarnation", "store_generation")}
+        span.update(memory_id=candidate["id"], start=start, end=start + len(source), text=source)
+        candidate["supporting_spans"] = [span]
+    candidates.append(row(4))
+    original = {item["id"]: deepcopy(item) for item in candidates}
+    engine = encoder(scores=[-3.0, 2.0, 2.0, 7.0])
+    monkeypatch.setattr(rerank, "_get_engine", lambda: engine)
+    monkeypatch.setenv("MESH_RERANK_PROFILE", "compact-96")
+    result = rerank.rerank("lookup", candidates, revalidate=lambda rows: rows)
+    assert [item["id"] for item in result] == ["parent-3", "parent-1", "parent-2", "parent-0", "parent-4"]
+    assert len(engine.session.calls) == 1
+    assert engine.session.calls[0]["input_ids"].shape[0] == 4
+    assert engine.session.calls[0]["input_ids"].shape[1] <= 96
+    for item in result:
+        assert {key: value for key, value in item.items() if not key.startswith("rerank_")} == original[item["id"]]
+    assert all(item["rerank_status"] == "applied" for item in result[:4])
+    assert all(item["rerank_input"]["source"] == "verbatim_selected_source_excerpt" for item in result[:4])
+    assert result[-1]["rerank_status"] == "outside_parent_cap"
+
+
+def test_compact_profile_never_enables_disabled_reranking(monkeypatch):
+    mesh = memory.Mesh(namespace="compact-disabled")
+    vector = seed(mesh, count=2)
+    monkeypatch.setattr(rerank, "_get_engine", lambda: pytest.fail("disabled profile loaded a model"))
+    baseline = recall(mesh, vector, n=2)
+    monkeypatch.setenv("MESH_RERANK_PROFILE", "compact-128")
+    assert recall(mesh, vector, n=2) == baseline
+    assert not any(key.startswith("rerank_") for item in baseline for key in item)
+
+
+def test_compact_profiles_leave_default_full_256_reranking_unchanged(monkeypatch):
+    engine = encoder(scores=[2.0, 1.0])
+    monkeypatch.setattr(rerank, "_get_engine", lambda: engine)
+    candidates = [row(0, " ".join(f"word{index}" for index in range(250))), row(1)]
+    implicit = rerank.rerank("query", candidates, revalidate=lambda rows: rows)
+    monkeypatch.setenv("MESH_RERANK_PROFILE", "full-256")
+    explicit = rerank.rerank("query", candidates, revalidate=lambda rows: rows)
+    assert implicit == explicit
+    assert implicit[0]["rerank_input"]["kept_passage_tokens"] == 224
+    assert "profile" not in implicit[0]["rerank_input"]
+
+
+@pytest.mark.parametrize("change", ["private", "identity"])
+@pytest.mark.parametrize("stage", ["selection", "inference"])
+def test_compact_privacy_and_identity_mutations_keep_existing_fences(monkeypatch, change, stage):
+    mesh = memory.Mesh(namespace="compact-mutation")
+    vector = seed(mesh, count=2)
+    body = " ".join(["Anchor"] + [f"word{index}" for index in range(120)])
+    mesh.store.upsert("item-0", body, vector, {"embedding_model": "hash-384"})
+
+    def mutate():
+        if change == "private":
+            with mesh.store._connect() as connection:
+                connection.execute("UPDATE memories SET local_only=1 WHERE id=?", ("item-0",))
+        else:
+            mesh.store.upsert("item-0", "Changed source.", vector, {"embedding_model": "hash-384"})
+
+    engine = encoder(on_run=mutate if stage == "inference" else None)
+    if stage == "selection":
+        original = engine.prepare
+
+        def prepare(query, candidates, **kwargs):
+            prepared = original(query, candidates, **kwargs)
+            mutate()
+            return prepared
+
+        engine.prepare = prepare
+    monkeypatch.setattr(rerank, "_get_engine", lambda: engine)
+    monkeypatch.setenv("MESH_RERANK_ENABLED", "1")
+    monkeypatch.setenv("MESH_RERANK_PROFILE", "compact-96")
+    result = recall(mesh, vector, n=2, include_private=False)
+    assert [item["id"] for item in result] == ["item-1"]
+    assert len(engine.session.calls) == (stage == "inference")
+    if stage == "selection":
+        assert result[0]["rerank_status"] == "candidates_changed"

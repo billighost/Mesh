@@ -20,11 +20,42 @@ paired with the hash-verified ordinary runtime-passage export. Matched native
 subprocesses preserve parent identities, base scores, exact supporting spans,
 first-four membership and tail order. Every query also gets a separately recorded
 `n=1` check against its `n=10` first result. Native session, inference and fresh
-query encoding calls are counted. A single default configuration uses at least
-100 matched resource samples and the same C4 resource maxima below; cold loading
+query encoding calls are counted. Each configuration uses at least 100 matched
+resource samples and the same C4 resource maxima below; cold loading
 of verified model bytes contributes to the process-tree RSS measurement. The
 separate scorer requires zero paired metric loss and the declared bounded exact
 evidence targets. Earlier failed or unqualified conditions remain visible.
+
+The runtime pair freezes a read-only database backup before either measured
+recall phase, then uses separate isolated copies of that backup. Both copies
+must retain the original store generation, namespace, memory identities, model
+and fully indexed passages. The paired phases reuse the verified stored vectors;
+primary or passage document inference during these phases rejects the run.
+The source database and its immutable ordinary passage export stay unchanged.
+
+The actual runtime supports three explicit input profiles:
+
+| `MESH_RERANK_PROFILE` | Query tokens | Passage tokens | Maximum pair tokens |
+| --- | ---: | ---: | ---: |
+| `full-256` (default) | 29 | 224 | 256 |
+| `compact-128` | 29 | 96 | 128 |
+| `compact-96` | 29 | 64 | 96 |
+
+Each pair includes three special tokens. Compact profiles select one contiguous
+verbatim excerpt within the original selected passage, or the accepted original
+body when no passage is selected. The deterministic rule maximizes distinct
+query-token coverage, then total query-token matches, then balances context around
+matches; ties retain the earliest window and no matches select a prefix. Recorded
+input offsets, original and kept token counts, removed characters and the profile
+must match the source. Supporting spans, parent identities and base scores remain
+intact. Each profile has a distinct protocol and independently passes the same
+resource and quality gates before qualification. Selecting a profile never
+enables reranking.
+
+When runtime passages and C4 are requested together, Actions evaluates the three
+profiles in separate jobs with distinct artifact names. Compact native results
+remain pending; passing mocked contracts does not establish their quality or
+resource qualification. The legacy experiment retains its original limits.
 
 The CI API is `retrieval_c4.py freeze`, `provision_retrieval_c4.py`, then
 `retrieval_c4.py run`. The run requires separate `--model-directory` and
@@ -109,11 +140,11 @@ an alias. The per-cell `candidate_hit_at_1_regressions` report contains
 counts over the full answered-query denominator. The owning review decides final
 qualification after the remote quality, resource, privacy and identity gates.
 
-The [small contract checks](../tests/test_retrieval_c4_contracts.py) use only stdlib
-mocks and synthetic data. Local validation covered 20 contracts, AST parsing and
-focused lint. No native retrieval, model inference, model download, daemon,
-provider call or full test suite was run locally. Remote quality and resource
-evaluation remains unrun; the implemented harness and its passing mocked checks
-are not evidence of model quality or performance qualification. Legacy native
-results and failures remain attached to their tested source in Actions; the
-new actual-runtime reranker requires its own native qualification.
+The [legacy contract checks](../tests/test_retrieval_c4_contracts.py),
+[runtime checks](../tests/test_runtime_reranker_ci.py) and
+[runtime input checks](../tests/test_local_reranker.py) use mocks and synthetic
+data. The combined compact-profile check covered 122 selected tests with one
+worker on Python 3.10. No native retrieval, model inference, model download,
+daemon, provider call or full test suite was run locally for this candidate.
+Native results and failures remain attached to their tested source in Actions;
+the compact profiles require their own native qualification.

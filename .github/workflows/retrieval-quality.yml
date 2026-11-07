@@ -45,13 +45,14 @@ concurrency:
 
 jobs:
   public-quality:
-    name: Guarded retrieval (${{ matrix.dataset }})
+    name: Guarded retrieval (${{ matrix.dataset }}, ${{ matrix.profile }})
     runs-on: windows-latest
     timeout-minutes: 85
     strategy:
       fail-fast: false
       matrix:
         dataset: [nfcorpus, scifact, prospective, longtext-prospective, longmemeval]
+        profile: ${{ inputs.run_c4 && inputs.run_runtime_passages && fromJSON('["full-256", "compact-128", "compact-96"]') || fromJSON('["full-256"]') }}
     defaults:
       run:
         shell: pwsh
@@ -59,6 +60,7 @@ jobs:
       RETRIEVAL_RUN_C4: ${{ inputs.run_c4 }}
       RETRIEVAL_RUN_RUNTIME_PASSAGES: ${{ inputs.run_runtime_passages }}
       RETRIEVAL_DATASET: ${{ matrix.dataset }}
+      RETRIEVAL_RERANK_PROFILE: ${{ matrix.profile }}
       RETRIEVAL_ROOT: .work/retrieval-ci/${{ github.run_id }}-${{ github.run_attempt }}/${{ matrix.dataset }}
       RETRIEVAL_MODELS: .work/production-models/embedding
       MESH_NO_AUTO_DAEMON: "1"
@@ -97,7 +99,7 @@ jobs:
             "$taskIsolatedEnvName=$taskIsolatedEnvValue" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           }
           New-Item -ItemType Directory -Force -Path $env:MESH_HOME,$env:HOME,$env:APPDATA,$env:LOCALAPPDATA,$env:XDG_CONFIG_HOME,$env:XDG_CACHE_HOME,$env:XDG_DATA_HOME,$env:CODEX_HOME,$env:CLAUDE_CONFIG_DIR | Out-Null
-          $taskRetrievalInitArgs = @("benchmarks/retrieval_ci.py", "init", $env:RETRIEVAL_DATASET, "--output-root", $env:RETRIEVAL_ROOT)
+          $taskRetrievalInitArgs = @("benchmarks/retrieval_ci.py", "init", $env:RETRIEVAL_DATASET, "--output-root", $env:RETRIEVAL_ROOT, "--runtime-rerank-profile", $env:RETRIEVAL_RERANK_PROFILE)
           if ($env:RETRIEVAL_RUN_C4 -eq "true") { $taskRetrievalInitArgs += @("--reranker-experiment", "c4") }
           if ($env:RETRIEVAL_RUN_RUNTIME_PASSAGES -eq "true") { $taskRetrievalInitArgs += "--runtime-passages" }
           python @taskRetrievalInitArgs
@@ -129,9 +131,15 @@ jobs:
         with:
           path: ${{ env.RETRIEVAL_MODELS }}
           key: retrieval-minilm-1110a243fdf4706b-6fd5d72fe4589f18-be50c3628f2bf5bb
+      - name: Restore the pinned optional local cross encoder
+        if: inputs.run_c4
+        uses: actions/cache@v4
+        with:
+          path: .work/production-models/c4-minilm-ce
+          key: retrieval-c4-minilm-a0914435-e9d8ebf845c413e9-d241a60d5e8f04cc
       - name: Qualify source and supervise independent retrieval conditions
         run: |
-          $taskRetrievalArgs = @("benchmarks/retrieval_ci.py", "run", $env:RETRIEVAL_DATASET, "--output-root", $env:RETRIEVAL_ROOT, "--model-directory", $env:RETRIEVAL_MODELS, "--qualification-directory", ".work/qualification/primary", "--floor-qualification-directory", ".work/qualification/floor", "--wall-seconds", "4200", "--rss-mib", "4096", "--cpu-seconds", "3600")
+          $taskRetrievalArgs = @("benchmarks/retrieval_ci.py", "run", $env:RETRIEVAL_DATASET, "--output-root", $env:RETRIEVAL_ROOT, "--runtime-rerank-profile", $env:RETRIEVAL_RERANK_PROFILE, "--model-directory", $env:RETRIEVAL_MODELS, "--qualification-directory", ".work/qualification/primary", "--floor-qualification-directory", ".work/qualification/floor", "--wall-seconds", "4200", "--rss-mib", "4096", "--cpu-seconds", "3600")
           if ($env:RETRIEVAL_RUN_C4 -eq "true") { $taskRetrievalArgs += @("--reranker-experiment", "c4") }
           if ($env:RETRIEVAL_RUN_RUNTIME_PASSAGES -eq "true") { $taskRetrievalArgs += "--runtime-passages" }
           python @taskRetrievalArgs
@@ -145,7 +153,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: retrieval-quality-${{ matrix.dataset }}-${{ github.sha }}
+          name: retrieval-quality-${{ matrix.dataset }}-${{ matrix.profile }}-${{ github.sha }}
           path: ${{ env.RETRIEVAL_ROOT }}/job-summary.json
           if-no-files-found: error
           retention-days: 30

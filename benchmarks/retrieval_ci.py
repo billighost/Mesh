@@ -18,7 +18,8 @@ from pathlib import Path
 from prepare_retrieval_ci import BOUNDED_DATASETS, DATASETS, MODEL
 from production_retrieval import (MODEL_TAG, PASSAGE_BATCH_LIMIT, PASSAGE_REPRESENTATION,
                                   WORKER_FAILURE_SOURCES, WORKER_FAILURE_TYPES,
-                                  runtime_parent_identities, validate_runtime_parent_results, validate_runtime_passage_schema)
+                                  runtime_parent_identities, runtime_passage_snapshot_metadata, runtime_passage_snapshot_reuse_metadata,
+                                  validate_runtime_parent_results, validate_runtime_passage_schema)
 from replay_retrieval import (FIELDS, checked_path, configure_isolation, digest_file,
                               isolated_artifact_path, read_jsonl, safe_member, verify_exports)
 
@@ -29,6 +30,7 @@ PHASES = ("provision", "prepare", "guarded", "score-guarded", "replay", "fresh-d
 C4_PHASES = ("c4-freeze", "c4-provision", "c4", "score-c4")
 RUNTIME_PASSAGE_PHASES = ("runtime-passages", "score-runtime-passages")
 RUNTIME_C4_PHASES = ("runtime-c4-freeze", "runtime-c4-provision", "runtime-c4", "score-runtime-c4")
+RUNTIME_RERANK_PROFILES = ("full-256", "compact-128", "compact-96")
 HARNESS_FILES = ("production_retrieval.py", "replay_retrieval.py", "prepare_retrieval_ci.py",
                  "retrieval_ci.py", "passage_retrieval.py", "provision_production_model.py",
                  "production_runner.py", "production_ledger.py", "runtime_rerank_c4.py")
@@ -118,7 +120,9 @@ def save(root, summary):
     os.replace(pending, path)
 
 
-def initial_summary(dataset, c4=False, runtime_passages=False):
+def initial_summary(dataset, c4=False, runtime_passages=False, runtime_rerank_profile="full-256"):
+    if type(runtime_rerank_profile) is not str or runtime_rerank_profile not in RUNTIME_RERANK_PROFILES:
+        raise GateError("RuntimeRerankerProfileInvalid")
     phases = list(PHASES)
     if runtime_passages:
         insertion = phases.index("score-fresh-default") + 1
@@ -128,6 +132,7 @@ def initial_summary(dataset, c4=False, runtime_passages=False):
             phases[insertion:insertion] = RUNTIME_C4_PHASES
     phases.extend(C4_PHASES if c4 else ())
     return {"artifact_version": 1, "status": "not_started", "dataset": dataset,
+            "runtime_rerank_profile": runtime_rerank_profile,
             "conditions": {}, "quality_gates": [],
             "phases": [{"name": phase, "status": "not_run"} for phase in phases],
             "labels_in_ranking_inputs": False, "default_changed": False,
@@ -332,8 +337,12 @@ def qualify(repository, primary, floor):
 
 
 def condition_evidence(directory, fixture, runtime_files, model, protocol_hash, *, scored, runtime_passages=False,
-                       guarded_source=None):
+                       runtime_c4=False, runtime_rerank_profile=None, guarded_source=None):
     manifest = load_json(directory, "run-manifest.json")
+    if (type(runtime_c4) is not bool or runtime_c4 and (
+            runtime_passages is not True or scored is not True
+            or manifest.get("paired_original_condition") != "runtime_passages")):
+        raise GateError("RuntimeC4ConditionOrPairingMismatch")
     if manifest["status"] != "complete" or not manifest["all_queries_accounted"] or manifest["query_target"] != fixture["query_count"]:
         raise GateError("IncompleteCondition")
     if manifest["labels_in_ranking_inputs"] is not False or manifest["runtime_files"] != runtime_files:
@@ -342,6 +351,10 @@ def condition_evidence(directory, fixture, runtime_files, model, protocol_hash, 
     if any(not re.fullmatch(r"(?:results-(?:C64|C96|default)|ingestion-fidelity|query-vectors|passage-ingestion-fidelity|parent-passage-coverage|query-resources|runtime-reranker-resources)\.jsonl", name)
            for name in manifest["output_sha256"]):
         raise GateError("UnknownPublicExportName")
+    if runtime_c4:
+        # C4 compares against native passage recall; verify its native envelope
+        # before accepting passage ordinals in that original comparator.
+        runtime_c4_evidence(directory, manifest, expected_profile=runtime_rerank_profile)
     result = {"status": "complete", "query_count": manifest["query_target"],
               "run_manifest_sha256": digest_file(safe_member(directory, "run-manifest.json")),
               "runtime_files": runtime_files, "output_sha256": manifest["output_sha256"]}
@@ -412,7 +425,8 @@ def condition_evidence(directory, fixture, runtime_files, model, protocol_hash, 
                     continue
                 candidates = row[field]
                 if runtime_passages and field in {"final_sdk_top10", "original_sdk_top10"}:
-                    validate_runtime_parent_results(candidates, identities, allow_passages=field == "final_sdk_top10")
+                    validate_runtime_parent_results(candidates, identities,
+                                                    allow_passages=field == "final_sdk_top10" or runtime_c4)
                 limit = 24 if field == "authorized_sdk_rerank_top24" else 10 if field.endswith("top10") else 64
                 if len(candidates) > limit or len({candidate["id"] for candidate in candidates}) != len(candidates):
                     raise GateError("UnboundedOrDuplicateParents")
@@ -510,7 +524,7 @@ def runtime_passage_evidence(directory, manifest, records):
                        for key in ("elapsed_ms", "process_cpu_ms", "sampled_owned_process_rss_bytes"))
                 or row["sampled_owned_process_rss_bytes"] <= 0):
             raise GateError("RuntimePassageQueryResourcesInvalid")
-    return {"schema_version": schema_version,
+    result = {"schema_version": schema_version,
             "runtime_passage_index": {"representation": PASSAGE_REPRESENTATION, "backend": "direct-onnx", "manual_worker": True},
             "runtime_passage_readiness": projected, "guarded_source_immutable": True,
             "guarded_source_database_fingerprints": fingerprints,
@@ -521,6 +535,11 @@ def runtime_passage_evidence(directory, manifest, records):
                 "process_cpu_ms_total": sum(row["process_cpu_ms"] for row in resources),
                 "sampled_owned_process_rss_bytes_max": max(row["sampled_owned_process_rss_bytes"] for row in resources)},
             "original_parent_identity_model_and_supporting_spans_verified": True}
+    if "runtime_passage_snapshot" in manifest:
+        result["runtime_passage_snapshot"] = runtime_passage_snapshot_metadata(manifest, records)
+    if "runtime_passage_snapshot_reuse" in manifest:
+        result["runtime_passage_snapshot_reuse"] = runtime_passage_snapshot_reuse_metadata(manifest, records)
+    return result
 
 
 def runtime_passage_pairing(root, manifests, conditions):
@@ -690,17 +709,32 @@ def c4_quality_gates(dataset, condition, matching_passages, *, cells_required=("
     return gates
 
 
-def runtime_c4_evidence(directory, manifest):
+def runtime_c4_evidence(directory, manifest, *, expected_profile=None):
     from retrieval_c4_model import LIMITS, MODEL
-    from runtime_rerank_c4 import POLICY
+    from runtime_rerank_c4 import POLICY, INPUT_PROFILES, effective_limits
 
+    if "runtime_passage_snapshot_reuse" in manifest:
+        records = list(read_jsonl(safe_member(directory, "ingestion-fidelity.jsonl")))
+        reuse = runtime_passage_snapshot_reuse_metadata(manifest, records)
+        matched = manifest.get("matched_snapshot_reuse", {})
+        if (reuse["source_run_manifest_sha256"] != manifest.get("runtime_passage_run_manifest_sha256")
+                or not isinstance(matched, dict) or set(matched) != {"baseline", "c4"}
+                or any(value != reuse for value in matched.values())):
+            raise GateError("RuntimeC4MatchedSnapshotReuseMismatch")
     configuration = manifest.get("runtime_reranker", {})
+    profile = configuration.get("profile", "full-256")
+    if (type(profile) is not str or profile not in INPUT_PROFILES
+            or expected_profile is not None and profile != expected_profile
+            or manifest.get("runtime_rerank_profile", profile) != profile):
+        raise GateError("RuntimeC4NativeProfileMismatch")
+    limits = effective_limits(profile)
     counts = configuration.get("native_counts", {})
     target = manifest["query_target"]
     passes = max(1, math.ceil(LIMITS["minimum_resource_samples_per_cell"] / target)) if type(target) is int and target > 0 else None
     if (configuration.get("configuration") != "c4-minilm-runtime-recall" or configuration.get("phase") != "c4"
             or configuration.get("policy") != POLICY or configuration.get("model") != MODEL
             or configuration.get("limits") != LIMITS or type(configuration.get("resource_passes")) is not int
+            or configuration.get("effective_limits", LIMITS if profile == "full-256" else None) != limits
             or configuration.get("resource_passes") != passes
             or configuration.get("parent_identity_scores_spans_and_tail_verified") is not True
             or configuration.get("top_one_matches_top_ten") is not True
@@ -739,6 +773,7 @@ def runtime_c4_evidence(directory, manifest):
             or len(samples) < LIMITS["minimum_resource_samples_per_cell"]):
         raise GateError("RuntimeC4ResourceSamplesIncomplete")
     return {"configuration": "c4-minilm-runtime-recall", "model": MODEL, "limits": LIMITS,
+            "profile": profile, "effective_limits": limits,
             "resource_passes": passes, "resource_sample_count": len(samples),
             "native_counts": {key: numeric(value) for key, value in counts.items()},
             "parent_identity_scores_spans_and_tail_verified": True, "top_one_matches_top_ten": True}
@@ -776,7 +811,8 @@ def runtime_c4_quality_gates(dataset, condition, baseline):
 def run(args, repository, root):
     c4 = getattr(args, "reranker_experiment", "off") == "c4"
     runtime_passages = getattr(args, "runtime_passages", False)
-    summary = initial_summary(args.dataset, c4, runtime_passages)
+    profile = getattr(args, "runtime_rerank_profile", "full-256")
+    summary = initial_summary(args.dataset, c4, runtime_passages, profile)
     summary["status"] = "running"
     save(root, summary)
     stage = "qualification"
@@ -814,6 +850,8 @@ def run(args, repository, root):
                                      "--runtime-passages", "--fresh-default-run", str(root / "fresh-default"), "--output", str(root / "runtime-passages")],
                 "score-runtime-passages": [python, production, "score", str(root / "runtime-passages"), "--dataset-directory", str(data)],
             })
+            if c4:
+                commands["runtime-passages"].append("--retain-guarded-home")
         if c4:
             reranker = str(repository / "benchmarks/retrieval_c4.py")
             c4_models = models.parent / "c4-minilm-ce"
@@ -831,7 +869,7 @@ def run(args, repository, root):
                 runtime_protocol = root / "runtime-c4-protocol.json"
                 commands.update({
                     "runtime-c4-freeze": [python, runtime_reranker, "freeze", "--repository", str(repository),
-                                          "--base-protocol", str(protocol), "--output", str(runtime_protocol)],
+                                          "--base-protocol", str(protocol), "--profile", profile, "--output", str(runtime_protocol)],
                     "runtime-c4-provision": [python, str(repository / "benchmarks/provision_retrieval_c4.py"),
                                              "--repository", str(repository), "--directory", str(c4_models)],
                     "runtime-c4": [python, runtime_reranker, "run", args.dataset, "--repository", str(repository),
@@ -839,6 +877,7 @@ def run(args, repository, root):
                                    "--fresh-default-run", str(root / "fresh-default"), "--dataset-directory", str(data),
                                    "--base-protocol", str(protocol), "--protocol", str(runtime_protocol),
                                    "--model-directory", str(c4_models), "--embedding-model-directory", str(models),
+                                   "--profile", profile,
                                    "--output", str(root / "runtime-c4")],
                     "score-runtime-c4": [python, production, "score", str(root / "runtime-c4"), "--dataset-directory", str(data)],
                 })
@@ -904,6 +943,8 @@ def run(args, repository, root):
                     manifests[condition], summary["conditions"][condition] = condition_evidence(
                         root / condition, fixture, runtime_files, MODEL, protocol_hash, scored=condition != "replay",
                         runtime_passages=condition in {"runtime-passages", "runtime-c4"},
+                        runtime_c4=condition == "runtime-c4",
+                        runtime_rerank_profile=profile if condition == "runtime-c4" else None,
                         guarded_source=root / "guarded" if condition == "passages" else None)
                     if condition == "passages":
                         summary["quality_gates"] = quality_gates(args.dataset, summary["conditions"])
@@ -1011,6 +1052,7 @@ def main():
     parser.add_argument("--cpu-seconds", type=int, default=3600)
     parser.add_argument("--reranker-experiment", choices=("off", "c4"), default="off", help="Separate optional C4 experiment; requires its runner/provisioner and matching resource qualification")
     parser.add_argument("--runtime-passages", action="store_true", help="Separate optional actual schema-6 passage-index evaluation on original parents, paired with fresh-default under the existing whole-run caps")
+    parser.add_argument("--runtime-rerank-profile", choices=RUNTIME_RERANK_PROFILES, default="full-256", help="Optional runtime C4 input profile (default: full-256); preserves the fixed quality and resource gates")
     args = parser.parse_args()
     repository = checked_path(args.repository, must_exist=True, directory=True)
     root = isolated_artifact_path(args.output_root, repository)
@@ -1019,7 +1061,7 @@ def main():
         if (os.environ.get("GITHUB_ACTIONS") != "true" or not args.model_directory or not args.qualification_directory
                 or not args.floor_qualification_directory or not 1 <= args.wall_seconds <= 4500
                 or not 64 <= args.rss_mib <= 6144 or not 1 <= args.cpu_seconds <= 12000):
-            summary = initial_summary(args.dataset, args.reranker_experiment == "c4", args.runtime_passages)
+            summary = initial_summary(args.dataset, args.reranker_experiment == "c4", args.runtime_passages, args.runtime_rerank_profile)
             summary.update(status="failed", failure_reason="ci_arguments_required")
             save(root, summary)
             return 1
@@ -1027,7 +1069,7 @@ def main():
     if args.command == "init":
         if (root / "job-summary.json").exists():
             raise GateError("RefusingExistingArtifact")
-        save(root, initial_summary(args.dataset, args.reranker_experiment == "c4", args.runtime_passages))
+        save(root, initial_summary(args.dataset, args.reranker_experiment == "c4", args.runtime_passages, args.runtime_rerank_profile))
     else:
         current = load_json(root, "job-summary.json")
         if current["status"] in {"running", "not_started"}:

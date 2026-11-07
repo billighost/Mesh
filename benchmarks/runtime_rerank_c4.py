@@ -25,14 +25,17 @@ from retrieval_c4 import (C4Aborted, C4Failure, C4Unavailable, checked_helpers, 
 from retrieval_c4_model import LIMITS, MODEL, RESOURCE_MAXIMA
 
 IMPLEMENTATIONS = ("runtime_rerank_c4.py", "production_retrieval.py", "replay_retrieval.py",
-                   "retrieval_c4.py", "retrieval_c4_model.py", "provision_retrieval_c4.py")
+                   "retrieval_c4.py", "retrieval_c4_model.py", "provision_retrieval_c4.py", "retrieval_ci.py")
+INPUT_PROFILES = {"full-256": (224, 256), "compact-128": (96, 128), "compact-96": (64, 96)}
 POLICY = {
     "entrypoint": "Mesh.recall(query, n=10, include_private=False, include_quarantined=False)",
     "representation": production.PASSAGE_REPRESENTATION,
     "comparator": "Hash-verified original-parent runtime-passage export, reranker disabled.",
     "candidates": "First four eligible parents before n trim; preserve base scores, identities, spans and tail.",
     "query_encoding": "Fresh default neural query encoding; exactly one encoding per native call.",
-    "resource_samples": "One default configuration; max(1, ceil(100/query count)) fixed matched passes.",
+    "passage_setup": "Matched fresh SQLite-backup copies of one immutable, qualified prequery passage snapshot; no reinference.",
+    "input_profile": "Explicit pinned profile; full source evidence stays intact and compact CE inputs use verbatim contiguous subspans.",
+    "resource_samples": "One requested profile; max(1, ceil(100/query count)) fixed matched passes.",
     "resources": "Same C4 RAM, latency and CPU maxima; include cold verified-byte model loading in tree RSS.",
     "top_one": "One separately recorded native n=1 call per query must match its native n=10 first result.",
     "labels_in_ranking_inputs": False,
@@ -46,12 +49,30 @@ def implementation_hashes(repository, helpers):
             for name in IMPLEMENTATIONS}
 
 
+def effective_limits(profile):
+    if type(profile) is not str or profile not in INPUT_PROFILES:
+        raise C4Failure("RuntimeRerankerProfileInvalid")
+    passage_tokens, pair_tokens = INPUT_PROFILES[profile]
+    return dict(LIMITS, maximum_passage_tokens=passage_tokens, maximum_pair_tokens=pair_tokens)
+
+
+def requested_profile(args):
+    profile = getattr(args, "profile", "full-256")
+    effective_limits(profile)
+    return profile
+
+
+def frozen_protocol(args, helpers):
+    profile = requested_profile(args)
+    return {"version": 1, "model": MODEL, "limits": LIMITS, "policy": POLICY,
+            "profile": profile, "effective_limits": effective_limits(profile), "resource_maxima": RESOURCE_MAXIMA,
+            "base_protocol_sha256": helpers.digest_file(args.base_protocol),
+            "implementation_sha256": implementation_hashes(args.repository, helpers)}
+
+
 def verify_protocol(args, helpers):
     protocol = json.loads(helpers.checked_path(args.protocol, must_exist=True, directory=False).read_text(encoding="utf-8"))
-    if (protocol != {"version": 1, "model": MODEL, "limits": LIMITS, "policy": POLICY,
-                     "resource_maxima": RESOURCE_MAXIMA,
-                     "base_protocol_sha256": helpers.digest_file(args.base_protocol),
-                     "implementation_sha256": implementation_hashes(args.repository, helpers)}):
+    if protocol != frozen_protocol(args, helpers):
         raise C4Failure("FrozenC4ProtocolMismatch")
 
 
@@ -84,6 +105,7 @@ def resource_gates(baseline, candidate, baseline_peak, candidate_peak):
 class RuntimeObserver:
     def __init__(self, args, helpers):
         self.args, self.helpers = args, helpers
+        requested_profile(args)
         path = helpers.safe_member(args.runtime_passage_run, "results-default.jsonl")
         rows = list(helpers.read_jsonl(path))
         self.frozen = {row["query_id"]: row for row in rows}
@@ -97,18 +119,25 @@ class RuntimeObserver:
     def configure(self):
         # install_model clears inherited settings; opt in only after its isolation.
         os.environ["MESH_RERANK_ENABLED"] = "1" if self.args.phase == "c4" else "0"
+        os.environ["MESH_RERANK_PROFILE"] = requested_profile(self.args)
         if self.args.phase == "c4":
             os.environ["MESH_RERANK_MODEL_DIR"] = str(self.args.model_directory)
+        else:
+            os.environ.pop("MESH_RERANK_MODEL_DIR", None)
 
     def attach_runtime(self, memory_module):
-        if self.args.phase != "c4" or self.module is not None:
+        if self.module is not None:
             return
+        profile = requested_profile(self.args)
         module = importlib.import_module("mesh.local_rerank")
         if (Path(module.__file__).parent != Path(memory_module.__file__).parent
                 or module.MODEL != {key: value for key, value in MODEL.items() if key != "tokenizer_verified"}
                 or (module.PARENT_CAP, module.QUERY_TOKENS, module.PASSAGE_TOKENS, module.PAIR_TOKENS)
-                != (LIMITS["parent_cap"], LIMITS["maximum_query_tokens"], LIMITS["maximum_passage_tokens"], LIMITS["maximum_pair_tokens"])):
+                != (LIMITS["parent_cap"], LIMITS["maximum_query_tokens"], LIMITS["maximum_passage_tokens"], LIMITS["maximum_pair_tokens"])
+                or module.INPUT_PROFILES != INPUT_PROFILES or module.INPUT_PROFILES[profile] != INPUT_PROFILES[profile]):
             raise C4Failure("RuntimeRerankerConfigurationChanged")
+        if self.args.phase != "c4":
+            return
         self.module = module
         self.original_init, self.original_score = module._LocalCrossEncoder.__init__, module._LocalCrossEncoder.score
 
@@ -180,25 +209,45 @@ class RuntimeObserver:
                 or any(hashlib.sha256(body.encode("utf-8")).hexdigest() != record.get("stored_sha256") for record in records)):
             raise C4Failure("AcceptedParentBodyOrIdentityChanged")
         account = row.get("rerank_input")
+        profile = requested_profile(self.args)
+        limits = effective_limits(profile)
         integer_keys = ("start", "end", "query_tokens", "kept_query_tokens", "removed_query_characters",
                         "passage_tokens", "kept_passage_tokens", "removed_passage_characters", "pair_tokens")
-        if (not isinstance(account, dict) or set(account) != {"source", *integer_keys}
+        expected_keys = {"source", *integer_keys} | ({"profile"} if profile != "full-256" else set())
+        if (not isinstance(account, dict) or set(account) != expected_keys
+                or profile != "full-256" and account.get("profile") != profile
                 or any(type(account.get(key)) is not int or account[key] < 0 for key in integer_keys)
                 or not 0 <= account["start"] < account["end"] <= len(body)
-                or not account["kept_query_tokens"] <= min(account["query_tokens"], LIMITS["maximum_query_tokens"])
-                or not 0 < account["kept_passage_tokens"] <= min(account["passage_tokens"], LIMITS["maximum_passage_tokens"])
-                or not 3 <= account["pair_tokens"] <= LIMITS["maximum_pair_tokens"]
-                or account["removed_query_characters"] > len(query["query"])):
+                or not account["kept_query_tokens"] <= min(account["query_tokens"], limits["maximum_query_tokens"])
+                or not 0 < account["kept_passage_tokens"] <= min(account["passage_tokens"], limits["maximum_passage_tokens"])
+                or not 3 <= account["pair_tokens"] <= limits["maximum_pair_tokens"]
+                or account["removed_query_characters"] > len(query["query"])
+                or not body[account["start"]:account["end"]].strip()):
             raise C4Failure("RuntimeRerankerInputAccountingChanged")
         if row.get("selected_passage_ordinal") is not None:
             spans = row.get("supporting_spans", [])
-            if (len(spans) != 1 or account["source"] != "exact_selected_source_span"
-                    or (account["start"], account["end"]) != (spans[0].get("start"), spans[0].get("end"))
-                    or spans[0].get("text") != body[account["start"]:account["end"]]
-                    or account["removed_passage_characters"] != 0 or account["passage_tokens"] != account["kept_passage_tokens"]):
+            if (len(spans) != 1 or type(spans[0].get("start")) is not int or type(spans[0].get("end")) is not int
+                    or not 0 <= spans[0]["start"] < spans[0]["end"] <= len(body)
+                    or spans[0].get("text") != body[spans[0]["start"]:spans[0]["end"]]):
                 raise C4Failure("SupportingSpanBytesChanged")
-        elif (account["source"] != "accepted_original_body" or account["start"] != 0
-              or account["removed_passage_characters"] != len(body) - account["end"]):
+            source_start, source_end = spans[0]["start"], spans[0]["end"]
+            exact_source, excerpt_source = "exact_selected_source_span", "verbatim_selected_source_excerpt"
+        else:
+            source_start, source_end = 0, len(body)
+            exact_source, excerpt_source = "accepted_original_body", "verbatim_original_body_excerpt"
+        if profile == "full-256":
+            if (account["source"] != exact_source or account["start"] != source_start
+                    or account["removed_passage_characters"] != source_end - account["end"]
+                    or row.get("selected_passage_ordinal") is not None and (
+                        account["end"] != source_end or account["passage_tokens"] != account["kept_passage_tokens"])):
+                raise C4Failure("SupportingSpanBytesChanged" if row.get("selected_passage_ordinal") is not None
+                                else "RuntimeRerankerInputAccountingChanged")
+        elif (not source_start <= account["start"] < account["end"] <= source_end
+              or account["removed_passage_characters"] != source_end - source_start - (account["end"] - account["start"])
+              or account["source"] != (excerpt_source if account["passage_tokens"] > account["kept_passage_tokens"] else exact_source)
+              or account["passage_tokens"] > account["kept_passage_tokens"] and account["removed_passage_characters"] == 0
+              or account["passage_tokens"] == account["kept_passage_tokens"] and (
+                  account["start"] != source_start or account["end"] != source_end)):
             raise C4Failure("RuntimeRerankerInputAccountingChanged")
 
     def native_call(self, mesh, query, memory_module, *, n=10, category="warmup"):
@@ -279,9 +328,11 @@ class RuntimeObserver:
                 production.append_jsonl(stream, row)
         manifest["runtime_reranker"] = {"configuration": "c4-minilm-runtime-recall", "phase": self.args.phase,
                                        "policy": POLICY, "model": MODEL, "limits": LIMITS,
+                                       "profile": requested_profile(self.args), "effective_limits": effective_limits(requested_profile(self.args)),
                                        "resource_passes": self.resource_passes, "native_counts": dict(self.counts),
                                        "parent_identity_scores_spans_and_tail_verified": True,
                                        "top_one_matches_top_ten": True, "labels_in_ranking_inputs": False}
+        manifest["runtime_rerank_profile"] = requested_profile(self.args)
 
     def close(self):
         if self.module is not None:
@@ -299,7 +350,8 @@ def measure(args, helpers):
         source_run=args.source_run, source_home=None, source_namespace=source["namespace"] if args.dataset != "longmemeval" else None,
         runtime_passages=True, fresh_default_run=args.fresh_default_run)
     try:
-        production.run_retrieval(options, experiment=observer)
+        production.run_retrieval(options, experiment=observer, passage_snapshot={
+            "directory": args.runtime_passage_run, "home": getattr(args, "runtime_passage_home", None)})
     except BaseException as exc:
         manifest_path = helpers.safe_member(args.output, "run-manifest.json", must_exist=False)
         if manifest_path.exists():
@@ -312,12 +364,14 @@ def measure(args, helpers):
 
 
 def run(args, helpers):
+    profile = requested_profile(args)
     output = helpers.isolated_artifact_path(args.output, args.repository)
     if output.exists():
         raise C4Failure("OutputAlreadyExists")
     output.mkdir(parents=True)
     metadata = {"status": "running", "configuration": "c4-minilm-runtime-recall", "optional_default_enabled": False,
                 "reranker_model": MODEL, "reranker_limits": LIMITS, "reranker_policy": POLICY,
+                "runtime_rerank_profile": profile, "reranker_effective_limits": effective_limits(profile),
                 "all_queries_accounted": False, "resource_qualified": False, "paired_original_condition": "runtime_passages",
                 "resource_gates": {key: {"observed": None, "maximum": maximum} for key, maximum in RESOURCE_MAXIMA.items()},
                 "labels_in_ranking_inputs": False, "failure_type": None}
@@ -344,6 +398,16 @@ def run(args, helpers):
                 raise C4Failure("RuntimeSourceHashMismatch")
         helpers.verify_exports(args.source_run, source)
         helpers.verify_exports(args.runtime_passage_run, comparator)
+        from retrieval_ci import runtime_passage_evidence
+
+        records = list(helpers.read_jsonl(helpers.safe_member(args.source_run, "ingestion-fidelity.jsonl")))
+        source_queries = {row["query_id"]: row for row in helpers.read_jsonl(helpers.safe_member(args.source_run, "query-vectors.jsonl"))}
+        runtime_passage_evidence(args.runtime_passage_run, comparator, records)
+        snapshot = production.load_runtime_passage_snapshot(
+            args.runtime_passage_run, getattr(args, "runtime_passage_home", None), args.repository, source,
+            helpers.digest_file(source_path), {key: comparator["runtime_passage_index"][key] for key in (
+                "fresh_default_run_manifest_sha256", "fresh_default_results_sha256")}, records, source_queries)
+        args.runtime_passage_home = snapshot["home"]
         verify_fixture(args.model_directory, helpers)
         metadata.update(runtime_passage_run_manifest_sha256=helpers.digest_file(comparator_path),
                         runtime_passage_results_sha256=comparator["output_sha256"]["results-default.jsonl"],
@@ -353,10 +417,11 @@ def run(args, helpers):
         helpers.configure_isolation(temporary)
         base = [sys.executable, str(helpers.safe_member(args.repository, "benchmarks/runtime_rerank_c4.py")), "measure", args.dataset]
         for name in ("repository", "source_run", "runtime_passage_run", "fresh_default_run", "dataset_directory", "base_protocol", "protocol",
-                     "model_directory", "embedding_model_directory"):
+                     "model_directory", "embedding_model_directory", "runtime_passage_home"):
             base += ["--" + name.replace("_", "-"), str(getattr(args, name))]
         if args.dependency_directory:
             base += ["--dependency-directory", str(args.dependency_directory)]
+        base += ["--profile", profile]
         phases = {}
         for phase in ("baseline", "c4"):
             active_phase = phase
@@ -364,7 +429,21 @@ def run(args, helpers):
             if phase == "c4":
                 ceiling = min(ceiling, phases["baseline"]["process_tree_peak_rss_bytes"] + RESOURCE_MAXIMA["delta_rss_mib"] * 1024**2)
             phase_output = temporary / phase
-            phases[phase] = supervised_measure(base + ["--phase", phase, "--output", str(phase_output)], args.repository, ceiling, phase_output, helpers)
+            production.verify_runtime_passage_snapshot(snapshot)
+            try:
+                phases[phase] = supervised_measure(base + ["--phase", phase, "--output", str(phase_output)], args.repository, ceiling, phase_output, helpers)
+            finally:
+                production.verify_runtime_passage_snapshot(snapshot)
+            phase_manifest = json.loads(helpers.safe_member(phase_output, "run-manifest.json").read_text(encoding="utf-8"))
+            helpers.verify_exports(phase_output, phase_manifest)
+            runtime_passage_evidence(phase_output, phase_manifest, records)
+            reuse = production.runtime_passage_snapshot_reuse_metadata(phase_manifest, records)
+            if (phase_manifest.get("status") != "complete" or phase_manifest.get("runtime_files") != source["runtime_files"]
+                    or phase_manifest.get("runtime_reranker", {}).get("profile") != profile
+                    or phase_manifest.get("runtime_reranker", {}).get("effective_limits") != effective_limits(profile)
+                    or reuse["source_run_manifest_sha256"] != snapshot["run_manifest_sha256"] or reuse["snapshot"] != snapshot["metadata"]):
+                raise C4Failure("MatchedSnapshotReuseChanged")
+            metadata.setdefault("matched_snapshot_reuse", {})[phase] = reuse
             active_phase = None
             metadata["matched_resource_phases"] = phases
             helpers.write_json(output / "run-manifest.json", metadata)
@@ -414,6 +493,7 @@ def main(argv=None):
     freeze = commands.add_parser("freeze", help="Freeze actual runtime-C4 qualification before native execution")
     for name in ("repository", "base-protocol", "output"):
         freeze.add_argument("--" + name, type=Path, required=True)
+    freeze.add_argument("--profile", choices=tuple(INPUT_PROFILES), default="full-256", help="Pinned runtime reranker input profile (default: full-256)")
     for name in ("run", "measure"):
         command = commands.add_parser(name, help="Qualify actual Mesh.recall on CI" if name == "run" else argparse.SUPPRESS)
         command.add_argument("dataset", choices=("nfcorpus", "scifact", "prospective", "longtext-prospective", "longmemeval"))
@@ -421,6 +501,8 @@ def main(argv=None):
                        "model-directory", "embedding-model-directory", "output"):
             command.add_argument("--" + option, type=Path, required=True)
         command.add_argument("--dependency-directory", type=Path)
+        command.add_argument("--profile", choices=tuple(INPUT_PROFILES), default="full-256", help="Pinned runtime reranker input profile (default: full-256)")
+        command.add_argument("--runtime-passage-home", type=Path, help="Explicit named isolated prequery passage snapshot home when its comparator manifest is sanitized")
         if name == "measure":
             command.add_argument("--phase", choices=("baseline", "c4"), required=True)
     args = parser.parse_args(argv)
@@ -434,10 +516,7 @@ def main(argv=None):
         if target.exists():
             raise C4Failure("FrozenProtocolAlreadyExists")
         target.parent.mkdir(parents=True, exist_ok=True)
-        helpers.write_json(target, {"version": 1, "model": MODEL, "limits": LIMITS, "policy": POLICY,
-                                   "resource_maxima": RESOURCE_MAXIMA,
-                                   "base_protocol_sha256": helpers.digest_file(args.base_protocol),
-                                   "implementation_sha256": implementation_hashes(args.repository, helpers)})
+        helpers.write_json(target, frozen_protocol(args, helpers))
     elif args.command == "measure":
         measure(args, helpers)
     else:

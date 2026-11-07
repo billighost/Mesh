@@ -4577,7 +4577,7 @@ class MeshStore:
                     tx_marker = _begin_write(conn, self.namespace, self._store_generation)
                     try:
                         old_row = conn.execute(
-                            "SELECT content, local_only, revision, source_agent, namespace, incarnation FROM memories WHERE id = ?",
+                            "SELECT content, local_only, revision, source_agent, namespace, incarnation, rowid FROM memories WHERE id = ?",
                             (memory_id,),
                         ).fetchone()
                         if old_row is not None and old_row[4] != self.namespace:
@@ -4591,8 +4591,9 @@ class MeshStore:
                         row_meta["revision"] = revision
                         row_meta["incarnation"] = incarnation
                         row_meta["store_generation"] = self.store_generation
-                        old_rowid = self._get_memory_rowid(conn, memory_id)
-                        conn.execute("DELETE FROM memory_passages WHERE namespace=? AND parent_id=?", (self.namespace, memory_id))
+                        old_rowid = int(old_row[6]) if old_row is not None else None
+                        if old_row is not None:
+                            conn.execute("DELETE FROM memory_passages WHERE namespace=? AND parent_id=?", (self.namespace, memory_id))
                         conn.execute("DELETE FROM embedding_jobs WHERE namespace=? AND memory_id=?", (self.namespace, memory_id))
                         conn.execute(
                             """
@@ -4766,7 +4767,7 @@ class MeshStore:
                             )
 
                             old_row = conn.execute(
-                                "SELECT content, local_only, revision, source_agent, namespace, incarnation FROM memories WHERE id = ?",
+                                "SELECT content, local_only, revision, source_agent, namespace, incarnation, rowid FROM memories WHERE id = ?",
                                 (memory_id,),
                             ).fetchone()
                             if old_row is not None and old_row[4] != self.namespace:
@@ -4777,8 +4778,9 @@ class MeshStore:
                                 )
                             revision = int(old_row[2]) + 1 if old_row is not None else 1
                             incarnation = old_row[5] if old_row is not None else uuid.uuid4().hex
-                            old_rowid = self._get_memory_rowid(conn, memory_id)
-                            conn.execute("DELETE FROM memory_passages WHERE namespace=? AND parent_id=?", (self.namespace, memory_id))
+                            old_rowid = int(old_row[6]) if old_row is not None else None
+                            if old_row is not None:
+                                conn.execute("DELETE FROM memory_passages WHERE namespace=? AND parent_id=?", (self.namespace, memory_id))
                             conn.execute("DELETE FROM embedding_jobs WHERE namespace=? AND memory_id=?", (self.namespace, memory_id))
                             conn.execute(
                                 """

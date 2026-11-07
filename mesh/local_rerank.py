@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import hashlib
 import os
 from pathlib import Path
@@ -26,6 +27,8 @@ PARENT_CAP = 4
 QUERY_TOKENS = 29
 PASSAGE_TOKENS = 224
 PAIR_TOKENS = 256
+INPUT_PROFILES = {"full-256": (PASSAGE_TOKENS, PAIR_TOKENS),
+                  "compact-128": (96, 128), "compact-96": (64, 96)}
 
 # One gate covers cold loading, tokenizer mutation, and inference across namespaces.
 # Busy recalls keep their existing order instead of building an unbounded queue.
@@ -114,6 +117,60 @@ def _bounded_prefix(text, tokenizer, maximum):
     return prefix, count, kept
 
 
+def _profile_limits(profile):
+    if not isinstance(profile, str) or profile not in INPUT_PROFILES:
+        raise RerankUnavailable("profile_invalid")
+    return INPUT_PROFILES[profile]
+
+
+def _bounded_excerpt(text, tokenizer, maximum, query_ids):
+    encoded = tokenizer.encode(text, add_special_tokens=False)
+    # Encoding properties materialize lists; retain each once before scanning.
+    ids = encoded.ids
+    count = len(ids)
+    if count <= maximum:
+        return text, count, count, 0
+    matches = Counter(token for token in ids[:maximum] if token in query_ids)
+    hits = sum(matches.values())
+    positions = sum(index for index, token in enumerate(ids[:maximum]) if token in query_ids)
+
+    def score(start):
+        # Balance context around matches; exact ties retain the earliest source window.
+        distance = abs(2 * positions - (2 * start + maximum - 1) * hits)
+        return len(matches), hits, -distance
+
+    best_start, best_score = 0, score(0)
+    for index in range(maximum, count):
+        removed = index - maximum
+        token = ids[removed]
+        if token in query_ids:
+            matches[token] -= 1
+            if not matches[token]:
+                del matches[token]
+            hits -= 1
+            positions -= removed
+        token = ids[index]
+        if token in query_ids:
+            matches[token] += 1
+            hits += 1
+            positions += index
+        start = removed + 1
+        current = score(start)
+        if current > best_score:
+            best_start, best_score = start, current
+    offsets = encoded.offsets
+    start = 0 if best_start == 0 else offsets[best_start][0]
+    end = offsets[best_start + maximum - 1][1]
+    if type(start) is not int or type(end) is not int or not 0 <= start < end <= len(text):
+        raise RerankUnavailable("tokenizer_excerpt_invalid")
+    # A wordpiece at the new boundary can tokenize differently in isolation.
+    # Recheck the verbatim substring rather than relying on silent pair truncation.
+    excerpt, _count, kept = _bounded_prefix(text[start:end], tokenizer, maximum)
+    if not excerpt.strip():
+        raise RerankUnavailable("tokenizer_excerpt_invalid")
+    return excerpt, count, kept, start
+
+
 def _source(row):
     body = row.get("content")
     identity = (row.get("id"), row.get("revision"), row.get("incarnation"), row.get("store_generation"))
@@ -175,16 +232,25 @@ class _LocalCrossEncoder:
         except Exception:
             raise RerankUnavailable("model_load_failed") from None
 
-    def prepare(self, query, candidates):
+    def prepare(self, query, candidates, *, profile="full-256"):
+        passage_limit, pair_limit = _profile_limits(profile)
         if not 1 <= len(candidates) <= PARENT_CAP:
             raise RerankUnavailable("candidate_cap_exceeded")
         query_text, query_count, kept_query = _bounded_prefix(query, self.tokenizer, QUERY_TOKENS)
+        query_ids = set(self.tokenizer.encode(query_text, add_special_tokens=False).ids) if profile != "full-256" else None
         pairs, accounting = [], []
         for row in candidates:
             source, mode, start = _source(row)
-            passage, count, kept = _bounded_prefix(source, self.tokenizer, PASSAGE_TOKENS)
-            if mode == "exact_selected_source_span" and count != kept:
-                raise RerankUnavailable("selected_span_too_long")
+            if profile == "full-256":
+                passage, count, kept = _bounded_prefix(source, self.tokenizer, passage_limit)
+                if mode == "exact_selected_source_span" and count != kept:
+                    raise RerankUnavailable("selected_span_too_long")
+            else:
+                passage, count, kept, relative_start = _bounded_excerpt(source, self.tokenizer, passage_limit, query_ids)
+                start += relative_start
+                if count != kept:
+                    mode = ("verbatim_selected_source_excerpt" if mode == "exact_selected_source_span"
+                            else "verbatim_original_body_excerpt")
             if not passage.strip():
                 raise RerankUnavailable("selected_span_empty")
             pairs.append((query_text, passage))
@@ -193,12 +259,14 @@ class _LocalCrossEncoder:
                                "removed_query_characters": len(query) - len(query_text),
                                "passage_tokens": count, "kept_passage_tokens": kept,
                                "removed_passage_characters": len(source) - len(passage)})
+            if profile != "full-256":
+                accounting[-1]["profile"] = profile
         try:
             self.tokenizer.enable_padding(pad_id=0, pad_token="[PAD]")
             encoded = self.tokenizer.encode_batch(pairs)
         finally:
             self.tokenizer.no_padding()
-        if len(encoded) != len(candidates) or any(len(item.ids) > PAIR_TOKENS for item in encoded):
+        if len(encoded) != len(candidates) or any(len(item.ids) > pair_limit for item in encoded):
             raise RerankUnavailable("pair_token_cap_exceeded")
         for item, account in zip(encoded, accounting):
             account["pair_tokens"] = len(item.ids)
@@ -280,6 +348,8 @@ def _rerank_locked(query, candidates, revalidate):
     if len(guarded) < 2:
         return _fallback(guarded, "insufficient_candidates")
     try:
+        profile = os.environ.get("MESH_RERANK_PROFILE", "full-256")
+        _profile_limits(profile)
         engine = _get_engine()
     except RerankUnavailable as exc:
         return _fallback(revalidate(guarded), str(exc))
@@ -290,7 +360,10 @@ def _rerank_locked(query, candidates, revalidate):
     try:
         if len({row.get("id") for row in head}) != len(head):
             raise RerankUnavailable("candidate_identity_invalid")
-        arrays, accounting = engine.prepare(query, head)
+        if profile == "full-256":
+            arrays, accounting = engine.prepare(query, head)
+        else:
+            arrays, accounting = engine.prepare(query, head, profile=profile)
     except RerankUnavailable as exc:
         return _fallback(revalidate(guarded), str(exc))
     except Exception:

@@ -29,6 +29,8 @@ from replay_retrieval import (checked_path, compact_results, configure_isolation
 MODEL_TAG = "onnx-minilm-l6-v2"
 PASSAGE_REPRESENTATION = "paragraph-sentences-v1"
 PASSAGE_BATCH_LIMIT = 32
+PASSAGE_SNAPSHOT_FOLDER = "mesh-frozen-quality-passage-snapshot"
+PASSAGE_SNAPSHOT_CONFIGURATION = "prequery-original-parent-passages-v1"
 WORKER_FAILURE_SOURCES = frozenset({"production_retrieval.py", "passage_retrieval.py", "replay_retrieval.py",
                                     "retrieval_c4.py", "retrieval_c4_model.py", "memory.py", "store.py",
                                     "passage_search.py", "passages.py", "runtime_rerank_c4.py", "local_rerank.py"})
@@ -580,6 +582,196 @@ def guarded_database_fingerprint(source_home, namespace):
     return {"database_sha256": digest_file(database), "wal_sha256": digest_file(wal) if wal.exists() else None}
 
 
+def freeze_runtime_passage_snapshot(mesh, records, snapshot_root, store_module):
+    source_home = isolated_source_home(str(mesh.store.db_path.parent))
+    snapshot_root = isolated_artifact_path(snapshot_root, must_exist=True)
+    home = checked_path(snapshot_root / "mesh-home", root=snapshot_root, must_exist=True, directory=True)
+    namespace = store_module.validate_namespace(mesh.namespace)
+    if safe_member(home, "mesh_" + namespace + ".db", must_exist=False).exists():
+        raise ValueError("Refusing to overwrite a frozen runtime passage snapshot")
+    identities = runtime_parent_identities(records)
+    if {row["store_generation"] for row in identities.values()} != {mesh.store.store_generation}:
+        raise ValueError("Runtime passage snapshot original generation changed")
+    copy_guarded_corpus(None, source_home, namespace, snapshot_root, records, store_module)
+    return {"namespace": namespace, "store_generation": mesh.store.store_generation,
+            "original_parent_count": len(identities), "fingerprint": guarded_database_fingerprint(home, namespace)}
+
+
+def runtime_passage_snapshot_metadata(manifest, records, source_queries=None):
+    snapshot = manifest.get("runtime_passage_snapshot", {})
+    if (not isinstance(snapshot, dict) or set(snapshot) != {"configuration", "copy_method", "frozen_before_queries", "immutable", "corpora"}
+            or snapshot.get("configuration") != PASSAGE_SNAPSHOT_CONFIGURATION
+            or snapshot.get("copy_method") != "sqlite_backup" or snapshot.get("frozen_before_queries") is not True
+            or snapshot.get("immutable") is not True or not isinstance(snapshot.get("corpora"), dict)):
+        raise ValueError("Runtime passage snapshot is missing or was not frozen before queries")
+    identities = runtime_parent_identities(records)
+    expected = defaultdict(set)
+    for record in records:
+        expected[record["corpus_id"]]
+        if record["acceptance"].get("memory_id"):
+            expected[record["corpus_id"]].add(record["acceptance"]["memory_id"])
+    namespaces = defaultdict(set)
+    for query in (source_queries or {}).values():
+        namespaces[query["corpus_id"]].add(query["namespace"])
+    if (set(snapshot["corpora"]) != set(expected)
+            or source_queries is not None and set(namespaces) != set(expected)):
+        raise ValueError("Runtime passage snapshot corpus accounting changed")
+    for corpus, identifiers in expected.items():
+        if corpus != "complete" and not re.fullmatch(r"corpus-[0-9]{3}\.jsonl", corpus):
+            raise ValueError("Runtime passage snapshot corpus name is invalid")
+        item = snapshot["corpora"][corpus]
+        generations = {identities[identifier]["store_generation"] for identifier in identifiers}
+        if (not isinstance(item, dict) or set(item) != {"namespace", "store_generation", "original_parent_count", "fingerprint"}
+                or type(item.get("namespace")) is not str or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", item["namespace"])
+                or source_queries is not None and namespaces[corpus] != {item["namespace"]}
+                or generations != {item.get("store_generation")}
+                or type(item.get("original_parent_count")) is not int or item["original_parent_count"] != len(identifiers)):
+            raise ValueError("Runtime passage snapshot namespace or original generation changed")
+        fingerprint = item["fingerprint"]
+        if (not isinstance(fingerprint, dict) or set(fingerprint) != {"database_sha256", "wal_sha256"}
+                or any(type(value) is not str or not re.fullmatch(r"[0-9a-f]{64}", value)
+                       for key, value in fingerprint.items() if key != "wal_sha256" or value is not None)):
+            raise ValueError("Runtime passage snapshot fingerprint is incomplete")
+    return snapshot
+
+
+def load_runtime_passage_snapshot(directory, home, repository, source_manifest, source_hash, pairing, records, source_queries):
+    directory = isolated_artifact_path(directory, repository, must_exist=True)
+    manifest_path = safe_member(directory, "run-manifest.json")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    verify_exports(directory, manifest)
+    if (manifest.get("status") != "complete" or manifest.get("all_queries_accounted") is not True
+            or manifest.get("passage_index_enabled") is not True or manifest.get("guarded_source_immutable") is not True
+            or manifest.get("source_run_manifest_sha256") != source_hash
+            or manifest.get("source_fidelity_sha256") != source_manifest["output_sha256"]["ingestion-fidelity.jsonl"]
+            or any(manifest.get(key) != source_manifest.get(key) for key in (
+                "dataset", "query_target", "dataset_manifest_sha256", "protocol_sha256", "runtime_files",
+                "model_revision", "model_file_sha256", "query_model_space_tag"))
+            or any(manifest.get("runtime_passage_index", {}).get(key) != value for key, value in pairing.items())):
+        raise ValueError("Runtime passage snapshot source or fresh-default pairing changed")
+    validate_runtime_passage_schema(manifest.get("schema_version"))
+    snapshot = runtime_passage_snapshot_metadata(manifest, records, source_queries)
+    if home is None:
+        retained = isolated_source_home(manifest["temporary_mesh_home"])
+        home = retained.parent / PASSAGE_SNAPSHOT_FOLDER / "mesh-home"
+    home = isolated_source_home(str(home))
+    for item in snapshot["corpora"].values():
+        if guarded_database_fingerprint(home, item["namespace"]) != item["fingerprint"]:
+            raise ValueError("Runtime passage snapshot database or WAL changed")
+    return {"directory": directory, "home": home, "repository": repository, "manifest": manifest, "metadata": snapshot,
+            "run_manifest_sha256": digest_file(manifest_path)}
+
+
+def runtime_passage_snapshot_reuse_metadata(manifest, records):
+    reuse = manifest.get("runtime_passage_snapshot_reuse", {})
+    if (not isinstance(reuse, dict) or set(reuse) != {"source_run_manifest_sha256", "snapshot", "source_immutable", "readiness_verified_without_inference"}
+            or type(reuse.get("source_run_manifest_sha256")) is not str
+            or not re.fullmatch(r"[0-9a-f]{64}", reuse["source_run_manifest_sha256"])
+            or reuse.get("source_immutable") is not True or reuse.get("readiness_verified_without_inference") is not True
+            or manifest.get("document_inference_invoked") is not False):
+        raise ValueError("Runtime passage snapshot reuse provenance or inference accounting changed")
+    snapshot = runtime_passage_snapshot_metadata({"runtime_passage_snapshot": reuse["snapshot"]}, records)
+    readiness = manifest.get("runtime_passage_readiness", {})
+    if set(readiness) != set(snapshot["corpora"]):
+        raise ValueError("Runtime passage snapshot reuse readiness is incomplete")
+    for corpus, item in snapshot["corpora"].items():
+        actual = readiness[corpus]
+        if (actual.get("status") != "indexed" or actual.get("target_model") != MODEL_TAG
+                or actual.get("target_representation") != PASSAGE_REPRESENTATION
+                or actual.get("representation_bound_indexed_memories") != item["original_parent_count"]
+                or any(type(actual.get(key)) is not int or actual[key] != 0 for key in (
+                    "completed_batches", "scheduled_jobs", "pending_embedding_jobs", "primary_document_inference_attempts",
+                    "passage_raw_batch_encoding_calls", "passage_encoded_rows"))):
+            raise ValueError("Runtime passage snapshot reuse performed work or failed readiness")
+    return reuse
+
+
+def copy_runtime_passage_snapshot(snapshot, corpus, namespace, root, records, store_module):
+    home = isolated_source_home(str(snapshot["home"]))
+    root = isolated_artifact_path(root, must_exist=True)
+    checked_path(root / "mesh-home", root=root, must_exist=True, directory=True)
+    namespace = store_module.validate_namespace(namespace)
+    item = snapshot["metadata"]["corpora"][corpus]
+    if namespace != item["namespace"] or guarded_database_fingerprint(home, namespace) != item["fingerprint"]:
+        raise ValueError("Runtime passage snapshot database, WAL or namespace changed before copying")
+    copy_guarded_corpus(snapshot["directory"], home, namespace, root, records, store_module)
+    if guarded_database_fingerprint(home, namespace) != item["fingerprint"]:
+        raise ValueError("Runtime passage snapshot database or WAL changed while copying")
+
+
+def verify_runtime_passage_snapshot(snapshot):
+    home = isolated_source_home(str(snapshot["home"]))
+    directory = isolated_artifact_path(snapshot["directory"], snapshot["repository"], must_exist=True)
+    if digest_file(safe_member(directory, "run-manifest.json")) != snapshot["run_manifest_sha256"]:
+        raise ValueError("Runtime passage snapshot manifest changed")
+    verify_exports(directory, snapshot["manifest"])
+    for item in snapshot["metadata"]["corpora"].values():
+        if guarded_database_fingerprint(home, item["namespace"]) != item["fingerprint"]:
+            raise ValueError("Runtime passage snapshot database or WAL changed")
+
+
+def verify_runtime_passage_readiness(mesh, records, memory_module):
+    identities = runtime_parent_identities(records)
+    if {row["store_generation"] for row in identities.values()} != {mesh.store.store_generation}:
+        raise ValueError("Original store generation changed before passage readiness verification")
+    identifiers = list(identities)
+    for offset in range(0, len(identifiers), 128):
+        batch = identifiers[offset:offset + 128]
+        status = mesh.wait_for_indexed(
+            batch, timeout=0, include_private=True, target_model=MODEL_TAG, target_representation=PASSAGE_REPRESENTATION,
+            expected_revisions={identifier: identities[identifier]["revision"] for identifier in batch},
+            expected_incarnations={identifier: identities[identifier]["incarnation"] for identifier in batch},
+            expected_store_generation=mesh.store.store_generation)
+        if status["status"] != "indexed" or set(status["indexed"]) != set(batch):
+            raise ValueError("Original-parent passage representation/model readiness failed")
+    verify_guarded_readiness(mesh, records, memory_module)
+    return len(identities)
+
+
+def reuse_runtime_passages(mesh, records, memory_module, readiness, resources):
+    identities = runtime_parent_identities(records)
+    model, backend = memory_module._get_model()
+    if (backend != "onnx" or not isinstance(model, memory_module._DirectOnnxEmbedding)
+            or memory_module._backend_to_model_tag(backend, model) != MODEL_TAG
+            or memory_module.PASSAGE_FORMAT_VERSION != PASSAGE_REPRESENTATION
+            or os.environ.get("MESH_PASSAGE_INDEX") != "1" or os.environ.get("MESH_BG_ONNX") != "0"):
+        raise ValueError("Snapshot passage reuse requires the pinned direct model and manual opt-in")
+    readiness.update(status="running", target_model=MODEL_TAG, target_representation=PASSAGE_REPRESENTATION,
+                     eligible_original_parent_memories=len(identities), representation_bound_indexed_memories=0,
+                     batch_limit=PASSAGE_BATCH_LIMIT, maximum_batches=max(3, len(identities) * 3), completed_batches=0,
+                     scheduled_jobs=0, pending_embedding_jobs=0, passage_raw_batch_encoding_calls=0,
+                     passage_encoded_rows=0, primary_document_inference_attempts=0)
+    started, cpu_started = time.monotonic(), time.process_time()
+    encoder, worker, raw = memory_module._encode_texts_with_tag, memory_module._process_reembed_batch, model._encode_raw_batches
+    had_raw_override = "_encode_raw_batches" in vars(model)
+
+    def forbid_primary(*_args, **_kwargs):
+        readiness["primary_document_inference_attempts"] += 1
+        raise RuntimeError("Snapshot passage reuse attempted primary document inference")
+
+    def forbid_passages(*_args, **_kwargs):
+        readiness["passage_raw_batch_encoding_calls"] += 1
+        raise RuntimeError("Snapshot passage reuse attempted passage reinference")
+
+    memory_module._encode_texts_with_tag = forbid_primary
+    memory_module._process_reembed_batch = model._encode_raw_batches = forbid_passages
+    try:
+        count = verify_runtime_passage_readiness(mesh, records, memory_module)
+        readiness.update(status="indexed", representation_bound_indexed_memories=count)
+    except BaseException:
+        readiness["status"] = "failed"
+        raise
+    finally:
+        memory_module._encode_texts_with_tag, memory_module._process_reembed_batch = encoder, worker
+        if had_raw_override:
+            model._encode_raw_batches = raw
+        else:
+            del model._encode_raw_batches
+        readiness["resource_diagnostics"] = {"wall_seconds": time.monotonic() - started,
+                                              "process_cpu_seconds": time.process_time() - cpu_started,
+                                              "sampled_owned_process_rss_bytes_max": resources.summary()["sampled_owned_process_rss_bytes_max"]}
+
+
 def index_runtime_passages(mesh, records, memory_module, readiness, resources):
     identities = runtime_parent_identities(records)
     if {row["store_generation"] for row in identities.values()} != {mesh.store.store_generation}:
@@ -640,18 +832,7 @@ def index_runtime_passages(mesh, records, memory_module, readiness, resources):
                 raise RuntimeError("Bounded runtime passage drain made no progress")
         else:
             raise RuntimeError("Runtime passage drain exceeded its original-parent batch bound")
-        identifiers = list(identities)
-        for offset in range(0, len(identifiers), 128):
-            batch = identifiers[offset:offset + 128]
-            status = mesh.wait_for_indexed(
-                batch, timeout=0, include_private=True, target_model=MODEL_TAG,
-                target_representation=PASSAGE_REPRESENTATION,
-                expected_revisions={identifier: identities[identifier]["revision"] for identifier in batch},
-                expected_incarnations={identifier: identities[identifier]["incarnation"] for identifier in batch},
-                expected_store_generation=identities[batch[0]]["store_generation"])
-            if status["status"] != "indexed" or set(status["indexed"]) != set(batch):
-                raise ValueError("Original-parent passage representation/model readiness failed")
-        verify_guarded_readiness(mesh, records, memory_module)
+        verify_runtime_passage_readiness(mesh, records, memory_module)
         readiness.update(status="indexed", representation_bound_indexed_memories=len(identities))
     except BaseException:
         readiness["status"] = "failed"
@@ -744,8 +925,10 @@ def fresh_queries(mesh, queries, records, streams, metadata, memory_module, *,
         experiment.after_namespace(mesh, queries, records, memory_module)
 
 
-def run_retrieval(args, *, experiment=None):
+def run_retrieval(args, *, experiment=None, passage_snapshot=None):
     runtime_passages = getattr(args, "runtime_passages", False)
+    if passage_snapshot is not None and (runtime_passages is not True or experiment is None or args.command != "query-only"):
+        raise ValueError("Passage snapshot reuse requires an explicit native passage query experiment")
     if runtime_passages and (args.command != "query-only" or not getattr(args, "fresh_default_run", None)):
         raise ValueError("Runtime passages are a query-only opt-in paired with an explicit fresh-default run")
     if getattr(args, "fresh_default_run", None) and not runtime_passages:
@@ -770,6 +953,7 @@ def run_retrieval(args, *, experiment=None):
     source_home = None
     source_queries = {}
     original_sdk_top10, pairing = None, None
+    snapshot = None
     if query_only:
         args.source_run = isolated_artifact_path(args.source_run, repository, must_exist=True)
         source_path = safe_member(args.source_run, "run-manifest.json")
@@ -806,6 +990,10 @@ def run_retrieval(args, *, experiment=None):
                 raise ValueError("Runtime passages require an explicitly default-off guarded source")
             original_sdk_top10, pairing = load_fresh_default_pair(
                 args.fresh_default_run, repository, args.source_run, source_manifest, queries, records)
+            if passage_snapshot is not None:
+                snapshot = load_runtime_passage_snapshot(
+                    passage_snapshot["directory"], passage_snapshot.get("home"), repository, source_manifest,
+                    digest_file(source_path), pairing, records, source_queries)
     output = isolated_artifact_path(args.output, repository)
     if output.exists():
         raise ValueError("Refusing to overwrite an existing run")
@@ -838,6 +1026,10 @@ def run_retrieval(args, *, experiment=None):
                         runtime_passage_index=dict(pairing, representation=PASSAGE_REPRESENTATION,
                                                   backend="direct-onnx", manual_worker=True),
                         runtime_passage_readiness={}, guarded_source_database_fingerprints={}, guarded_source_immutable=False)
+        if snapshot is not None:
+            metadata["runtime_passage_snapshot_reuse"] = {
+                "source_run_manifest_sha256": snapshot["run_manifest_sha256"], "snapshot": snapshot["metadata"],
+                "source_immutable": False, "readiness_verified_without_inference": False}
     write_json(output / "run-manifest.json", metadata)
     started = time.monotonic()
     caps = [96] if query_only else protocol["candidate_caps"]
@@ -855,6 +1047,13 @@ def run_retrieval(args, *, experiment=None):
                 metadata["temporary_mesh_home"] = str(root / "mesh-home")
             else:
                 root = Path(cleanup.enter_context(tempfile.TemporaryDirectory(prefix="mesh-frozen-quality-"))).resolve(strict=True)
+            snapshot_root = None
+            if runtime_passages and args.retain_guarded_home and snapshot is None:
+                snapshot_root = root / PASSAGE_SNAPSHOT_FOLDER
+                (snapshot_root / "mesh-home").mkdir(parents=True)
+                metadata["runtime_passage_snapshot"] = {
+                    "configuration": PASSAGE_SNAPSHOT_CONFIGURATION, "copy_method": "sqlite_backup",
+                    "frozen_before_queries": True, "immutable": False, "corpora": {}}
             install_model(root, args.model_directory, protocol, query_only=query_only, repository=repository)
             if runtime_passages:
                 os.environ["MESH_PASSAGE_INDEX"] = "1"
@@ -889,7 +1088,12 @@ def run_retrieval(args, *, experiment=None):
                     if runtime_passages:
                         source_fingerprint = guarded_database_fingerprint(source_home, namespace)
                         metadata["guarded_source_database_fingerprints"][corpus_id] = source_fingerprint
-                    copy_guarded_corpus(args.source_run, source_home, namespace, root, records, store_module)
+                        if snapshot is not None and snapshot["manifest"]["guarded_source_database_fingerprints"].get(corpus_id) != source_fingerprint:
+                            raise ValueError("Guarded source fingerprint differs from the qualified passage snapshot")
+                    if snapshot is not None:
+                        copy_runtime_passage_snapshot(snapshot, corpus_id, namespace, root, records, store_module)
+                    else:
+                        copy_guarded_corpus(args.source_run, source_home, namespace, root, records, store_module)
                 mesh = memory_module.Mesh(namespace=namespace, agent_id="offline-retrieval-verification")
                 try:
                     if mesh.store.db_path.parent.resolve() != root / "mesh-home":
@@ -901,13 +1105,26 @@ def run_retrieval(args, *, experiment=None):
                             append_jsonl(fidelity, record)
                         if runtime_passages:
                             readiness = metadata["runtime_passage_readiness"].setdefault(corpus_id, {})
-                            index_runtime_passages(mesh, records, memory_module, readiness, resources)
+                            if snapshot is not None:
+                                reuse_runtime_passages(mesh, records, memory_module, readiness, resources)
+                            else:
+                                index_runtime_passages(mesh, records, memory_module, readiness, resources)
                             metadata["document_inference_invoked"] |= bool(readiness["passage_encoded_rows"])
+                            if snapshot_root is not None:
+                                # Freeze before default recall can update access statistics.
+                                metadata["runtime_passage_snapshot"]["corpora"][corpus_id] = freeze_runtime_passage_snapshot(
+                                    mesh, records, snapshot_root, store_module)
                         fresh_queries(mesh, group, records, streams, metadata, memory_module,
                                       original_sdk_top10=original_sdk_top10, resource_stream=resource_stream,
                                       resources=resources, experiment=experiment)
                         if runtime_passages and guarded_database_fingerprint(source_home, namespace) != source_fingerprint:
                             raise ValueError("Guarded source database changed during runtime passage evaluation")
+                        if snapshot is not None:
+                            verify_runtime_passage_snapshot(snapshot)
+                        if snapshot_root is not None:
+                            expected = metadata["runtime_passage_snapshot"]["corpora"][corpus_id]["fingerprint"]
+                            if guarded_database_fingerprint(snapshot_root / "mesh-home", namespace) != expected:
+                                raise ValueError("Prequery passage snapshot changed during comparator queries")
                     else:
                         corpus_path = safe_member(data, corpus_id if args.dataset == "longmemeval" else "corpus.jsonl")
                         records, summary = ingest_corpus(mesh, corpus_path, args.dataset, corpus_id, memory_module)
@@ -932,6 +1149,11 @@ def run_retrieval(args, *, experiment=None):
                         or digest_file(safe_member(fresh_path, "results-default.jsonl")) != pairing["fresh_default_results_sha256"]):
                     raise ValueError("Fresh-default pair changed during runtime passage evaluation")
                 metadata["guarded_source_immutable"] = True
+                if snapshot is not None:
+                    verify_runtime_passage_snapshot(snapshot)
+                    metadata["runtime_passage_snapshot_reuse"].update(source_immutable=True, readiness_verified_without_inference=True)
+                if snapshot_root is not None:
+                    metadata["runtime_passage_snapshot"]["immutable"] = True
             if experiment is not None:
                 experiment.finish(metadata, output)
             metadata["status"] = "complete"
