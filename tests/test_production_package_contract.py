@@ -47,6 +47,22 @@ def selected(member: str, patterns: list[str]) -> bool:
 
 
 class SourceManifestContracts(unittest.TestCase):
+    def test_sdist_declares_transitive_sibling_helper_imports(self):
+        # A new benchmark import must fail here instead of during archive collection.
+        for helper in validator.SDIST_HELPERS:
+            tree = ast.parse((ROOT / helper).read_text(encoding="utf-8"))
+            imports = set()
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    imports.update(alias.name.split(".")[0] for alias in node.names)
+                elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                    imports.add(node.module.split(".")[0])
+            for name in sorted(imports):
+                sibling = Path(helper).parent / (name + ".py")
+                if (ROOT / sibling).is_file():
+                    with self.subTest(helper=helper, dependency=sibling.as_posix()):
+                        self.assertIn(sibling.as_posix(), validator.SDIST_HELPERS)
+
     def test_sdist_includes_every_imported_helper_and_bounded_fixture(self):
         config = table_lists("tool.hatch.build.targets.sdist")
         manifest = (ROOT / "MANIFEST.in").read_text(encoding="utf-8").splitlines()

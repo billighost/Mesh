@@ -108,6 +108,8 @@ tests its exact commit on Windows with Python 3.14.0 and Python 3.10. The minimu
 job pins APSW 3.51.3.0. Both suites must pass; the primary also validates process
 crash recovery, at least 60% coverage, and the built package. Each job records
 source hashes and exact installed dependency versions before measurement.
+Full qualification uses two pytest workers, retaining the complete selection,
+property-test profile, coverage gate, and each test's own concurrency probes.
 
 Qualification is scheduled independently for each Python kind. Performance
 matrices and test-speed observations keep separate per-branch concurrency groups,

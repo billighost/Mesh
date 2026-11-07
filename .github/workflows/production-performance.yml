@@ -105,7 +105,7 @@ jobs:
           HYPOTHESIS_PROFILE: ci
         run: |
           New-Item -ItemType Directory -Force .work/qualification | Out-Null
-          python scripts/run_tests.py --workers 4 --report .work/qualification/full-run.json -- -q --tb=short -ra --hypothesis-profile=ci --hypothesis-show-statistics --cov=mesh --cov-fail-under=60 --cov-report=xml:.work/qualification/coverage.xml --junitxml=.work/qualification/full.xml
+          python scripts/run_tests.py --workers 2 --report .work/qualification/full-run.json -- -q --tb=short -ra --hypothesis-profile=ci --hypothesis-show-statistics --cov=mesh --cov-fail-under=60 --cov-report=xml:.work/qualification/coverage.xml --junitxml=.work/qualification/full.xml
       - name: Build and validate the installed wheel
         if: matrix.kind == 'primary'
         run: |

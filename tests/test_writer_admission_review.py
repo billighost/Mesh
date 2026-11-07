@@ -76,14 +76,18 @@ def test_writer_waits_for_slow_open_reservations_and_recovers_after_failure(monk
     entered = [threading.Event(), threading.Event()]
     release = [threading.Event(), threading.Event()]
     started, finished = threading.Event(), threading.Event()
+    admitted, finish_open = threading.Event(), threading.Event()
 
     def connect(path, *args, **kwargs):
         for index, name in enumerate(("writer-open-a", "writer-open-b")):
             if str(path).endswith(f"mesh_{name}.db"):
                 entered[index].set()
-                assert release[index].wait(10)
+                assert release[index].wait(20)
                 if index == 0 and failing_open:
                     raise sqlite3.OperationalError("Isolated connection open failure")
+        if str(path).endswith("mesh_writer-open-c.db"):
+            admitted.set()
+            assert finish_open.wait(20)
         return original(path, *args, **kwargs)
 
     monkeypatch.setattr(sqlite3, "connect", connect)
@@ -102,11 +106,23 @@ def test_writer_waits_for_slow_open_reservations_and_recovers_after_failure(monk
             waiting = executor.submit(request)
             assert started.wait(2)
             assert not finished.wait(0.15), "Reserved opens incorrectly caused immediate admission failure."
+            assert not admitted.is_set()
             assert executor.submit(ready_store.count).result(timeout=2) == 0
             release[0].set()
-            assert waiting.result(timeout=3) == 0
+            # Admission precedes disk open/schema work; loaded FULL commits have
+            # no three-second constructor contract. Keep the other opener held.
+            assert admitted.wait(7), "Writer was not admitted after an opening slot became available."
+            assert not finished.is_set()
             assert not release[1].is_set()
+            assert not openers[1].done()
+            with storage._CACHE_LOCK:
+                assert len(storage._CONNECTION_POOL) + len(storage._WRITER_OPENING) <= 2
+            finish_open.set()
+            assert waiting.result(timeout=10) == 0
+            assert not release[1].is_set()
+            assert not openers[1].done()
         finally:
+            finish_open.set()
             for stop in release:
                 stop.set()
         if failing_open:

@@ -138,6 +138,7 @@ include = [
     "/benchmarks/prepare_retrieval_ci.py",
     "/benchmarks/replay_retrieval.py",
     "/benchmarks/retrieval_ci.py",
+    "/benchmarks/retrieval_telemetry.py",
     "/benchmarks/passage_retrieval.py",
     "/benchmarks/check_passage_contract.py",
     "/benchmarks/retrieval_c4.py",

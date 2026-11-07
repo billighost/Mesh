@@ -38,7 +38,7 @@ SDIST_HELPERS = (
     "benchmarks/replay_retrieval.py", "benchmarks/retrieval_ci.py", "benchmarks/passage_retrieval.py",
     "benchmarks/check_passage_contract.py", "benchmarks/retrieval_c4.py",
     "benchmarks/retrieval_c4_model.py", "benchmarks/provision_retrieval_c4.py",
-    "benchmarks/runtime_rerank_c4.py",
+    "benchmarks/runtime_rerank_c4.py", "benchmarks/retrieval_telemetry.py",
 )
 SDIST_FIXTURES = (
     "benchmarks/retrieval_fixtures/README.md",
