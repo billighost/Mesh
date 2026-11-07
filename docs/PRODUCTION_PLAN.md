@@ -12,9 +12,10 @@ binds durable indexing jobs and operation receipts to memory revisions,
 incarnations, and store generations. Namespace recovery, public encryption,
 privacy, and uncertain mutation outcomes have focused regression coverage.
 
-Final full-suite and supported-platform qualification remains pending. Earlier
-full-suite failures are preserved as failures; focused passing checks and an
-installed-wheel smoke do not replace final CI. The
+Supported-platform and full-suite qualification has passed at the published
+checkpoints below. Native retrieval qualification remains pending. Earlier
+failures are preserved; focused passing checks and an installed-wheel smoke do
+not replace final CI. The
 [production Actions workflow](../.github/workflows/production-performance.yml)
 records full qualification and runs its measurements against that same source.
 The maintainer authorized publication of `ci/mesh-production-run-c4-20261106`.
@@ -27,8 +28,11 @@ test-fixture interference and HTTP connection exhaustion repairs are qualified.
 At `ecd96b5`, the schema-6 platform matrix and both full qualification suites
 also passed. Subsequent focused repairs cover all-short scorer activation,
 absent-ordinal legacy metadata and content-free worker failure diagnostics.
-Final same-source supported-platform and retrieval qualification of these
-latest changes remains pending.
+At `675970f`, all fifteen platform/Python combinations and both full production
+qualification suites passed. Native worker diagnostics then exposed a schema
+scalar mismatch before passage indexing. The benchmark-only repair now accepts
+the exact canonical string or integer schema 6 and emits a consistent numeric
+manifest. Corrected native quality/resource qualification remains pending.
 
 The reviewed retrieval and optional four-candidate reranker harnesses are now
 integrated as CI utilities. The production workflow calls the five-dataset

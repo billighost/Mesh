@@ -18,7 +18,7 @@ from pathlib import Path
 from prepare_retrieval_ci import BOUNDED_DATASETS, DATASETS, MODEL
 from production_retrieval import (MODEL_TAG, PASSAGE_BATCH_LIMIT, PASSAGE_REPRESENTATION,
                                   WORKER_FAILURE_SOURCES, WORKER_FAILURE_TYPES,
-                                  runtime_parent_identities, validate_runtime_parent_results)
+                                  runtime_parent_identities, validate_runtime_parent_results, validate_runtime_passage_schema)
 from replay_retrieval import (FIELDS, checked_path, configure_isolation, digest_file,
                               isolated_artifact_path, read_jsonl, safe_member, verify_exports)
 
@@ -448,8 +448,9 @@ def runtime_resource_projection(value):
 
 
 def runtime_passage_evidence(directory, manifest, records):
+    schema_version = validate_runtime_passage_schema(manifest.get("schema_version"))
     configuration = manifest.get("runtime_passage_index", {})
-    if (manifest.get("passage_index_enabled") is not True or manifest.get("schema_version") != 6
+    if (manifest.get("passage_index_enabled") is not True
             or configuration.get("representation") != PASSAGE_REPRESENTATION
             or configuration.get("backend") != "direct-onnx" or configuration.get("manual_worker") is not True
             or manifest.get("guarded_source_immutable") is not True):
@@ -500,7 +501,8 @@ def runtime_passage_evidence(directory, manifest, records):
                        for key in ("elapsed_ms", "process_cpu_ms", "sampled_owned_process_rss_bytes"))
                 or row["sampled_owned_process_rss_bytes"] <= 0):
             raise GateError("RuntimePassageQueryResourcesInvalid")
-    return {"runtime_passage_index": {"representation": PASSAGE_REPRESENTATION, "backend": "direct-onnx", "manual_worker": True},
+    return {"schema_version": schema_version,
+            "runtime_passage_index": {"representation": PASSAGE_REPRESENTATION, "backend": "direct-onnx", "manual_worker": True},
             "runtime_passage_readiness": projected, "guarded_source_immutable": True,
             "guarded_source_database_fingerprints": fingerprints,
             "runtime_passage_resource_diagnostics": runtime_resource_projection(manifest.get("runtime_passage_resource_diagnostics")),

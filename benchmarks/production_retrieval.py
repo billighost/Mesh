@@ -55,6 +55,13 @@ def worker_failure_details(exc, stage):
             "source_frames": frames[-4:]}
 
 
+def validate_runtime_passage_schema(value):
+    # Mesh stores its schema constant as text; benchmark manifests use a number.
+    if type(value) not in {str, int} or value not in {"6", 6}:
+        raise ValueError("Runtime passage evaluation requires the canonical schema-6 runtime")
+    return 6
+
+
 def decorate_results(results, records_by_memory):
     if any(row.get("local_only") or row.get("quarantined") for row in results):
         raise RuntimeError("Private or quarantined candidate in a public export")
@@ -850,9 +857,8 @@ def run_retrieval(args):
             metadata["runtime_files"] = hashes
             if source_manifest and hashes != source_manifest["runtime_files"]:
                 raise ValueError("Fresh-default runtime differs from its current guarded baseline")
-            metadata["schema_version"] = store_module.SCHEMA_VERSION
-            if runtime_passages and store_module.SCHEMA_VERSION != 6:
-                raise ValueError("Runtime passage evaluation requires the schema-6 runtime")
+            metadata["schema_version"] = (validate_runtime_passage_schema(store_module.SCHEMA_VERSION)
+                                          if runtime_passages else store_module.SCHEMA_VERSION)
             metadata["dependencies"] = {name: importlib.metadata.version(name) for name in ("numpy", "onnxruntime", "tokenizers", "apsw")}
             groups = [(query["corpus"], [query]) for query in queries] if args.dataset == "longmemeval" else [("complete", queries)]
             records_by_corpus = defaultdict(list)

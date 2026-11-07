@@ -25,8 +25,14 @@ generations now activate the same authorized scorer as long-parent generations.
 The production passage condition runs after its fresh-default pair and before
 legacy experiments; its evidence survives a later experimental failure. Exact
 parent, model, span, readiness and source pairing checks remain required. Final
-same-source passage, retrieval and supported-platform qualification of these
-latest repairs remains pending; focused checks do not replace those gates.
+native passage and retrieval qualification remains pending. At `675970f`,
+[normal CI](https://github.com/billighost/Mesh/actions/runs/42344319962) passed all
+fifteen combinations, and both full production qualification suites passed in
+[the production run](https://github.com/billighost/Mesh/actions/runs/42344319969).
+Worker diagnostics identified a string-versus-integer schema check that stopped
+the retrieval experiment before passage indexing. The repaired benchmark boundary
+accepts only canonical schema 6 and records its numeric form consistently.
+Focused checks do not replace corrected native quality and resource gates.
 
 The development machine has 8 GiB RAM. Local work uses small isolated checks
 with one test worker and no model or corpus evaluation. Full suites, concurrent
@@ -100,6 +106,18 @@ An ordinary `ci/mesh-production-*` branch runs qualification. A reviewed
 speed. The narrower `ci/mesh-production-run-c4-*` prefix explicitly requests
 the optional reranker experiment. Manual workflow dispatch exposes equivalent
 controls and can reduce the registered scope.
+
+For reviewed benchmark-only repairs, a `[retrieval-only]` commit marker keeps all
+qualification and retrieval jobs while omitting the extra storage matrix and
+test-speed observations. A `[qualification-only]` marker keeps full qualification
+for documentation/evidence updates. The
+[scope checker](../scripts/check_ci_measurement_scope.py) inspects the entire push
+diff and rejects these markers when runtime, storage-harness or test-launcher
+sources changed. Marker comparison matches GitHub's case-insensitive expressions.
+A missing push base also rejects the shortcut; fetch its history or use full
+scope. Manual workflow inputs still choose measurements directly. Earlier
+measurements retain their tested commit, version and source hashes; these
+shortcuts do not qualify changed sources by reusing old numerical evidence.
 
 The maintainer explicitly authorized publishing this CI branch, overriding the
 repository [AGENTS.md](../AGENTS.md) push restriction for this work. Subsequent

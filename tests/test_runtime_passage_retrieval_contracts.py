@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import copy
 import io
 import json
@@ -189,6 +190,108 @@ def test_opt_in_is_set_after_install_model_clears_inherited_flags(enabled):
         result = json.loads((args.output / "run-manifest.json").read_text(encoding="utf-8"))
         assert result["passage_index_enabled"] is enabled
         assert result["status"] == "failed"
+
+
+@pytest.mark.parametrize("schema", ["6", 6])
+def test_schema_six_fake_runtime_completes_worker_and_controller_projection(schema):
+    with tempfile.TemporaryDirectory(prefix="mesh-frozen-quality-contract-") as temporary, mock.patch.dict(os.environ):
+        root = Path(temporary)
+        source, fresh, source_manifest, fresh_manifest, queries, records = paired_fixture(root)
+        home, data, models = root / "mesh-home", root / "data", root / "models"
+        for directory in (home, data, models):
+            directory.mkdir()
+        content = "synthetic parent content"
+        records[0].update(stored_characters=len(content), stored_sha256=production.digest_text(content))
+        for directory in (source, fresh):
+            jsonl(directory / "ingestion-fidelity.jsonl", records)
+        source_manifest["output_sha256"]["ingestion-fidelity.jsonl"] = replay.digest_file(source / "ingestion-fidelity.jsonl")
+        fresh_manifest["output_sha256"]["ingestion-fidelity.jsonl"] = source_manifest["output_sha256"]["ingestion-fidelity.jsonl"]
+        jsonl(data / "queries-selected.jsonl", queries)
+        fixture = {"query_count": 1, "corpus_count": 1, "files": {"queries-selected.jsonl": replay.digest_file(data / "queries-selected.jsonl")}}
+        production.write_json(data / "manifest.json", fixture)
+        protocol = {"model": dict(MODEL, name="sentence-transformers/all-MiniLM-L6-v2"), "candidate_caps": [64, 96], "fusion": "calibrated"}
+        for name, key in (("model.onnx", "onnx_sha256"), ("tokenizer.json", "tokenizer_sha256")):
+            (models / name).write_bytes(b"synthetic fixture without a native model")
+            protocol["model"][key] = replay.digest_file(models / name)
+        production.write_json(root / "protocol.json", protocol)
+        source_manifest.update(embedding_model="minilm", temporary_mesh_home=str(home), schema_version=schema,
+            dataset_manifest_sha256=replay.digest_file(data / "manifest.json"), protocol_sha256=replay.digest_file(root / "protocol.json"),
+            model_file_sha256={key: protocol["model"][key] for key in ("onnx_sha256", "tokenizer_sha256")})
+        jsonl(source / "query-vectors.jsonl", [{"query_id": "query-1", "query": "synthetic query", "corpus_id": "complete",
+                                              "embedding_model": production.MODEL_TAG, "namespace": "fixture"}])
+        source_manifest["output_sha256"]["query-vectors.jsonl"] = replay.digest_file(source / "query-vectors.jsonl")
+        production.write_json(source / "run-manifest.json", source_manifest)
+        fresh_manifest.update({key: source_manifest[key] for key in (
+            "dataset_manifest_sha256", "protocol_sha256", "model_file_sha256", "schema_version")})
+        fresh_manifest["source_run_manifest_sha256"] = replay.digest_file(source / "run-manifest.json")
+        production.write_json(fresh / "run-manifest.json", fresh_manifest)
+        database = home / "mesh_fixture.db"
+        with contextlib.closing(sqlite3.connect(database)) as connection, connection:
+            connection.execute("CREATE TABLE memories(id TEXT,namespace TEXT,content TEXT,revision INTEGER,local_only INTEGER,quarantined INTEGER,embedding_model TEXT,embedding BLOB,incarnation TEXT)")
+            connection.execute("INSERT INTO memories VALUES(?,?,?,?,?,?,?,?,?)",
+                (MEMORY_ID, "fixture", content, 7, 0, 0, production.MODEL_TAG, b"synthetic primary", INCARNATION))
+        original_database_hash = replay.digest_file(database)
+        mesh, _model, module = manual_runtime(records)
+
+        @contextlib.contextmanager
+        def read_connect():
+            with contextlib.closing(sqlite3.connect(mesh.store.db_path)) as connection:
+                connection.row_factory = sqlite3.Row
+                yield connection
+
+        mesh.store._read_connect = read_connect
+
+        def recall(query, **kwargs):
+            assert kwargs == {"n": 10, "include_private": False, "include_quarantined": False}
+            assert not mesh.store.jobs and not mesh.store.todo
+            module._embed_query_with_tag(query)
+            return [candidate(passage=True)]
+
+        mesh.recall = recall
+        module.Mesh = lambda **kwargs: mesh
+        store_module = types.SimpleNamespace(SCHEMA_VERSION=schema, sqlite3=sqlite3,
+                                            validate_namespace=lambda value: value, get_vector_cache_stats=lambda: {})
+
+        def import_runtime(owned, *_args):
+            mesh.store.db_path = owned / "mesh-home/mesh_fixture.db"
+            return RUNTIME, None, module, store_module
+
+        args = argparse.Namespace(command="query-only", dataset="prospective", repository=root, dataset_directory=data,
+            protocol=root / "protocol.json", model_directory=models, dependency_directory=None, source_run=source,
+            source_home=home, source_namespace="fixture", output=root / "runtime-passages", retain_guarded_home=False,
+            runtime_passages=True, fresh_default_run=fresh)
+        with mock.patch.object(production, "import_runtime", side_effect=import_runtime), \
+                mock.patch.object(production, "verify_sqlite", return_value={"fts5": True, "threadsafe": True}), \
+                mock.patch.object(production, "close_namespace") as closed, \
+                mock.patch.object(production, "RuntimePassageResources", Resources), \
+                mock.patch.object(production.importlib.metadata, "version", return_value="synthetic"):
+            production.run_retrieval(args)
+        closed.assert_called_once()
+        manifest = json.loads((args.output / "run-manifest.json").read_text(encoding="utf-8"))
+        assert manifest["status"] == "complete" and type(manifest["schema_version"]) is int and manifest["schema_version"] == 6
+        assert replay.digest_file(database) == original_database_hash
+        assert any(wait[1].get("target_representation") == production.PASSAGE_REPRESENTATION for wait in mesh.waits)
+        # Supply the one-row offline score only after the complete ranking export.
+        fields = {cohort: metrics(1.0, 1) for cohort in (
+            "unconditional", "any_gold_survived", "all_gold_survived", "retained_gold_denominator")}
+        score = {"run_manifest_sha256": replay.digest_file(args.output / "run-manifest.json"), "query_count": 1,
+            "cells": {"results-default": {"final_sdk_top10": fields, "original_sdk_top10": fields}},
+            "gold_survival": {"answered_queries": 1}, "ingestion": source_manifest["ingestion"]}
+        production.write_json(args.output / "score-summary.json", score)
+        _manifest, projected = ci.condition_evidence(args.output, fixture, RUNTIME, protocol["model"],
+            replay.digest_file(root / "protocol.json"), scored=True, runtime_passages=True)
+        assert type(projected["schema_version"]) is int and projected["schema_version"] == 6
+        assert projected["runtime_passage_readiness"]["complete"]["representation_bound_indexed_memories"] == 1
+        assert projected["original_parent_identity_model_and_supporting_spans_verified"] is True
+        assert projected["runtime_passage_query_resources"]["query_count"] == 1
+
+
+@pytest.mark.parametrize("schema", [True, False, 6.0, None, "06", "6 ", " 6", "+6", "6.0", "5", "7", 5, 7, [], {}])
+def test_runtime_schema_validation_rejects_other_versions_and_noncanonical_values(tmp_path, schema):
+    with pytest.raises(ValueError, match="canonical schema-6"):
+        production.validate_runtime_passage_schema(schema)
+    with pytest.raises(ValueError, match="canonical schema-6"):
+        ci.runtime_passage_evidence(tmp_path, {"schema_version": schema}, [])
 
 
 def test_manual_drain_preserves_full_original_identity_and_exact_representation(monkeypatch):

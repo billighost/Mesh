@@ -76,10 +76,13 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+          fetch-depth: 2
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
           cache: pip
+      - name: Verify the requested measurement scope against every changed path
+        run: python scripts/check_ci_measurement_scope.py
       - name: Install qualification dependencies
         run: |
           python -m pip install --upgrade pip
@@ -128,7 +131,8 @@ jobs:
     name: Same-source retrieval quality
     if: >-
       (github.event_name == 'workflow_dispatch' && (inputs.run_retrieval || inputs.run_c4 || inputs.run_runtime_passages)) ||
-      (github.event_name == 'push' && startsWith(github.ref_name, 'ci/mesh-production-run-'))
+      (github.event_name == 'push' && startsWith(github.ref_name, 'ci/mesh-production-run-') &&
+       !contains(github.event.head_commit.message, '[qualification-only]'))
     needs: [qualification]
     uses: ./.github/workflows/retrieval-quality.yml
     with:
@@ -143,7 +147,9 @@ jobs:
     name: Full-suite test speed (manual only, fixed order)
     if: >-
       (github.event_name == 'workflow_dispatch' && inputs.run_test_speed) ||
-      (github.event_name == 'push' && startsWith(github.ref_name, 'ci/mesh-production-run-'))
+      (github.event_name == 'push' && startsWith(github.ref_name, 'ci/mesh-production-run-') &&
+       !contains(github.event.head_commit.message, '[retrieval-only]') &&
+       !contains(github.event.head_commit.message, '[qualification-only]'))
     needs: [qualification]
     runs-on: windows-latest
     timeout-minutes: 120
@@ -186,7 +192,9 @@ jobs:
     name: Serial production matrix (manual only)
     if: >-
       (github.event_name == 'workflow_dispatch' && inputs.run_performance) ||
-      (github.event_name == 'push' && startsWith(github.ref_name, 'ci/mesh-production-run-'))
+      (github.event_name == 'push' && startsWith(github.ref_name, 'ci/mesh-production-run-') &&
+       !contains(github.event.head_commit.message, '[retrieval-only]') &&
+       !contains(github.event.head_commit.message, '[qualification-only]'))
     needs: [qualification]
     runs-on: windows-latest
     timeout-minutes: 180
