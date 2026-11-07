@@ -43,6 +43,10 @@ job pins APSW 3.51.3.0. Both suites must pass; the primary also validates proces
 crash recovery, at least 60% coverage, and the built package. Each job records
 source hashes and exact installed dependency versions before measurement.
 
+Qualification is scheduled independently for each Python kind. Performance
+matrices and test-speed observations keep separate per-branch concurrency groups,
+so an older matrix does not delay qualification or retrieval of a repaired source.
+
 Measurements use those source hashes and dependency constraints. A missing
 qualification artifact, changed source, failed integrity check, unknown receipt,
 or executed workload failure prevents a successful final result. Artifacts

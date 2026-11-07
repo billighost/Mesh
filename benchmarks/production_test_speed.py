@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import time
@@ -54,12 +55,24 @@ def suite_identity(path: Path) -> dict:
     skipped = sorted((case.get("classname", ""), case.get("name", ""),
                       case.find("skipped").get("type", "skipped"))
                      for case in cases if case.find("skipped") is not None)
+    failed = [case for case in cases if case.find("failure") is not None or case.find("error") is not None]
+    failure_ids = []
+    for case in failed:
+        # Parameter IDs and XML failure bodies may contain synthetic secret values.
+        module = case.get("classname", "")
+        name = case.get("name", "").split("[", 1)[0]
+        identifier = module + "::" + name
+        if (re.fullmatch(r"tests(?:\.[A-Za-z_][A-Za-z_0-9]*)+", module)
+                and re.fullmatch(r"test_[A-Za-z_0-9]+", name) and len(identifier) <= 256):
+            failure_ids.append(identifier)
     return {
         "tests": len(cases), "selection_sha256": hashlib.sha256(json.dumps(identities).encode()).hexdigest(),
         "skipped_selection_sha256": hashlib.sha256(json.dumps(skipped).encode()).hexdigest(),
         "failures": sum(case.find("failure") is not None for case in cases),
         "errors": sum(case.find("error") is not None for case in cases),
         "skipped": sum(case.find("skipped") is not None for case in cases),
+        "failed_test_identifiers": sorted(set(failure_ids)),
+        "unidentified_failed_cases": len(failed) - len(failure_ids),
     }
 
 

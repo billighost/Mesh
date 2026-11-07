@@ -199,6 +199,24 @@ def test_speed_identity_distinguishes_changed_skipped_testcases(tmp_path):
     assert one["skipped_selection_sha256"] != two["skipped_selection_sha256"]
 
 
+def test_speed_failure_identifiers_exclude_parameters_and_xml_bodies(tmp_path):
+    report = tmp_path / "failed.xml"
+    report.write_text(
+        '<testsuite><testcase classname="tests.test_audit" name="test_redaction[FAKE_SECRET_VALUE]">'
+        '<failure>FAKE_SECRET_VALUE C:/Users/EXAMPLE</failure></testcase>'
+        '<testcase classname="C:/Users/EXAMPLE" name="test_error"><error>FAKE_SECRET_VALUE</error></testcase>'
+        '<testcase classname="tests.test_audit" name="FAKE_SECRET_VALUE"><failure/></testcase></testsuite>',
+        encoding="utf-8",
+    )
+    selection = speed_metadata.suite_identity(report)
+    assert selection["failed_test_identifiers"] == ["tests.test_audit::test_redaction"]
+    assert selection["unidentified_failed_cases"] == 2
+    assert (selection["failures"], selection["errors"]) == (2, 1)
+    speed_metadata.runner.ledger.assert_safe_output(selection)
+    assert "FAKE_SECRET_VALUE" not in json.dumps(selection)
+    assert "C:/Users" not in json.dumps(selection)
+
+
 def _matching_speed_observations():
     observation = {"status": "completed", "resource_sampling_available": True, "wall_seconds": 10.0,
                    "selection": {"tests": 1100, "selection_sha256": "a" * 64,
