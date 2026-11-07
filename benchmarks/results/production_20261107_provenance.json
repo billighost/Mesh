@@ -1,0 +1,15 @@
+{
+  "mesh_version": "0.9.0",
+  "source_commit": "6060925fbdecd9a8278f9fafe4428e8d2d8b86b3",
+  "normal_ci_run_id": 42338200399,
+  "production_run_id": 42338200383,
+  "normal_ci_url": "https://github.com/billighost/Mesh/actions/runs/42338200399",
+  "production_ci_url": "https://github.com/billighost/Mesh/actions/runs/42338200383",
+  "source_files_verified": 44,
+  "windows_checkout_line_endings_accounted": true,
+  "files_sha256": {
+    "production_performance_20261107.json": "9c5f8378951c8972bf36a1cd874e46b41d2d436ff3bd0d7ea7bd25eb2b0155a5",
+    "production_test_speed_20261107.json": "aafe676920b2ff9fe3334f276a5a6bd7a9c7767d2f2402ef09d53207c69e7e31"
+  },
+  "retrieval_qualification": "pending_supervisor_repairs_and_schema6_runtime_experiment"
+}

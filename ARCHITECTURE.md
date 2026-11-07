@@ -143,11 +143,17 @@ model_status.json
 
 ## 3. Storage schema
 
-Schema version: **5** (`SCHEMA_VERSION` in `store.py`). A database with a newer schema is refused; migrations create a timestamped backup before DDL. Schema 4 adds content revisions, required embedding jobs, mutation delivery, and operation receipts; schema 5 adds persistent database and memory identities.
+Schema version: **6** (`SCHEMA_VERSION` in `store.py`). A database with a newer schema is refused; migrations create a verified timestamped backup before DDL. Schema 4 adds content revisions, required embedding jobs, mutation delivery, and operation receipts; schema 5 adds persistent database and memory identities; schema 6 adds passage readiness and derived vectors/offsets.
 
 ### `memories`
 
 Core columns: `id` (UUID), `namespace`, `content`, `confidence`, `memory_type`, `source_agent`, `tags` (JSON), `created_at`, `updated_at`, `accessed_at`, `access_count`, `ttl_days`, `decay_start_at`, `local_only`, `embedding` (float32 BLOB), `embedding_model`, `trust_tier`, `quarantined`, `secret_ref`, `revision`, `incarnation`. An incarnation stays stable during edits and changes when an ID is deleted and reused.
+
+`passage_format_version` and `passage_count` describe the complete derived generation. An empty format is pending; `paragraph-sentences-v1` with count zero reuses a verified single-window primary vector.
+
+### `memory_passages`
+
+Derived rows hold parent ID/revision/incarnation, namespace, ordinal, original offsets, model/representation IDs, and an encrypted-when-enabled float32 vector. No passage bodies or plaintext FTS sidecar are persisted. Publication replaces all rows, the primary vector, parent readiness and the exact durable job in one identity-checked transaction. Content/vector/model edits invalidate rows; metadata-only edits carry forward matching revisions. Delete, replacement, clear and staged namespace maintenance explicitly preserve these invariants.
 
 ### `memories_fts`
 
@@ -175,7 +181,7 @@ Key/value metadata, including `schema_version`, `namespace_owner`, `content_vers
 
 ### `embedding_jobs`
 
-Required neural indexing work keyed by memory ID, namespace, content revision, incarnation, and target model. Publication checks all of those values and the store generation in the write transaction; stale or completed work cannot overwrite a current vector.
+Required neural indexing work keyed by memory ID, namespace, content revision, incarnation, target model and target representation. Publication checks all of those values and the store generation in the write transaction; stale or completed work cannot overwrite a current vector. Missing neural passage generations are discovered in capacity-aware bounded batches. Unsupported or absent local passage backends leave explicit passage work pending with backoff; supported document encoding can still publish a primary vector without consuming that passage job.
 
 ### `mutation_outbox`
 
@@ -308,6 +314,10 @@ sequenceDiagram
 - Absolute similarity floor: 0.05; hash-embedding semantic-only floor: 0.18.
 - `is_stale` when effective confidence < 0.3 (decay factor × stored confidence).
 - Results carry match reasons, candidate counts, IDs/revisions, memory incarnations, store generations, and bounded supporting excerpts with source offsets. `other_possible_memories` exposes authorized strong matches hidden by metadata filters and preserves the same identities.
+
+`MESH_PASSAGE_INDEX=1` activates the passage candidate; it is off by default pending independent quality/resource qualification. Text queries use it only when the authorized snapshot contains a complete compatible passage generation; hidden, incompatible or malformed bundles cannot switch the public scorer. Empty-text/vector-only learning lookups retain the primary vectors. `mesh/passages.py` preserves paragraph/sentence boundaries before normalization, using 224-token windows with 32-token overlap only inside oversized sentences; inputs within the existing 254-token single-window limit reuse their primary vector. `mesh/passage_search.py` uses body-only lexical statistics, same-passage fusion, parent candidate budgets and deterministic parent/ordinal ordering. Semantic, lexical and BM25 diagnostics describe the selected span. Parent tags remain eligibility filters. Cached matrices/offsets/lexical entries and bounded streaming/query/worker allocations use the global byte leases; insufficient workspace retires reclaimable cache generations before streaming or retrying durable work. Final results revalidate parent policy and complete identity.
+
+The effective corpus contains compatible ready passages and implicit short/pending parents. It does not merge a separate original-primary long-parent ranking, so the earlier CI child experiment does not qualify this configuration. Standard `wait_for_indexed` remains document readiness; `target_representation="paragraph-sentences-v1"` additionally requires the complete source-bound passage generation. Import/export omit derived rows and rebuild them. Encryption activation converts existing passage vectors on store initialization; `mesh encrypt-db` also converts them in its full existing-data workflow.
 
 The cache pre-tokenizes content and bounds vector, lexical, and snapshot allocations. If a namespace cannot fit its configured cache budget, retrieval scans bounded database pages and retains bounded candidate heaps rather than loading the entire namespace. Query encoding uses the verified local model when ready, independently of ingestion's fast hash stage. Query/embedding cache keys include backend identity and preprocessing role; hash and neural vectors are never mixed under one model tag.
 

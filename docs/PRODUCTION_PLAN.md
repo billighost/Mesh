@@ -7,7 +7,7 @@ Inspected branch: feat/ci-evidence, HEAD 61ec16de97a5604a19a81c6396f8bfc46d982c4
 
 The approved safety, storage, query, bounded-execution, transport, brief, and
 packaged-agent instruction changes are implemented in the working tree. Patched
-APSW supplies one SQLite driver, WAL uses FULL synchronization, and schema 5
+APSW supplies one SQLite driver, WAL uses FULL synchronization, and schema 6
 binds durable indexing jobs and operation receipts to memory revisions,
 incarnations, and store generations. Namespace recovery, public encryption,
 privacy, and uncertain mutation outcomes have focused regression coverage.
@@ -18,12 +18,15 @@ installed-wheel smoke do not replace final CI. The
 [production Actions workflow](../.github/workflows/production-performance.yml)
 records full qualification and runs its measurements against that same source.
 The maintainer authorized publication of `ci/mesh-production-run-c4-20261106`.
-Normal CI passed all fifteen OS/Python combinations at `256d232`; Windows primary
-and minimum qualification passed at `1fc2bb6`, including full suites, process-crash
-recovery, coverage, and primary wheel validation. A subsequent foreground timing
-failure, test-speed fixture interference, HTTP connection exhaustion, and
-retrieval preparation/projection errors have focused repairs. Final same-source
-supported-platform, performance, retrieval and test-speed gates remain pending.
+At `6060925`, normal CI passed all fifteen OS/Python combinations; Windows primary
+and minimum qualification passed full suites, process-crash recovery, coverage
+and primary wheel validation. The source-bound production matrix and same-selection
+test-speed observations also completed successfully; [RESULTS.md](../benchmarks/RESULTS.md)
+preserves their measurements and resource deferrals. Foreground progress,
+test-fixture interference and HTTP connection exhaustion repairs are qualified.
+Legacy passage-model and source-fidelity projection contracts still need repair.
+Final same-source supported-platform and retrieval qualification of the subsequent
+schema-6 passage changes remains pending.
 
 The reviewed retrieval and optional four-candidate reranker harnesses are now
 integrated as CI utilities. The production workflow calls the five-dataset
@@ -31,8 +34,8 @@ retrieval workflow after primary and minimum qualification; source hashes,
 dependency constraints, exact evidence IDs, and failure artifacts bind each
 result to the source tested. [CI_VALIDATION.md](CI_VALIDATION.md) describes the
 remote checks and remaining evidence requirements. These harnesses have passed
-small local contract checks; their native model and full-corpus runs remain
-pending, and the production retrieval default has no experimental reranker.
+small local contract checks; native scoring has exposed the projection repairs
+above. The production retrieval default has no experimental reranker.
 
 The maintainer's current machine has 8 GiB RAM and four logical CPUs. Development
 verification now stays limited to small, isolated, one-worker smokes; full tests,
@@ -41,7 +44,13 @@ The first measurement pass registers 512-fact cells plus resource-gated 10,000-f
 HTTP cells. The larger mixed-workload targets below remain later qualification
 work, with no inferred speedup from this initial coverage pass.
 
-Long-memory passage retrieval remains a CI experiment. The current evidence shows
+Long-memory passage retrieval has an opt-in schema-6 candidate behind
+`MESH_PASSAGE_INDEX=1` (default off), with `paragraph-sentences-v1` readiness.
+Its derived-only storage, durable publication, encryption, namespace handling,
+original supporting spans and cached/streaming parity require independent CI
+qualification. The effective production corpus and parent scoring differ from
+the earlier child experiment, so that experiment cannot establish adoption.
+The current evidence shows
 both representation weakness in long memories and short-query errors involving
 qualifiers or answerless references. General paragraph/sentence boundaries and
 maximum joint passage scoring are being evaluated against original parent IDs.

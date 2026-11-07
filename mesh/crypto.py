@@ -603,7 +603,7 @@ def encrypt_namespace_db(
     encrypted_contradictions = 0
     encrypted_audits = 0
 
-    main_tables = ("memories", "queries", "contradictions", "work_items", "work_events")
+    main_tables = ("memories", "memory_passages", "queries", "contradictions", "work_items", "work_events", "embedding_jobs", "mutation_outbox", "operation_receipts")
     audit_tables = ("audit_log", "audit_events")
     with namespace_write_lock(clean_ns, timeout=30.0):
         # Validate both files before changing either, including unbound legacy databases.
@@ -696,6 +696,7 @@ def encrypt_namespace_db(
 
                     # Encrypt task text with the same resolved key before publishing success.
                     MeshStore._encrypt_work_tables_in_tx(conn, key=key)
+                    MeshStore._encrypt_passages_in_tx(conn, key=key)
 
                     # 4. Purge on-disk FTS5 table so no plaintext tokens remain in shadow tables
                     try:

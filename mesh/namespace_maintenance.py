@@ -156,9 +156,13 @@ def _verify_database(path: Path, owner: str, generation: str, pending: str | Non
         if count is not None and connection.execute("SELECT COUNT(*) FROM memories WHERE namespace=?", (owner,)).fetchone()[0] != count:
             raise RuntimeError("Namespace maintenance memory count changed.")
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        for table in ("memories", "queries", "contradictions", "work_items", "work_events", "embedding_jobs", "mutation_outbox", "operation_receipts"):
+        for table in ("memories", "memory_passages", "queries", "contradictions", "work_items", "work_events", "embedding_jobs", "mutation_outbox", "operation_receipts"):
             if table in tables and connection.execute(f"SELECT 1 FROM {table} WHERE namespace!=? LIMIT 1", (owner,)).fetchone():
                 raise RuntimeError("Namespace maintenance database has unexpected namespace rows.")
+        if "memory_passages" in tables:
+            from .passage_search import verify_passage_rows
+
+            verify_passage_rows(connection)
     finally:
         connection.close()
 

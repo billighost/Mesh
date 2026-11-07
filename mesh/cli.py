@@ -1248,7 +1248,9 @@ def ask_cmd() -> None:
 
     parser = _parser(
         "ask",
-        "Search memories with hybrid semantic + keyword search.",
+        "Search memories with hybrid semantic + keyword search.\n"
+        "MESH_PASSAGE_INDEX=1 enables the opt-in paragraph-sentences-v1 index (default: 0).\n"
+        "SDK passage readiness: wait_for_indexed(..., target_representation='paragraph-sentences-v1').",
         [
             ('mesh ask "how do we deploy?"', "natural-language search"),
             ('mesh ask "database" --type decision -n 10', "only decisions, up to 10"),

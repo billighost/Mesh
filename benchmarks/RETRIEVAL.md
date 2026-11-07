@@ -167,6 +167,36 @@ further work. Historical direct 13/16, positional 0/6 and LongMemEval 3/6
 top-one results in the preserved source-identified evidence are not new-source
 or successful experimental results.
 
+## Production passage-index experiment
+
+The separate `run_runtime_passages: true` / `--runtime-passages` condition tests
+the implemented schema-6 passage index through fresh `Mesh.recall` queries.
+The production qualification workflow requests it on reviewed
+`ci/mesh-production-run-*` branches; standalone retrieval dispatch keeps it
+optional. It copies the guarded database, enables `MESH_PASSAGE_INDEX=1` only
+inside that isolated experiment, and drains bounded durable indexing batches.
+Readiness must match each original parent's revision, incarnation, store
+generation, local model and `paragraph-sentences-v1` representation. Source
+database/WAL fingerprints must remain unchanged.
+
+The `runtime-passages` condition preserves the hash-verified fresh-default
+ranks alongside its own original-parent ranks. Content-free original offsets,
+parent identities, loaded-query inference counts, and indexing/query RSS, CPU
+and wall observations are verified under the existing whole-run caps. It
+reports paired hit@1/@5/@10, MRR, nDCG and document recall, plus lost/gained
+exact top-one hits. Bounded fixtures require the registered hit@1 threshold
+and zero new exact top-one regressions; BEIR paired nDCG and document recall
+may degrade by at most 0.01. Missing readiness, provenance or measurements
+fails the experiment. The fresh-default, legacy child-passage and production
+passage conditions remain distinct; their scores do not select a runtime
+default automatically.
+
+Source-accounted public parents with no faithful original document aliases
+retain their original rank and receive zero relevance credit. Private,
+quarantined, unknown or identity-mismatched parents remain rejected. Legacy
+child manifests may inherit missing model-file hashes only from their
+independently verified, matching guarded source.
+
 ## Optional C4 experiment
 
 The optional `run_c4: true` / `--reranker-experiment c4` hook is separate and off

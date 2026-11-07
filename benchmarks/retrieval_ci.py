@@ -16,6 +16,8 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from prepare_retrieval_ci import BOUNDED_DATASETS, DATASETS, MODEL
+from production_retrieval import (MODEL_TAG, PASSAGE_BATCH_LIMIT, PASSAGE_REPRESENTATION,
+                                  runtime_parent_identities, validate_runtime_parent_results)
 from replay_retrieval import (FIELDS, checked_path, configure_isolation, digest_file,
                               isolated_artifact_path, read_jsonl, safe_member, verify_exports)
 
@@ -24,6 +26,7 @@ CONDITIONS = ("guarded", "replay", "fresh-default", "passages")
 PHASES = ("provision", "prepare", "guarded", "score-guarded", "replay", "fresh-default", "score-fresh-default",
           "passages", "score-passages")
 C4_PHASES = ("c4-freeze", "c4-provision", "c4", "score-c4")
+RUNTIME_PASSAGE_PHASES = ("runtime-passages", "score-runtime-passages")
 HARNESS_FILES = ("production_retrieval.py", "replay_retrieval.py", "prepare_retrieval_ci.py",
                  "retrieval_ci.py", "passage_retrieval.py", "provision_production_model.py",
                  "production_runner.py", "production_ledger.py")
@@ -44,6 +47,9 @@ COUNTER_KEYS = {
     "rejected_passages", "excluded_private_or_quarantined_passages", "body_or_identity_changed_passages",
     "parents_with_full_nonspace_coverage", "parents_with_partial_passage_coverage", "guarded_uncovered_nonspace_characters",
     "unique_public_child_memories", "identity_bound_indexed_child_memories",
+    "eligible_original_parent_memories", "representation_bound_indexed_memories", "batch_limit", "maximum_batches",
+    "completed_batches", "scheduled_jobs", "passage_raw_batch_encoding_calls", "passage_encoded_rows",
+    "primary_document_inference_attempts",
 }
 
 
@@ -90,13 +96,15 @@ def save(root, summary):
     os.replace(pending, path)
 
 
-def initial_summary(dataset, c4=False):
+def initial_summary(dataset, c4=False, runtime_passages=False):
     return {"artifact_version": 1, "status": "not_started", "dataset": dataset,
             "conditions": {}, "quality_gates": [],
-            "phases": [{"name": phase, "status": "not_run"} for phase in (*PHASES, *(C4_PHASES if c4 else ()))],
+            "phases": [{"name": phase, "status": "not_run"} for phase in (
+                *PHASES, *(RUNTIME_PASSAGE_PHASES if runtime_passages else ()), *(C4_PHASES if c4 else ()))],
             "labels_in_ranking_inputs": False, "default_changed": False,
             "claims": {"full_longmemeval": False, "competitor_superiority": False, "quiet_performance": False},
-            "optional_c4_cross_encoder": "requested_separate_experiment" if c4 else "not_run_separate_manual_experiment"}
+            "optional_c4_cross_encoder": "requested_separate_experiment" if c4 else "not_run_separate_manual_experiment",
+            "optional_runtime_passage_index": "requested_separate_experiment" if runtime_passages else "not_run_separate_manual_experiment"}
 
 
 class TreeUsage:
@@ -293,7 +301,8 @@ def qualify(repository, primary, floor):
             "same_runtime_sources": True, "same_primary_python_and_packages": True}
 
 
-def condition_evidence(directory, fixture, runtime_files, model, protocol_hash, *, scored):
+def condition_evidence(directory, fixture, runtime_files, model, protocol_hash, *, scored, runtime_passages=False,
+                       guarded_source=None):
     manifest = load_json(directory, "run-manifest.json")
     if manifest["status"] != "complete" or not manifest["all_queries_accounted"] or manifest["query_target"] != fixture["query_count"]:
         raise GateError("IncompleteCondition")
@@ -311,8 +320,25 @@ def condition_evidence(directory, fixture, runtime_files, model, protocol_hash, 
         result["exact_rank_continuity"] = set(comparisons) == {"64", "96"} and all(
             comparisons[cap][field]["identical_ranked_queries"] == fixture["query_count"] for cap in ("64", "96") for field in FIELDS)
         return manifest, result
+    model_files = manifest.get("model_file_sha256")
+    if model_files is None and "passage_ingestion" in manifest and guarded_source is not None:
+        # Older child-passage exports identify their guarded source instead of
+        # repeating its local model hashes. Derive only from that verified source.
+        guarded_source = checked_path(guarded_source, must_exist=True, directory=True)
+        guarded = load_json(guarded_source, "run-manifest.json")
+        verify_exports(guarded_source, guarded)
+        guarded_hash = digest_file(safe_member(guarded_source, "run-manifest.json"))
+        if (guarded.get("status") != "complete" or guarded.get("all_queries_accounted") is not True
+                or manifest.get("source_run_manifest_sha256") != guarded_hash
+                or manifest.get("source_output_sha256") != guarded["output_sha256"]
+                or any(guarded.get(key) != manifest.get(key) for key in (
+                    "runtime_files", "model_revision", "query_model_space_tag", "protocol_sha256", "dataset_manifest_sha256",
+                ))):
+            raise GateError("PassageGuardedModelProvenanceMismatch")
+        model_files = guarded.get("model_file_sha256")
+        result.update(model_file_provenance="hash_verified_guarded_source", paired_guarded_model_manifest_sha256=guarded_hash)
     if (manifest["model_revision"] != model["revision"] or manifest["query_model_space_tag"] != "onnx-minilm-l6-v2"
-            or manifest["model_file_sha256"] != {key: model[key] for key in ("onnx_sha256", "tokenizer_sha256")}
+            or model_files != {key: model[key] for key in ("onnx_sha256", "tokenizer_sha256")}
             or manifest["protocol_sha256"] != protocol_hash):
         raise GateError("ConditionModelOrProtocolMismatch")
     score = load_json(directory, "score-summary.json")
@@ -321,15 +347,29 @@ def condition_evidence(directory, fixture, runtime_files, model, protocol_hash, 
     records = list(read_jsonl(safe_member(directory, "ingestion-fidelity.jsonl")))
     if len(records) != fixture["corpus_count"]:
         raise GateError("IncompleteIngestionFidelity")
-    faithful = {}
+    faithful, public_parents, parent_states = {}, set(), {}
+    nonpublic_parents = set()
+    identities = runtime_parent_identities(records) if runtime_passages else None
     for record in records:
         identifier = record["acceptance"].get("memory_id")
         if identifier and (not record.get("current_incarnation") or not record.get("store_generation") or not record["current_revision"]):
             raise GateError("IncompleteSourceIdentity")
+        if identifier:
+            state = tuple(record.get(key) for key in (
+                "current_revision", "current_incarnation", "store_generation", "stored_sha256",
+                "private", "quarantined", "neural_indexed",
+            ))
+            if parent_states.setdefault(identifier, state) != state:
+                raise GateError("InconsistentDuplicateSourceIdentity")
+            if record["private"] or record["quarantined"]:
+                nonpublic_parents.add(identifier)
+            else:
+                public_parents.add(identifier)
         if record["faithful_public"]:
             if record["private"] or record["quarantined"] or record["body_changed"]:
                 raise GateError("InvalidPublicFidelity")
             faithful.setdefault(identifier, []).append(record["document_id"])
+    unfaithful_public_candidates = 0
     for relative in manifest["output_sha256"]:
         if not relative.startswith("results-"):
             continue
@@ -341,19 +381,26 @@ def condition_evidence(directory, fixture, runtime_files, model, protocol_hash, 
                 if field not in row:
                     continue
                 candidates = row[field]
+                if runtime_passages and field in {"final_sdk_top10", "original_sdk_top10"}:
+                    validate_runtime_parent_results(candidates, identities, allow_passages=field == "final_sdk_top10")
                 limit = 24 if field == "authorized_sdk_rerank_top24" else 10 if field.endswith("top10") else 64
                 if len(candidates) > limit or len({candidate["id"] for candidate in candidates}) != len(candidates):
                     raise GateError("UnboundedOrDuplicateParents")
                 for candidate in candidates:
-                    expected_ids = faithful.get(candidate["id"])
+                    expected_ids = faithful.get(candidate["id"], [])
                     actual_ids = candidate.get("faithful_document_ids")
-                    if (candidate.get("local_only") or candidate.get("quarantined") or not expected_ids
-                            or not actual_ids or actual_ids[0] != expected_ids[0]):
+                    if (candidate.get("local_only") or candidate.get("quarantined")
+                            or candidate["id"] not in public_parents or candidate["id"] in nonpublic_parents
+                            or not isinstance(actual_ids, list) or actual_ids != expected_ids):
                         raise GateError("UnfaithfulOrPrivateExport")
+                    # Guarded public text can differ from its original source.
+                    # Empty faithful IDs keep it visible without relevance credit.
+                    unfaithful_public_candidates += int(not expected_ids)
     result.update(metrics=metric_projection(score["cells"]), gold_survival=counters(score["gold_survival"]),
-                  ingestion=counters(score["ingestion"]), model_revision=model["revision"], model_file_sha256=manifest["model_file_sha256"],
+                  ingestion=counters(score["ingestion"]), model_revision=model["revision"], model_file_sha256=model_files,
                   protocol_sha256=protocol_hash, dataset_manifest_sha256=manifest["dataset_manifest_sha256"],
                   score_summary_sha256=digest_file(safe_member(directory, "score-summary.json")))
+    result["unfaithful_public_exported_candidates"] = unfaithful_public_candidates
     if "passage_ingestion" in manifest:
         result["passage_ingestion"] = counters(manifest["passage_ingestion"])
         # The passage harness records the requested budget with its fixed parameters.
@@ -365,7 +412,151 @@ def condition_evidence(directory, fixture, runtime_files, model, protocol_hash, 
         result["parent_budget"] = 96
         result["parent_caps"] = [64, 96]
         result["privacy_and_canonical_source_ids_verified"] = True
+    if runtime_passages:
+        result.update(runtime_passage_evidence(directory, manifest, records))
     return manifest, result
+
+
+def runtime_resource_projection(value):
+    keys = {"wall_seconds", "process_cpu_seconds", "sampled_owned_process_rss_bytes_max"}
+    if (not isinstance(value, dict) or set(value) != keys
+            or any(type(value[key]) not in {int, float} or not math.isfinite(value[key]) or value[key] < 0 for key in keys)
+            or value["sampled_owned_process_rss_bytes_max"] <= 0):
+        raise GateError("RuntimePassageResourceAccountingMissing")
+    return {key: numeric(value[key]) for key in sorted(keys)}
+
+
+def runtime_passage_evidence(directory, manifest, records):
+    configuration = manifest.get("runtime_passage_index", {})
+    if (manifest.get("passage_index_enabled") is not True or manifest.get("schema_version") != 6
+            or configuration.get("representation") != PASSAGE_REPRESENTATION
+            or configuration.get("backend") != "direct-onnx" or configuration.get("manual_worker") is not True
+            or manifest.get("guarded_source_immutable") is not True):
+        raise GateError("RuntimePassageConditionOrSourceMismatch")
+    expected = {}
+    for record in records:
+        expected.setdefault(record["corpus_id"], set())
+        if record["acceptance"].get("memory_id"):
+            expected[record["corpus_id"]].add(record["acceptance"]["memory_id"])
+    readiness, fingerprints = manifest.get("runtime_passage_readiness", {}), manifest.get("guarded_source_database_fingerprints", {})
+    if set(readiness) != set(expected) or set(fingerprints) != set(expected):
+        raise GateError("RuntimePassageCorpusAccountingMismatch")
+    projected = {}
+    for corpus, identifiers in expected.items():
+        item, count = readiness[corpus], len(identifiers)
+        required = {"eligible_original_parent_memories": count, "representation_bound_indexed_memories": count,
+                    "pending_embedding_jobs": 0, "primary_document_inference_attempts": 0,
+                    "batch_limit": PASSAGE_BATCH_LIMIT, "maximum_batches": max(3, count * 3)}
+        integer_fields = (*required, "completed_batches", "scheduled_jobs", "passage_raw_batch_encoding_calls", "passage_encoded_rows")
+        if (item.get("status") != "indexed" or item.get("target_model") != MODEL_TAG
+                or item.get("target_representation") != PASSAGE_REPRESENTATION
+                or any(type(item.get(key)) is not int or item[key] < 0 for key in integer_fields)
+                or any(item.get(key) != value for key, value in required.items())
+                or item["completed_batches"] > item["maximum_batches"] or item["scheduled_jobs"] > count):
+            raise GateError("RuntimePassageOriginalParentReadinessFailed")
+        fingerprint = fingerprints[corpus]
+        if (set(fingerprint) != {"database_sha256", "wal_sha256"}
+                or any(not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value)
+                       for key, value in fingerprint.items() if key != "wal_sha256" or value is not None)):
+            raise GateError("RuntimePassageSourceFingerprintMissing")
+        projected[corpus] = counters({key: item[key] for key in integer_fields}) | {
+            "target_representation": PASSAGE_REPRESENTATION, "target_model": MODEL_TAG,
+            "resource_diagnostics": runtime_resource_projection(item.get("resource_diagnostics"))}
+    observations = manifest.get("runtime_passage_query_backend_observations", {})
+    if (observations.get("normal_sdk_query_encoding_calls") != manifest["query_target"]
+            or observations.get("all_query_model_tags_match_indexed_model") is not True
+            or observations.get("all_query_dimensions_384") is not True or observations.get("document_inference_attempts") != 0):
+        raise GateError("RuntimePassageFreshQueryInferenceAccountingFailed")
+    if "query-resources.jsonl" not in manifest["output_sha256"]:
+        raise GateError("RuntimePassageQueryResourcesMissing")
+    resources = list(read_jsonl(safe_member(directory, "query-resources.jsonl")))
+    if len(resources) != manifest["query_target"]:
+        raise GateError("RuntimePassageQueryResourcesIncomplete")
+    for ordinal, row in enumerate(resources, 1):
+        if (set(row) != {"query_ordinal", "elapsed_ms", "process_cpu_ms", "sampled_owned_process_rss_bytes"}
+                or type(row["query_ordinal"]) is not int or row["query_ordinal"] != ordinal
+                or any(type(row[key]) not in {int, float} or not math.isfinite(row[key]) or row[key] < 0
+                       for key in ("elapsed_ms", "process_cpu_ms", "sampled_owned_process_rss_bytes"))
+                or row["sampled_owned_process_rss_bytes"] <= 0):
+            raise GateError("RuntimePassageQueryResourcesInvalid")
+    return {"runtime_passage_index": {"representation": PASSAGE_REPRESENTATION, "backend": "direct-onnx", "manual_worker": True},
+            "runtime_passage_readiness": projected, "guarded_source_immutable": True,
+            "guarded_source_database_fingerprints": fingerprints,
+            "runtime_passage_resource_diagnostics": runtime_resource_projection(manifest.get("runtime_passage_resource_diagnostics")),
+            "runtime_passage_query_resources": {"query_count": len(resources),
+                "elapsed_ms_total": sum(row["elapsed_ms"] for row in resources),
+                "elapsed_ms_max": max(row["elapsed_ms"] for row in resources),
+                "process_cpu_ms_total": sum(row["process_cpu_ms"] for row in resources),
+                "sampled_owned_process_rss_bytes_max": max(row["sampled_owned_process_rss_bytes"] for row in resources)},
+            "original_parent_identity_model_and_supporting_spans_verified": True}
+
+
+def runtime_passage_pairing(root, manifests, conditions):
+    experiment, baseline = manifests["runtime-passages"], manifests["fresh-default"]
+    pairing = experiment["runtime_passage_index"]
+    if (baseline.get("passage_index_enabled") is not False
+            or pairing.get("fresh_default_run_manifest_sha256") != conditions["fresh-default"]["run_manifest_sha256"]
+            or pairing.get("fresh_default_results_sha256") != baseline["output_sha256"]["results-default.jsonl"]
+            or experiment["source_fidelity_sha256"] != baseline["output_sha256"]["ingestion-fidelity.jsonl"]):
+        raise GateError("RuntimePassageFreshDefaultPairMismatch")
+    original = {row["query_id"]: row for row in read_jsonl(safe_member(root / "fresh-default", "results-default.jsonl"))}
+    candidate = list(read_jsonl(safe_member(root / "runtime-passages", "results-default.jsonl")))
+    if len(candidate) != len(original) or {row["query_id"] for row in candidate} != set(original):
+        raise GateError("RuntimePassagePairedQueryAccountingMismatch")
+    for row in candidate:
+        matching = original[row["query_id"]]
+        if (row.get("original_sdk_top10") != matching["final_sdk_top10"] or row["corpus_id"] != matching["corpus_id"]
+                or row.get("candidate_cap") is not None or row["query_embedding_model"] != MODEL_TAG):
+            raise GateError("RuntimePassageOriginalRanksChanged")
+    conditions["runtime-passages"]["paired_fresh_default_run_manifest_sha256"] = pairing["fresh_default_run_manifest_sha256"]
+    conditions["runtime-passages"]["paired_fresh_default_results_sha256"] = pairing["fresh_default_results_sha256"]
+    conditions["runtime-passages"]["original_fresh_default_ranks_verified"] = True
+
+
+def runtime_passage_quality_gates(dataset, condition, baseline):
+    cells, matching = condition["metrics"], baseline["metrics"]
+    answered = condition["gold_survival"]["answered_queries"]
+    if (set(cells) != {"results-default"} or set(matching) != {"results-default"}
+            or type(answered) is not int or answered <= 0 or baseline["gold_survival"]["answered_queries"] != answered):
+        raise GateError("RuntimePassageScoredPairIncomplete")
+    cell = cells["results-default"]
+    candidate, original = cell["final_sdk_top10"]["unconditional"], cell["original_sdk_top10"]["unconditional"]
+    fresh = matching["results-default"]["final_sdk_top10"]["unconditional"]
+    gates = [{"name": "runtime_passages_original_parent_readiness_and_resource_accounting", "passed": True}]
+    for metric in (*C4_PAIRED_METRICS, "document_recall_at_10"):
+        items = (candidate[metric], original[metric], fresh[metric])
+        valid = all(item["n"] == answered and type(item["mean"]) in {int, float}
+                    and math.isfinite(item["mean"]) and 0 <= item["mean"] <= 1 for item in items)
+        valid = valid and math.isclose(original[metric]["mean"], fresh[metric]["mean"], rel_tol=0, abs_tol=1e-12)
+        if metric in C4_PAIRED_METRICS:
+            paired = cell["candidate_minus_original_sdk"][metric]
+            valid = (valid and paired["n"] == answered and type(paired["mean"]) in {int, float}
+                     and math.isfinite(paired["mean"]) and math.isclose(
+                         paired["mean"], candidate[metric]["mean"] - original[metric]["mean"], rel_tol=0, abs_tol=1e-12))
+        gates.append({"name": "runtime_passages_paired_accounting_" + metric, "passed": valid})
+    counts = cell["candidate_hit_at_1_regressions"]
+    balanced = all(type(counts.get(key)) is int and 0 <= counts[key] <= answered for key in C4_HIT_COUNT_FIELDS)
+    if balanced:
+        lost, gained = counts["lost_baseline_hits"], counts["gained_hits"]
+        balanced = (counts["answered_queries"] == answered and lost + gained <= answered
+                    and lost <= counts["baseline_hits"] and gained <= answered - counts["baseline_hits"]
+                    and counts["candidate_hits"] == counts["baseline_hits"] - lost + gained
+                    and math.isclose(original["hit_at_1"]["mean"], counts["baseline_hits"] / answered, rel_tol=0, abs_tol=1e-12)
+                    and math.isclose(candidate["hit_at_1"]["mean"], counts["candidate_hits"] / answered, rel_tol=0, abs_tol=1e-12))
+    gates.append({"name": "runtime_passages_paired_hit_at_1_count_accounting", "passed": balanced})
+    if dataset in QUALITY_TARGETS:
+        target, observed = QUALITY_TARGETS[dataset], candidate["hit_at_1"]["mean"]
+        gates.extend([{"name": "runtime_passages_exact_evidence_hit_at_1", "passed": observed >= target,
+                       "observed": observed, "minimum": target},
+                      {"name": "runtime_passages_no_new_exact_evidence_hit_at_1_regressions",
+                       "passed": balanced and counts["lost_baseline_hits"] == 0, "maximum_regressions": 0,
+                       "observed_regressions": counts.get("lost_baseline_hits")}])
+    else:
+        for metric in ("ndcg_at_10", "document_recall_at_10"):
+            delta = candidate[metric]["mean"] - original[metric]["mean"]
+            gates.append({"name": "runtime_passages_paired_nonregression_" + metric,
+                          "passed": delta >= -0.01 - 1e-12, "observed_delta": delta, "minimum_delta": -0.01})
+    return gates
 
 
 def quality_gates(dataset, conditions):
@@ -469,7 +660,8 @@ def c4_quality_gates(dataset, condition, matching_passages):
 
 def run(args, repository, root):
     c4 = getattr(args, "reranker_experiment", "off") == "c4"
-    summary = initial_summary(args.dataset, c4)
+    runtime_passages = getattr(args, "runtime_passages", False)
+    summary = initial_summary(args.dataset, c4, runtime_passages)
     summary["status"] = "running"
     save(root, summary)
     stage = "qualification"
@@ -500,6 +692,13 @@ def run(args, repository, root):
         }
         commands.update({"score-" + condition: [python, production, "score", str(root / condition), "--dataset-directory", str(data)]
                          for condition in ("guarded", "fresh-default", "passages")})
+        if runtime_passages:
+            commands.update({
+                "runtime-passages": [python, production, "query-only", args.dataset, *common,
+                                     "--source-run", str(root / "guarded"), "--source-namespace", "bounded-" + args.dataset + "-000",
+                                     "--runtime-passages", "--fresh-default-run", str(root / "fresh-default"), "--output", str(root / "runtime-passages")],
+                "score-runtime-passages": [python, production, "score", str(root / "runtime-passages"), "--dataset-directory", str(data)],
+            })
         if c4:
             reranker = str(repository / "benchmarks/retrieval_c4.py")
             c4_models = models.parent / "c4-minilm-ce"
@@ -538,6 +737,14 @@ def run(args, repository, root):
                 used_cpu += observed["sampled_tree_cpu_seconds"]
                 save(root, summary)
                 if observed["status"] != "passed":
+                    if phase["name"] in RUNTIME_PASSAGE_PHASES:
+                        summary["optional_runtime_passage_index"] = "failed_or_unavailable"
+                        try:
+                            partial = load_json(root / "runtime-passages", "run-manifest.json")
+                            summary["runtime_passage_failed_resource_diagnostics"] = runtime_resource_projection(
+                                partial.get("runtime_passage_resource_diagnostics"))
+                        except (ValueError, OSError, KeyError, TypeError):
+                            pass
                     if phase["name"] in C4_PHASES:
                         summary["optional_c4_cross_encoder"] = "failed_or_unavailable"
                         try:
@@ -551,15 +758,21 @@ def run(args, repository, root):
                     fixture = load_json(data, "manifest.json")
                     protocol_hash = digest_file(safe_member(root, "protocol.json"))
                     manifests[condition], summary["conditions"][condition] = condition_evidence(
-                        root / condition, fixture, runtime_files, MODEL, protocol_hash, scored=condition != "replay")
+                        root / condition, fixture, runtime_files, MODEL, protocol_hash, scored=condition != "replay",
+                        runtime_passages=condition == "runtime-passages",
+                        guarded_source=root / "guarded" if condition == "passages" else None)
                     if condition == "passages":
                         summary["quality_gates"] = quality_gates(args.dataset, summary["conditions"])
+                    if condition == "runtime-passages":
+                        runtime_passage_pairing(root, manifests, summary["conditions"])
+                        summary["quality_gates"].extend(runtime_passage_quality_gates(
+                            args.dataset, summary["conditions"][condition], summary["conditions"]["fresh-default"]))
                     save(root, summary)
             stage = "paired_validation"
             fixture = load_json(data, "manifest.json")
             baseline_hash = summary["conditions"]["guarded"]["run_manifest_sha256"]
             fixture_hash = digest_file(safe_member(data, "manifest.json"))
-            for condition in ("fresh-default", "passages"):
+            for condition in ("fresh-default", "passages", *(("runtime-passages",) if runtime_passages else ())):
                 if (manifests[condition]["source_run_manifest_sha256"] != baseline_hash
                         or manifests[condition]["dataset_manifest_sha256"] != fixture_hash):
                     raise GateError("PairedConditionSourceMismatch")
@@ -574,6 +787,11 @@ def run(args, repository, root):
             if hashes(repository) != runtime_files or harness_hashes(repository) != harness:
                 raise GateError("SourceChangedDuringRun")
             summary["quality_gates"] = quality_gates(args.dataset, summary["conditions"])
+            if runtime_passages:
+                runtime_passage_pairing(root, manifests, summary["conditions"])
+                summary["optional_runtime_passage_index"] = "complete"
+                summary["quality_gates"].extend(runtime_passage_quality_gates(
+                    args.dataset, summary["conditions"]["runtime-passages"], summary["conditions"]["fresh-default"]))
             if c4:
                 experiment = manifests["c4"]
                 if (experiment.get("paired_original_condition") != "no_reranker_passages"
@@ -594,6 +812,10 @@ def run(args, repository, root):
                            for metric in selected_metrics}
                     for cell, values in summary["conditions"]["passages"]["metrics"].items()},
             }
+            if runtime_passages:
+                summary["quality_differences"]["runtime_passages_minus_fresh_default"] = {
+                    metric: summary["conditions"]["runtime-passages"]["metrics"]["results-default"]["final_sdk_top10"]["unconditional"][metric]["mean"] - fresh[metric]["mean"]
+                    for metric in selected_metrics}
             summary["source_and_query_identity_verified"] = True
             summary["fresh_default_rank_parity_required"] = False
             summary["status"] = "complete" if all(gate["passed"] for gate in summary["quality_gates"]) else "failed"
@@ -624,6 +846,7 @@ def main():
     parser.add_argument("--rss-mib", type=int, default=4096)
     parser.add_argument("--cpu-seconds", type=int, default=3600)
     parser.add_argument("--reranker-experiment", choices=("off", "c4"), default="off", help="Separate optional C4 experiment; requires its runner/provisioner and matching resource qualification")
+    parser.add_argument("--runtime-passages", action="store_true", help="Separate optional actual schema-6 passage-index evaluation on original parents, paired with fresh-default under the existing whole-run caps")
     args = parser.parse_args()
     repository = checked_path(args.repository, must_exist=True, directory=True)
     root = isolated_artifact_path(args.output_root, repository)
@@ -632,7 +855,7 @@ def main():
         if (os.environ.get("GITHUB_ACTIONS") != "true" or not args.model_directory or not args.qualification_directory
                 or not args.floor_qualification_directory or not 1 <= args.wall_seconds <= 4500
                 or not 64 <= args.rss_mib <= 6144 or not 1 <= args.cpu_seconds <= 12000):
-            summary = initial_summary(args.dataset)
+            summary = initial_summary(args.dataset, args.reranker_experiment == "c4", args.runtime_passages)
             summary.update(status="failed", failure_reason="ci_arguments_required")
             save(root, summary)
             return 1
@@ -640,7 +863,7 @@ def main():
     if args.command == "init":
         if (root / "job-summary.json").exists():
             raise GateError("RefusingExistingArtifact")
-        save(root, initial_summary(args.dataset))
+        save(root, initial_summary(args.dataset, args.reranker_experiment == "c4", args.runtime_passages))
     else:
         current = load_json(root, "job-summary.json")
         if current["status"] in {"running", "not_started"}:

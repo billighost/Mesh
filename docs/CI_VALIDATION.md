@@ -1,24 +1,27 @@
 # Remote qualification for Mesh 0.9.0
 
 The production changes and reviewed measurement utilities are published on
-`ci/mesh-production-run-c4-20261106`. Normal CI passed all fifteen OS/Python
-combinations at `256d232`. Windows primary and minimum qualification also passed
-at `1fc2bb6`, including full isolated suites, real process-crash recovery,
-coverage, and primary installed-wheel validation. Its normal CI exposed one
-scheduling-sensitive foreground test; its test-speed run exposed generated-file
-and background-delivery interference in two tests.
+`ci/mesh-production-run-c4-20261106`. At `6060925`, [normal CI](https://github.com/billighost/Mesh/actions/runs/42338200399)
+passed all fifteen OS/Python combinations, packaging, security, documentation,
+skills and installed-wheel checks. [Production qualification](https://github.com/billighost/Mesh/actions/runs/42338200383)
+passed the primary and minimum full isolated suites, real process-crash recovery,
+coverage and primary installed-wheel validation. Its performance matrix and
+same-selection one-versus-two-worker observations also completed successfully.
+The source-bound numerical results and resource deferrals are published in
+[RESULTS.md](../benchmarks/RESULTS.md).
 
-The next repair batch replaces the timing assumption with held-inference progress,
-isolates the documentation fixture, preserves source checks when Git is absent,
-and stops unrelated delivery during intentional closed-file deletion. Reviewed
-HTTP clients now reuse bounded connections while proving identity afresh on
+The foreground-progress and test-fixture interference repairs are qualified.
+Reviewed HTTP clients reuse bounded connections while proving identity afresh on
 every call, including rejecting a closed identity connection before token dispatch.
 
-Retrieval now reaches native scoring on the bounded datasets. Further repairs
-preserve legitimate empty-cohort intervals, read the passage harness's declared
-budget, and pin generated labels to their canonical LF bytes without changing
-query or relevance values. Final same-source platform, retrieval, performance and
-test-speed gates remain pending; focused checks do not replace them.
+Retrieval reached native scoring. Two supervisor projection contracts still
+require repair: the legacy child experiment omitted local model hashes, and
+source-accounted public parents with no faithful source alias must retain their
+rank with zero relevance credit. The schema-6 production passage candidate has
+focused coverage and a separate opt-in fresh-query evaluation, with exact parent,
+model, original-span and source pairing checks. Final same-source passage,
+retrieval and supported-platform qualification remains pending; focused checks
+do not replace those gates.
 
 The development machine has 8 GiB RAM. Local work uses small isolated checks
 with one test worker and no model or corpus evaluation. Full suites, concurrent
@@ -68,7 +71,7 @@ preserve failures and explicit resource or budget deferrals.
 | --- | --- |
 | Concurrent storage | Five pilots, 48 serial primary cells with 512 input facts, scalar and atomic calls, receipt SDK and HTTP, hash and neural modes, and one/four/eight/sixteen local agents |
 | Scale extension | Four conditional sixteen-agent HTTP cells with 10,000 input facts; requires declared RAM, readiness and time-budget gates |
-| Retrieval | NFCorpus, SciFact, direct facts, positional long memories, and the inspected six-case LongMemEval fixture; keeps guarded, saved-vector replay, fresh default queries and passage experiments separate |
+| Retrieval | NFCorpus, SciFact, direct facts, positional long memories, and the inspected six-case LongMemEval fixture; keeps guarded, saved-vector replay, fresh default queries, child-passage experiments and opt-in production passage queries separate |
 | Optional C4 | Reranks four authorized parent candidates in a separate experiment; requires complete paired quality accounting and fixed RAM, CPU and latency limits |
 | Test speed | Runs the same full selection once with one worker and once with two; retains source, dependency, seed, skipped-test and resource accounting |
 

@@ -189,7 +189,7 @@ def _rebind_namespace_database(conn: sqlite3.Connection, old: str, new: str, *, 
     conn.execute("BEGIN IMMEDIATE")
     try:
         # Use a static allowlist: database-supplied identifiers are untrusted.
-        for table in ("memories", "queries", "contradictions", "work_items", "work_events", "embedding_jobs", "mutation_outbox", "operation_receipts"):
+        for table in ("memories", "memory_passages", "queries", "contradictions", "work_items", "work_events", "embedding_jobs", "mutation_outbox", "operation_receipts"):
             if table in tables:
                 conn.execute(f"UPDATE {table} SET namespace=? WHERE namespace=?", (new, old))
         if "mesh_meta" in tables:
@@ -199,6 +199,10 @@ def _rebind_namespace_database(conn: sqlite3.Connection, old: str, new: str, *, 
                 conn.execute("UPDATE mesh_meta SET value=? WHERE key='store_generation'", (new_generation or uuid.uuid4().hex,))
         if conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
             raise sqlite3.IntegrityError("Namespace rename would leave inconsistent references.")
+        if "memory_passages" in tables:
+            from .passage_search import verify_passage_rows
+
+            verify_passage_rows(conn)
         count = int(conn.execute("SELECT COUNT(*) FROM memories WHERE namespace=?", (new,)).fetchone()[0])
         conn.commit()
         return count

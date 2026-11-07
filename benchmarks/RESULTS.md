@@ -2,13 +2,55 @@
 
 This document provides empirical latency, throughput, memory, and scaling benchmarks for **Mesh** (`mesh-context-layer`). All tests measure real end-to-end execution paths including SQLite WAL transactions, token budgeting, FTS5 lexical matching, and ONNX SIMD cosine vector ranking.
 
+## Mesh 0.9.0 production qualification (2026-11-07, `6060925`)
+
+[Normal CI](https://github.com/billighost/Mesh/actions/runs/42338200399) passed all fifteen OS/Python combinations (Ubuntu, macOS, Windows; Python 3.10–3.14), security, documentation, skills, packaging and installed-wheel checks. [Production qualification](https://github.com/billighost/Mesh/actions/runs/42338200383) passed the full isolated primary and minimum suites, process-crash recovery, coverage and primary installed-wheel validation on the same source. [Provenance](results/production_20261107_provenance.json) binds the exported numerical evidence. Retrieval and the subsequent schema-6 passage candidate still require qualification.
+
+### Windows production matrix — Mesh 0.9.0 (2026-11-07)
+
+A preregistered single serial pass on Windows 2025Server, 4 logical CPUs, 15.99 GiB RAM; Python 3.14.0, APSW 3.54.1.0, SQLite 3.54.1, ONNX Runtime 1.31.1. Each primary cell uses 512 measured facts plus twelve anchors; atomic calls contain eight facts. The receipt SDK and authenticated HTTP use the same public fixture, ownership policy and WAL/FULL durability. The process-tree RSS cap was 4.00 GiB, with 2 GiB available-RAM headroom for resource qualification.
+
+The tested source is commit `6060925`. Its Windows checkout bytes are identified by the relative source and harness manifests in [the numerical ledger](results/production_performance_20261107.json) (`runtime_source_sha256` and `harness_source_sha256`); these measurements apply to that commit. The ledger also binds the local model files, fixture digests and qualification reports.
+
+Acknowledged measured facts per second, excluding anchors and process close:
+
+| Backend | Surface | Call | Group | 1 agent | 4 agents | 8 agents | 16 agents |
+| --- | --- | --- | --- | ---: | ---: | ---: | ---: |
+| Hash | Receipt SDK | Scalar | 0 | 132.7 | 17.5 | 17.5 | 12.7 |
+| Hash | HTTP | Scalar | 0 | 85.2 | 82.3 | 76.4 | 80.9 |
+| Hash | HTTP | Scalar | 1 | 45.7 | 86.2 | 90.2 | 89.1 |
+| Hash | Receipt SDK | Atomic 8 | 0 | 199.5 | 128.0 | 64.2 | 37.8 |
+| Hash | HTTP | Atomic 8 | 0 | 179.1 | 178.7 | 172.3 | 166.6 |
+| Hash | HTTP | Atomic 8 | 1 | 149.0 | 175.0 | 181.6 | 144.8 |
+| Neural | Receipt SDK | Scalar | 0 | 115.2 | 17.8 | 16.6 | deferred(resource) |
+| Neural | HTTP | Scalar | 0 | 76.4 | 75.0 | 75.9 | 74.8 |
+| Neural | HTTP | Scalar | 1 | 42.2 | 77.6 | 83.0 | 83.4 |
+| Neural | Receipt SDK | Atomic 8 | 0 | 133.3 | 74.5 | 45.1 | deferred(resource) |
+| Neural | HTTP | Atomic 8 | 0 | 122.8 | 157.9 | 152.8 | 146.8 |
+| Neural | HTTP | Atomic 8 | 1 | 118.4 | 144.1 | 161.8 | 154.2 |
+
+Primary coverage: 48 planned; 46 completed, 0 failed, 2 deferred, 0 unavailable. Known accounting: 23,552 attempted, 23,552 acknowledged, 0 failed acknowledgements, 0 unknown outcomes and 0 observed committed facts without acknowledgement. All completed cells passed independent ID/content/revision, receipt, integrity, policy, resource and cleanup checks. Every missing cell retains its planned dimensions and reason in the ledger; failed rates are diagnostic.
+
+The separate sixteen-agent HTTP scalar scale extension uses 10,000 measured facts plus twelve anchors:
+
+| Backend | Group | Status | Acknowledged facts/s | Indexed facts/s | Peak summed RSS MiB |
+| --- | --- | --- | ---: | ---: | ---: |
+| Hash | 0 | completed | 68.6 | — | 915.7 |
+| Hash | 1 | completed | 79.9 | — | 924.3 |
+| Neural | 0 | deferred(budget) | — | — | — |
+| Neural | 1 | completed | 63.0 | 44.5 | 1,057.8 |
+
+Five planned 128-fact resource pilots are recorded separately and excluded from primary and scale rates. The ledger preserves independently verified insertion rates, neural indexing boundaries, successful scalar or batch-call p50/p95/p99, first/repeated public recall latency, per-anchor Recall@1/@5, actual group coalescing counters and RSS/CPU by phase and role, plus the post-close footprint. Summed RSS can double-count shared pages; sampling can miss short-lived processes and phase CPU attribution is approximate. One pass establishes coverage, with no run-to-run repeatability claim. The twelve anchors are functional retrieval checks; they do not establish held-out competitor superiority. Same-source crash tests establish process recovery, without establishing physical power-loss durability.
+
+### Full-suite test speed — Mesh 0.9.0 (`6060925`)
+
+The same 1,364-test selection, fixed Hypothesis seed and CI profile completed with zero failures in both observations, with four skips. One worker took 162.279 seconds; two took 100.104 seconds (an observed 1.62× wall ratio). Sampled peak summed process-tree RSS was 916.7 MiB and 1,162.2 MiB, respectively. This is one fixed-order observation on a four-CPU Windows hosted runner; cache/order effects and sampled process accounting prevent a generalized speedup claim. [The comparison](results/production_test_speed_20261107.json) preserves source, dependency, selection, skip, cleanup and resource accounting.
+
 ## Mesh 0.9.0 working-tree retrieval investigation (2026-11-06)
 
 [The sanitized aggregate](results/production_retrieval_20261106.json) identifies
 each tested runtime, dataset, model, protocol, and scorer by SHA-256. These are
-development checkpoints. Final-source GitHub Actions qualification and the new
-concurrent performance matrix have not run. There is no new throughput, quiet
-latency, competitor-superiority, or physical power-loss result.
+development retrieval checkpoints, preceding the published production matrix above. Final retrieval qualification remains pending; these cells establish no competitor superiority or physical power-loss result.
 
 All quality cells used the pinned local MiniLM encoder, patched SQLite 3.54.1,
 WAL/FULL durability, public visibility, and original annotated evidence IDs.

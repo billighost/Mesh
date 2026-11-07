@@ -41,7 +41,7 @@ import threading
 import time
 import uuid
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterator, Optional
@@ -76,6 +76,7 @@ from .audit import (
     validate_namespace,
 )
 from .envutil import env_bool, env_float, env_int
+from .passages import PASSAGE_FORMAT_VERSION, passage_index_enabled, split_passages, validate_representation
 from .secrets import (
     convert_text_secrets_to_refs,
     is_credential,
@@ -89,6 +90,11 @@ from .store import (
     MeshStore,
     StaleStoreError,
     _content_identity,
+    _CacheBudgetLease,
+    _MEMORY_COLUMNS,
+    _blob_to_vector,
+    _cache_row_peak_bytes,
+    _object_graph_bytes,
     _extract_search_tokens,
     _is_same_known_space,
     _normalize_trust_tier,
@@ -179,6 +185,7 @@ class _ReembedHint:
     attempts: int = 0
     incarnation: Optional[str] = None
     store_generation: Optional[str] = None
+    target_representation: str = ""
 
 
 class _BoundedReembedQueue:
@@ -188,9 +195,9 @@ class _BoundedReembedQueue:
         self.maxsize = max(1, int(maxsize))
         self._data: OrderedDict[tuple[str, str, str], _ReembedHint] = OrderedDict()
 
-    def put(self, namespace: str, memory_id: str, revision: int, *, data_root: Optional[Path] = None, target_model: str = "onnx-minilm-l6-v2", incarnation: Optional[str] = None, store_generation: Optional[str] = None) -> None:
+    def put(self, namespace: str, memory_id: str, revision: int, *, data_root: Optional[Path] = None, target_model: str = "onnx-minilm-l6-v2", incarnation: Optional[str] = None, store_generation: Optional[str] = None, target_representation: str = "") -> None:
         root = str(Path(data_root or get_mesh_dir()).absolute())
-        hint = _ReembedHint(root, str(namespace), str(memory_id), int(revision), target_model, incarnation=incarnation, store_generation=store_generation)
+        hint = _ReembedHint(root, str(namespace), str(memory_id), int(revision), target_model, incarnation=incarnation, store_generation=store_generation, target_representation=validate_representation(target_representation))
         key = (root, hint.namespace, hint.memory_id)
         self._data[key] = hint
         self._data.move_to_end(key)
@@ -1484,12 +1491,14 @@ def _recover_reembed_hints(limit: int = 32) -> list[_ReembedHint]:
         try:
             with mesh_dir_context(Path(root)):
                 store = _reembed_store(root, namespace)
+                if _model is not None and _model_backend not in (None, "onnx-warming", "hash-fallback"):
+                    store.backfill_embedding_jobs(limit=min(8, limit), target_model=_backend_to_model_tag(_model_backend, _model), target_representation=PASSAGE_FORMAT_VERSION if passage_index_enabled() and isinstance(_model, _DirectOnnxEmbedding) else "")
                 stats = store.embedding_job_stats()
                 jobs = store.list_embedding_jobs(limit=min(8, limit - len(hints))) if len(hints) < limit else []
             with _PENDING_REEMBED_LOCK:
                 _REEMBED_BACKLOG[(root, namespace)] = max(int(stats["pending_count"]), len(jobs))
             hints.extend(
-                _ReembedHint(root, namespace, job["memory_id"], int(job["revision"]), job["target_model"], int(job["attempts"]), incarnation=job["incarnation"], store_generation=job["store_generation"])
+                _ReembedHint(root, namespace, job["memory_id"], int(job["revision"]), job["target_model"], int(job["attempts"]), incarnation=job["incarnation"], store_generation=job["store_generation"], target_representation=job["target_representation"])
                 for job in jobs
             )
         except Exception:
@@ -1515,42 +1524,113 @@ def _process_reembed_batch(items: list[_ReembedHint]) -> None:
                 try:
                     store = _reembed_store(root, namespace)
                     valid = []
-                    total_bytes = 0
-                    byte_limit = env_int("MESH_BG_ONNX_BATCH_BYTES", 32768, minimum=16384, maximum=262144)
-                    for hint in hints:
-                        row = store.get(hint.memory_id)
-                        if row is None or int(row["revision"]) != hint.revision:
-                            continue
-                        if hint.incarnation is not None and hint.incarnation != row["incarnation"]:
-                            continue
-                        if hint.store_generation is not None and hint.store_generation != row["store_generation"]:
-                            continue
-                        size = len(row["content"].encode("utf-8"))
-                        if valid and total_bytes + size > byte_limit:
-                            with _PENDING_REEMBED_LOCK:
-                                _PENDING_REEMBED_QUEUE.put(namespace, hint.memory_id, hint.revision, data_root=Path(root), target_model=hint.target_model, incarnation=row["incarnation"], store_generation=row["store_generation"])
-                            continue
-                        total_bytes += size
-                        valid.append((hint, row["content"], row["embedding_model"], row["incarnation"], row["store_generation"]))
-                    if valid:
+                    lease = _CacheBudgetLease((store.db_path, namespace))
+                    def resize_work(size):
                         try:
-                            vectors, model_tag = _encode_texts_with_tag([text for _, text, _, _, _ in valid])
-                            if len(vectors) != len(valid):
-                                raise RuntimeError("Embedding worker returned an invalid row count")
-                            with store.atomic_write():
-                                for (hint, _, old_model, incarnation, store_generation), vector in zip(valid, vectors):
-                                    if model_tag != hint.target_model:
-                                        store.retry_embedding_job(hint.memory_id, expected_revision=hint.revision, expected_incarnation=incarnation, expected_store_generation=store_generation, expected_target_model=hint.target_model, error_code="model_space_unavailable", delay_seconds=min(60.0, 2.0 ** min(hint.attempts, 6)))
-                                        continue
-                                    store.publish_embedding(
-                                        hint.memory_id, vector.tolist(), expected_revision=hint.revision,
-                                        embedding_model=model_tag, expected_model=old_model,
-                                        expected_incarnation=incarnation, expected_store_generation=store_generation,
-                                    )
-                        except Exception:
-                            with store.atomic_write():
-                                for hint, _, _, incarnation, store_generation in valid:
-                                    store.retry_embedding_job(hint.memory_id, expected_revision=hint.revision, expected_incarnation=incarnation, expected_store_generation=store_generation, expected_target_model=hint.target_model, error_code="embedding_failed", delay_seconds=min(60.0, 2.0 ** min(hint.attempts, 6)))
+                            lease.resize(size)
+                        except CacheBudgetExceededError as allocation_error:
+                            allocation_error.__traceback__ = None
+                            store._invalidate_cache()
+                            lease.resize(size)
+
+                    total_bytes = 0
+                    retained_bytes = 0
+                    byte_limit = env_int("MESH_BG_ONNX_BATCH_BYTES", 32768, minimum=16384, maximum=262144)
+                    try:
+                        resident, backend = _model, _model_backend
+                        resident_tag = _backend_to_model_tag(backend, resident)
+                        for hint in hints:
+                            with store._read_connect() as connection:
+                                raw = connection.execute(f"SELECT {_MEMORY_COLUMNS},embedding FROM memories WHERE namespace=? AND id=?", (namespace, hint.memory_id)).fetchone()
+                                job = connection.execute("SELECT revision,incarnation,target_model,target_representation FROM embedding_jobs WHERE namespace=? AND memory_id=?", (namespace, hint.memory_id)).fetchone()
+                                if raw is None or job is None or int(raw["revision"]) != hint.revision or int(job[0]) != hint.revision or job[2] != hint.target_model or job[3] != hint.target_representation:
+                                    continue
+                                if (hint.incarnation is not None and hint.incarnation != raw["incarnation"]) or job[1] != raw["incarnation"]:
+                                    continue
+                                if hint.store_generation is not None and hint.store_generation != raw["store_generation"]:
+                                    continue
+                                resize_work(65536 + retained_bytes + _cache_row_peak_bytes(raw))
+                                data = dict(raw)
+                                blob = data.pop("embedding")
+                                row = store._deserialize_memory_row(data)
+                            size = len(row["content"].encode("utf-8"))
+                            if valid and total_bytes + size > byte_limit:
+                                with _PENDING_REEMBED_LOCK:
+                                    _PENDING_REEMBED_QUEUE.put(namespace, hint.memory_id, hint.revision, data_root=Path(root), target_model=hint.target_model, incarnation=row["incarnation"], store_generation=row["store_generation"], target_representation=hint.target_representation)
+                                continue
+                            if hint.target_representation == "" and passage_index_enabled() and isinstance(resident, _DirectOnnxEmbedding) and resident_tag == hint.target_model:
+                                # Upgrade the exact durable job, never a newer model
+                                # target installed while the worker read its source.
+                                with store.atomic_write(), store._connect() as connection:
+                                    changed = connection.execute(
+                                        "UPDATE embedding_jobs SET target_representation=? WHERE namespace=? AND memory_id=? AND revision=? AND incarnation=? AND target_model=? AND target_representation='' "
+                                        "AND EXISTS(SELECT 1 FROM memories WHERE namespace=? AND id=? AND revision=? AND incarnation=? AND embedding_model=?)",
+                                        (PASSAGE_FORMAT_VERSION, namespace, hint.memory_id, hint.revision, row["incarnation"], hint.target_model, namespace, hint.memory_id, hint.revision, row["incarnation"], row["embedding_model"]),
+                                    ).rowcount
+                                if not changed:
+                                    continue
+                                hint = replace(hint, target_representation=PASSAGE_FORMAT_VERSION)
+                            primary = None
+                            if row["embedding_model"] == hint.target_model and blob:
+                                try:
+                                    primary = _blob_to_vector(blob)
+                                except ValueError:
+                                    primary = None
+                                if primary is not None and (primary.shape != (EMBEDDING_DIM,) or not np.isfinite(primary).all()):
+                                    primary = None
+                            total_bytes += size
+                            retained_bytes += _object_graph_bytes(row) + (EMBEDDING_DIM * 4 if primary is not None else 0)
+                            valid.append((hint, row, primary))
+                        plans = []
+                        for hint, row, _ in valid:
+                            if hint.target_representation:
+                                if not passage_index_enabled() or not isinstance(resident, _DirectOnnxEmbedding) or resident_tag != hint.target_model:
+                                    plans.append(None)
+                                    continue
+                                plans.append(split_passages(row["content"], resident.window_tokenizer))
+                            else:
+                                plans.append(None)
+                        passage_count = sum(len(plan) for (_, row, _), plan in zip(valid, plans) if plan is not None and plan != [(0, len(row["content"]))])
+                        resize_work(65536 + retained_bytes + total_bytes * 256 + (passage_count + len(valid)) * (EMBEDDING_DIM * 4 * 3 + 128))
+                        missing = [(offset, row["content"]) for offset, (hint, row, primary) in enumerate(valid)
+                                   if primary is None and (not hint.target_representation or plans[offset] is not None or (resident is not None and resident_tag == hint.target_model and resident_tag != "hash-384"))]
+                        encoded, model_tag = _encode_texts_with_tag([text for _, text in missing]) if missing else ([], resident_tag)
+                        if len(encoded) != len(missing):
+                            raise RuntimeError("Embedding worker returned an invalid row count")
+                        primary_by_position = {offset: vector for (offset, _), vector in zip(missing, encoded)}
+                        bundles = []
+                        for offset, ((hint, row, primary), plan) in enumerate(zip(valid, plans)):
+                            vector = primary if primary is not None else primary_by_position.get(offset)
+                            derived = None
+                            if plan is not None and plan != [(0, len(row["content"]))]:
+                                derived = np.empty((len(plan), EMBEDDING_DIM), dtype=np.float32)
+                                for start in range(0, len(plan), 16):
+                                    block = plan[start:start + 16]
+                                    texts = [" ".join(row["content"][left:right].split()) for left, right in block]
+                                    derived[start:start + len(block)] = _validated_embedding_rows(resident._encode_raw_batches(texts, batch_size=16), len(block))
+                            bundles.append((vector, derived))
+                        with store.atomic_write():
+                            for offset, ((hint, row, primary), plan, (vector, derived)) in enumerate(zip(valid, plans, bundles)):
+                                actual_tag = row["embedding_model"] if primary is not None else model_tag
+                                partial = bool(hint.target_representation and plan is None)
+                                if vector is None or actual_tag != hint.target_model or (partial and primary is not None):
+                                    store.retry_embedding_job(hint.memory_id, expected_revision=hint.revision, expected_incarnation=row["incarnation"], expected_store_generation=row["store_generation"], expected_target_model=hint.target_model, expected_target_representation=hint.target_representation, error_code="representation_unavailable" if partial and primary is not None else "model_space_unavailable", delay_seconds=min(60.0, 2.0 ** min(hint.attempts, 6)))
+                                    continue
+                                store.publish_embedding(
+                                    hint.memory_id, vector, expected_revision=hint.revision,
+                                    embedding_model=actual_tag, expected_model=row["embedding_model"],
+                                    expected_incarnation=row["incarnation"], expected_store_generation=row["store_generation"],
+                                    target_representation=hint.target_representation, passage_spans=plan, passage_embeddings=derived,
+                                    document_pending_passages=partial,
+                                )
+                                if partial:
+                                    store.retry_embedding_job(hint.memory_id, expected_revision=hint.revision, expected_incarnation=row["incarnation"], expected_store_generation=row["store_generation"], expected_target_model=hint.target_model, expected_target_representation=hint.target_representation, error_code="representation_unavailable", delay_seconds=min(60.0, 2.0 ** min(hint.attempts, 6)))
+                    except Exception as exc:
+                        with store.atomic_write():
+                            for hint, row, _ in valid:
+                                store.retry_embedding_job(hint.memory_id, expected_revision=hint.revision, expected_incarnation=row["incarnation"], expected_store_generation=row["store_generation"], expected_target_model=hint.target_model, expected_target_representation=hint.target_representation, error_code="embedding_budget_exhausted" if isinstance(exc, CacheBudgetExceededError) else "embedding_failed", delay_seconds=min(60.0, 2.0 ** min(hint.attempts, 6)))
+                    finally:
+                        lease.release()
                     count = int(store.embedding_job_stats()["pending_count"])
                     with _PENDING_REEMBED_LOCK:
                         if (root, namespace) in _REEMBED_NAMESPACES:
@@ -2783,24 +2863,10 @@ class Mesh:
         if target_model == "hash-384":
             return
         limit = min(128, max(32, int(max_batch)))
-        with self.store._read_connect() as conn:
-            ids = [row[0] for row in conn.execute(
-                "SELECT id FROM memories WHERE namespace=? "
-                "AND (embedding_model IN ('hash-384','needs-reembed','unknown') OR embedding IS NULL) "
-                "ORDER BY id LIMIT ?", (self.namespace, limit),
-            )]
-        hints = []
-        for memory_id in ids:
-            row = self.store.get(memory_id)
-            if row is not None:
-                hints.append(_ReembedHint(
-                    str(self.store.db_path.parent), self.namespace, memory_id,
-                    int(row["revision"]), target_model, incarnation=row["incarnation"],
-                    store_generation=row["store_generation"],
-                ))
-        with self.store.atomic_write():
-            for hint in hints:
-                self.store.enqueue_embedding_job(hint.memory_id, expected_revision=hint.revision, expected_incarnation=hint.incarnation, expected_store_generation=hint.store_generation, target_model=target_model)
+        self.store.backfill_embedding_jobs(limit, target_model=target_model, target_representation=PASSAGE_FORMAT_VERSION if passage_index_enabled() and isinstance(model, _DirectOnnxEmbedding) else "")
+        hints = [_ReembedHint(str(self.store.db_path.parent), self.namespace, job["memory_id"], int(job["revision"]), job["target_model"], int(job["attempts"]),
+                              incarnation=job["incarnation"], store_generation=job["store_generation"], target_representation=job["target_representation"])
+                 for job in self.store.list_embedding_jobs(limit)]
         if max_batch > 0:
             _process_reembed_batch(hints[:max_batch])
         _register_reembed_namespace(self.store)
@@ -2808,7 +2874,7 @@ class Mesh:
             if _bg_onnx_enabled():
                 with _PENDING_REEMBED_LOCK:
                     for hint in hints[max(0, int(max_batch)):]:
-                        _PENDING_REEMBED_QUEUE.put(self.namespace, hint.memory_id, hint.revision, data_root=self.store.db_path.parent, target_model=target_model, incarnation=hint.incarnation, store_generation=hint.store_generation)
+                        _PENDING_REEMBED_QUEUE.put(self.namespace, hint.memory_id, hint.revision, data_root=self.store.db_path.parent, target_model=hint.target_model, incarnation=hint.incarnation, store_generation=hint.store_generation, target_representation=hint.target_representation)
 
     def _prepare_learn(
         self, content: str, memory_type: str = "fact", confidence: float = 1.0,
@@ -3238,8 +3304,9 @@ class Mesh:
         include_private: Optional[bool] = None, target_model: Optional[str] = None,
         expected_incarnations: Optional[dict[str, str]] = None,
         expected_store_generation: Optional[str] = None,
+        target_representation: Optional[str] = None,
     ) -> dict[str, Any]:
-        """Wait for semantic readiness of specified revisions without replaying writes."""
+        """Wait for document or explicitly requested passage readiness without replaying writes."""
         global _REEMBED_DRAINING
         _check_agent_scope(self.agent_id, self.namespace, write=False, trusted_local=self.trusted_local)
         timeout = _validate_index_wait(True, timeout)
@@ -3258,6 +3325,8 @@ class Mesh:
             _validate_incarnation(expected_store_generation, "expected_store_generation")
         if target_model is not None:
             target_model = self.store._validate_model_id(target_model)
+        if target_representation is not None:
+            target_representation = validate_representation(target_representation)
         actual_private = _resolve_sdk_include_private(include_private)
         def stale_outcome():
             changed = self.store.db_path.exists()
@@ -3290,15 +3359,20 @@ class Mesh:
                         unavailable.append(mid)
                     elif row["revision"] != expected.get(mid, row["revision"]) or row["incarnation"] != incarnations.get(mid, row["incarnation"]) or row["store_generation"] != generation:
                         superseded.append(mid)
-                    elif row["indexing_state"] == "indexed" and (target_model is None or row["embedding_model"] == target_model):
+                    elif row["indexing_state"] == "indexed" and (target_model is None or row["embedding_model"] == target_model) and (not target_representation or (row["passage_indexing_state"] == "indexed" and row["passage_format_version"] == target_representation)):
                         indexed.append(mid)
                     else:
                         pending.append(mid)
                 outcome = {"status": "indexed", "indexed": indexed, "pending": pending, "superseded": superseded, "unavailable": unavailable, "revisions": {mid: row["revision"] for mid, row in rows.items()}, "incarnations": {mid: row["incarnation"] for mid, row in rows.items()}, "store_generation": generation, "embedding_models": {mid: row["embedding_model"] for mid, row in rows.items()}}
+                outcome["passage_format_versions"] = {mid: row["passage_format_version"] for mid, row in rows.items()}
+                outcome["passage_indexing_states"] = {mid: row["passage_indexing_state"] for mid, row in rows.items()}
                 if unavailable or superseded:
                     outcome["status"] = "superseded" if superseded else "unavailable"
                     return outcome
                 if not pending:
+                    return outcome
+                if target_representation and not passage_index_enabled():
+                    outcome["status"] = "disabled"
                     return outcome
                 if time.monotonic() >= deadline:
                     outcome["status"] = "timed_out"
@@ -3468,6 +3542,7 @@ class Mesh:
                 "bm25_score": float(row.get("bm25_score", 0.0)),
                 "candidate_count": int(row.get("candidate_count", len(candidates))),
                 "supporting_spans": row.get("supporting_spans", []),
+                "selected_passage_ordinal": row.get("selected_passage_ordinal"),
                 "source_agent": row.get("source_agent", "unknown"),
                 "memory_type": row.get("memory_type", "fact"),
                 "tags": mem_tags,

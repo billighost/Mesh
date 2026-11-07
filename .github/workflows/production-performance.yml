@@ -25,6 +25,10 @@ name: Production qualification and performance
         description: "Evaluate the optional four-candidate local reranker with strict quality and resource gates"
         type: boolean
         default: false
+      run_runtime_passages:
+        description: "Evaluate the schema-6 passage index with fresh queries and original parent evidence"
+        type: boolean
+        default: true
       max_tree_rss_mib:
         description: "Declare a process-tree RSS cap before pilots (MiB)"
         type: choice
@@ -123,7 +127,7 @@ jobs:
   retrieval:
     name: Same-source retrieval quality
     if: >-
-      (github.event_name == 'workflow_dispatch' && (inputs.run_retrieval || inputs.run_c4)) ||
+      (github.event_name == 'workflow_dispatch' && (inputs.run_retrieval || inputs.run_c4 || inputs.run_runtime_passages)) ||
       (github.event_name == 'push' && startsWith(github.ref_name, 'ci/mesh-production-run-'))
     needs: [qualification]
     uses: ./.github/workflows/retrieval-quality.yml
@@ -131,6 +135,9 @@ jobs:
       run_c4: >-
         ${{ (github.event_name == 'workflow_dispatch' && inputs.run_c4) ||
             (github.event_name == 'push' && startsWith(github.ref_name, 'ci/mesh-production-run-c4-')) }}
+      run_runtime_passages: >-
+        ${{ (github.event_name == 'workflow_dispatch' && inputs.run_runtime_passages) ||
+            (github.event_name == 'push' && startsWith(github.ref_name, 'ci/mesh-production-run-')) }}
 
   test_speed:
     name: Full-suite test speed (manual only, fixed order)

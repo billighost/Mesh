@@ -83,6 +83,7 @@ from .crypto import (
 from .audit import _path_recheck_ttl
 from .envutil import env_int
 from .guards import guard_ingest, guard_tags
+from .passages import PASSAGE_FORMAT_VERSION, passage_index_enabled, validate_representation, validate_spans
 from .secrets import is_credential, normalize_secret_ref, redact_secrets_local
 
 EMBEDDING_DIM = 384
@@ -117,7 +118,7 @@ VALID_TRUST_TIERS: frozenset[str] = frozenset({"user", "agent", "log_captured"})
 _MEMORY_COLUMNS = (
     "id, namespace, content, confidence, memory_type, source_agent, "
     "tags, created_at, updated_at, accessed_at, access_count, ttl_days, "
-    "decay_start_at, local_only, embedding_model, trust_tier, quarantined, secret_ref, revision, incarnation, "
+    "decay_start_at, local_only, embedding_model, trust_tier, quarantined, secret_ref, revision, incarnation, passage_format_version, passage_count, "
     "(SELECT value FROM mesh_meta WHERE key='store_generation') AS store_generation"
 )
 
@@ -138,7 +139,7 @@ _PATTERNS_MEMORY_WHITELIST: tuple[str, ...] = (
 )
 
 _TOKEN_RE = re.compile(r"[\w./:\\-]+", re.UNICODE)
-SCHEMA_VERSION: str = "5"
+SCHEMA_VERSION: str = "6"
 _WORD_RE = re.compile(r"[^\W_]+", re.UNICODE)
 _PUNCT_SPLIT_RE = re.compile(r"[\W_]+", re.UNICODE)
 
@@ -1626,6 +1627,9 @@ class _VectorCacheEntry:
         "visible_stem_df",
         "visible_doc_len_total",
         "visible_id_count",
+        "passages",
+        "passage_index_dirty",
+        "passage_index_enabled",
     )
 
     def __init__(
@@ -1676,6 +1680,9 @@ class _VectorCacheEntry:
         self.visible_stem_df: dict[str, int] = {}
         self.visible_doc_len_total = 0
         self.visible_id_count = 0
+        self.passages = None
+        self.passage_index_dirty = False
+        self.passage_index_enabled = passage_index_enabled()
         self.needs_healing_ids: set[str] = (
             set(needs_healing_ids) if needs_healing_ids is not None else set()
         )
@@ -1951,6 +1958,8 @@ class _VectorCacheEntry:
             buf = getattr(self, name, None)
             if buf is not None:
                 total += int(buf.nbytes) + 128
+        if self.passages is not None:
+            total += self.passages.allocated_bytes
         return total
 
     @staticmethod
@@ -2063,6 +2072,8 @@ class _VectorCacheEntry:
         vec: Optional[np.ndarray],
         row_meta: Optional[dict[str, Any]] = None,
     ) -> bool:
+        if self.passages is not None and memory_id in self.passages.ranges:
+            self.passage_index_dirty = True
         self.all_ids.add(memory_id)
         if row_meta is not None:
             self._unindex_row_lexical(memory_id)
@@ -2131,6 +2142,8 @@ class _VectorCacheEntry:
         self._delete_vector_unmetered(memory_id)
 
     def _delete_vector_unmetered(self, memory_id: str) -> None:
+        if self.passages is not None and memory_id in self.passages.ranges:
+            self.passage_index_dirty = True
         self.all_ids.discard(memory_id)
         self.needs_healing_ids.discard(memory_id)
         self._unindex_row_lexical(memory_id)
@@ -3342,10 +3355,19 @@ class MeshStore:
     def _schedule_embedding_in_tx(
         self, conn: sqlite3.Connection, memory_id: str, revision: int, embedding_model: str,
         target_model: str = "onnx-minilm-l6-v2", *, incarnation: str,
+        target_representation: str = "", preserve_job_target: bool = False,
     ) -> None:
+        target_representation = validate_representation(target_representation)
+        previous = conn.execute("SELECT target_model,target_representation FROM embedding_jobs WHERE namespace=? AND memory_id=? AND incarnation=? AND revision=?", (self.namespace, memory_id, incarnation, revision - 1)).fetchone() if preserve_job_target else None
+        if previous is not None:
+            target_model, target_representation = tuple(previous)
         if embedding_model not in ("hash-384", "needs-reembed", "unknown"):
-            conn.execute("DELETE FROM embedding_jobs WHERE namespace=? AND memory_id=?", (self.namespace, memory_id))
-            return
+            if not passage_index_enabled() and previous is None:
+                return
+            parent = conn.execute("SELECT passage_format_version FROM memories WHERE namespace=? AND id=?", (self.namespace, memory_id)).fetchone()
+            if previous is None and parent is not None and parent[0] == PASSAGE_FORMAT_VERSION:
+                return
+            target_model, target_representation = tuple(previous) if previous is not None else (embedding_model, PASSAGE_FORMAT_VERSION)
         target_model = self._validate_model_id(target_model)
         maximum = env_int("MESH_MAX_PENDING_EMBEDDING_JOBS", 100000, minimum=1)
         count = int(conn.execute("SELECT value FROM mesh_meta WHERE key='embedding_jobs_count'").fetchone()[0])
@@ -3355,10 +3377,10 @@ class MeshStore:
             raise RuntimeError("Pending embedding job capacity exceeded; no mutation was committed.")
         now = _utc_now_iso()
         conn.execute(
-            """INSERT INTO embedding_jobs(memory_id,namespace,revision,incarnation,target_model,attempts,available_at,created_at,error_code)
-            VALUES(?,?,?,?,?,0,?,?,NULL) ON CONFLICT(memory_id) DO UPDATE SET revision=excluded.revision,incarnation=excluded.incarnation,target_model=excluded.target_model,
+            """INSERT INTO embedding_jobs(memory_id,namespace,revision,incarnation,target_model,target_representation,attempts,available_at,created_at,error_code)
+            VALUES(?,?,?,?,?,?,0,?,?,NULL) ON CONFLICT(memory_id) DO UPDATE SET revision=excluded.revision,incarnation=excluded.incarnation,target_model=excluded.target_model,target_representation=excluded.target_representation,
             attempts=0,available_at=excluded.available_at,created_at=excluded.created_at,error_code=NULL""",
-            (memory_id, self.namespace, revision, incarnation, target_model, now, now),
+            (memory_id, self.namespace, revision, incarnation, target_model, target_representation, now, now),
         )
 
     @staticmethod
@@ -3371,10 +3393,12 @@ class MeshStore:
     def enqueue_embedding_job(
         self, memory_id: str, *, expected_revision: int, expected_incarnation: str,
         expected_store_generation: str, target_model: str = "onnx-minilm-l6-v2",
+        target_representation: str = "",
     ) -> bool:
         memory_id = validate_memory_id(memory_id)
         self._validate_expected_identity(expected_revision, expected_incarnation, expected_store_generation)
         target_model = self._validate_model_id(target_model)
+        target_representation = validate_representation(target_representation)
         if expected_store_generation != self.store_generation:
             return False
         with self.write_transaction(), self._connect() as conn:
@@ -3382,13 +3406,38 @@ class MeshStore:
             if row is None or int(row[0]) != expected_revision or row[2] != expected_incarnation:
                 return False
             job = conn.execute(
-                "SELECT revision,target_model,incarnation FROM embedding_jobs WHERE namespace=? AND memory_id=?",
+                "SELECT revision,target_model,incarnation,target_representation FROM embedding_jobs WHERE namespace=? AND memory_id=?",
                 (self.namespace, memory_id),
             ).fetchone()
-            if job is not None and int(job[0]) == expected_revision and job[1] == target_model and job[2] == expected_incarnation:
+            if job is not None and int(job[0]) == expected_revision and job[1] == target_model and job[2] == expected_incarnation and job[3] == target_representation:
                 return True
-            self._schedule_embedding_in_tx(conn, memory_id, int(row[0]), "needs-reembed", target_model, incarnation=row[2])
+            self._schedule_embedding_in_tx(conn, memory_id, int(row[0]), "needs-reembed", target_model, incarnation=row[2], target_representation=target_representation)
             return True
+
+    def backfill_embedding_jobs(self, limit: int = 32, *, target_model: str = "onnx-minilm-l6-v2", target_representation: str = PASSAGE_FORMAT_VERSION) -> int:
+        """Discover missing representations in bounded, capacity-aware durable batches."""
+        target_model = self._validate_model_id(target_model)
+        target_representation = validate_representation(target_representation)
+        if target_representation and not passage_index_enabled():
+            return 0
+        if target_model in ("hash-384", "unknown", "needs-reembed"):
+            return 0
+        limit = max(1, min(128, int(limit)))
+        with self.write_transaction(), self._connect() as conn:
+            capacity = env_int("MESH_MAX_PENDING_EMBEDDING_JOBS", 100000, minimum=1) - int(conn.execute("SELECT value FROM mesh_meta WHERE key='embedding_jobs_count'").fetchone()[0])
+            if capacity <= 0:
+                return 0
+            rows = conn.execute(
+                "SELECT id,revision,incarnation FROM memories WHERE namespace=? "
+                "AND (embedding_model IN ('hash-384','unknown','needs-reembed') "
+                "OR (embedding_model=? AND (embedding IS NULL OR (?!='' AND passage_format_version!=?)))) "
+                "AND NOT EXISTS(SELECT 1 FROM embedding_jobs WHERE memory_id=memories.id) "
+                "ORDER BY passage_format_version,id LIMIT ?",
+                (self.namespace, target_model, target_representation, PASSAGE_FORMAT_VERSION, min(limit, capacity)),
+            ).fetchall()
+            for memory_id, revision, incarnation in rows:
+                self._schedule_embedding_in_tx(conn, memory_id, int(revision), "needs-reembed", target_model, incarnation=incarnation, target_representation=target_representation)
+            return len(rows)
 
     def list_embedding_jobs(self, limit: int = 32) -> list[dict[str, Any]]:
         with self._read_connect() as conn:
@@ -3411,11 +3460,13 @@ class MeshStore:
     def retry_embedding_job(
         self, memory_id: str, *, expected_revision: int, expected_incarnation: str,
         expected_store_generation: str, expected_target_model: str,
+        expected_target_representation: str = "",
         error_code: str = "embedding_failed", delay_seconds: float = 1.0,
     ) -> bool:
         memory_id = validate_memory_id(memory_id)
         self._validate_expected_identity(expected_revision, expected_incarnation, expected_store_generation)
         expected_target_model = self._validate_model_id(expected_target_model)
+        expected_target_representation = validate_representation(expected_target_representation)
         if not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", error_code or ""):
             raise ValueError("error_code must be a content-free error identifier.")
         if not math.isfinite(delay_seconds) or delay_seconds < 0:
@@ -3426,10 +3477,10 @@ class MeshStore:
         with self.write_transaction(), self._connect() as conn:
             cursor = conn.execute(
                 "UPDATE embedding_jobs SET attempts=attempts+1,available_at=MAX(available_at,?),error_code=? "
-                "WHERE namespace=? AND memory_id=? AND revision=? AND incarnation=? AND target_model=? "
+                "WHERE namespace=? AND memory_id=? AND revision=? AND incarnation=? AND target_model=? AND target_representation=? "
                 "AND EXISTS(SELECT 1 FROM memories WHERE id=memory_id AND namespace=embedding_jobs.namespace "
                 "AND revision=embedding_jobs.revision AND incarnation=embedding_jobs.incarnation)",
-                (available, error_code, self.namespace, memory_id, expected_revision, expected_incarnation, expected_target_model),
+                (available, error_code, self.namespace, memory_id, expected_revision, expected_incarnation, expected_target_model, expected_target_representation),
             )
             return cursor.rowcount > 0
 
@@ -3437,36 +3488,67 @@ class MeshStore:
         self, memory_id: str, embedding: list[float], *, expected_revision: int,
         expected_incarnation: str, expected_store_generation: str,
         embedding_model: str, expected_model: Optional[str] = None,
+        target_representation: str = "", passage_spans: Optional[Sequence[tuple[int, int]]] = None,
+        passage_embeddings: Optional[np.ndarray] = None,
+        document_pending_passages: bool = False,
     ) -> bool:
         memory_id = validate_memory_id(memory_id)
         self._validate_expected_identity(expected_revision, expected_incarnation, expected_store_generation)
         model = self._validate_model_id(embedding_model)
+        target_representation = validate_representation(target_representation)
+        if type(document_pending_passages) is not bool or (document_pending_passages and not target_representation):
+            raise ValueError("Partial document publication requires an explicit passage target.")
+        if document_pending_passages and (passage_spans is not None or passage_embeddings is not None):
+            raise ValueError("Partial document publication cannot include passage data.")
+        if target_representation and model in ("hash-384", "unknown", "needs-reembed"):
+            raise ValueError("Passage publication requires a known local model space.")
         if expected_model is not None:
             expected_model = self._validate_model_id(expected_model)
         vector = _normalize_vector(embedding, enforce_dim=True)
-        blob = vector.tobytes()
-        if is_encryption_enabled():
-            blob = encrypt_blob_for_storage(blob)
+        derived = None
+        if passage_embeddings is not None:
+            derived = np.asarray(passage_embeddings, dtype=np.float32)
+            if passage_spans is None or derived.shape != (len(passage_spans), EMBEDDING_DIM) or not np.isfinite(derived).all():
+                raise ValueError("Passage embeddings do not match their complete source spans.")
+        if target_representation == "" and (passage_spans is not None or derived is not None):
+            raise ValueError("Document-only publication cannot supply passage rows.")
         if expected_store_generation != self.store_generation:
             return False
         with self.write_transaction(), self._connect() as conn:
-            row = conn.execute("SELECT revision,embedding_model,incarnation FROM memories WHERE namespace=? AND id=?", (self.namespace, memory_id)).fetchone()
+            row = conn.execute("SELECT revision,embedding_model,incarnation,content,passage_count FROM memories WHERE namespace=? AND id=?", (self.namespace, memory_id)).fetchone()
             if row is None or int(row[0]) != expected_revision or row[2] != expected_incarnation or (expected_model is not None and row[1] != expected_model):
                 return False
-            job = conn.execute("SELECT revision,target_model,incarnation FROM embedding_jobs WHERE namespace=? AND memory_id=?", (self.namespace, memory_id)).fetchone()
-            if job is None or int(job[0]) != expected_revision or job[1] != model or job[2] != expected_incarnation:
+            job = conn.execute("SELECT revision,target_model,incarnation,target_representation FROM embedding_jobs WHERE namespace=? AND memory_id=?", (self.namespace, memory_id)).fetchone()
+            if job is None or int(job[0]) != expected_revision or job[1] != model or job[2] != expected_incarnation or job[3] != target_representation:
                 return False
-            cache = self._is_cache_synced_locked()
-            conn.execute("UPDATE memories SET embedding=?,embedding_model=? WHERE namespace=? AND id=? AND revision=? AND incarnation=?", (blob, model, self.namespace, memory_id, expected_revision, expected_incarnation))
-            conn.execute("DELETE FROM embedding_jobs WHERE namespace=? AND memory_id=? AND revision=? AND incarnation=? AND target_model=?", (self.namespace, memory_id, expected_revision, expected_incarnation, model))
+            count = 0
+            if target_representation and not document_pending_passages:
+                content = decrypt_text_if_encrypted(row[3])
+                if passage_spans is None:
+                    raise ValueError("Passage publication requires a complete source plan.")
+                validate_spans(content, passage_spans)
+                if derived is None and list(passage_spans) != [(0, len(content))]:
+                    raise ValueError("Only a single whole-source passage may reuse the primary vector.")
+                count = len(passage_spans) if derived is not None else 0
+            # Validate the full bundle before changing any row. Encryption is
+            # resolved inside the publication transaction, after slow inference.
+            blob = _vector_to_blob(vector)
+            conn.execute("DELETE FROM memory_passages WHERE namespace=? AND parent_id=?", (self.namespace, memory_id))
+            if derived is not None:
+                for ordinal, ((start, end), passage_vector) in enumerate(zip(passage_spans, derived)):
+                    conn.execute(
+                        "INSERT INTO memory_passages(parent_id,namespace,parent_revision,parent_incarnation,ordinal,start,end,embedding_model,representation_version,embedding) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                        (memory_id, self.namespace, expected_revision, expected_incarnation, ordinal, start, end, model, target_representation, _vector_to_blob(passage_vector)),
+                    )
+            published_format = "" if document_pending_passages else target_representation
+            conn.execute("UPDATE memories SET embedding=?,embedding_model=?,passage_format_version=?,passage_count=? WHERE namespace=? AND id=? AND revision=? AND incarnation=?", (blob, model, published_format, count, self.namespace, memory_id, expected_revision, expected_incarnation))
+            if not document_pending_passages:
+                conn.execute("DELETE FROM embedding_jobs WHERE namespace=? AND memory_id=? AND revision=? AND incarnation=? AND target_model=? AND target_representation=?", (self.namespace, memory_id, expected_revision, expected_incarnation, model, target_representation))
             version = self._bump_content_version_in_tx(conn)
-            if self._owns_write_transaction():
+            if count or row[4]:
+                self._invalidate_cache()
+            else:
                 self._queue_cache_delta("upsert", memory_id, vector, self.get(memory_id), version)
-            if cache is not None:
-                with cache.write_snapshot():
-                    metadata = {**cache.rows_by_id[memory_id], "embedding_model": model}
-                    cache.upsert_vector(memory_id, vector, metadata)
-                    self._refresh_stamps_after_write_locked(cache, version)
             return True
 
     def _get_data_version_locked(self) -> int:
@@ -3506,6 +3588,8 @@ class MeshStore:
             return None
         try:
             with cached.read_snapshot():
+                if cached.passage_index_dirty or cached.passage_index_enabled != passage_index_enabled():
+                    return None
                 old_stamp = cached.stamp
                 old_cv = cached.content_version
                 cached_count = len(cached.all_ids)
@@ -3567,13 +3651,14 @@ class MeshStore:
 
     def _ensure_initialized(self) -> None:
         self._assert_instance_file()
+        enc_on = is_encryption_enabled()
         stamp = _get_db_stamp(self.db_path)
         with _CACHE_LOCK:
             known = _INITIALIZED_DBS.get(self.db_path)
-            if self.__dict__.get("_namespace_verified") and stamp is not None and stamp[1] > 0 and known == stamp and not self._fts_dirty:
+            if self.__dict__.get("_namespace_verified") and self.__dict__.get("_encryption_verified") == enc_on and stamp is not None and stamp[1] > 0 and known == stamp and not self._fts_dirty:
                 return
         # A cold encrypted open must perform legacy data and FTS cleanup.
-        if stamp is not None and stamp[1] > 0 and not self._fts_dirty and (known is not None or not is_encryption_enabled()):
+        if stamp is not None and stamp[1] > 0 and not self._fts_dirty and (not enc_on or self.__dict__.get("_encryption_verified") is True):
             schema_current = False
             with self._read_connect() as conn:
                 version = int(conn.execute("PRAGMA user_version").fetchone()[0])
@@ -3586,8 +3671,9 @@ class MeshStore:
                     if owner is not None and owner[0] != self.namespace:
                         raise ValueError("Namespace database belongs to another namespace spelling; use the original spelling or a distinct namespace.")
                     if row is not None and row[0] == SCHEMA_VERSION and owner is not None and not (cleanup and cleanup[0] == "1"):
-                        conn.execute("SELECT revision,incarnation FROM memories LIMIT 0").close()
-                        conn.execute("SELECT incarnation FROM embedding_jobs LIMIT 0").close()
+                        conn.execute("SELECT revision,incarnation,passage_format_version,passage_count FROM memories LIMIT 0").close()
+                        conn.execute("SELECT incarnation,target_representation FROM embedding_jobs LIMIT 0").close()
+                        conn.execute("SELECT parent_id,embedding FROM memory_passages LIMIT 0").close()
                         self._bind_store_identity(conn)
                         schema_current = True
             if schema_current:
@@ -3596,10 +3682,12 @@ class MeshStore:
                     if current_stamp is not None:
                         _INITIALIZED_DBS[self.db_path] = current_stamp
                 self._namespace_verified = True
+                self._encryption_verified = enc_on
                 return
         with namespace_write_lock(self.namespace, data_root=self.db_path.parent):
             self._ensure_initialized_locked()
         self._namespace_verified = True
+        self._encryption_verified = enc_on
 
     def _ensure_initialized_locked(self) -> None:
         if not self.create and not self.db_path.exists():
@@ -3612,6 +3700,7 @@ class MeshStore:
                     and stamp[1] > 0
                     and _INITIALIZED_DBS.get(self.db_path) == stamp
                     and self.__dict__.get("_namespace_verified")
+                    and self.__dict__.get("_encryption_verified") == is_encryption_enabled()
                     and not self._fts_dirty
                 ):
                     if self.db_path in _CONNECTION_POOL:
@@ -3678,6 +3767,7 @@ class MeshStore:
                 conn.backup(destination)
                 if is_encryption_enabled():
                     self._encrypt_work_tables_in_tx(destination)
+                    self._encrypt_passages_in_tx(destination)
                     destination.commit()
                     destination.execute("VACUUM")
                 if destination.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
@@ -3735,7 +3825,7 @@ class MeshStore:
                     pass
                 generation = conn.execute("SELECT value FROM mesh_meta WHERE key='store_generation'").fetchone()
                 if generation is None:
-                    if str(cur_ver) == "5":
+                    if int(cur_ver) >= 5:
                         raise RuntimeError("Database identity is missing; repair or restore this database before opening it.")
                     conn.execute("INSERT INTO mesh_meta(key,value) VALUES('store_generation',?)", (uuid.uuid4().hex,))
                 else:
@@ -3767,7 +3857,9 @@ class MeshStore:
                         quarantined     INTEGER NOT NULL DEFAULT 0,
                         secret_ref      TEXT,
                         revision        INTEGER NOT NULL DEFAULT 1,
-                        incarnation     TEXT NOT NULL
+                        incarnation     TEXT NOT NULL,
+                        passage_format_version TEXT NOT NULL DEFAULT '',
+                        passage_count INTEGER NOT NULL DEFAULT 0 CHECK(passage_count >= 0)
                     )
                     """
                 )
@@ -3787,21 +3879,40 @@ class MeshStore:
                     ("secret_ref", "ALTER TABLE memories ADD COLUMN secret_ref TEXT"),
                     ("revision", "ALTER TABLE memories ADD COLUMN revision INTEGER NOT NULL DEFAULT 1"),
                     ("incarnation", "ALTER TABLE memories ADD COLUMN incarnation TEXT NOT NULL DEFAULT ''"),
+                    ("passage_format_version", "ALTER TABLE memories ADD COLUMN passage_format_version TEXT NOT NULL DEFAULT ''"),
+                    ("passage_count", "ALTER TABLE memories ADD COLUMN passage_count INTEGER NOT NULL DEFAULT 0 CHECK(passage_count >= 0)"),
                 ):
                     if col_name not in existing_cols:
-                        if col_name == "incarnation" and str(cur_ver) == "5":
+                        if col_name == "incarnation" and int(cur_ver) >= 5:
                             raise RuntimeError("Memory identities are missing from a current-schema database.")
                         try:
                             conn.execute(col_sql)
                         except sqlite3.OperationalError:
-                            if col_name == "incarnation":
+                            if col_name in ("incarnation", "passage_format_version", "passage_count"):
                                 raise
                             pass
-                if str(cur_ver) != "5":
+                if int(cur_ver) < 5:
                     conn.execute("UPDATE memories SET incarnation=lower(hex(randomblob(16))) WHERE incarnation IS NULL OR incarnation=''")
                 if conn.execute("SELECT 1 FROM memories WHERE length(incarnation)!=32 OR incarnation GLOB '*[^a-f0-9]*' LIMIT 1").fetchone():
                     raise RuntimeError("Memory identity is malformed; repair or restore this database before opening it.")
                 conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_incarnation ON memories(incarnation)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_passage_readiness ON memories(namespace,passage_format_version,id)")
+                conn.execute(
+                    """CREATE TABLE IF NOT EXISTS memory_passages (
+                        parent_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+                        namespace TEXT NOT NULL,
+                        parent_revision INTEGER NOT NULL CHECK(parent_revision > 0),
+                        parent_incarnation TEXT NOT NULL,
+                        ordinal INTEGER NOT NULL CHECK(ordinal >= 0),
+                        start INTEGER NOT NULL CHECK(start >= 0),
+                        end INTEGER NOT NULL CHECK(end > start),
+                        embedding_model TEXT NOT NULL,
+                        representation_version TEXT NOT NULL,
+                        embedding BLOB NOT NULL,
+                        PRIMARY KEY(parent_id,ordinal)
+                    )"""
+                )
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_passages_scan ON memory_passages(namespace,embedding_model,parent_id,ordinal)")
 
                 conn.execute(
                     """
@@ -3912,6 +4023,7 @@ class MeshStore:
                         revision INTEGER NOT NULL CHECK(revision > 0),
                         incarnation TEXT NOT NULL,
                         target_model TEXT NOT NULL,
+                        target_representation TEXT NOT NULL DEFAULT '',
                         attempts INTEGER NOT NULL DEFAULT 0,
                         available_at TEXT NOT NULL,
                         created_at TEXT NOT NULL,
@@ -3921,10 +4033,12 @@ class MeshStore:
                 )
                 job_columns = {row[1] for row in conn.execute("PRAGMA table_info(embedding_jobs)")}
                 if "incarnation" not in job_columns:
-                    if str(cur_ver) == "5":
+                    if int(cur_ver) >= 5:
                         raise RuntimeError("Embedding job identities are missing from a current-schema database.")
                     conn.execute("ALTER TABLE embedding_jobs ADD COLUMN incarnation TEXT NOT NULL DEFAULT ''")
-                if str(cur_ver) != "5":
+                if "target_representation" not in job_columns:
+                    conn.execute("ALTER TABLE embedding_jobs ADD COLUMN target_representation TEXT NOT NULL DEFAULT ''")
+                if int(cur_ver) < 5:
                     conn.execute(
                         "UPDATE embedding_jobs SET incarnation=COALESCE((SELECT incarnation FROM memories "
                         "WHERE memories.id=embedding_jobs.memory_id AND memories.namespace=embedding_jobs.namespace "
@@ -3970,11 +4084,15 @@ class MeshStore:
                     conn.execute(f"CREATE TRIGGER IF NOT EXISTS {table}_count_delete AFTER DELETE ON {table} BEGIN UPDATE mesh_meta SET value=MAX(0,CAST(value AS INTEGER)-1) WHERE key='{key}'; END")
                 now_jobs = _utc_now_iso()
                 conn.execute(
-                    "INSERT OR IGNORE INTO embedding_jobs(memory_id,namespace,revision,incarnation,target_model,available_at,created_at) SELECT id,namespace,revision,incarnation,'onnx-minilm-l6-v2',?,? FROM memories WHERE embedding_model IN ('hash-384','unknown','needs-reembed')",
-                    (now_jobs, now_jobs),
+                    "INSERT OR IGNORE INTO embedding_jobs(memory_id,namespace,revision,incarnation,target_model,available_at,created_at) "
+                    "SELECT id,namespace,revision,incarnation,'onnx-minilm-l6-v2',?,? FROM memories "
+                    "WHERE embedding_model IN ('hash-384','unknown','needs-reembed') "
+                    "AND NOT EXISTS(SELECT 1 FROM embedding_jobs WHERE memory_id=memories.id) ORDER BY id LIMIT ?",
+                    (now_jobs, now_jobs, max(0, env_int("MESH_MAX_PENDING_EMBEDDING_JOBS", 100000, minimum=1) - int(conn.execute("SELECT value FROM mesh_meta WHERE key='embedding_jobs_count'").fetchone()[0]))),
                 )
                 if enc_on:
-                    if self._encrypt_work_tables_in_tx(conn):
+                    work_changed = self._encrypt_work_tables_in_tx(conn)
+                    if self._encrypt_passages_in_tx(conn) or work_changed:
                         conn.execute("INSERT OR REPLACE INTO mesh_meta(key,value) VALUES('work_encryption_cleanup_pending','1')")
                 cleanup_row = conn.execute("SELECT value FROM mesh_meta WHERE key='work_encryption_cleanup_pending'").fetchone()
                 encryption_cleanup_pending = bool(cleanup_row and cleanup_row[0] == "1")
@@ -4116,9 +4234,10 @@ class MeshStore:
                         for mid, emb in zip(got_ids, got_embs):
                             if emb is not None and len(emb) == EMBEDDING_DIM:
                                 conn.execute(
-                                    "UPDATE memories SET embedding = ?, embedding_model = 'onnx-minilm-l6-v2' WHERE id = ?",
+                                    "UPDATE memories SET embedding = ?, embedding_model = 'onnx-minilm-l6-v2',passage_format_version='',passage_count=0 WHERE id = ?",
                                     (_vector_to_blob(emb), mid),
                                 )
+                                conn.execute("DELETE FROM memory_passages WHERE parent_id=?", (mid,))
                         self._bump_content_version_in_tx(conn)
                         _commit_write(conn, tx_marker)
                     self._invalidate_cache()
@@ -4268,8 +4387,9 @@ class MeshStore:
                         (self.namespace,),
                     ).fetchone()
                     count, vector_count, text_chars, max_chars = map(int, summary)
+                    passage_count = int(conn.execute("SELECT COUNT(*) FROM memory_passages WHERE namespace=?", (self.namespace,)).fetchone()[0]) if passage_index_enabled() else 0
                     matrix_bytes = vector_count * EMBEDDING_DIM * 4
-                    minimum = 4096 + matrix_bytes + count * 2048 + text_chars * 4
+                    minimum = 4096 + matrix_bytes + count * 2048 + text_chars * 4 + passage_count * (EMBEDDING_DIM * 4 + 16 + 512)
                     if minimum > limit:
                         raise CacheBudgetExceededError(
                             "Namespace exceeds the cache allocation budget; use bounded streaming retrieval.",
@@ -4308,6 +4428,11 @@ class MeshStore:
                         if not entry._upsert_vector(meta["id"], vector, row_meta=meta):
                             raise RuntimeError("Unable to construct a valid namespace vector cache.")
                     cursor.close()
+                    if passage_count:
+                        from .passage_search import load_passage_cache
+
+                        entry.passages = load_passage_cache(self, conn, entry, passage_count)
+                        entry._cache_bytes += entry.passages.allocated_bytes
                     entry._build_peak_bytes = 0
                     lease.resize(entry._cache_bytes)
                 with _CACHE_LOCK:
@@ -4323,7 +4448,11 @@ class MeshStore:
                         _CACHE_REJECTIONS.move_to_end(key)
                         while len(_CACHE_REJECTIONS) > _get_max_namespaces():
                             _CACHE_REJECTIONS.popitem(last=False)
-                if lease is not None and entry is None:
+                # Failed generations were never published. Drop allocator
+                # traceback references before the caller admits streaming work.
+                exc.__traceback__ = None
+                entry = None
+                if lease is not None:
                     lease.release()
                 raise
             except BaseException:
@@ -4424,6 +4553,8 @@ class MeshStore:
             "decay_start_at": decay_start_at,
             "local_only": bool(local_flag),
             "embedding_model": emb_model,
+            "passage_format_version": "",
+            "passage_count": 0,
             "trust_tier": trust_tier,
             "quarantined": bool(quarantined_flag),
             "secret_ref": norm_ref,
@@ -4454,6 +4585,8 @@ class MeshStore:
                         row_meta["incarnation"] = incarnation
                         row_meta["store_generation"] = self.store_generation
                         old_rowid = self._get_memory_rowid(conn, memory_id)
+                        conn.execute("DELETE FROM memory_passages WHERE namespace=? AND parent_id=?", (self.namespace, memory_id))
+                        conn.execute("DELETE FROM embedding_jobs WHERE namespace=? AND memory_id=?", (self.namespace, memory_id))
                         conn.execute(
                             """
                             INSERT OR REPLACE INTO memories
@@ -4638,6 +4771,8 @@ class MeshStore:
                             revision = int(old_row[2]) + 1 if old_row is not None else 1
                             incarnation = old_row[5] if old_row is not None else uuid.uuid4().hex
                             old_rowid = self._get_memory_rowid(conn, memory_id)
+                            conn.execute("DELETE FROM memory_passages WHERE namespace=? AND parent_id=?", (self.namespace, memory_id))
+                            conn.execute("DELETE FROM embedding_jobs WHERE namespace=? AND memory_id=?", (self.namespace, memory_id))
                             conn.execute(
                                 """
                                 INSERT OR REPLACE INTO memories
@@ -4720,6 +4855,8 @@ class MeshStore:
                                     "decay_start_at": decay_start_at,
                                     "local_only": bool(local_flag),
                                     "embedding_model": emb_model,
+                                    "passage_format_version": "",
+                                    "passage_count": 0,
                                     "trust_tier": trust_tier,
                                     "quarantined": bool(quarantined_flag),
                                     "secret_ref": norm_ref,
@@ -4994,6 +5131,9 @@ class MeshStore:
                 content_changed = new_content != old_content
                 if content_changed and norm_vec is None:
                     new_emb_model = "needs-reembed"
+                preserve_passages = not content_changed and norm_vec is None and new_emb_model == existing_meta["embedding_model"]
+                new_passage_format = existing_meta.get("passage_format_version", "") if preserve_passages else ""
+                new_passage_count = int(existing_meta.get("passage_count", 0)) if preserve_passages else 0
                 became_private = new_local_bool and not bool(existing_meta.get("local_only"))
 
                 if content_changed or new_local_bool:
@@ -5116,6 +5256,15 @@ class MeshStore:
                                     self.namespace,
                                 ),
                             )
+                        conn.execute("UPDATE memories SET passage_format_version=?,passage_count=? WHERE namespace=? AND id=?", (new_passage_format, new_passage_count, self.namespace, memory_id))
+                        if preserve_passages:
+                            conn.execute(
+                                "UPDATE memory_passages SET parent_revision=? WHERE namespace=? AND parent_id=? AND parent_revision=? AND parent_incarnation=?",
+                                (new_revision, self.namespace, memory_id, existing_meta["revision"], existing_meta["incarnation"]),
+                            )
+                        else:
+                            conn.execute("DELETE FROM memory_passages WHERE namespace=? AND parent_id=?", (self.namespace, memory_id))
+                            conn.execute("DELETE FROM embedding_jobs WHERE namespace=? AND memory_id=?", (self.namespace, memory_id))
                         self._sync_fts_row(
                             conn,
                             memory_id=memory_id,
@@ -5137,7 +5286,7 @@ class MeshStore:
                             )
                             _scrub_queries_in_tx(conn, self.namespace, old_content)
                             _scrub_pending_query_telemetry(self.namespace, old_content, data_root=self.db_path.parent)
-                        self._schedule_embedding_in_tx(conn, memory_id, new_revision, new_emb_model, incarnation=existing_meta["incarnation"])
+                        self._schedule_embedding_in_tx(conn, memory_id, new_revision, new_emb_model, incarnation=existing_meta["incarnation"], preserve_job_target=preserve_passages)
                         self._record_mutation_in_tx(conn, "update", memory_id, new_revision)
                         new_cv = self._bump_content_version_in_tx(conn)
                         _commit_write(conn, tx_marker)
@@ -5166,6 +5315,8 @@ class MeshStore:
                     "decay_start_at": new_decay_start,
                     "local_only": new_local_bool,
                     "embedding_model": new_emb_model,
+                    "passage_format_version": new_passage_format,
+                    "passage_count": new_passage_count,
                     "trust_tier": new_trust_tier,
                     "quarantined": new_quarantined_bool,
                     "secret_ref": new_secret_ref,
@@ -5566,16 +5717,29 @@ class MeshStore:
         if not ids or not self.db_path.exists():
             return {}
         placeholders = ",".join("?" for _ in ids)
+        from .passage_search import passage_metadata
+
+        result = {}
         with self._read_connect() as conn:
             rows = conn.execute(
-                f"SELECT id, revision, embedding_model, local_only, embedding IS NOT NULL, incarnation FROM memories WHERE namespace=? AND id IN ({placeholders})",
+                f"SELECT id,namespace,content,revision,embedding_model,local_only,embedding IS NOT NULL AS has_vector,incarnation,passage_format_version,passage_count FROM memories WHERE namespace=? AND id IN ({placeholders})",
                 (self.namespace, *ids),
             ).fetchall()
-        return {
-            str(mid): {"id": str(mid), "revision": int(revision), "incarnation": str(incarnation), "store_generation": self.store_generation, "embedding_model": str(model), "indexing_state": "indexed" if has_vector and model not in ("hash-384", "needs-reembed", "unknown", None) else "pending"}
-            for mid, revision, model, private, has_vector, incarnation in rows
-            if include_private or not private
-        }
+            for raw in rows:
+                parent = dict(raw)
+                if parent["local_only"] and not include_private:
+                    continue
+                indexed = parent["has_vector"] and parent["embedding_model"] not in ("hash-384", "needs-reembed", "unknown", None)
+                complete = False
+                if indexed and parent["passage_format_version"] == PASSAGE_FORMAT_VERSION:
+                    parent["content"] = decrypt_text_if_encrypted(parent["content"])
+                    complete = parent["passage_count"] == 0 or len(passage_metadata(conn, parent)) == parent["passage_count"]
+                mid = parent["id"]
+                result[mid] = {"id": mid, "revision": int(parent["revision"]), "incarnation": parent["incarnation"], "store_generation": self.store_generation,
+                               "embedding_model": parent["embedding_model"], "indexing_state": "indexed" if indexed else "pending",
+                               "passage_format_version": parent["passage_format_version"], "passage_count": parent["passage_count"],
+                               "passage_indexing_state": "indexed" if complete else "pending"}
+        return result
 
     @_retry_cache_snapshot
     def revalidate_query_results(
@@ -5721,7 +5885,7 @@ class MeshStore:
         return metadata, sem, lex_score, similarity, reason, literal_match
 
     @staticmethod
-    def _rank_hybrid_results(candidate_rows, dense_scores, bm25_scores, exact_best, spec, n, *, streaming=False):
+    def _rank_hybrid_results(candidate_rows, dense_scores, bm25_scores, exact_best, spec, n, *, streaming=False, rank_scores=None, candidate_count=None):
         rrf_scores = Counter()
         channels = (
             (sorted(dense_scores, key=lambda mid: (-dense_scores[mid], mid)), 1.0),
@@ -5733,21 +5897,27 @@ class MeshStore:
                 rrf_scores[mid] += weight / (60.0 + rank)
         results = []
         for mid, (row, sem, lex_score, similarity, reason, literal_match) in candidate_rows.items():
-            rank_score = float(rrf_scores[mid]) if spec.mode == "rrf" else similarity
-            excerpt, span_start, span_end = _query_excerpt(row["content"], spec.tokens)
+            rank_score = rank_scores[mid] if rank_scores is not None else float(rrf_scores[mid]) if spec.mode == "rrf" else similarity
+            passage = row.pop("_supporting_passage", None)
+            if passage is None:
+                excerpt, span_start, span_end = _query_excerpt(row["content"], spec.tokens)
+            else:
+                span_start, span_end, ordinal = passage
+                excerpt = row["content"][span_start:span_end]
+                row["selected_passage_ordinal"] = ordinal
             row.update({
                 "semantic_similarity": round(sem, 4),
                 "lexical_score": round(lex_score, 4),
-                "bm25_score": round(float(bm25_scores.get(mid, 0.0)), 6),
+                "bm25_score": round(float(row.pop("_passage_bm25_score", bm25_scores.get(mid, 0.0))), 6),
                 "similarity": round(similarity, 4),
                 "rank_score": round(rank_score, 8),
                 "ranking_mode": spec.mode,
                 "retrieval_mode": "streaming" if streaming else "cached",
                 "retrieval_degradation_reason": "cache_budget" if streaming else None,
-                "candidate_count": len(candidate_rows),
+                "candidate_count": len(candidate_rows) if candidate_count is None else candidate_count,
                 "match_reason": "exact_identifier" if literal_match else reason,
                 "snippet": _make_snippet(excerpt),
-                "supporting_spans": [{"memory_id": mid, "revision": int(row.get("revision", 1)), "start": span_start, "end": span_end, "text": excerpt}],
+                "supporting_spans": [{"memory_id": mid, "revision": int(row.get("revision", 1)), "incarnation": row.get("incarnation"), "store_generation": row.get("store_generation"), "start": span_start, "end": span_end, "text": excerpt}],
             })
             results.append(row)
         results.sort(key=lambda row: (-row["rank_score"], -row["similarity"], -row["semantic_similarity"], row["id"]))
@@ -5763,6 +5933,15 @@ class MeshStore:
             include_private=include_private, include_quarantined=include_quarantined,
         )
         tag_set = {str(tag).strip().lower() for tag in tags or []}
+        if passage_index_enabled() and (spec.tokens or spec.literals or spec.phrase or spec.compact):
+            from .passage_search import passage_query
+
+            results = passage_query(self, spec, cache=None, n=n, memory_type=memory_type, tags=tags, source_agent=source_agent,
+                                    include_private=include_private, include_quarantined=include_quarantined,
+                                    include_stale=include_stale, min_confidence=min_confidence, now=now,
+                                    query_embedding_model=query_embedding_model)
+            if results is not None:
+                return results
         # Empty-vector lookups (including guarded deduplication) do not need
         # bodies or lexical statistics for every row in an oversized namespace.
         if not (spec.tokens or spec.literals or spec.phrase or spec.compact):
@@ -5951,6 +6130,23 @@ class MeshStore:
         try:
             cache = self._get_vector_cache()
         except CacheBudgetExceededError:
+            cache = None
+        if cache is not None and cache.passages is not None and passage_index_enabled() and (spec.tokens or spec.literals or spec.phrase or spec.compact):
+            from .passage_search import passage_query
+
+            try:
+                results = passage_query(self, spec, cache=cache, n=n, memory_type=memory_type, tags=tags, source_agent=source_agent,
+                                        include_private=include_private, include_quarantined=include_quarantined,
+                                        include_stale=include_stale, min_confidence=min_confidence, now=ref_now,
+                                        query_embedding_model=query_embedding_model)
+                if results is not None:
+                    return results
+            except CacheBudgetExceededError:
+                self._invalidate_cache()
+                cache = None
+        # Active exception tracebacks can retain an abandoned cache generation
+        # and its lease until the handler exits, starving streaming workspace.
+        if cache is None:
             return self._streaming_hybrid_query(
                 spec, n=n, memory_type=memory_type, tags=tags, source_agent=source_agent,
                 include_private=include_private, include_quarantined=include_quarantined,
@@ -6650,6 +6846,7 @@ class MeshStore:
                             rowid = int(row[0])
                             if purged_content is None:
                                 purged_content = decrypt_text_if_encrypted(str(row[1] or ""))
+                            conn.execute("DELETE FROM memory_passages WHERE namespace=? AND parent_id=?", (self.namespace, clean_id))
                             cur = conn.execute(
                                 "DELETE FROM memories WHERE rowid = ? AND namespace = ?",
                                 (rowid, self.namespace),
@@ -6767,6 +6964,7 @@ class MeshStore:
                                 )
                             except sqlite3.OperationalError:
                                 pass
+                        conn.execute("DELETE FROM memory_passages WHERE namespace = ?", (self.namespace,))
                         conn.execute("DELETE FROM memories WHERE namespace = ?", (self.namespace,))
                         conn.execute("DELETE FROM embedding_jobs WHERE namespace = ?", (self.namespace,))
                         conn.execute("DELETE FROM queries WHERE namespace = ?", (self.namespace,))
@@ -7272,6 +7470,25 @@ class MeshStore:
         if key is None and not is_encryption_enabled():
             return value
         return encrypt_text_for_storage(value, key=key)
+
+    @staticmethod
+    def _encrypt_passages_in_tx(conn: sqlite3.Connection, *, key: Optional[bytes] = None) -> bool:
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_passages'").fetchone() is None:
+            return False
+        changed = False
+        cursor = conn.execute("SELECT parent_id,ordinal,embedding FROM memory_passages")
+        try:
+            while batch := cursor.fetchmany(64):
+                for parent_id, ordinal, blob in batch:
+                    if not is_encrypted_blob(blob):
+                        encrypted = encrypt_blob_for_storage(blob, key=key)
+                        if not encrypted or not is_encrypted_blob(encrypted):
+                            raise RuntimeError("Passage vector encryption failed.")
+                        conn.execute("UPDATE memory_passages SET embedding=? WHERE parent_id=? AND ordinal=?", (encrypted, parent_id, ordinal))
+                        changed = True
+        finally:
+            cursor.close()
+        return changed
 
     @staticmethod
     def _encrypt_work_tables_in_tx(conn: sqlite3.Connection, *, key: Optional[bytes] = None) -> bool:

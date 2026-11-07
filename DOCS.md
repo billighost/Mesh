@@ -839,7 +839,7 @@ Public methods on `Mesh` (0.9.0):
 |---|---|
 | `learn(content, memory_type=..., confidence=..., tags=..., ttl_days=..., local_only=..., secret_ref=..., vault_secrets=..., wait_for_indexed=False, index_timeout=5.0)` | Durably store a guarded memory; report its revision, disposition, embedding model, and indexing state |
 | `learn_many(items, atomic=True, wait_for_indexed=False, index_timeout=5.0)` | Guarded bulk ingestion with ordered per-item outcomes; an atomic batch rolls back on rejection |
-| `wait_for_indexed(memory_ids, timeout=5.0, expected_revisions=..., expected_incarnations=..., expected_store_generation=..., target_model=...)` | Wait for specified memory identities to become semantically searchable without replaying writes; report pending, superseded, and unavailable IDs |
+| `wait_for_indexed(memory_ids, timeout=5.0, expected_revisions=..., expected_incarnations=..., expected_store_generation=..., target_model=..., target_representation=...)` | Wait for document readiness, or explicitly request `paragraph-sentences-v1` passage readiness, without replaying writes; report pending, superseded, unavailable, or disabled indexing |
 | `recall(query, n=..., min_similarity=..., min_confidence=..., include_stale=..., memory_type=..., tags=..., source_agent=..., include_private=...)` | Hybrid search |
 | `update(memory_id, ...)` | Update in place |
 | `forget(memory_id)` | Delete |
@@ -940,6 +940,7 @@ It binds loopback by default. Non-loopback binding requires an explicit `--host`
 | `MESH_QUERY_CACHE_BYTES` | Query-cache byte budget including keys and vectors. Default 4 MiB; `0` disables caching. |
 | `MESH_QUERY_MODE` | `auto` (default) uses the configured verified neural model when ready and reports fallback when unavailable; `neural` requires that model; `hash` forces hash queries. This is separate from fast-stage ingestion. |
 | `MESH_RECALL_FUSION` | Hybrid ranking mode: `calibrated` (default) or experimental `rrf`. Scores from fusion are separate from cosine similarity. |
+| `MESH_PASSAGE_INDEX` | `1` enables the schema-6 passage candidate in the active SDK/server process; default `0`. Text queries require an authorized, complete compatible passage generation. Ready compatible long memories use original paragraph/sentence spans, while single-window and pending memories retain a primary representation. Vector-only learning lookups keep primary vectors. Quality/resource qualification is pending. |
 | `MESH_RECALL_CANDIDATES` | Candidate-pool target for independent dense and lexical channels. Default 96, range 16–512; at least the requested result count. |
 | `MESH_IDLE_UNLOAD_SECONDS` | Idle seconds before unloading the model; `0` never unloads. |
 
