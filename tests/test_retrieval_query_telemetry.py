@@ -170,7 +170,11 @@ def test_fresh_query_producer_copies_numeric_rows_and_restores_hooks(monkeypatch
 
     monkeypatch.setattr(production, "runtime_parent_identities", lambda _records: {})
     monkeypatch.setattr(production, "validate_runtime_parent_results", lambda *_args: None)
-    monkeypatch.setattr(production, "decorate_results", lambda *_args: [])
+    def decorate(_results, _by_memory, *, score_components):
+        assert score_components is True
+        return []
+
+    monkeypatch.setattr(production, "decorate_results", decorate)
     resource_stream, stable_stream, results_stream = io.StringIO(), io.StringIO(), io.StringIO()
     production.fresh_queries(Mesh(), [{"id": "PRIVATE_QUERY_ID", "query": "PRIVATE_QUERY_TEXT"}], [],
         {96: results_stream}, {}, module, original_sdk_top10={"PRIVATE_QUERY_ID": []},
