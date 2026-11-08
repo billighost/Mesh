@@ -591,7 +591,7 @@ def test_production_metadata_matches_frozen_c4_fixture():
     assert namespace["LIMITS"]["maximum_pair_tokens"] == rerank.PAIR_TOKENS
 
 
-@pytest.mark.parametrize("profile,passage_limit,pair_limit", [("compact-128", 96, 128), ("compact-96", 64, 96)])
+@pytest.mark.parametrize("profile,passage_limit,pair_limit", [("compact-128", 96, 128), ("compact-96", 64, 96), ("compact-80", 48, 80)])
 def test_compact_profile_has_independent_query_passage_and_pair_caps(profile, passage_limit, pair_limit):
     engine = encoder()
     query = " ".join(f"query{index}" for index in range(40))
@@ -608,7 +608,7 @@ def test_compact_profile_has_independent_query_passage_and_pair_caps(profile, pa
     assert (rerank.QUERY_TOKENS, rerank.PASSAGE_TOKENS, rerank.PAIR_TOKENS) == (29, 224, 256)
 
 
-@pytest.mark.parametrize("profile", ["compact-128", "compact-96"])
+@pytest.mark.parametrize("profile", ["compact-128", "compact-96", "compact-80"])
 @pytest.mark.parametrize("position", [0, 120, 239])
 def test_compact_selected_excerpt_preserves_unicode_source_span_and_context(profile, position):
     words = [f"texte{index}" for index in range(240)]
@@ -734,7 +734,8 @@ def test_compact_wordpiece_boundary_is_rechecked_as_a_verbatim_substring():
     assert excerpt == source[start:start + len(excerpt)]
 
 
-def test_compact_reranking_uses_one_batch_and_preserves_original_span_scores_and_tail(monkeypatch):
+@pytest.mark.parametrize("profile", ["compact-96", "compact-80"])
+def test_compact_reranking_uses_one_batch_and_preserves_original_span_scores_and_tail(monkeypatch, profile):
     source = " ".join([f"word{index}" for index in range(120)] + ["lookup"] + [f"tail{index}" for index in range(120)])
     candidates = [row(index, "Préface \U0001f30d. " + source + " End.") for index in range(4)]
     for candidate in candidates:
@@ -747,12 +748,12 @@ def test_compact_reranking_uses_one_batch_and_preserves_original_span_scores_and
     original = {item["id"]: deepcopy(item) for item in candidates}
     engine = encoder(scores=[-3.0, 2.0, 2.0, 7.0])
     monkeypatch.setattr(rerank, "_get_engine", lambda: engine)
-    monkeypatch.setenv("MESH_RERANK_PROFILE", "compact-96")
+    monkeypatch.setenv("MESH_RERANK_PROFILE", profile)
     result = rerank.rerank("lookup", candidates, revalidate=lambda rows: rows)
     assert [item["id"] for item in result] == ["parent-3", "parent-1", "parent-2", "parent-0", "parent-4"]
     assert len(engine.session.calls) == 1
     assert engine.session.calls[0]["input_ids"].shape[0] == 4
-    assert engine.session.calls[0]["input_ids"].shape[1] <= 96
+    assert engine.session.calls[0]["input_ids"].shape[1] <= rerank.INPUT_PROFILES[profile][1]
     for item in result:
         assert {key: value for key, value in item.items() if not key.startswith("rerank_")} == original[item["id"]]
     assert all(item["rerank_status"] == "applied" for item in result[:4])
@@ -760,12 +761,13 @@ def test_compact_reranking_uses_one_batch_and_preserves_original_span_scores_and
     assert result[-1]["rerank_status"] == "outside_parent_cap"
 
 
-def test_compact_profile_never_enables_disabled_reranking(monkeypatch):
+@pytest.mark.parametrize("profile", ["compact-128", "compact-96", "compact-80"])
+def test_compact_profile_never_enables_disabled_reranking(monkeypatch, profile):
     mesh = memory.Mesh(namespace="compact-disabled")
     vector = seed(mesh, count=2)
     monkeypatch.setattr(rerank, "_get_engine", lambda: pytest.fail("disabled profile loaded a model"))
     baseline = recall(mesh, vector, n=2)
-    monkeypatch.setenv("MESH_RERANK_PROFILE", "compact-128")
+    monkeypatch.setenv("MESH_RERANK_PROFILE", profile)
     assert recall(mesh, vector, n=2) == baseline
     assert not any(key.startswith("rerank_") for item in baseline for key in item)
 

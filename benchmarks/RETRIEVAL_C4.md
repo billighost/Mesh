@@ -48,13 +48,21 @@ its fingerprint is recorded. This prevents a later read-only backup from creatin
 an empty WAL beside the immutable source. Query copies restore the production
 WAL/FULL configuration; database and WAL tampering still reject the run.
 
-The actual runtime supports three explicit input profiles:
+The actual runtime supports four explicit input profiles:
 
 | `MESH_RERANK_PROFILE` | Query tokens | Passage tokens | Maximum pair tokens |
 | --- | ---: | ---: | ---: |
 | `full-256` (default) | 29 | 224 | 256 |
 | `compact-128` | 29 | 96 | 128 |
 | `compact-96` | 29 | 64 | 96 |
+| `compact-80` (experimental, unqualified) | 29 | 48 | 80 |
+
+`compact-80` is an opt-in experiment to measure the compute cost of a smaller
+input. It retains the pinned model, one CPU thread, the exact first four parents,
+original bodies and supporting spans, default-off behavior, and every existing
+quality and resource ceiling. Its shorter excerpt may omit useful evidence;
+neither lower latency nor a quality gain is established. It requires separate
+native qualification under the same gates before any release recommendation.
 
 Each pair includes three special tokens. Compact profiles select one contiguous
 verbatim excerpt within the original selected passage, or the accepted original
@@ -67,10 +75,19 @@ intact. Each profile has a distinct protocol and independently passes the same
 resource and quality gates before qualification. Selecting a profile never
 enables reranking.
 
-When runtime passages and C4 are requested together, Actions evaluates the three
-profiles in separate jobs with distinct artifact names. Compact native results
-remain pending; passing mocked contracts does not establish their quality or
-resource qualification. The legacy experiment retains its original limits.
+When runtime passages and C4 are requested together, the `standard` Actions
+profile set evaluates the three existing profiles in separate jobs with distinct
+artifact names. Select `rerank_profile_set: compact-80` to evaluate the smaller
+experimental profile across all five datasets with the same gates. The production
+workflow exposes the same manual input. On its authorized automatic CI branch,
+the commit marker `[compact-80]` selects this experiment without skipping full
+qualification, storage measurements, or the test-speed observation. Unsupported
+profile sets fail before model preparation. Profile selection does not enable
+C4 or runtime passages; their separate switches still apply.
+
+Compact native qualification remains incomplete; passing mocked contracts does
+not establish quality or resource qualification. The legacy experiment retains
+its original limits and its failures remain separate from actual runtime results.
 
 The CI API is `retrieval_c4.py freeze`, `provision_retrieval_c4.py`, then
 `retrieval_c4.py run`. The run requires separate `--model-directory` and

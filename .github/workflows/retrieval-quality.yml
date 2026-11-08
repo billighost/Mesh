@@ -18,6 +18,11 @@ name: Retrieval quality
         required: false
         type: boolean
         default: false
+      rerank_profile_set:
+        description: "Use standard profiles or the experimental compact-80 profile; preserves the full dataset and gate selection"
+        required: false
+        type: string
+        default: "standard"
   workflow_dispatch:
     inputs:
       qualification_run_id:
@@ -34,6 +39,12 @@ name: Retrieval quality
         required: false
         type: boolean
         default: false
+      rerank_profile_set:
+        description: "Use the existing three reranker profiles or the experimental compact-80 profile"
+        required: false
+        type: choice
+        options: ["standard", "compact-80"]
+        default: "standard"
 
 permissions:
   contents: read
@@ -52,7 +63,7 @@ jobs:
       fail-fast: false
       matrix:
         dataset: [nfcorpus, scifact, prospective, longtext-prospective, longmemeval]
-        profile: ${{ inputs.run_c4 && inputs.run_runtime_passages && fromJSON('["full-256", "compact-128", "compact-96"]') || fromJSON('["full-256"]') }}
+        profile: ${{ inputs.run_c4 && inputs.run_runtime_passages && fromJSON(inputs.rerank_profile_set == 'compact-80' && '["compact-80"]' || '["full-256", "compact-128", "compact-96"]') || fromJSON('["full-256"]') }}
     defaults:
       run:
         shell: pwsh
@@ -104,6 +115,9 @@ jobs:
           if ($env:RETRIEVAL_RUN_RUNTIME_PASSAGES -eq "true") { $taskRetrievalInitArgs += "--runtime-passages" }
           python @taskRetrievalInitArgs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Validate the requested runtime reranker profile set
+        if: inputs.rerank_profile_set != 'standard' && inputs.rerank_profile_set != 'compact-80'
+        run: throw "Unsupported runtime reranker profile set"
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14.0"
@@ -127,15 +141,60 @@ jobs:
           python -m pip install -c .work/qualification/primary/constraints.txt ".[test,secrets]" psutil
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Restore fixed public local embedding pair
-        uses: actions/cache@v4
+        id: embedding_cache
+        timeout-minutes: 7
+        continue-on-error: true
+        uses: actions/cache/restore@v4
         with:
-          path: ${{ env.RETRIEVAL_MODELS }}
+          path: |
+            ${{ env.RETRIEVAL_MODELS }}/model.onnx
+            ${{ env.RETRIEVAL_MODELS }}/tokenizer.json
+          key: retrieval-minilm-1110a243fdf4706b-6fd5d72fe4589f18-be50c3628f2bf5bb
+      - name: Prepare and verify pinned embedding cache files
+        id: embedding_fixture
+        timeout-minutes: 7
+        continue-on-error: true
+        run: |
+          python benchmarks/provision_production_model.py --directory $env:RETRIEVAL_MODELS
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "verified=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+      - name: Save only the verified embedding files
+        if: steps.embedding_cache.outputs.cache-hit != 'true' && steps.embedding_fixture.outputs.verified == 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ${{ env.RETRIEVAL_MODELS }}/model.onnx
+            ${{ env.RETRIEVAL_MODELS }}/tokenizer.json
           key: retrieval-minilm-1110a243fdf4706b-6fd5d72fe4589f18-be50c3628f2bf5bb
       - name: Restore the pinned optional local cross encoder
         if: inputs.run_c4
-        uses: actions/cache@v4
+        id: c4_cache
+        timeout-minutes: 7
+        continue-on-error: true
+        uses: actions/cache/restore@v4
         with:
-          path: .work/production-models/c4-minilm-ce
+          path: |
+            .work/production-models/c4-minilm-ce/model.onnx
+            .work/production-models/c4-minilm-ce/tokenizer.json
+          key: retrieval-c4-minilm-a0914435-e9d8ebf845c413e9-d241a60d5e8f04cc
+      - name: Prepare and verify pinned optional cross encoder cache files
+        if: inputs.run_c4
+        id: c4_fixture
+        timeout-minutes: 7
+        continue-on-error: true
+        run: |
+          python benchmarks/provision_retrieval_c4.py --repository . --directory .work/production-models/c4-minilm-ce
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "verified=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+      - name: Save only the verified optional cross encoder files
+        if: inputs.run_c4 && steps.c4_cache.outputs.cache-hit != 'true' && steps.c4_fixture.outputs.verified == 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            .work/production-models/c4-minilm-ce/model.onnx
+            .work/production-models/c4-minilm-ce/tokenizer.json
           key: retrieval-c4-minilm-a0914435-e9d8ebf845c413e9-d241a60d5e8f04cc
       - name: Qualify source and supervise independent retrieval conditions
         run: |

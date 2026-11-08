@@ -226,6 +226,23 @@ continues to load its configured embedding model without a cross-encoder.
 
 ## Artifact output
 
+The workflow restores and saves only the two hash-pinned embedding files and,
+when C4 is explicitly requested, its two separately pinned model files. Verified
+files are saved before retrieval so a later accuracy or resource rejection does
+not prevent cache warming. Preparation/cache failures leave the required runner
+phases in place; those phases still independently verify exact sizes, hashes and
+source allowlists. Initial static downloads can therefore happen during workflow
+setup, while the registered provision phase measures its cached verification.
+Query inference, complete original-corpus accounting, scoring and resource limits
+remain unchanged. Databases, datasets, ranks and agent configuration are never
+cached. No retrieval speedup is inferred from the asset cache.
+
+Result export builds faithful source aliases only for returned parents, keeping
+their original alias order and all privacy/identity checks. It avoids allocating
+aliases for the entire corpus on every query; complete ingestion-fidelity
+validation still covers every original document. This reduces benchmark overhead
+and establishes no measured improvement to runtime search latency.
+
 The workflow creates `job-summary.json` before dependency setup and always
 finalizes/uploads that sanitized success or failure artifact. Each completed
 base condition's aggregate metrics are saved before optional later work. It

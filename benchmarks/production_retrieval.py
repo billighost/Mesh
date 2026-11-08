@@ -71,8 +71,9 @@ def validate_runtime_passage_schema(value):
 def decorate_results(results, records_by_memory):
     if any(row.get("local_only") or row.get("quarantined") for row in results):
         raise RuntimeError("Private or quarantined candidate in a public export")
-    source_ids = {identifier: [record["document_id"] for record in records if record["faithful_public"]]
-                  for identifier, records in records_by_memory.items()}
+    # Unreturned parents cannot contribute aliases to this export.
+    source_ids = {row["id"]: [record["document_id"] for record in records_by_memory.get(row["id"], ())
+                             if record["faithful_public"]] for row in results}
     exported = compact_results(results, source_ids)
     for row, candidate in zip(results, exported):
         candidate.update(incarnation=row.get("incarnation"), store_generation=row.get("store_generation"),

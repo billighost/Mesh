@@ -25,6 +25,11 @@ name: Production qualification and performance
         description: "Evaluate the optional four-candidate local reranker with strict quality and resource gates"
         type: boolean
         default: false
+      rerank_profile_set:
+        description: "Use the existing three reranker profiles or the experimental compact-80 profile"
+        type: choice
+        options: ["standard", "compact-80"]
+        default: "standard"
       run_runtime_passages:
         description: "Evaluate the schema-6 passage index with fresh queries and original parent evidence"
         type: boolean
@@ -142,6 +147,9 @@ jobs:
       run_runtime_passages: >-
         ${{ (github.event_name == 'workflow_dispatch' && inputs.run_runtime_passages) ||
             (github.event_name == 'push' && startsWith(github.ref_name, 'ci/mesh-production-run-')) }}
+      rerank_profile_set: >-
+        ${{ (github.event_name == 'workflow_dispatch' && inputs.rerank_profile_set) ||
+            (contains(github.event.head_commit.message, '[compact-80]') && 'compact-80') || 'standard' }}
 
   test_speed:
     name: Full-suite test speed (manual only, fixed order)

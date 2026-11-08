@@ -28,7 +28,7 @@ QUERY_TOKENS = 29
 PASSAGE_TOKENS = 224
 PAIR_TOKENS = 256
 INPUT_PROFILES = {"full-256": (PASSAGE_TOKENS, PAIR_TOKENS),
-                  "compact-128": (96, 128), "compact-96": (64, 96)}
+                  "compact-128": (96, 128), "compact-96": (64, 96), "compact-80": (48, 80)}
 
 # One gate covers cold loading, tokenizer mutation, and inference across namespaces.
 # Busy recalls keep their existing order instead of building an unbounded queue.

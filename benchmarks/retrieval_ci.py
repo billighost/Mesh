@@ -33,7 +33,7 @@ PHASES = ("provision", "prepare", "guarded", "score-guarded", "replay", "fresh-d
 C4_PHASES = ("c4-freeze", "c4-provision", "c4", "score-c4")
 RUNTIME_PASSAGE_PHASES = ("runtime-passages", "score-runtime-passages")
 RUNTIME_C4_PHASES = ("runtime-c4-freeze", "runtime-c4-provision", "runtime-c4", "score-runtime-c4")
-RUNTIME_RERANK_PROFILES = ("full-256", "compact-128", "compact-96")
+RUNTIME_RERANK_PROFILES = ("full-256", "compact-128", "compact-96", "compact-80")
 HARNESS_FILES = ("production_retrieval.py", "replay_retrieval.py", "prepare_retrieval_ci.py",
                  "retrieval_ci.py", "passage_retrieval.py", "provision_production_model.py",
                  "production_runner.py", "production_ledger.py", "runtime_rerank_c4.py", "retrieval_telemetry.py")

@@ -672,6 +672,11 @@ def test_frozen_protocol_binds_profile_and_effective_caps(tmp_path, monkeypatch,
     assert frozen["limits"] == runtime.LIMITS
     assert (frozen["effective_limits"]["maximum_passage_tokens"], frozen["effective_limits"]["maximum_pair_tokens"]) == runtime.INPUT_PROFILES[profile]
     assert frozen["effective_limits"]["maximum_query_tokens"] == 29
+    assert tuple(runtime.INPUT_PROFILES) == ci.RUNTIME_RERANK_PROFILES
+    assert frozen["resource_maxima"] == {
+        "total_rss_mib": 768, "delta_rss_mib": 128, "delta_p95_ms": 50,
+        "delta_p99_ms": 100, "delta_cpu_ms": 50,
+    }
     frozen["effective_limits"]["maximum_pair_tokens"] += 1
     production.write_json(target, frozen)
     with pytest.raises(C4Failure, match="FrozenC4ProtocolMismatch"):
@@ -694,7 +699,7 @@ def test_native_runtime_catalog_and_full_hard_constants_remain_pinned(monkeypatc
         observer.attach_runtime(memory_module)
 
 
-@pytest.mark.parametrize("profile", ["compact-128", "compact-96"])
+@pytest.mark.parametrize("profile", ["compact-128", "compact-96", "compact-80"])
 @pytest.mark.parametrize("selected", [False, True])
 def test_compact_runtime_accepts_exact_contiguous_subspan_and_keeps_original_evidence(profile, selected):
     observer, query, original, candidate = compact_fixture(profile, selected)
@@ -780,16 +785,17 @@ def test_native_evidence_rejects_unpinned_compact_configuration(tmp_path, change
 
 
 @pytest.mark.parametrize("command", ["init", "run"])
-def test_ci_setup_failure_artifact_preserves_requested_profile(tmp_path, monkeypatch, command):
+@pytest.mark.parametrize("profile", ["compact-96", "compact-80"])
+def test_ci_setup_failure_artifact_preserves_requested_profile(tmp_path, monkeypatch, command, profile):
     repository = tmp_path / "project"
     repository.mkdir()
     (repository / ".work").mkdir()
     output = repository / ".work" / "profile-output"
     monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     monkeypatch.setattr(sys, "argv", ["retrieval_ci.py", command, "prospective", "--repository", str(repository),
-        "--output-root", str(output), "--runtime-rerank-profile", "compact-96", "--runtime-passages", "--reranker-experiment", "c4"])
+        "--output-root", str(output), "--runtime-rerank-profile", profile, "--runtime-passages", "--reranker-experiment", "c4"])
     assert ci.main() == (0 if command == "init" else 1)
-    assert ci.load_json(output, "job-summary.json")["runtime_rerank_profile"] == "compact-96"
+    assert ci.load_json(output, "job-summary.json")["runtime_rerank_profile"] == profile
 
 
 def test_remote_guard_does_not_allow_local_native_execution(monkeypatch):

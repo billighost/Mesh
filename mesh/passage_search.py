@@ -216,6 +216,36 @@ class _PassageResults(list):
     pass
 
 
+def _admit_best_unit(heap, choices, score, identifier, ordinal, limit):
+    evicted = None
+    if len(heap) >= limit:
+        boundary = heap[0]
+        if not (score > boundary.score or (score == boundary.score and identifier < boundary.memory_id)):
+            return
+        evicted = boundary.memory_id
+    _keep_best_scored_id(heap, score, identifier, limit)
+    # Each parent contributes once per channel. Only a displaced choice can
+    # become stale, so admission never needs to traverse the retained heap.
+    if evicted is not None:
+        choices.pop(evicted, None)
+    choices[identifier] = ordinal
+
+
+def _parent_memory_rows(connection, where, params, identifiers=None):
+    if identifiers is None:
+        with contextlib.closing(connection.execute(f"SELECT {_MEMORY_COLUMNS},embedding FROM memories WHERE {where}", params)) as cursor:
+            yield from cursor
+        return
+    selected = iter(identifiers)
+    while block := tuple(itertools.islice(selected, 512)):
+        placeholders = ",".join("?" for _ in block)
+        with contextlib.closing(connection.execute(
+            f"SELECT {_MEMORY_COLUMNS},embedding FROM memories WHERE {where} AND id IN ({placeholders})",
+            (*params, *block),
+        )) as cursor:
+            yield from cursor
+
+
 def passage_query(store, spec, *, cache, n, memory_type, tags, source_agent, include_private,
                   include_quarantined, include_stale, min_confidence, now, query_embedding_model):
     """Use one authorized corpus, or return None to retain the primary scorer."""
@@ -275,14 +305,17 @@ def passage_query(store, spec, *, cache, n, memory_type, tags, source_agent, inc
                 raw = data = blob = parent = primary = None
                 lease.resize(base)
 
-            def parents():
+            def parents(identifiers=None):
                 if cache is not None:
-                    for identifier, parent in cache.rows_by_id.items():
+                    selected = cache.rows_by_id.items() if identifiers is None else (
+                        (identifier, cache.rows_by_id[identifier]) for identifier in identifiers
+                    )
+                    for identifier, parent in selected:
                         if identifier in eligible:
                             lease.resize(base + retained + 16384 + len(parent["content"]) * 8)
                             yield parent, None
                 else:
-                    for raw in connection.execute(f"SELECT {_MEMORY_COLUMNS},embedding FROM memories WHERE {where}", params):
+                    for raw in _parent_memory_rows(connection, where, params, identifiers):
                         lease.resize(base + retained + _cache_row_peak_bytes(raw))
                         data = dict(raw)
                         blob = data.pop("embedding")
@@ -327,7 +360,11 @@ def passage_query(store, spec, *, cache, n, memory_type, tags, source_agent, inc
                         lexical = cache.lexical_by_id[parent["id"]]
                 else:
                     vector = store._stream_row_vector(parent, blob, query_embedding_model) if not statistics else None
-                    lexical = _build_row_lexical_entry(parent["content"], [])
+                    if statistics:
+                        length, stems = _build_row_lexical_statistics(parent["content"], [])
+                        lexical = {"doc_len": length, "df_stems": stems}
+                    else:
+                        lexical = _build_row_lexical_entry(parent["content"], [])
                 yield -1, 0, len(parent["content"]), vector, lexical
 
             query_stems = set(spec.stems)
@@ -349,14 +386,6 @@ def passage_query(store, spec, *, cache, n, memory_type, tags, source_agent, inc
             dense_heap, lexical_heap, exact_heap = [], [], []
             dense_units, lexical_units, exact_units = {}, {}, {}
 
-            def admit(heap, choices, score, identifier, ordinal):
-                _keep_best_scored_id(heap, score, identifier, spec.pool)
-                live = {item.memory_id for item in heap}
-                for stale in choices.keys() - live:
-                    choices.pop(stale)
-                if identifier in live:
-                    choices[identifier] = ordinal
-
             for parent, blob in parents():
                 dense = lexical_best = exact = None
                 for ordinal, _, _, vector, lexical in units(parent, blob):
@@ -370,7 +399,7 @@ def passage_query(store, spec, *, cache, n, memory_type, tags, source_agent, inc
                         exact = (bm25, -ordinal)
                 for heap, choices, best in ((dense_heap, dense_units, dense), (lexical_heap, lexical_units, lexical_best), (exact_heap, exact_units, exact)):
                     if best is not None:
-                        admit(heap, choices, best[0], parent["id"], -best[1])
+                        _admit_best_unit(heap, choices, best[0], parent["id"], -best[1], spec.pool)
             dense_scores = {item.memory_id: item.score for item in dense_heap}
             bm25_scores = {item.memory_id: item.score for item in lexical_heap}
             exact_best = [item.memory_id for item in sorted(exact_heap, key=lambda item: (-item.score, item.memory_id))]
@@ -382,10 +411,8 @@ def passage_query(store, spec, *, cache, n, memory_type, tags, source_agent, inc
                     unit_rrf[key] = unit_rrf.get(key, 0.0) + weight / (60.0 + rank)
             kept, kept_charges, result_heap, rank_scores = {}, {}, [], {}
             evaluated = 0
-            for parent, blob in parents():
+            for parent, blob in parents(candidate_ids):
                 identifier = parent["id"]
-                if identifier not in candidate_ids:
-                    continue
                 best = None
                 for ordinal, start, stop, vector, lexical in units(parent, blob):
                     semantic = float(vector @ spec.vector) if vector is not None else 0.0

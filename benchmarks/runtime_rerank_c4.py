@@ -26,7 +26,7 @@ from retrieval_c4_model import LIMITS, MODEL, RESOURCE_MAXIMA
 
 IMPLEMENTATIONS = ("runtime_rerank_c4.py", "production_retrieval.py", "replay_retrieval.py",
                    "retrieval_c4.py", "retrieval_c4_model.py", "provision_retrieval_c4.py", "retrieval_ci.py")
-INPUT_PROFILES = {"full-256": (224, 256), "compact-128": (96, 128), "compact-96": (64, 96)}
+INPUT_PROFILES = {"full-256": (224, 256), "compact-128": (96, 128), "compact-96": (64, 96), "compact-80": (48, 80)}
 POLICY = {
     "entrypoint": "Mesh.recall(query, n=10, include_private=False, include_quarantined=False)",
     "representation": production.PASSAGE_REPRESENTATION,
