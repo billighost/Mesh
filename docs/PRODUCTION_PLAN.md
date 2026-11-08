@@ -5,6 +5,16 @@ Inspected branch: feat/ci-evidence, HEAD 61ec16de97a5604a19a81c6396f8bfc46d982c4
 
 ## Implementation checkpoint
 
+An explicit, default-off E5 shadow experiment is implemented for remote
+qualification. It compares fresh SDK calls on copies of one original-parent
+snapshot, reembeds every copied parent with revision/incarnation/generation
+checks, and preserves the existing five datasets, qualification and gates.
+Its bounded 256-token, prefixed window-mean profile is distinct from upstream
+512-token encoding. Model-swap costs are checked in both normal-cache and
+cache-cold strata. The model, tokenizer, profile and durable space are pinned;
+native quality, resource and packaging proof remains pending. This experiment
+does not select a production embedding model. See [RETRIEVAL.md](../benchmarks/RETRIEVAL.md).
+
 The latest completed source is `e353bc1`: normal CI, both full qualification
 suites, the concurrent-write matrix, and the test-speed comparison passed in
 [Actions](https://github.com/billighost/Mesh/actions/runs/42378934727).

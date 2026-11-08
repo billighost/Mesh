@@ -126,6 +126,155 @@ def test_nested_checkout_does_not_commit_enclosing_transaction():
     assert store.list_mutation_events() == []
 
 
+def _count_committed_refreshes(store, monkeypatch):
+    refreshed = []
+    original = store._refresh_cache_stamp_after_non_memory_write
+
+    def refresh():
+        with store._connect() as conn:
+            assert not conn.in_transaction
+        refreshed.append(True)
+        return original()
+
+    monkeypatch.setattr(store, "_refresh_cache_stamp_after_non_memory_write", refresh)
+    return refreshed
+
+
+def test_nested_receipt_refreshes_once_and_retains_transaction_reads(monkeypatch):
+    store = MeshStore("refresh-receipt")
+    fact(store, "existing", dense=True)
+    store._get_vector_cache()
+    refreshed = _count_committed_refreshes(store, monkeypatch)
+
+    def write():
+        with store.write_transaction():
+            fact(store, "new", dense=True)
+            assert store.get("new") is not None
+            with store._read_connect() as conn:
+                assert conn.in_transaction and scalar(conn, "SELECT COUNT(*) FROM memories") == 2
+        assert not refreshed
+        return {"memory_id": "new", "revision": 1}
+
+    with store.write_transaction():
+        receipt = store.execute_operation("op-refresh", "test-agent", "learn", "a" * 64, write)
+        assert not receipt["replayed"] and not refreshed
+        assert store.get_operation_receipt("op-refresh", "test-agent") is not None
+    assert len(refreshed) == 1
+    cache = store._get_vector_cache()
+    with cache.read_snapshot():
+        assert set(cache.rows_by_id) == {"existing", "new"}
+    replay = store.execute_operation("op-refresh", "test-agent", "learn", "a" * 64,
+                                     lambda: pytest.fail("A replay must not run its callback."))
+    assert replay["replayed"] and len(refreshed) == 2
+    assert store.count() == 2 and len(store.list_mutation_events()) == 2
+
+
+def test_inner_rollback_keeps_outer_cache_and_callbacks_coherent(monkeypatch):
+    store = MeshStore("refresh-inner")
+    fact(store, "existing", dense=True)
+    store._get_vector_cache()
+    refreshed = _count_committed_refreshes(store, monkeypatch)
+    callbacks = []
+    with store.write_transaction():
+        fact(store, "first", dense=True)
+        store.after_commit(lambda: callbacks.append("first"))
+        with pytest.raises(RuntimeError, match="inner abort"):
+            with store.write_transaction():
+                fact(store, "rolled-back", dense=True)
+                store.after_commit(lambda: callbacks.append("rolled-back"))
+                raise RuntimeError("inner abort")
+        assert store.get("rolled-back") is None and store.get("first") is not None
+        assert not refreshed and not callbacks
+        fact(store, "last", dense=True)
+        store.after_commit(lambda: callbacks.append("last"))
+    assert len(refreshed) == 1 and callbacks == ["first", "last"]
+    cache = store._get_vector_cache()
+    with cache.read_snapshot():
+        assert set(cache.rows_by_id) == {"existing", "first", "last"}
+    assert len(store.list_mutation_events()) == 3
+
+
+@pytest.mark.parametrize("failure", ["body", "commit"])
+def test_outer_failure_refreshes_rolled_back_state_once(monkeypatch, failure):
+    store = MeshStore("refresh-outer")
+    fact(store, "existing", dense=True)
+    store._get_vector_cache()
+    refreshed = _count_committed_refreshes(store, monkeypatch)
+    callbacks = []
+    if failure == "commit":
+        commit = storage._commit_write
+
+        def fail_outer_commit(conn, marker):
+            if marker is None:
+                raise RuntimeError("outer abort")
+            return commit(conn, marker)
+
+        monkeypatch.setattr(storage, "_commit_write", fail_outer_commit)
+    with pytest.raises(RuntimeError, match="outer abort"):
+        with store.write_transaction():
+            with store.write_transaction():
+                fact(store, "new", dense=True)
+                store.after_commit(lambda: callbacks.append("new"))
+            store.execute_operation("op-abort", "test-agent", "learn", "a" * 64,
+                                    lambda: {"memory_id": "new", "revision": 1})
+            assert not refreshed and store.get("new") is not None
+            if failure == "body":
+                raise RuntimeError("outer abort")
+    assert len(refreshed) == 1 and not callbacks
+    assert store.get("new") is None and store.get_operation_receipt("op-abort", "test-agent") is None
+    assert len(store.list_mutation_events()) == 1 and store.embedding_job_stats()["pending_count"] == 0
+    cache = store._get_vector_cache()
+    with cache.read_snapshot():
+        assert set(cache.rows_by_id) == {"existing"}
+
+
+def test_group_receipts_share_one_committed_refresh(monkeypatch):
+    from mesh.group_commit import GroupCommitBinding, GroupCommitCoordinator, GroupCommitLimits
+
+    store = MeshStore("refresh-group")
+    fact(store, "existing", dense=True)
+    store._get_vector_cache()
+    refreshed = _count_committed_refreshes(store, monkeypatch)
+    coordinator = GroupCommitCoordinator(store.db_path.parent, limits=GroupCommitLimits(coalesce_seconds=0),
+                                         autostart=False)
+    tickets = []
+    try:
+        for index in range(2):
+            memory_id = f"new-{index}"
+            operation_id = f"op-{index}"
+            binding = GroupCommitBinding(store.namespace, "local-user", "test-agent", operation_id,
+                                         "mesh_learn", "a" * 64)
+            ticket = coordinator.reserve(binding, byte_cost=256)
+            assert ticket.begin_preparation()
+
+            def write(memory_id=memory_id):
+                fact(store, memory_id, dense=True)
+                return {"memory_id": memory_id, "revision": 1}
+
+            def execute(operation_id=operation_id, write=write):
+                result = store.execute_operation(operation_id, "local-user", "mesh_learn", "a" * 64, write)
+                assert not refreshed
+                return result
+
+            ticket.prepared(store, execute)
+            tickets.append(ticket)
+        batch = coordinator._next_batch()
+        assert len(batch) == 2
+        coordinator._execute_batch(batch)
+        assert len(refreshed) == 1
+        assert all(not ticket.future.result(timeout=0)["replayed"] for ticket in tickets)
+        assert coordinator.stats()["committed_batches"] == 1
+        assert store.count() == 3 and len(store.list_mutation_events()) == 3
+        with store._connect() as conn:
+            assert scalar(conn, "PRAGMA synchronous") == 2
+            assert scalar(conn, "PRAGMA journal_mode") == "wal"
+        cache = store._get_vector_cache()
+        with cache.read_snapshot():
+            assert set(cache.rows_by_id) == {"existing", "new-0", "new-1"}
+    finally:
+        assert coordinator.close()
+
+
 def test_memory_task_conflict_and_receipt_rollback_together():
     store = MeshStore("rollback")
     fact(store, "existing")

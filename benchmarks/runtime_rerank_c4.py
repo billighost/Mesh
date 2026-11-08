@@ -164,7 +164,8 @@ class RuntimeObserver:
         if frozen is None or frozen["corpus_id"] != query.get("corpus", "complete"):
             raise C4Failure("ImmutableQueryAccountingChanged")
         expected = frozen["final_sdk_top10"]
-        exported = production.decorate_results(results, self.by_memory)
+        exported = production.decorate_results(results, self.by_memory,
+            score_components=bool(expected) and all("score_components" in row for row in expected))
         production.validate_runtime_parent_results(exported, self.identities)
         if len(exported) != min(n, len(expected)) or len({row["id"] for row in exported}) != len(exported):
             raise C4Failure("RuntimeRerankerParentSetChanged")

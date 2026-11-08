@@ -1613,11 +1613,28 @@ def _process_reembed_batch(items: list[_ReembedHint]) -> None:
                             derived = None
                             if plan is not None and plan != [(0, len(row["content"]))]:
                                 derived = np.empty((len(plan), EMBEDDING_DIM), dtype=np.float32)
-                                for start in range(0, len(plan), 16):
-                                    block = plan[start:start + 16]
-                                    texts = [" ".join(row["content"][left:right].split()) for left, right in block]
-                                    derived[start:start + len(block)] = _validated_embedding_rows(resident._encode_raw_batches(texts, batch_size=16), len(block))
                             bundles.append((vector, derived))
+                        passage_batch = []
+
+                        def encode_passage_batch():
+                            texts = [text for _, _, text in passage_batch]
+                            vectors = _validated_embedding_rows(resident._encode_raw_batches(texts, batch_size=16), len(texts))
+                            for (parent_offset, ordinal, _), vector in zip(passage_batch, vectors):
+                                bundles[parent_offset][1][ordinal] = vector
+                            passage_batch.clear()
+
+                        # Many parents have only a few passages. Keep inference
+                        # batches full without retaining more than sixteen texts
+                        # or changing the identity-bound publication boundary.
+                        for offset, ((_, row, _), plan, (_, derived)) in enumerate(zip(valid, plans, bundles)):
+                            if derived is None:
+                                continue
+                            for ordinal, (left, right) in enumerate(plan):
+                                passage_batch.append((offset, ordinal, " ".join(row["content"][left:right].split())))
+                                if len(passage_batch) == 16:
+                                    encode_passage_batch()
+                        if passage_batch:
+                            encode_passage_batch()
                         with store.atomic_write():
                             for offset, ((hint, row, primary), plan, (vector, derived)) in enumerate(zip(valid, plans, bundles)):
                                 actual_tag = row["embedding_model"] if primary is not None else model_tag
@@ -2050,7 +2067,7 @@ def _embedding_identity(model: Any, backend: Optional[str], model_tag: str) -> t
         getattr(model, "model_revision", _HF_MODEL_REVISION),
         str(getattr(model, "model_path", "")),
         str(getattr(model, "tokenizer_path", "")),
-        "token-windows-v2",
+        getattr(model, "embedding_preprocessing_identity", "token-windows-v2"),
     )
 
 
@@ -2087,18 +2104,30 @@ def _encode_uncached_texts_with_tag(
     texts: list[str],
     *,
     model_context: Optional[tuple[Any, Optional[str]]] = None,
+    role: str = "document",
 ) -> tuple[np.ndarray, str]:
+    if role not in ("document", "query"):
+        raise ValueError("Embedding role must be document or query")
     with _using_model():
-        return _encode_uncached_texts_with_tag_active(texts, model_context=model_context)
+        if role == "document":
+            return _encode_uncached_texts_with_tag_active(texts, model_context=model_context)
+        return _encode_uncached_texts_with_tag_active(texts, model_context=model_context, role=role)
 
 
 def _encode_uncached_texts_with_tag_active(
     texts: list[str], *, model_context: Optional[tuple[Any, Optional[str]]] = None,
+    role: str = "document",
 ) -> tuple[np.ndarray, str]:
     global _last_model_use_ts
     model, backend = model_context if model_context is not None else _get_model()
     _last_model_use_ts = time.monotonic()
     tag = _backend_to_model_tag(backend, model)
+
+    role_encoder = getattr(model, "encode_for_role", None)
+    if callable(role_encoder):
+        return _validated_embedding_rows(
+            role_encoder(texts, role=role, batch_size=min(32, max(1, len(texts)))), len(texts)
+        ), tag
 
     if isinstance(model, _DirectOnnxEmbedding):
         return _validated_embedding_rows(model.encode(texts, batch_size=min(32, max(1, len(texts)))), len(texts)), tag
@@ -2268,7 +2297,10 @@ def _embed_cached_with_tag(
             arr_ro = _store_in_embed_cache_locked(key, vec_arr, "hash-384")
         return arr_ro, "hash-384"
 
-    arr, model_tag = _encode_uncached_texts_with_tag([cleaned_text], model_context=(model, backend))
+    if callable(getattr(model, "encode_for_role", None)):
+        arr, model_tag = _encode_uncached_texts_with_tag([cleaned_text], model_context=(model, backend), role=role)
+    else:
+        arr, model_tag = _encode_uncached_texts_with_tag([cleaned_text], model_context=(model, backend))
     if model_tag != target_tag:
         raise RuntimeError("Embedding model changed while encoding a request")
     with _EMBED_CACHE_LOCK:

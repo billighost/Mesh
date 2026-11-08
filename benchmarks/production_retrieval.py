@@ -33,6 +33,11 @@ PASSAGE_BATCH_LIMIT = 32
 PASSAGE_SNAPSHOT_FOLDER = "mesh-frozen-quality-passage-snapshot"
 PASSAGE_SNAPSHOT_CONFIGURATION = "prequery-original-parent-passages-v1"
 RERANK_DIAGNOSTICS_FILE = "reranker-diagnostics.json"
+QUERY_SCORE_NUMBERS = ("semantic_similarity", "lexical_score", "similarity", "rank_score", "bm25_score")
+QUERY_SCORE_MODES = {
+    "ranking_mode": {"calibrated", "rrf"}, "retrieval_mode": {"cached", "streaming"},
+    "match_reason": {"semantic", "exact+semantic", "synonym+semantic", "tag+semantic", "lexical+semantic", "exact_identifier", "hybrid"},
+}
 RERANK_INPUT_INTEGERS = ("start", "end", "query_tokens", "kept_query_tokens", "removed_query_characters",
                          "passage_tokens", "kept_passage_tokens", "removed_passage_characters", "pair_tokens")
 WORKER_FAILURE_SOURCES = frozenset({"production_retrieval.py", "passage_retrieval.py", "replay_retrieval.py",
@@ -68,7 +73,7 @@ def validate_runtime_passage_schema(value):
     return 6
 
 
-def decorate_results(results, records_by_memory):
+def decorate_results(results, records_by_memory, *, score_components=False):
     if any(row.get("local_only") or row.get("quarantined") for row in results):
         raise RuntimeError("Private or quarantined candidate in a public export")
     # Unreturned parents cannot contribute aliases to this export.
@@ -82,7 +87,138 @@ def decorate_results(results, records_by_memory):
                          supporting_spans=[{key: span.get(key) for key in (
                              "memory_id", "revision", "incarnation", "store_generation", "start", "end",
                          )} for span in row.get("supporting_spans", [])])
+        if score_components:
+            candidate["score_components"] = query_score_components(row)
     return exported
+
+
+def query_score_components(row):
+    """Copy existing returned-result observations; never parse bodies or queries."""
+    values = {key: row.get(key) for key in (*QUERY_SCORE_NUMBERS, *QUERY_SCORE_MODES)}
+    values["lexical_source_scope"] = "selected_body_span" if row.get("selected_passage_ordinal") is not None else "body_and_tags_not_separated"
+    return project_query_score_components(values)
+
+
+def project_query_score_components(values):
+    if not isinstance(values, dict) or set(values) != {*QUERY_SCORE_NUMBERS, *QUERY_SCORE_MODES, "lexical_source_scope"}:
+        raise ValueError("Invalid query score component shape")
+    for key in QUERY_SCORE_NUMBERS:
+        score = values[key]
+        if score is not None and (type(score) not in {int, float} or not math.isfinite(score)
+                                  or score < 0 or key != "bm25_score" and score > 1):
+            raise ValueError("Invalid query score numeric component")
+    for key, allowed in QUERY_SCORE_MODES.items():
+        if values[key] is not None and (not isinstance(values[key], str) or values[key] not in allowed):
+            raise ValueError("Invalid query score mode component")
+    if values["lexical_source_scope"] not in {"selected_body_span", "body_and_tags_not_separated"}:
+        raise ValueError("Invalid query score lexical source scope")
+    return dict(values)
+
+
+def query_score_diagnostic_provenance(manifest, run_hash, labels_hash, scorer_hash, filename):
+    if (manifest.get("query_score_components_version") != 1 or type(manifest.get("query_score_components_version")) is not int
+            or manifest.get("status") != "complete" or manifest.get("all_queries_accounted") is not True
+            or manifest.get("labels_in_ranking_inputs") is not False or filename != "results-default.jsonl"):
+        raise ValueError("Invalid query score diagnostic condition")
+    sources = manifest.get("runtime_files")
+    if not isinstance(sources, dict) or not sources:
+        raise ValueError("Invalid query score diagnostic runtime source")
+    for name, digest in sources.items():
+        if not isinstance(name, str) or not re.fullmatch(r"mesh/(?:[A-Za-z0-9_]+/)*[A-Za-z0-9_]+\.py", name):
+            raise ValueError("Invalid query score diagnostic runtime source")
+        _diagnostic_digest(digest)
+    values = {"run_manifest_sha256": run_hash, "labels_sha256": labels_hash, "scorer_sha256": scorer_hash,
+              "producer_harness_sha256": manifest["harness_sha256"], "dataset_manifest_sha256": manifest["dataset_manifest_sha256"],
+              "protocol_sha256": manifest["protocol_sha256"], "results_sha256": manifest["output_sha256"][filename],
+              "ingestion_fidelity_sha256": manifest["output_sha256"]["ingestion-fidelity.jsonl"],
+              "embedding_model_sha256": manifest["model_file_sha256"]["onnx_sha256"],
+              "embedding_tokenizer_sha256": manifest["model_file_sha256"]["tokenizer_sha256"]}
+    return {key: _diagnostic_digest(value) for key, value in values.items()} | {"runtime_files": dict(sources), "results_file": filename}
+
+
+def build_query_score_diagnostics(rows, queries, labels, provenance):
+    """Describe immutable default/passage ranks after evaluator labels are opened."""
+    try:
+        identifiers = [query["id"] for query in queries]
+        qrels, unanswered = labels["qrels"], labels.get("unanswered_query_ids", [])
+        if (not isinstance(qrels, dict) or not isinstance(unanswered, list)
+                or len(set(identifiers)) != len(identifiers) or len(set(unanswered)) != len(unanswered)
+                or set(qrels) | set(unanswered) != set(identifiers)
+                or any(not isinstance(value, str) or not value for value in (*identifiers, *qrels, *unanswered))
+                or any(not isinstance(gold, dict) or any(not isinstance(doc, str) or not doc or type(grade) is not int or grade < 1
+                    for doc, grade in gold.items()) for gold in qrels.values())
+                or any(bool(qrels.get(identifier)) == (identifier in unanswered) for identifier in identifiers)
+                or len(rows) != len(queries) or {row["query_id"] for row in rows} != set(identifiers)):
+            raise ValueError("Invalid query score diagnostic query accounting")
+        by_query = {row["query_id"]: row for row in rows}
+        value = {"version": 1, "configuration": "query-score-postscore-v1", "provenance": provenance,
+                 "body_tag_contributions": "unavailable_runtime_union_score", "queries": []}
+        for query in queries:
+            row, gold = by_query[query["id"]], qrels.get(query["id"], {})
+            if row.get("corpus_id") != query.get("corpus", "complete"):
+                raise ValueError("Invalid query score diagnostic corpus")
+            reference = digest_text(json.dumps([provenance["dataset_manifest_sha256"], row["corpus_id"], row["query_id"]], separators=(",", ":")))
+            entry = {"query_ref": reference, "answered": bool(gold), "rankings": {}}
+            for field in ("original_sdk_top10", "final_sdk_top10"):
+                if field not in row:
+                    continue
+                candidates = row[field]
+                if not isinstance(candidates, list) or len(candidates) > 10 or len({item["id"] for item in candidates}) != len(candidates):
+                    raise ValueError("Invalid query score diagnostic candidate bound")
+                shown = []
+                for rank, candidate in enumerate(candidates, 1):
+                    if (candidate.get("local_only") is not False or candidate.get("quarantined") is not False
+                            or not isinstance(candidate.get("faithful_document_ids"), list)
+                            or any(not isinstance(doc, str) or not doc for doc in candidate["faithful_document_ids"])):
+                        raise ValueError("Invalid query score diagnostic public evidence")
+                    shown.append({"rank": rank, "primary_id_is_gold": candidate_document(candidate) in gold,
+                                  "any_faithful_id_is_gold": bool(set(candidate["faithful_document_ids"]) & set(gold)),
+                                  "scores": project_query_score_components(candidate["score_components"])
+                                            if "score_components" in candidate else query_score_components(candidate)})
+                entry["rankings"][field] = {"first_primary_gold_rank": next((item["rank"] for item in shown if item["primary_id_is_gold"]), None),
+                                             "candidates": shown}
+            value["queries"].append(entry)
+        return project_query_score_diagnostics(value, provenance, len(queries))
+    except (KeyError, TypeError, AttributeError, OverflowError):
+        raise ValueError("Invalid query score diagnostic input") from None
+
+
+def project_query_score_diagnostics(value, provenance, query_count, *, expected_query_refs=None):
+    """Admit only bounded numeric observations and fixed enums into CI evidence."""
+    try:
+        if (not isinstance(value, dict) or set(value) != {"version", "configuration", "provenance", "body_tag_contributions", "queries"}
+                or type(value["version"]) is not int or value["version"] != 1 or value["configuration"] != "query-score-postscore-v1"
+                or value["provenance"] != provenance or value["body_tag_contributions"] != "unavailable_runtime_union_score"
+                or not isinstance(value["queries"], list) or len(value["queries"]) != query_count):
+            raise ValueError("Invalid public query score diagnostic envelope")
+        references = set()
+        for query in value["queries"]:
+            if (set(query) != {"query_ref", "answered", "rankings"} or type(query["answered"]) is not bool
+                    or _diagnostic_digest(query["query_ref"]) in references or not isinstance(query["rankings"], dict)
+                    or "final_sdk_top10" not in query["rankings"]
+                    or set(query["rankings"]) - {"original_sdk_top10", "final_sdk_top10"}):
+                raise ValueError("Invalid public query score diagnostic query")
+            references.add(query["query_ref"])
+            for ranking in query["rankings"].values():
+                if (not isinstance(ranking, dict) or set(ranking) != {"first_primary_gold_rank", "candidates"}
+                        or not isinstance(ranking["candidates"], list) or len(ranking["candidates"]) > 10):
+                    raise ValueError("Invalid public query score diagnostic ranking")
+                for rank, candidate in enumerate(ranking["candidates"], 1):
+                    if (set(candidate) != {"rank", "primary_id_is_gold", "any_faithful_id_is_gold", "scores"}
+                            or type(candidate["rank"]) is not int or candidate["rank"] != rank
+                            or any(type(candidate[key]) is not bool for key in ("primary_id_is_gold", "any_faithful_id_is_gold"))
+                            or candidate["primary_id_is_gold"] and not candidate["any_faithful_id_is_gold"]
+                            or not query["answered"] and (candidate["primary_id_is_gold"] or candidate["any_faithful_id_is_gold"])):
+                        raise ValueError("Invalid public query score diagnostic candidate")
+                    project_query_score_components(candidate["scores"])
+                first = next((item["rank"] for item in ranking["candidates"] if item["primary_id_is_gold"]), None)
+                if ranking["first_primary_gold_rank"] != first or first is not None and type(ranking["first_primary_gold_rank"]) is not int:
+                    raise ValueError("Invalid public query score diagnostic gold rank")
+        if expected_query_refs is not None and references != expected_query_refs:
+            raise ValueError("Invalid public query score diagnostic references")
+        return json.loads(json.dumps(value, allow_nan=False))
+    except (KeyError, TypeError, AttributeError, OverflowError):
+        raise ValueError("Invalid public query score diagnostic shape") from None
 
 
 def verify_manifest(path: Path) -> dict:
@@ -1135,7 +1271,7 @@ def fresh_queries(mesh, queries, records, streams, metadata, memory_module, *,
             elapsed_ms = (time.perf_counter() - started) * 1000
             if len(observations) != before + 1:
                 raise ValueError("Default SDK call did not account for one normal query encoding")
-            exported = decorate_results(results, by_memory)
+            exported = decorate_results(results, by_memory, score_components=True)
             if runtime_passages:
                 validate_runtime_parent_results(exported, identities)
             payload = {"query_id": query["id"], "corpus_id": query.get("corpus", "complete"),
@@ -1270,6 +1406,8 @@ def run_retrieval(args, *, experiment=None, passage_snapshot=None, query_progres
         "smoke_limit_cases": None, "inspected_case_count": len(queries) if args.dataset == "longmemeval" else None,
         "ingestion": source_manifest["ingestion"] if query_only else {}, "cache_observations": {},
     }
+    if query_only:
+        metadata["query_score_components_version"] = 1
     if source_manifest:
         metadata["source_run_manifest_sha256"] = digest_file(args.source_run / "run-manifest.json")
         metadata["source_fidelity_sha256"] = source_manifest["output_sha256"]["ingestion-fidelity.jsonl"]
@@ -1527,6 +1665,9 @@ def score_run(args):
         if "session_qrels" in labels:
             cell["gold_session_hits"] = {field: summarize(rows, field, labels["session_qrels"], retained, query_ids) for field in fields}
         result["cells"][path.stem] = cell
+        if manifest.get("query_score_components_version") == 1 and path.name == "results-default.jsonl":
+            provenance = query_score_diagnostic_provenance(manifest, run_hash, labels_hash, result["scorer_sha256"], path.name)
+            result.setdefault("query_score_diagnostics", {})[path.stem] = build_query_score_diagnostics(rows, queries, labels, provenance)
     if not result["cells"]:
         raise ValueError("No accounted rank cell to score")
     if native_c4:
@@ -1543,6 +1684,11 @@ def score_run(args):
         diagnostic_path = safe_member(run, RERANK_DIAGNOSTICS_FILE, must_exist=False)
         write_json(diagnostic_path, diagnostic)
         result["reranker_diagnostics"] = {"file": RERANK_DIAGNOSTICS_FILE, "sha256": digest_file(diagnostic_path)}
+    if "query_score_diagnostics" in result:
+        verify_exports(run, manifest)
+        if (digest_file(manifest_path) != run_hash or digest_file(data / "manifest.json") != manifest["dataset_manifest_sha256"]
+                or digest_file(data / "labels.json") != labels_hash or digest_file(data / "queries-selected.jsonl") != query_hash):
+            raise ValueError("Fixed scoring inputs changed before query score diagnostics")
     write_json(run / "score-summary.json", result)
     print(json.dumps({"dataset": result["dataset"], "query_count": len(query_ids), "gold_survival": survival,
                       "sdk_hit_at_1": {name: cell["final_sdk_top10"]["unconditional"]["hit_at_1"] for name, cell in result["cells"].items()}}), flush=True)

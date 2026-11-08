@@ -31,6 +31,7 @@ include benchmarks/prepare_retrieval_ci.py
 include benchmarks/replay_retrieval.py
 include benchmarks/retrieval_ci.py
 include benchmarks/retrieval_telemetry.py
+include benchmarks/embedding_shadow.py
 include benchmarks/passage_retrieval.py
 include benchmarks/check_passage_contract.py
 include benchmarks/retrieval_c4.py

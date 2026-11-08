@@ -19,6 +19,7 @@ from prepare_retrieval_ci import BOUNDED_DATASETS, DATASETS, MODEL
 from production_retrieval import (MODEL_TAG, PASSAGE_BATCH_LIMIT, PASSAGE_REPRESENTATION, RERANK_DIAGNOSTICS_FILE,
                                   WORKER_FAILURE_SOURCES, WORKER_FAILURE_TYPES,
                                   digest_text, project_reranker_diagnostics, reranker_diagnostic_provenance,
+                                  build_query_score_diagnostics, project_query_score_diagnostics, query_score_diagnostic_provenance,
                                   runtime_parent_identities, runtime_passage_snapshot_metadata, runtime_passage_snapshot_reuse_metadata,
                                   validate_runtime_parent_results, validate_runtime_passage_schema)
 from replay_retrieval import (FIELDS, checked_path, configure_isolation, digest_file,
@@ -33,10 +34,12 @@ PHASES = ("provision", "prepare", "guarded", "score-guarded", "replay", "fresh-d
 C4_PHASES = ("c4-freeze", "c4-provision", "c4", "score-c4")
 RUNTIME_PASSAGE_PHASES = ("runtime-passages", "score-runtime-passages")
 RUNTIME_C4_PHASES = ("runtime-c4-freeze", "runtime-c4-provision", "runtime-c4", "score-runtime-c4")
+E5_SHADOW_PHASES = ("e5-shadow-provision", "e5-shadow", "score-e5-shadow")
 RUNTIME_RERANK_PROFILES = ("full-256", "compact-128", "compact-96", "compact-80")
 HARNESS_FILES = ("production_retrieval.py", "replay_retrieval.py", "prepare_retrieval_ci.py",
                  "retrieval_ci.py", "passage_retrieval.py", "provision_production_model.py",
-                 "production_runner.py", "production_ledger.py", "runtime_rerank_c4.py", "retrieval_telemetry.py")
+                 "production_runner.py", "production_ledger.py", "runtime_rerank_c4.py", "retrieval_telemetry.py",
+                 "embedding_shadow.py")
 QUALITY_TARGETS = {"prospective": 0.95, "longtext-prospective": 5 / 6, "longmemeval": 5 / 6}
 C4_RESOURCE_LIMITS = {"total_rss_mib": 768, "delta_rss_mib": 128, "delta_p95_ms": 50, "delta_p99_ms": 100, "delta_cpu_ms": 50}
 C4_PAIRED_METRICS = ("hit_at_1", "hit_at_5", "hit_at_10", "mrr_at_10", "ndcg_at_10")
@@ -123,10 +126,13 @@ def save(root, summary):
     os.replace(pending, path)
 
 
-def initial_summary(dataset, c4=False, runtime_passages=False, runtime_rerank_profile="full-256"):
+def initial_summary(dataset, c4=False, runtime_passages=False, runtime_rerank_profile="full-256", e5_shadow=False):
     if type(runtime_rerank_profile) is not str or runtime_rerank_profile not in RUNTIME_RERANK_PROFILES:
         raise GateError("RuntimeRerankerProfileInvalid")
     phases = list(PHASES)
+    if e5_shadow:
+        insertion = phases.index("score-fresh-default") + 1
+        phases[insertion:insertion] = E5_SHADOW_PHASES
     if runtime_passages:
         insertion = phases.index("score-fresh-default") + 1
         phases[insertion:insertion] = RUNTIME_PASSAGE_PHASES
@@ -142,6 +148,7 @@ def initial_summary(dataset, c4=False, runtime_passages=False, runtime_rerank_pr
             "claims": {"full_longmemeval": False, "competitor_superiority": False, "quiet_performance": False},
             "optional_c4_cross_encoder": "requested_separate_experiment" if c4 else "not_run_separate_manual_experiment",
             "optional_runtime_passage_index": "requested_separate_experiment" if runtime_passages else "not_run_separate_manual_experiment",
+            "optional_e5_shadow": "requested_separate_model_swap" if e5_shadow else "not_run_separate_manual_experiment",
             "optional_runtime_c4": "requested_actual_mesh_recall" if c4 and runtime_passages else "not_run_separate_manual_experiment"}
 
 
@@ -387,8 +394,57 @@ def reranker_diagnostic_evidence(directory, manifest, score, fixture, rank_rows,
         raise GateError("InvalidNativeRerankerDiagnosticEvidence") from None
 
 
+def query_score_diagnostic_evidence(directory, manifest, score, fixture, rank_rows, *, dataset_directory=None):
+    references = score.get("query_score_diagnostics")
+    if manifest.get("query_score_components_version") is None and references is None:
+        return None
+    try:
+        if not isinstance(references, dict) or set(references) != {"results-default"}:
+            raise GateError("InvalidQueryScoreDiagnosticReference")
+        verify_exports(directory, manifest)
+        labels = fixture["files"]["labels.json"]
+        labels_hash = labels["sha256"] if isinstance(labels, dict) else labels
+        scorer_hash = digest_file(Path(__file__).with_name("production_retrieval.py"))
+        if score.get("labels_sha256") != labels_hash or score.get("scorer_sha256") != scorer_hash:
+            raise GateError("QueryScoreDiagnosticScorerOrLabelsMismatch")
+        provenance = query_score_diagnostic_provenance(manifest, digest_file(safe_member(directory, "run-manifest.json")),
+                                                       labels_hash, scorer_hash, "results-default.jsonl")
+        by_reference = {digest_text(json.dumps([manifest["dataset_manifest_sha256"], row["corpus_id"], row["query_id"]], separators=(",", ":"))): row
+                        for row in rank_rows}
+        if len(by_reference) != len(rank_rows):
+            raise GateError("QueryScoreDiagnosticDuplicateQuery")
+        projected = project_query_score_diagnostics(references["results-default"], provenance, fixture["query_count"],
+                                                    expected_query_refs=set(by_reference))
+        if dataset_directory is None:
+            raise GateError("QueryScoreDiagnosticMissingDataset")
+        data = checked_path(dataset_directory, must_exist=True, directory=True)
+        if digest_file(safe_member(data, "manifest.json")) != manifest["dataset_manifest_sha256"]:
+            raise GateError("QueryScoreDiagnosticDatasetMismatch")
+        for name in ("labels.json", "queries-selected.jsonl"):
+            entry = fixture["files"][name]
+            expected_hash = entry["sha256"] if isinstance(entry, dict) else entry
+            if digest_file(safe_member(data, name)) != expected_hash:
+                raise GateError("QueryScoreDiagnosticDatasetInputMismatch")
+        queries = list(read_jsonl(safe_member(data, "queries-selected.jsonl")))
+        labels = load_json(data, "labels.json")
+        expected = build_query_score_diagnostics(rank_rows, queries, labels, provenance)
+        if projected != expected:
+            raise GateError("QueryScoreDiagnosticFixedEvidenceMismatch")
+        verify_exports(directory, manifest)
+        if (digest_file(safe_member(directory, "run-manifest.json")) != provenance["run_manifest_sha256"]
+                or digest_file(safe_member(data, "manifest.json")) != manifest["dataset_manifest_sha256"]):
+            raise GateError("QueryScoreDiagnosticInputChanged")
+        for name in ("labels.json", "queries-selected.jsonl"):
+            entry = fixture["files"][name]
+            if digest_file(safe_member(data, name)) != (entry["sha256"] if isinstance(entry, dict) else entry):
+                raise GateError("QueryScoreDiagnosticDatasetInputChanged")
+        return projected
+    except (ValueError, OSError, KeyError, TypeError, AttributeError, OverflowError):
+        raise GateError("InvalidQueryScoreDiagnosticEvidence") from None
+
+
 def condition_evidence(directory, fixture, runtime_files, model, protocol_hash, *, scored, runtime_passages=False,
-                       runtime_c4=False, runtime_rerank_profile=None, guarded_source=None):
+                       runtime_c4=False, runtime_rerank_profile=None, guarded_source=None, dataset_directory=None):
     manifest = load_json(directory, "run-manifest.json")
     if (type(runtime_c4) is not bool or runtime_c4 and (
             runtime_passages is not True or scored is not True
@@ -465,6 +521,7 @@ def condition_evidence(directory, fixture, runtime_files, model, protocol_hash, 
             faithful.setdefault(identifier, []).append(record["document_id"])
     unfaithful_public_candidates = 0
     native_rank_rows = None
+    query_score_diagnostic = None
     for relative in manifest["output_sha256"]:
         if not relative.startswith("results-"):
             continue
@@ -494,11 +551,16 @@ def condition_evidence(directory, fixture, runtime_files, model, protocol_hash, 
                     # Guarded public text can differ from its original source.
                     # Empty faithful IDs keep it visible without relevance credit.
                     unfaithful_public_candidates += int(not expected_ids)
+        if relative == "results-default.jsonl":
+            query_score_diagnostic = query_score_diagnostic_evidence(directory, manifest, score, fixture, rows,
+                                                                     dataset_directory=dataset_directory)
     result.update(metrics=metric_projection(score["cells"]), gold_survival=counters(score["gold_survival"]),
                   ingestion=counters(score["ingestion"]), model_revision=model["revision"], model_file_sha256=model_files,
                   protocol_sha256=protocol_hash, dataset_manifest_sha256=manifest["dataset_manifest_sha256"],
                   score_summary_sha256=digest_file(safe_member(directory, "score-summary.json")))
     result["unfaithful_public_exported_candidates"] = unfaithful_public_candidates
+    if query_score_diagnostic is not None:
+        result["query_score_diagnostics"] = query_score_diagnostic
     if runtime_c4:
         diagnostic = reranker_diagnostic_evidence(directory, manifest, score, fixture, native_rank_rows, records)
         if diagnostic is not None:
@@ -875,11 +937,14 @@ def run(args, repository, root):
     c4 = getattr(args, "reranker_experiment", "off") == "c4"
     runtime_passages = getattr(args, "runtime_passages", False)
     profile = getattr(args, "runtime_rerank_profile", "full-256")
-    summary = initial_summary(args.dataset, c4, runtime_passages, profile)
+    e5_shadow = getattr(args, "e5_shadow", False)
+    summary = initial_summary(args.dataset, c4, runtime_passages, profile, e5_shadow)
     summary["status"] = "running"
     save(root, summary)
     stage = "qualification"
     try:
+        if e5_shadow and (c4 or runtime_passages):
+            raise GateError("E5ShadowRequiresC4AndRuntimePassagesOff")
         runtime_files, harness = hashes(repository), harness_hashes(repository)
         summary.update(runtime_files=runtime_files, harness_files=harness)
         summary["qualification"] = qualify(repository, args.qualification_directory, args.floor_qualification_directory)
@@ -906,6 +971,19 @@ def run(args, repository, root):
         }
         commands.update({"score-" + condition: [python, production, "score", str(root / condition), "--dataset-directory", str(data)]
                          for condition in ("guarded", "fresh-default", "passages")})
+        if e5_shadow:
+            shadow_runner = str(safe_member(repository, "benchmarks/embedding_shadow.py"))
+            shadow_models = models.parent / "e5-small-v2-q8"
+            commands.update({
+                "e5-shadow-provision": [python, shadow_runner, "provision", "--repository", str(repository), "--model-directory", str(shadow_models)],
+                "e5-shadow": [python, shadow_runner, "run", args.dataset, "--repository", str(repository),
+                              "--source-run", str(root / "guarded"), "--fresh-default-run", str(root / "fresh-default"),
+                              "--dataset-directory", str(data), "--model-directory", str(shadow_models),
+                              "--embedding-model-directory", str(models), "--qualification-directory", str(args.qualification_directory),
+                              "--floor-qualification-directory", str(args.floor_qualification_directory), "--output", str(root / "e5-shadow")],
+                "score-e5-shadow": [python, shadow_runner, "score", args.dataset, "--repository", str(repository),
+                                    "--output", str(root / "e5-shadow"), "--dataset-directory", str(data)],
+            })
         if runtime_passages:
             commands.update({
                 "runtime-passages": [python, production, "query-only", args.dataset, *common,
@@ -970,6 +1048,10 @@ def run(args, repository, root):
                 used_cpu += observed["sampled_tree_cpu_seconds"]
                 save(root, summary)
                 if observed["status"] != "passed":
+                    if phase["name"] in E5_SHADOW_PHASES:
+                        from embedding_shadow import failure_projection
+                        summary["optional_e5_shadow"] = "failed_or_unavailable"
+                        summary["e5_shadow_failure"] = failure_projection(root / "e5-shadow")
                     if phase["name"] in {"guarded", "fresh-default", "passages", "runtime-passages", "c4", "runtime-c4"}:
                         try:
                             partial = load_json(root / phase["name"], "run-manifest.json")
@@ -1013,6 +1095,12 @@ def run(args, repository, root):
                         except (ValueError, OSError, KeyError, TypeError):
                             pass
                     raise GateError("PhaseFailed")
+                if phase["name"] == "score-e5-shadow":
+                    from embedding_shadow import evidence
+                    projected, gates = evidence(root / "e5-shadow", load_json(data, "manifest.json"), runtime_files, root / "guarded", repository)
+                    summary.update(e5_shadow=projected, e5_shadow_quality_gates=gates, optional_e5_shadow="complete")
+                    save(root, summary)
+                    continue
                 condition = "replay" if phase["name"] == "replay" else phase["name"][6:] if phase["name"].startswith("score-") else None
                 if condition:
                     fixture = load_json(data, "manifest.json")
@@ -1022,9 +1110,10 @@ def run(args, repository, root):
                         runtime_passages=condition in {"runtime-passages", "runtime-c4"},
                         runtime_c4=condition == "runtime-c4",
                         runtime_rerank_profile=profile if condition == "runtime-c4" else None,
-                        guarded_source=root / "guarded" if condition == "passages" else None)
+                        guarded_source=root / "guarded" if condition == "passages" else None,
+                        dataset_directory=data)
                     if condition == "passages":
-                        summary["quality_gates"] = quality_gates(args.dataset, summary["conditions"])
+                        summary["quality_gates"] = quality_gates(args.dataset, summary["conditions"]) + summary.get("e5_shadow_quality_gates", [])
                         if "runtime-passages" in summary["conditions"]:
                             summary["quality_gates"].extend(runtime_passage_quality_gates(
                                 args.dataset, summary["conditions"]["runtime-passages"], summary["conditions"]["fresh-default"]))
@@ -1062,7 +1151,7 @@ def run(args, repository, root):
                 raise GateError("FreshQueryInferenceAccountingFailed")
             if hashes(repository) != runtime_files or harness_hashes(repository) != harness:
                 raise GateError("SourceChangedDuringRun")
-            summary["quality_gates"] = quality_gates(args.dataset, summary["conditions"])
+            summary["quality_gates"] = quality_gates(args.dataset, summary["conditions"]) + summary.get("e5_shadow_quality_gates", [])
             if runtime_passages:
                 runtime_passage_pairing(root, manifests, summary["conditions"])
                 summary["optional_runtime_passage_index"] = "complete"
@@ -1130,6 +1219,7 @@ def main():
     parser.add_argument("--reranker-experiment", choices=("off", "c4"), default="off", help="Separate optional C4 experiment; requires its runner/provisioner and matching resource qualification")
     parser.add_argument("--runtime-passages", action="store_true", help="Separate optional actual schema-6 passage-index evaluation on original parents, paired with fresh-default under the existing whole-run caps")
     parser.add_argument("--runtime-rerank-profile", choices=RUNTIME_RERANK_PROFILES, default="full-256", help="Optional runtime C4 input profile (default: full-256); preserves the fixed quality and resource gates")
+    parser.add_argument("--e5-shadow", action="store_true", help="Actions-only pinned E5 model-swap shadow through actual SDK calls; requires C4/runtime passages off and retains all ordinary gates")
     args = parser.parse_args()
     repository = checked_path(args.repository, must_exist=True, directory=True)
     root = isolated_artifact_path(args.output_root, repository)
@@ -1138,7 +1228,7 @@ def main():
         if (os.environ.get("GITHUB_ACTIONS") != "true" or not args.model_directory or not args.qualification_directory
                 or not args.floor_qualification_directory or not 1 <= args.wall_seconds <= 4500
                 or not 64 <= args.rss_mib <= 6144 or not 1 <= args.cpu_seconds <= 12000):
-            summary = initial_summary(args.dataset, args.reranker_experiment == "c4", args.runtime_passages, args.runtime_rerank_profile)
+            summary = initial_summary(args.dataset, args.reranker_experiment == "c4", args.runtime_passages, args.runtime_rerank_profile, args.e5_shadow)
             summary.update(status="failed", failure_reason="ci_arguments_required")
             save(root, summary)
             return 1
@@ -1146,7 +1236,7 @@ def main():
     if args.command == "init":
         if (root / "job-summary.json").exists():
             raise GateError("RefusingExistingArtifact")
-        save(root, initial_summary(args.dataset, args.reranker_experiment == "c4", args.runtime_passages, args.runtime_rerank_profile))
+        save(root, initial_summary(args.dataset, args.reranker_experiment == "c4", args.runtime_passages, args.runtime_rerank_profile, args.e5_shadow))
     else:
         current = load_json(root, "job-summary.json")
         if current["status"] in {"running", "not_started"}:

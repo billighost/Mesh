@@ -2,6 +2,57 @@
 
 This document provides empirical latency, throughput, memory, and scaling benchmarks for **Mesh** (`mesh-context-layer`). All tests measure real end-to-end execution paths including SQLite WAL transactions, token budgeting, FTS5 lexical matching, and ONNX SIMD cosine vector ranking.
 
+## Mesh 0.9.0 measured checkpoint (2026-11-08, `db5e76a`)
+
+[Normal CI](https://github.com/billighost/Mesh/actions/runs/42431857693) passed all 18 jobs. [Production](https://github.com/billighost/Mesh/actions/runs/42431857665) passed both full qualification suites, primary installed-wheel validation, process-crash recovery, the registered storage matrix and test-speed observation. All five `compact-80` retrieval jobs failed overall; no profile is globally qualified. [Provenance](results/production_20261108_db5e76a_provenance.json) binds the evidence to `db5e76a`. Primary/floor suites selected 1,785 cases with 3/4 skips, zero failures/errors and 74.38%/74.29% coverage. Earlier failed and unscored checkpoints remain below.
+
+The [storage ledger](results/production_performance_20261108_db5e76a.json) retains all 57 cells: 54 completed and three deferred, zero failed/unavailable. Primary coverage is 46/48 with 23,552 measured facts acknowledged and zero unknown outcomes. Two sixteen-agent neural receipt-SDK cells remain resource deferred; the ungrouped neural 10,000-fact HTTP cell remains budget deferred. The ungrouped hash scale cell completed on this pass. Five pilots remain separate. Selected sixteen-agent grouped HTTP rates, excluding anchors and process close:
+
+| Backend | Measured facts | Call | Durable facts/s | Indexed facts/s |
+| --- | ---: | --- | ---: | ---: |
+| Hash | 512 | Scalar | 73.99 | — |
+| Hash | 512 | Atomic 8 | 138.83 | — |
+| Neural | 512 | Scalar | 73.09 | 45.39 |
+| Neural | 512 | Atomic 8 | 137.37 | 61.46 |
+| Hash | 10,000 | Scalar | 69.95 | — |
+| Neural | 10,000 | Scalar | 55.51 | 38.02 |
+
+The grouped hash/neural scale rates are still below the earlier `e353bc1` single-pass 138.63/113.64 durable facts/s. Small increases over `fc7d6a5` establish no confirmed storage speedup. The run uses patched APSW 3.54.1.0/SQLite 3.54.1 and WAL/FULL, Python 3.14.0 and ONNX Runtime 1.31.1, on a Windows 2025Server hosted worker with four logical CPUs and 15.99 GiB RAM. Sampled RSS can miss short peaks and sum shared pages; the reported hardware does not establish identical host load. Process-crash tests do not establish physical power-cut survival.
+
+The [pre-C4 passage comparison](results/production_comparison_20261108_db5e76a.json) compares matching declared passage workloads against `fc7d6a5`, with pinned inputs/model, identical preparer/protocol/readiness counters and resource limits. The old job selects compact-96 for its later reranker and the new job selects compact-80; the compared preceding passage condition does not use that profile. These numbers compare source changes in passage search and are not native reranker-profile speed measurements.
+
+| Dataset | Pre-C4 observation | `fc7d6a5` | `db5e76a` | Change |
+| --- | --- | ---: | ---: | ---: |
+| nfcorpus | Query-call elapsed s | 53.897 | 60.774 | +12.76% |
+| nfcorpus | Query-call CPU s | 50.469 | 55.047 | +9.07% |
+| nfcorpus | Backfill elapsed s | 179.230 | 302.705 | +68.89% |
+| nfcorpus | Backfill CPU s | 271.000 | 539.656 | +99.14% |
+| nfcorpus | Sampled query RSS MiB | 541.76 | 517.87 | -4.41% |
+| scifact | Query-call elapsed s | 164.263 | 107.821 | -34.36% |
+| scifact | Query-call CPU s | 161.000 | 104.516 | -35.08% |
+| scifact | Backfill elapsed s | 464.406 | 402.897 | -13.24% |
+| scifact | Backfill CPU s | 829.812 | 712.531 | -14.13% |
+| scifact | Sampled query RSS MiB | 483.50 | 491.03 | +1.56% |
+
+SciFact has 5,183 parents, 12,166 passages and 300 queries; NFCorpus has 3,592 admitted original parents, 9,406 passages and 323 queries. Both complete with cached queries throughout. Charged generations remain 251,401,672 bytes (SciFact) and 183,862,837 bytes (NFCorpus) within the unchanged 256 MiB budget. SciFact query-call elapsed time fell by 34.36%; NFCorpus query-call time rose by 12.76%, and its backfill costs rose. These single passes on separate workers have distinct database IDs/snapshots and timestamp-bearing dataset manifests. Raw dataset manifest payloads are unavailable; pinned inputs match. They establish no generalized speedup or quiet latency/SLO, and the tradeoffs remain visible.
+
+The [retrieval aggregate](results/production_retrieval_20261108_db5e76a.json) retains all five jobs, all 24 failed gates, every phase and both resource-rejected native conditions as unscored. Hit@k measures authorized annotated primary-source evidence, not a generated answer or complete multi-source reasoning. Two bounded native conditions pass their own gates; LongMemEval now scores but fails quality. Default and passage features remain unqualified.
+
+| Fixture (answerable queries) | Fresh default Hit@1 / @5 / @10, % | Passages Hit@1 / @5 / @10, % | Native compact-80 |
+| --- | --- | --- | --- |
+| Direct facts (16) | 81.25 / 100.00 / 100.00 | 81.25 / 100.00 / 100.00 | 100 / 100 / 100; own gates pass |
+| Long-text regression (6) | 0.00 / 0.00 / 100.00 | 33.33 / 100.00 / 100.00 | 100 / 100 / 100; own gates pass |
+| Inspected LongMemEval subset (6) | 50.00 / 100.00 / 100.00 | 50.00 / 100.00 / 100.00 | 66.67 / 100 / 100; quality rejected |
+| NFCorpus (323) | 49.23 / 66.87 / 74.30 | 45.51 / 64.09 / 71.52 | Resource rejected; unscored |
+| SciFact (300) | 56.00 / 78.33 / 84.67 | 57.33 / 79.67 / 83.67 | Resource rejected; unscored |
+
+Native compact-80 preserves 16/16 direct-fact and 6/6 long-text first-result hits with all native gates passed. Their preceding default/passage gates still fail. The inspected LongMemEval subset improves from 3/6 passage hits to 4/6 native hits with no lost top-one hits, but requires 5/6. Its native added p95/p99/CPU are 27.77/31.25/23.28 ms; total/added RSS are 286.62/38.84 MiB, and all native resource gates pass. Its separate later legacy C4 phase exceeds the 768 MiB RSS ceiling (790.73 MiB sampled), aborts before scoring and remains unscored; that failure does not invalidate the earlier source-bound native score.
+
+NFCorpus native added p95/p99/CPU are 69.24/1,767.31/59.36 ms and SciFact 107.65/826.77/91.41 ms, exceeding the unchanged 50/100/50 ms ceilings. Both native conditions are resource rejected before scoring; their later legacy passage/C4 phases do not run. Public passage first-result hits remain 3.715 points below fresh default on NFCorpus and 1.333 points above on SciFact, whose Hit@10 is one point lower. These failed experiments establish no competitor superiority, full LongMemEval quality, generated-answer correctness or qualified optional default.
+
+The [same-source test-speed observation](results/production_test_speed_20261108_db5e76a.json) completes the same 1,785-case selection, four skips and zero failures/errors, once with one worker and once with two: 192.470 → 117.068 seconds (39.18% lower; 1.644× observed ratio). Sampled summed RSS increases from 929.98 to 1138.70 MiB. This fixed-order hosted observation does not establish a generalized test speedup; the suite differs from the preceding 1,754-case checkpoint.
+
+
 ## Mesh 0.9.0 measured checkpoint (2026-11-08, `fc7d6a5`)
 
 [Normal CI](https://github.com/billighost/Mesh/actions/runs/42424338520) passed all 18 jobs. [Production](https://github.com/billighost/Mesh/actions/runs/42424338605) passed full primary/floor qualification, installed-wheel validation, process-crash recovery, the registered storage matrix and test-speed observation; all fifteen retrieval jobs failed overall. Primary/floor suites each selected 1,754 cases, with 3/4 skips, no failures/errors, and 74.30%/74.26% coverage. [Provenance](results/production_20261108_fc7d6a5_provenance.json) binds every measurement to `fc7d6a5`; the earlier checkpoints remain below.

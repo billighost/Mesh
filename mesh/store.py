@@ -3110,7 +3110,9 @@ class MeshStore:
                         if conn._mesh_cache_delta_lease is not None:
                             conn._mesh_cache_delta_lease.release()
                             conn._mesh_cache_delta_lease = None
-                self._refresh_cache_stamp_after_non_memory_write()
+                    # Releasing a savepoint has not published a new generation;
+                    # the outer transaction refreshes committed state once.
+                    self._refresh_cache_stamp_after_non_memory_write()
         self._run_after_commit_actions(actions)
 
     def _collects_cache_deltas(self) -> bool:

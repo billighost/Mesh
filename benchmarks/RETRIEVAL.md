@@ -55,6 +55,40 @@ results.
 
 ## Run the checks with explicit local inputs
 
+The separate Actions `run_e5_shadow` dispatch/call input defaults to false. It
+requires C4 and runtime passages off and successful primary/floor qualification
+artifacts for the same runtime and harness source. It adds separately tracked
+provisioning, native comparison and offline scoring after fresh-default, while
+retaining every ordinary condition, gate and all five datasets. No production
+loader, default or accepted arbitrary-model checksum changes are involved.
+
+The candidate is [Xenova/e5-small-v2 at 02af7998](https://huggingface.co/Xenova/e5-small-v2/tree/02af79985278377e65c724a76275707cb0333c70),
+using its quantized ONNX file and tokenizer. The
+[pinned upstream card](https://huggingface.co/intfloat/e5-small-v2/blob/ffb93f3bd4047442299a41ebb6fa998a38507c52/README.md)
+declares MIT licensing and English input. Exact revisions, bytes and SHA-256
+digests are in [embedding_shadow.py](embedding_shadow.py). Actions verifies both
+assets again, including the tokenizer; local tests use fake models only.
+
+This is the `e5-bounded256-window-mean-v1` variant: 384 dimensions, 224 content
+tokens per window, stride 192, `query: ` or `passage: ` on every window,
+attention-masked mean pooling and normalized window means. Prefix-aware checks
+reject truncation or lost source coverage. The canonical profile digest enters
+the durable model tag and query/document cache identities. It is distinct from
+upstream 512-token encoding. Every original parent is copied and reembedded
+through the existing durable publication protocol; the original ingestion
+export remains byte-identical and separate indexing evidence verifies identities.
+
+Actual SDK n=10 calls and separate n=1 parity checks use fresh query text, with
+no precomputed query vectors or relevance labels. Each model has an independent
+process and store copied from the same frozen snapshot. Normal-cache and
+cache-cold strata each require at least 100 matched samples; native calls,
+windows and vector cache hits are counted separately. Existing 768 MiB total,
+128 MiB added RSS, 50 ms added p95/mean CPU and 100 ms added p99 limits apply as
+model-swap costs in both strata. The cumulative whole-run CPU/wall/RSS limits
+also cover provisioning, copying, reembedding, queries and exports. Failed,
+interrupted or resource-rejected native phases remain unscored. Passing tiny
+contracts is not native quality/resource qualification or a default-model decision.
+
 Use Python with the repository dependencies and patched SQLite runtime. All
 paths below are placeholders for local artifacts. The scripts do not fetch data
 or models. Pass `--dependency-directory` only when a verified local dependency
@@ -203,6 +237,22 @@ metrics and gates survive a later legacy or C4 failure; the final combined
 status still applies every requested gate and the same whole-run resource
 limits. Worker failures retain only a fixed stage, exception type and source
 line numbers, so diagnostics expose no memory bodies or exception arguments.
+
+Scored fresh-default and runtime-passage runs record the existing returned
+semantic, lexical, BM25, similarity and rank scores, plus fixed ranking,
+retrieval and match-reason enums. Their `query_score_diagnostics` in the score
+and sanitized condition summaries bind these observations to the frozen rank
+exports, source, model, dataset, protocol, scorer and labels. Labels are opened
+only after ranks are fixed; the consumer reloads verified labels and query files
+to reconstruct all reported membership and scores. The diagnostic retains opaque query references and
+at most ten parents per original/final SDK ranking; it adds no inference,
+corpus reads, body tokenization or ranking changes. Missing score components
+remain null. Primary body/tag contributions remain explicitly unavailable
+because runtime lexical matching uses their union; a selected passage records
+body-span input scope without claiming annotated evidence containment. Older
+exports retain absent diagnostics. New runs paired with older rank exports retain
+null observations for their unavailable components. Failed or unscored phases
+stay visible.
 
 ## Optional C4 experiment
 

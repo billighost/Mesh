@@ -159,7 +159,7 @@ def manifest() -> dict[str, str]:
 
 def harness_manifest() -> dict[str, str]:
     return {f"benchmarks/{name}": sha_file(REPO / "benchmarks" / name, 4 * MIB)
-            for name in ("production_bench.py", "production_transport.py")}
+            for name in ("production_bench.py", "production_transport.py", "embedding_shadow.py", "retrieval_ci.py")}
 
 
 def controller_manifest() -> dict[str, str]:

@@ -207,7 +207,10 @@ def test_schema_six_fake_runtime_completes_worker_and_controller_projection(sche
         source_manifest["output_sha256"]["ingestion-fidelity.jsonl"] = replay.digest_file(source / "ingestion-fidelity.jsonl")
         fresh_manifest["output_sha256"]["ingestion-fidelity.jsonl"] = source_manifest["output_sha256"]["ingestion-fidelity.jsonl"]
         jsonl(data / "queries-selected.jsonl", queries)
-        fixture = {"query_count": 1, "corpus_count": 1, "files": {"queries-selected.jsonl": replay.digest_file(data / "queries-selected.jsonl")}}
+        production.write_json(data / "labels.json", {"qrels": {"query-1": {"doc": 1}}})
+        fixture = {"query_count": 1, "corpus_count": 1, "files": {
+            "queries-selected.jsonl": replay.digest_file(data / "queries-selected.jsonl"),
+            "labels.json": replay.digest_file(data / "labels.json")}}
         production.write_json(data / "manifest.json", fixture)
         protocol = {"model": dict(MODEL, name="sentence-transformers/all-MiniLM-L6-v2"), "candidate_caps": [64, 96], "fusion": "calibrated"}
         for name, key in (("model.onnx", "onnx_sha256"), ("tokenizer.json", "tokenizer_sha256")):
@@ -273,15 +276,10 @@ def test_schema_six_fake_runtime_completes_worker_and_controller_projection(sche
         assert manifest["status"] == "complete" and type(manifest["schema_version"]) is int and manifest["schema_version"] == 6
         assert replay.digest_file(database) == original_database_hash
         assert any(wait[1].get("target_representation") == production.PASSAGE_REPRESENTATION for wait in mesh.waits)
-        # Supply the one-row offline score only after the complete ranking export.
-        fields = {cohort: metrics(1.0, 1) for cohort in (
-            "unconditional", "any_gold_survived", "all_gold_survived", "retained_gold_denominator")}
-        score = {"run_manifest_sha256": replay.digest_file(args.output / "run-manifest.json"), "query_count": 1,
-            "cells": {"results-default": {"final_sdk_top10": fields, "original_sdk_top10": fields}},
-            "gold_survival": {"answered_queries": 1}, "ingestion": source_manifest["ingestion"]}
-        production.write_json(args.output / "score-summary.json", score)
+        # Exercise source/label binding only after the complete ranking export.
+        production.score_run(types.SimpleNamespace(run_directory=args.output, dataset_directory=data))
         _manifest, projected = ci.condition_evidence(args.output, fixture, RUNTIME, protocol["model"],
-            replay.digest_file(root / "protocol.json"), scored=True, runtime_passages=True)
+            replay.digest_file(root / "protocol.json"), scored=True, runtime_passages=True, dataset_directory=data)
         assert type(projected["schema_version"]) is int and projected["schema_version"] == 6
         assert projected["runtime_passage_readiness"]["complete"]["representation_bound_indexed_memories"] == 1
         assert projected["original_parent_identity_model_and_supporting_spans_verified"] is True

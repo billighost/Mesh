@@ -91,6 +91,86 @@ def run_jobs(store):
     memory._process_reembed_batch(hints)
 
 
+def test_passage_inference_packs_parents_with_exact_source_mapping(local_encoder):
+    store = MeshStore("passage-packed")
+    parents = [put(store, f"long-{number}", long_content(f"Aurora policy {number} requires blue envelopes.")) for number in range(6)]
+    short = put(store, "short", "Aurora short policy requires green envelopes.")
+    batches = []
+    original = local_encoder[0]._encode_raw_batches
+
+    def observe(texts, batch_size=32):
+        batches.append((len(texts), batch_size))
+        return original(texts, batch_size)
+
+    local_encoder[0]._encode_raw_batches = observe
+    run_jobs(store)
+    assert batches == [(16, 16), (2, 16)]
+    expected_texts = [" ".join(parent["content"][start:end].split()) for parent in parents
+                      for start, end in split_passages(parent["content"], local_encoder[0].window_tokenizer)]
+    assert local_encoder[1] == expected_texts
+    previous_vectors = {}
+    for parent in parents:
+        spans = split_passages(parent["content"], local_encoder[0].window_tokenizer)
+        per_parent = np.vstack([memory._hash_embed_384(" ".join(parent["content"][start:end].split())) for start, end in spans])
+        previous_vectors[parent["id"]] = memory._validated_embedding_rows(per_parent, len(spans))
+    rows = passage_rows(store)
+    assert len(rows) == 18
+    for (parent_id, revision, incarnation, ordinal, start, end, model, representation, blob), text in zip(rows, expected_texts):
+        parent = parents[int(parent_id.rsplit("-", 1)[1])]
+        assert (revision, incarnation, model, representation) == (parent["revision"], parent["incarnation"], MODEL, PASSAGE_FORMAT_VERSION)
+        assert (start, end) == split_passages(parent["content"], local_encoder[0].window_tokenizer)[ordinal]
+        np.testing.assert_array_equal(storage._blob_to_vector(blob), storage._normalize_vector(previous_vectors[parent_id][ordinal]))
+    assert store.get_indexing_status([short["id"]])[short["id"]]["passage_indexing_state"] == "indexed"
+    assert store.embedding_job_stats()["pending_count"] == 0
+
+
+def test_packed_inference_revalidates_each_parent_after_edit(local_encoder):
+    store = MeshStore("passage-packed-cas")
+    changed = put(store, "changed")
+    survivor = put(store, "survivor", long_content("Aurora survivor policy requires green envelopes."))
+    original = local_encoder[0]._encode_raw_batches
+
+    def concurrent_edit(texts, batch_size=32):
+        store.update(changed["id"], content="A replacement accepted source.")
+        return original(texts, batch_size)
+
+    local_encoder[0]._encode_raw_batches = concurrent_edit
+    run_jobs(store)
+    rows = passage_rows(store)
+    assert len(rows) == 3 and all(row[0] == survivor["id"] for row in rows)
+    assert store.get(changed["id"])["passage_format_version"] == ""
+    assert store.get_indexing_status([survivor["id"]])[survivor["id"]]["passage_indexing_state"] == "indexed"
+    assert store.embedding_job_stats()["pending_count"] == 1
+
+
+@pytest.mark.parametrize("invalid", ["count", "nonfinite"])
+def test_late_packed_inference_failure_publishes_no_partial_bundle(local_encoder, invalid):
+    store = MeshStore("passage-packed-failure")
+    for number in range(6):
+        put(store, f"long-{number}", long_content(f"Aurora policy {number} requires blue envelopes."))
+    original = local_encoder[0]._encode_raw_batches
+    calls = 0
+
+    def fail_later(texts, batch_size=32):
+        nonlocal calls
+        calls += 1
+        vectors = original(texts, batch_size)
+        if calls == 2:
+            if invalid == "count":
+                return vectors[:-1]
+            vectors[-1, 0] = np.nan
+        return vectors
+
+    local_encoder[0]._encode_raw_batches = fail_later
+    baseline = storage.get_vector_cache_stats()["charged_bytes"]
+    run_jobs(store)
+    assert calls == 2 and passage_rows(store) == []
+    with store._read_connect() as connection:
+        jobs = connection.execute("SELECT attempts,error_code FROM embedding_jobs ORDER BY memory_id").fetchall()
+    assert len(jobs) == 6 and all(tuple(row) == (1, "embedding_failed") for row in jobs)
+    assert storage.get_vector_cache_stats()["charged_bytes"] == baseline
+
+
 def passage_rows(store):
     with store._read_connect() as connection:
         return [tuple(row) for row in connection.execute("SELECT parent_id,parent_revision,parent_incarnation,ordinal,start,end,embedding_model,representation_version,embedding FROM memory_passages ORDER BY parent_id,ordinal")]

@@ -183,6 +183,8 @@ Key/value metadata, including `schema_version`, `namespace_owner`, `content_vers
 
 Required neural indexing work keyed by memory ID, namespace, content revision, incarnation, target model and target representation. Publication checks all of those values and the store generation in the write transaction; stale or completed work cannot overwrite a current vector. Missing neural passage generations are discovered in capacity-aware bounded batches. Unsupported or absent local passage backends leave explicit passage work pending with backoff; supported document encoding can still publish a primary vector without consuming that passage job.
 
+Within the existing admitted source-byte and working-memory bounds, passage inference packs at most sixteen original-source texts across parents. Each returned vector maps back to its parent and passage ordinal before the unchanged identity-checked publication transaction. A late inference failure publishes no partial bundle; required jobs remain durable. Native speed, numerical quality and memory effects require source-bound qualification.
+
 ### `mutation_outbox`
 
 Content-free mutation events with stable event IDs, object IDs, revisions, and delivery timestamps. They commit with authoritative effects and are delivered to the durable audit database with deduplication.
@@ -498,6 +500,7 @@ There is no remote telemetry or phone-home mechanism.
 - Vector/lexical snapshot allocations, transaction deltas, SQLite page caches, query/embedding caches, receipts, outboxes, pending jobs, and telemetry are bounded. Large namespaces use the streaming retrieval/export paths.
 - Async transports offload blocking work through a bounded executor with four workers and at most 32 admitted calls, so a normal burst from sixteen local agents can queue without creating more worker threads. Cancellation before execution releases admission when its queued runner settles; an admitted mutation keeps its receipt outcome for reconciliation after caller cancellation.
 - Optional local group commits reserve bounded items/bytes, prepare outside the writer transaction, schedule by namespace/producer, and isolate each operation with a savepoint. Success is delivered only after the shared FULL commit. Direct SDK access remains supported; the broker is not an exclusive-writer claim.
+- Nested guarded writes refresh committed cache/file stamps once after the outer transaction. Savepoint releases retain pending cache deltas and callbacks until that owner commits; rollback still invalidates or restores the existing transaction state.
 - FTS updates use integer rowid lookups.
 - C-001 (SQLITE_MISUSE under thread contention) was fixed in 0.8.1b2 by reworking thread synchronization. Field test: 8 threads in 7.16 s with 0 errors; 16 threads in 17.11 s with 0 errors.
 - Many agents can share one authenticated server to reuse its model/cache and amortize FULL commits. Separate local processes can also cooperate through the same namespace file locks and runtime contract.
