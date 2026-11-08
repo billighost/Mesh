@@ -23,6 +23,12 @@ finally:
     sys.path.pop(0)
 
 
+def test_registered_harness_sources_match_measured_report_sources():
+    from benchmarks import production_bench
+
+    assert controller.harness_manifest() == production_bench.benchmark_source_manifest()
+
+
 @pytest.fixture
 def isolated_plan(tmp_path, monkeypatch):
     repository = tmp_path / "repository"

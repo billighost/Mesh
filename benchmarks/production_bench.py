@@ -109,7 +109,7 @@ def source_manifest(repo: Path) -> dict[str, str]:
 
 def benchmark_source_manifest() -> dict[str, str]:
     return {"benchmarks/" + name: hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
-            for name in ("production_bench.py", "production_transport.py")}
+            for name in ("production_bench.py", "production_transport.py", "embedding_shadow.py", "retrieval_ci.py")}
 
 
 def _sources_unchanged(config: dict[str, Any]) -> bool:
