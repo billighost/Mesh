@@ -7,8 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from test_runtime_reranker_diagnostics import ci, production, write_case
-from test_runtime_reranker_ci import fixture as native_fixture
+from tests.test_runtime_reranker_diagnostics import ci, production, write_case
+from tests.test_runtime_reranker_ci import fixture as native_fixture
 from retrieval_c4 import C4Failure
 
 
