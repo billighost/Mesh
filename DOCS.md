@@ -7,7 +7,7 @@ Complete user guide for **Mesh** (`mesh-context-layer`) **0.9.0** (Beta): instal
 - Looking for one specific command? Jump to the [CLI reference](#6-cli-reference).
 - README overview and FAQ: [README.md](README.md).
 
-> Current API descriptions reflect the 0.9.0 source branch. Historical field-test observations retain their tested versions and dates. Commands marked **verified** refer to the named isolated run; no cloud provider was called.
+> Current API descriptions reflect the 0.9.0 source branch; check the installed version before using them with an older PyPI package. Historical field-test observations retain their tested versions and dates. Commands marked **verified** refer to the named isolated run; no cloud provider was called.
 
 ---
 
@@ -35,6 +35,25 @@ pip install mesh-context-layer
 mesh --help
 mesh doctor
 ```
+
+### Upgrading to 0.9.0
+
+Stop agents and any Mesh daemon, and back up the complete `MESH_HOME` before
+upgrading. Populated namespace upgrades verify a pre-migration backup before
+applying schema 6. The new schema tracks revisions, incarnations, store
+generations, indexing jobs and operation receipts. Older packages must not open
+an upgraded store; rollback requires restoring its backup with the matching
+older package. Do not rely on a public-only JSON export as the sole backup of
+private data.
+
+```bash
+pip install --upgrade mesh-context-layer
+mesh version
+```
+
+Restart the daemon and MCP clients after upgrading. Preview the integration
+changes before reinstalling rules, profiles or skills with `mesh install AGENT
+--dry-run`, replacing `AGENT` with the supported agent name.
 
 ### Optional extras
 
@@ -1016,7 +1035,7 @@ It binds loopback by default. Non-loopback binding requires an explicit `--host`
 | `MESH_MAX_OPERATION_RECEIPTS` | Retained operation-receipt cap per store. Default 100000; receipts are not automatically expired to admit new writes. |
 | `MESH_MAX_OPERATION_RECEIPT_BYTES` | Maximum serialized content-free receipt size. Default 1 MiB. |
 | `MESH_NO_OUTBOX_WORKER` | `1` disables background outbox discovery/delivery. Durable events remain stored; use only when managing delivery explicitly. |
-| `MESH_MAX_QUERY_ROWS` | Retention cap on stored search query records per namespace (default 1000). Pruned automatically in FIFO order. |
+| `MESH_MAX_QUERY_ROWS` | Retention cap on stored search query records per namespace (default 10000). Pruned automatically in FIFO order. |
 | `MESH_LOG_QUERY_TEXT` | `1` (default) stores redacted search queries in the local `queries` table. `0` or `false` disables query-text logging entirely (stores empty query string, preserving query count metrics with zero search terms recorded). |
 | `MESH_TRACKING_BATCH` | In-memory access tracking batch write limit before flushing to SQLite. Default 128. |
 | `MESH_TRACKING_FLUSH_SECONDS` | In-memory access tracking maximum flush interval in seconds. Default 5.0. |
@@ -1124,7 +1143,7 @@ Mesh embeds locally with ONNX Runtime (`all-MiniLM-L6-v2`, 384 dimensions) or th
 
 ### Local access tracking and telemetry policy
 
-No remote telemetry or phone-home. Local access tracking records (`access_count`, `accessed_at`, `queries`) and operational audit events remain strictly on the local machine in SQLite. They are never transmitted over the network and are completely excluded from all exports (`mesh export`, CSV, Markdown, JSON). Query text records are automatically pruned according to `MESH_MAX_QUERY_ROWS` (default 1,000) and can be disabled via `MESH_LOG_QUERY_TEXT=0`. Local audit events are content-free and only exportable via `mesh audit export` to a local file you explicitly choose.
+No remote telemetry or phone-home. Local access tracking records (`access_count`, `accessed_at`, `queries`) and operational audit events remain strictly on the local machine in SQLite. They are never transmitted over the network and are completely excluded from all exports (`mesh export`, CSV, Markdown, JSON). Query text records are automatically pruned according to `MESH_MAX_QUERY_ROWS` (default 10,000) and can be disabled via `MESH_LOG_QUERY_TEXT=0`. Local audit events are content-free and only exportable via `mesh audit export` to a local file you explicitly choose.
 
 ### Log capture
 
@@ -1165,56 +1184,52 @@ mesh run --env STRIPE_KEY=keyring://mesh/shared/STRIPE_KEY -- ./deploy.sh
 
 ## 14. Performance and evidence
 
-### Method
+### Current source measurements
 
-From [`benchmarks/RESULTS.md`](benchmarks/RESULTS.md): local ONNX embeddings, Windows AMD64 / Ubuntu 22.04 CI, Python 3.12/3.14, SQLite 3.50+ WAL with Porter FTS5, synthetic multi-domain corpus. These are not universal numbers.
+[benchmarks/RESULTS.md](benchmarks/RESULTS.md) is the authoritative record for
+**Mesh 0.9.0** measurements. Each checkpoint names its tested commit, local
+model, dependency versions, operating system and workload. Durable acceptance,
+completed neural indexing, retrieval quality, latency, CPU and sampled RAM are
+separate observations. Failed, resource-rejected, deferred and unscored
+conditions remain visible.
 
-### Core operations (p50)
+Normal CI and both full qualification suites passed at `2d67c704` on November 8,
+2026. Its storage benchmark failed before measurement registration, and its
+test-speed report failed source-manifest validation. All five retrieval jobs
+failed overall. Those failures do not establish a new storage or test-speed
+result. See [remote qualification](docs/CI_VALIDATION.md) for the complete status
+and prerequisites for another source to be qualified.
 
-| Operation | p50 |
-|---|---:|
-| Brief (500-token) | 6.20 ms |
-| Brief (full) | 6.85 ms |
-| Task create | 39.55 ms |
-| Task list | 5.75 ms |
-| Task update | 22.04 ms |
-| Task complete | 21.36 ms |
-| Log (markdown) | 2.60 ms |
-| Log (JSON) | 2.54 ms |
-| Recall hybrid top-5 | 57.78 ms |
-| Recall top-1 | 47.50 ms |
-| Learn new | 140.96 ms |
-| Learn duplicate | 64.12 ms |
-| Inspect top-10 | 2.86 ms |
-| Count | 1.40 ms |
-| Embedding cache hit | 0.02 ms |
+Passage retrieval and optional local reranking remain default off. Gains on
+small bounded fixtures do not establish general accuracy, and no profile is
+qualified across all evaluated datasets. Process-crash checks establish the
+observed recovery behavior; physical power-cut survival requires separate
+hardware/filesystem testing.
 
-### Scale
+### Historical comparisons
 
-| Memories | Work items | Ingest | DB | Dense recall p50 | Brief p50 | Task list p50 | Reopen | RAM delta |
-|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 500 | 100 | ~15/s | 5.39 MB | 143.7 ms | 7.04 ms | 4.11 ms | 5.52 ms | +195 MB |
-| 1,000 | 200 | ~16/s | 10.6 MB | 152.1 ms | 7.82 ms | 4.35 ms | 5.80 ms | +198 MB |
-| 5,000 | 1,000 | ~18/s | 52.4 MB | 178.4 ms | 9.15 ms | 5.12 ms | 6.20 ms | +215 MB |
-| 10,000 | 2,000 | ~19/s | 104.8 MB | 195.2 ms | 11.40 ms | 6.40 ms | 6.95 ms | +240 MB |
+The 470-answerable-query competitor comparison in
+[docs/BENCHMARKS.md](docs/BENCHMARKS.md) evaluates **Mesh 0.8.3**, Mem0 2.2.1,
+Basic Memory 0.24.1 and Auxly 1.5.0. Its scores and the corresponding
+[historical performance report](docs/PERFORMANCE.md) do not measure the 0.9.0
+candidate. The [field-test archive](docs/field-test/README.md) retains its own
+tested package versions and independent observations.
 
 ### Reproduce
 
-```bash
-python benchmarks/mesh_benchmark.py
-python benchmarks/concurrency_stress.py
-python benchmarks/scale_benchmark.py --scales 500,1000,5000
-pytest tests/bench/test_retrieval_benchmark.py -v
-```
+Follow the isolated, source-bound workloads in
+[PRODUCTION.md](benchmarks/PRODUCTION.md) and
+[RETRIEVAL.md](benchmarks/RETRIEVAL.md). The Actions workflows retain exact
+source/dependency hashes and failure artifacts. Model and corpus evaluations
+require verified local assets; the harnesses do not call a cloud LLM provider.
 
-### What is not measured
+### Scope limits
 
-- 100,000+ memories.
-- macOS/Linux independent runs.
-- Long-duration soak tests.
-- Real-world corpus retrieval quality.
-- Agent compliance rates beyond the small probe.
-- Cloud capture latency or cost.
+The recorded checkpoints do not establish a full-population LongMemEval result,
+complete multi-source answers, performance at 100,000+ memories, long-duration
+soak behavior, generalized competitor superiority, or physical power-cut
+validation. A complete matched competitor comparison of the changed 0.9.0
+candidate remains separate work.
 
 ---
 
@@ -1428,7 +1443,7 @@ sha256sum /tmp/mesh-wheel/*.whl
 
 Compare the hash with the release record. Building from source: `pip install .` or `python -m build`.
 
-The sdist excludes landing pages, marketing assets, benchmarks, docs, and media; the wheel includes the Python package and skill Markdown files.
+The wheel includes the Python package and packaged skill resources. The sdist also includes tests, scripts and the explicitly listed benchmark helpers and fixed fixtures needed for qualification. Landing pages, marketing assets, raw benchmark datasets/results, model binaries and media are excluded; inspect the release archive and package validation manifest for its exact contents.
 
 ---
 

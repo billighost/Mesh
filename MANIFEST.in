@@ -22,6 +22,7 @@ include benchmarks/production_bench.py
 include benchmarks/production_transport.py
 include benchmarks/production_runner.py
 include benchmarks/production_ledger.py
+include benchmarks/storage_profile.py
 include benchmarks/production_test_speed.py
 include benchmarks/production_report.py
 include benchmarks/freeze_production_dependencies.py

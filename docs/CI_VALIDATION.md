@@ -1,5 +1,33 @@
 # Remote qualification for Mesh 0.9.0
 
+## Current completed checkpoint (reviewed November 16, 2026)
+
+At `2d67c704`, [normal CI](https://github.com/billighost/Mesh/actions/runs/42485932114)
+and both full primary/minimum suites in the
+[production run](https://github.com/billighost/Mesh/actions/runs/42485932167)
+passed. The production workflow finished on November 8; it is no longer running.
+Its storage matrix failed during source-manifest registration before measured
+cells began. The test-speed comparison failed while validating its report
+manifest. The controller and producer submitted four benchmark source files,
+but the ledger's allowed paths admitted only two. Correctness qualification
+therefore passed without a successful new storage or test-speed observation.
+
+All five retrieval jobs failed overall. Native reranking meets its own gates on
+the small direct-fact and positional-long-text fixtures, but ordinary default
+accuracy still misses its targets. The inspected LongMemEval native score also
+misses its quality target. NFCorpus native reranking exceeds added latency
+limits; SciFact exceeds added latency and CPU limits. Rejected native conditions
+remain unscored. The optional E5 shadow is a separate manual experiment and was
+not run. [RESULTS.md](../benchmarks/RESULTS.md) retains source-specific evidence.
+
+Subsequent source changes require their own full qualification and relevant
+measurements. Neither an earlier passing suite nor an experimental fixture gain
+qualifies a changed default or establishes a competitor result. The historical
+470-query comparison evaluates Mesh 0.8.3; the five-dataset workflow below
+qualifies Mesh configurations rather than running its competitors.
+
+## Earlier source checkpoints
+
 At `e353bc1`, [normal CI](https://github.com/billighost/Mesh/actions/runs/42378934838)
 passed, and [the production run](https://github.com/billighost/Mesh/actions/runs/42378934727)
 passed both full qualification suites, the concurrent-write matrix, and the
@@ -7,19 +35,19 @@ same-selection test-speed comparison. The immutable SQLite snapshot repair is
 verified in native retrieval runs. [RESULTS.md](../benchmarks/RESULTS.md) records
 the tested source and retains earlier evidence.
 
-Retrieval qualification still fails. Compact native reranker conditions meet
+At that checkpoint, retrieval qualification failed. Compact native reranker conditions met
 their own gates on the direct-fact and positional long-text fixtures, while the
 inspected LongMemEval conditions miss the accuracy target. Some full-length
-conditions exceed the incremental resource limits. Every public-corpus job
-exceeds the unchanged cumulative CPU budget; the completed SciFact passage
+conditions exceed the incremental resource limits. Every public-corpus job at `e353bc1`
+exceeded the unchanged cumulative CPU budget; the completed SciFact passage
 condition attributes most worker CPU to queries. No profile qualifies across
 all evaluated datasets. Baseline failures, rejected profiles, and unscored
 phases remain visible; passing storage tests do not waive retrieval gates.
 
-The current cache repair omits redundant primary lexical terms only for complete
+The reviewed cache repair omits redundant primary lexical terms only for complete
 validated long-parent passage generations, with a complete primary streaming
-fallback. Its focused tests pass; public cache admission, CPU use, and accuracy
-still require a source-bound Actions run. Post-export native reranker diagnostics
+fallback. Later source-bound passage conditions complete on the public corpora;
+full optional reranker quality and resource qualification remains incomplete. Post-export native reranker diagnostics
 record candidate ranks and input geometry after scoring, without exposing text
 or changing ranking inputs. They can identify an evidence-prefix limitation or
 an inside-prefix miss; they cannot infer answer-span containment from document

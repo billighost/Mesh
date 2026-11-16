@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [0.9.0] - Unreleased
 
-Release improving durable concurrent storage, natural-language retrieval, bounded resource use, and persistent context for agents sharing one machine. The Python API remains compatible; native SQLite is supplied by the APSW dependency.
+Candidate release for durable concurrent storage, retrieval, bounded resource use, and persistent context for agents sharing one machine. Python entry points are retained; native SQLite is supplied by the required APSW dependency. Schema 6 upgrades require a backup and must not be reopened by older packages. Performance and accuracy evidence remains tied to each tested source; see the [release notes](docs/releases/RELEASE_NOTES_v0.9.0.md).
 
 ### Added
 - **Patched SQLite runtime**: A lazy DB-API facade uses APSW's bundled SQLite for storage, audit, encryption helpers, backup, and maintenance. Runtime verification rejects vulnerable WAL versions and missing FTS5 or thread safety. Persistent transactions use `synchronous=FULL` by default.
@@ -17,6 +17,7 @@ Release improving durable concurrent storage, natural-language retrieval, bounde
 - **Reviewed connection profiles**: `mesh.client.MeshClient` and `mesh call` preserve namespace, store identity, agent attribution, and privacy policy across SDK and existing authenticated HTTP access. The packaged skill documents MCP, CLI, SDK, and HTTP fallback and requires topic recall before decisions.
 - **Expanded project briefs**: Select up to twenty current facts with IDs, bounded work and handoff context, omissions, and continuation metadata. Brief parameters and estimated Markdown budgets are consistent across supported surfaces.
 - **Isolated parallel testing and process benchmarks**: `scripts/run_tests.py` bounds workers, plugins, and math-library threads while retaining selected tests, CI property-test profiles, and coverage. Production benchmarks distinguish durable acceptance, verified indexing, real HTTP transport, receipts, and resource usage.
+- **Optional E5 shadow evaluation**: Benchmark-only paired stores can evaluate pinned role-prefixed E5 encoding with normal-cache and cache-cold query strata. The trial retains source and identity checks and fixed quality/resource gates; it does not change the production embedding model.
 - **Multi-Format Data Export (`mesh/io.py`, `mesh/cli.py`)**: Added full export support for JSON (complete round-trip), Markdown summaries, and spreadsheet CSV formats (`mesh export --format {json,markdown,csv}`). CSV export neutralizes formula injection attempts (CWE-1236) by escaping leading `=`, `+`, `-`, `@`, `	`, and `` characters.
 - **Embedding-Downgrade Protections & Re-Embedding CLI (`mesh reembed`, `mesh/memory.py`)**: Enforced dimension and model validation preventing high-dimensional ONNX vectors from being silently overwritten by lexical hash vectors. Added `mesh reembed` CLI command and API to explicitly drain and upgrade memory stores to target neural embedding models.
 - **Daemon Readiness Probe (`mesh/daemon.py`, `mesh/cli.py`)**: Added deterministic health and readiness endpoints (`/healthz`, `/readyz`) with keep-alive socket checks to confirm transformer model readiness before CLI query delegation.
@@ -42,7 +43,7 @@ Release improving durable concurrent storage, natural-language retrieval, bounde
 
 ### Security
 - **Strict Input Validation & Prompt Injection Defense**: Hardened `mesh/guard.py` delimiter sanitization preventing prompt injection probes within ingested conversational turns.
-- **Secret Redaction Integrity**: Verified zero leakage of multiline bearer tokens, API keys, and environment credentials in logs, audits, and exports.
+- **Secret Redaction Integrity**: Expanded regression coverage for multiline bearer tokens, API keys and environment credentials. Durable audit events exclude content and secret values; detection remains best-effort and secret references remain the preferred input.
 
 ### Removed
 - **Legacy Native C Core**: Removed `c_core/`, `c_cli/`, `mesh/c_bridge.py`, `mesh/native_cli.py`, and prebuilt DLL binaries.

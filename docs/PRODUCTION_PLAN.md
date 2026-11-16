@@ -5,6 +5,25 @@ Inspected branch: feat/ci-evidence, HEAD 61ec16de97a5604a19a81c6396f8bfc46d982c4
 
 ## Implementation checkpoint
 
+Latest completed candidate: `2d67c704` on `ci/mesh-production-run-c4-20261106`.
+[Normal CI](https://github.com/billighost/Mesh/actions/runs/42485932114) and both
+full primary/minimum qualification suites passed. The
+[production run](https://github.com/billighost/Mesh/actions/runs/42485932167)
+finished on November 8 with storage registration and test-speed reporting
+failures caused by a stale benchmark source-manifest allowlist. All five
+retrieval jobs failed overall. Current native reranking misses conversational
+quality or public-corpus resource targets; no optional default is qualified.
+The separately enabled E5 shadow remains unrun. These results supersede the
+older checkpoints below where their status differs.
+
+The candidate includes patched APSW/WAL-FULL storage, schema-6 identity and
+receipts, atomic work history, bounded bulk/group execution, namespace recovery,
+cache/backfill changes and agent transport fallback. Release preparation must
+repair the benchmark manifest boundary, qualify changed sources, publish honest
+results and complete the fresh matched competitor comparison. The earlier
+470-query competitor evidence measures Mesh 0.8.3. See
+[CI_VALIDATION.md](CI_VALIDATION.md) for the current qualification requirements.
+
 An explicit, default-off E5 shadow experiment is implemented for remote
 qualification. It compares fresh SDK calls on copies of one original-parent
 snapshot, reembeds every copied parent with revision/incarnation/generation
@@ -15,7 +34,7 @@ cache-cold strata. The model, tokenizer, profile and durable space are pinned;
 native quality, resource and packaging proof remains pending. This experiment
 does not select a production embedding model. See [RETRIEVAL.md](../benchmarks/RETRIEVAL.md).
 
-The latest completed source is `e353bc1`: normal CI, both full qualification
+At the earlier completed source `e353bc1`: normal CI, both full qualification
 suites, the concurrent-write matrix, and the test-speed comparison passed in
 [Actions](https://github.com/billighost/Mesh/actions/runs/42378934727).
 The native snapshot repair holds. Retrieval remains unqualified: compact
@@ -420,14 +439,14 @@ Static skill checks and scripted traces cannot prove that a model will obey inst
 
 Process-kill tests are crash tests, not physical power-loss proof. The software contract requires patched SQLite, FULL synchronization, transaction ordering, and documented filesystem/device flush guarantees. Add controlled VM/device fault evidence before claiming empirical power-loss validation.
 
-Required handoff checks: ruff check ., python scripts/check_skill.py, python scripts/check_docs.py, and pytest -q. The docs checker currently imports MCP dependencies despite the stated stdlib-only requirement; make schema/reference checking genuinely stdlib-only during the implementation.
+Required handoff checks: ruff check ., python scripts/check_skill.py, python scripts/check_docs.py, and pytest -q. The documentation checker now derives the reference schemas from source using the standard library, without importing the MCP runtime.
 
 ### 8. Tradeoffs and recommended choices
 
 | Choice | Recommendation and reason | Status |
 |---|---|---|
 | Deployment | Many agents on one machine, because it is the realistic user workload. | Approved. |
-| Durability | FULL and verified patched SQLite, because recent acknowledged memories must survive crash/power loss. | Implemented with bundled APSW; platform/package and process-crash checks passed at `e353bc1`. Physical power-cut validation remains unperformed. |
+| Durability | FULL and verified patched SQLite, because recent acknowledged memories must survive crash/power loss. | Implemented with bundled APSW; platform/package and process-crash checks passed at `2d67c704`. Physical power-cut validation remains unperformed. |
 | Language | Keep Python/SQLite first; allow selective native work only after end-to-end profiling. Current logical defects and fsync costs survive a rewrite. | Python retained; the latest measured passage-query cost is being addressed through cache layout before adding another native dependency. |
 | Reranker | Evaluate an optional local model with bounded work and explicit budgets; select by measured first-result gains. | Evaluation approved; default/model choice gated by evidence. |
 | Query mode | Neural when the verified configured model is ready, explicit degraded fallback otherwise. | Implemented; query caches are bound to model space and encoding role. |

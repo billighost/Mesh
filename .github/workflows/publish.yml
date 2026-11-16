@@ -18,18 +18,39 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
+permissions:
+  contents: read
+  actions: read
+
+env:
+  MESH_NO_AUTO_DAEMON: "1"
+  MESH_NO_MODEL_DOWNLOAD: "1"
+  MESH_NO_UPDATE_CHECK: "1"
+  MESH_NO_IMPLICIT_CLOUD: "1"
+  MESH_AUTO_APPROVE: "0"
+  MESH_ENABLE_AUTO_SYNC: "0"
+  MESH_ALLOW_CLOUD_CAPTURE: "0"
+  MESH_ALLOW_CLOUD_SYNC: "0"
+  HF_HUB_OFFLINE: "1"
+  TRANSFORMERS_OFFLINE: "1"
+  PYTHONUTF8: "1"
+
 jobs:
   build:
     name: Build & Validate Release Packages
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       id-token: write
       attestations: write
       contents: read
+      actions: read
     steps:
       - name: Checkout Repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
           fetch-depth: 0
 
       - name: Set up Python 3.12
@@ -38,13 +59,21 @@ jobs:
           python-version: "3.12"
           cache: "pip"
 
+      - name: Verify the exact release tag and same-source qualification
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python scripts/release_check.py --checks-only --verify-publication
+
       - name: Install Build & QA Tools
         run: |
           python -m pip install --upgrade pip
-          pip install build twine ruff pytest hatchling
+          python -m pip install ".[test,secrets]" build twine ruff hatchling
 
       - name: Verify Code Quality
-        run: ruff check .
+        run: |
+          python -m ruff check .
+          python scripts/check_skill.py
+          python scripts/check_docs.py
 
       - name: Build Distributions & Generate SBOM / Provenance
         run: PYTHONPATH=. python scripts/build_release.py
@@ -54,13 +83,15 @@ jobs:
         with:
           subject-path: "dist/*"
 
-      - name: Smoke-Test Wheel in Isolated Virtualenv
-        run: |
-          python -m venv test_env
-          test_env/bin/pip install dist/*.whl
-          test_env/bin/python -c "import mesh; print('Installed Mesh version:', mesh.__version__)"
-          test_env/bin/mesh --help
-          test_env/bin/mesh version
+      - name: Validate the installed wheel and extracted source archive in isolated homes
+        run: python scripts/validate_production_package.py dist --collect-sdist
+
+      - name: Preserve installed package validation
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: release-package-validation
+          path: .work/package-final-validation.json
+          if-no-files-found: error
 
       - name: Upload Built Artifacts
         uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
@@ -74,6 +105,7 @@ jobs:
     name: Publish to PyPI via Trusted Publishing (OIDC)
     needs: [build]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     environment:
       name: ${{ github.event.inputs.target == 'testpypi' && 'testpypi' || 'pypi' }}
       url: ${{ github.event.inputs.target == 'testpypi' && 'https://test.pypi.org/p/mesh-context-layer' || 'https://pypi.org/p/mesh-context-layer' }}
@@ -110,6 +142,7 @@ jobs:
     needs: [build, publish]
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'release'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write
     steps:

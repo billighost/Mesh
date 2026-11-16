@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "mesh_version": "0.9.0",
+  "source_commit": "2d67c704e45d4f3eb2da1bcd0f0477749528ec8e",
+  "production_run_id": 42485932167,
+  "job_id": 128749391777,
+  "status": "failed_before_registration",
+  "failure_code": "UnsafeRelativeSourceManifest",
+  "measured_cells": [],
+  "headline_eligible": false,
+  "numerical_ledger_available": false,
+  "failure_log_sha256": "57651bec966f9d15fcdf5b8d9c3ea7f2002b76d7fc84269033d5a3bdd9bc95f6"
+}

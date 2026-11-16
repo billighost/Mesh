@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "mesh_version": "0.9.0",
+  "source_commit": "2d67c704e45d4f3eb2da1bcd0f0477749528ec8e",
+  "production_run_id": 42485932167,
+  "status": "unavailable",
+  "headline_eligible": false,
+  "reason": "storage_and_test_speed_reports_failed_source_manifest_validation",
+  "conditions": [],
+  "competitor_comparison_run": false,
+  "qualifies_generalized_speedup": false
+}

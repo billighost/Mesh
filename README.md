@@ -11,7 +11,7 @@ When one agent learns something, another agent in a different session or tool ca
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 ![Status: Beta](https://img.shields.io/badge/status-beta-orange.svg)
 
-> **Beta.** Source version `0.9.0`. Requires Python 3.10+. Read [DOCS.md](DOCS.md) for full reference and [SECURITY.md](SECURITY.md) for vulnerability reporting.
+> **Beta.** This README describes source version `0.9.0`; the PyPI badge shows the published package version. Requires Python 3.10+. See the [0.9.0 release notes](docs/releases/RELEASE_NOTES_v0.9.0.md), [DOCS.md](DOCS.md) for the full reference, and [SECURITY.md](SECURITY.md) for vulnerability reporting.
 
 ---
 
@@ -20,15 +20,15 @@ When one agent learns something, another agent in a different session or tool ca
 Get started in three commands:
 
 ```bash
-# 1. Install the pure-Python package
+# 1. Install Mesh and its patched SQLite dependency
 pip install mesh-context-layer
 
 # 2. Preview and apply configuration to your AI coding agent (e.g. Claude Code, Cursor, Windsurf)
 mesh install claude-code --dry-run
 mesh install claude-code --apply
 
-# 3. Non-interactive or headless setups can pre-download the local model upfront:
-mesh setup --yes
+# 3. Choose whether to download the optional local embedding model:
+mesh setup
 ```
 
 Use Mesh in Python:
@@ -47,7 +47,7 @@ for r in results:
     print(f"{r['content']} (score: {r['similarity']:.2f})")
 ```
 
-*First-run model download:* The local ONNX embedding model (`all-MiniLM-L6-v2`, ~86 MB) downloads on first use after explicit interactive user consent. For non-interactive or CI environments, pass `--yes` to `mesh setup` to accept the download upfront.
+*First-run model download:* The local ONNX embedding model (`all-MiniLM-L6-v2`, ~86 MB) requires explicit user consent. Memory operations also work with the built-in hash backend; neural search requires the verified local model. See [model setup](DOCS.md#mesh-setup).
 
 ---
 
@@ -62,6 +62,20 @@ Mesh provides a dedicated context coordination layer designed specifically for m
 - **Session handoff & task ledger:** Deterministic task management (`mesh_task_create`, `mesh_task_update`, `mesh_task_complete`) and automated project summaries (`mesh_project_brief`) give arriving agents instant project context across disconnected sessions.
 - **Privacy by default:** Built-in secret detection scans and redacts credentials before disk persistence. Server-enforced namespace locks ensure private context is never leaked across boundaries.
 - **20 MCP tools:** Complete Model Context Protocol server exposing 20 specialized tools for durable memory, task lifecycles, and changelogs.
+
+### Changes in 0.9.0
+
+Persistent writes use patched SQLite from APSW with WAL/FULL synchronization.
+Schema 6 binds indexing jobs, mutation delivery and operation receipts to the
+current memory revision, incarnation and store generation. Atomic bulk calls,
+optional group commits, bounded caches, and recoverable namespace maintenance
+support agents sharing one machine. Project briefs and reviewed connection
+profiles preserve context and policy across MCP, CLI, SDK and HTTP access.
+
+Passage retrieval and local reranking remain explicitly enabled experiments.
+Their native accuracy and resource qualification is incomplete; neither is a
+validated default. Source-specific observations and failures are recorded in
+[benchmarks/RESULTS.md](benchmarks/RESULTS.md).
 
 ---
 
@@ -89,17 +103,17 @@ Independently reviewed by 3 people (Jason, Mark and Adesire); see [docs/REVIEWS.
 
 ## 5. Benchmarks & Empirical Evidence
 
-All benchmarks are measured under reproducible harnesses with raw JSON results published in the repository. See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for accuracy methodologies and [docs/PERFORMANCE.md](docs/PERFORMANCE.md) for latency, memory, disk, and concurrency measurements.
+Current **Mesh 0.9.0** qualification and measured checkpoints are recorded in [benchmarks/RESULTS.md](benchmarks/RESULTS.md), including failed and deferred conditions. The comparative tables and microbenchmarks below are historical **Mesh 0.8.3** evidence; they do not measure the 0.9.0 changes. See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for the historical accuracy methodology and [docs/PERFORMANCE.md](docs/PERFORMANCE.md) for its resource measurements.
 
-### Headline Retrieval Accuracy ($N=470$ LongMemEval-S Ground-Truth Corpus)
+### Historical Retrieval Accuracy (Mesh 0.8.3; $N=470$ LongMemEval-S)
 
 *Source: `benchmarks/results/pass1/merged_raw.jsonl` (Run 41109952815, `ubuntu-24.04`, 4 vCPUs)*
 
-Mesh was evaluated against Mem0, Basic Memory, and Auxly across 470 non-abstention questions from the official LongMemEval-S benchmark (~489 conversational turns per haystack). 95% confidence intervals are computed via 1,000-sample bootstrap:
+Mesh 0.8.3 was evaluated against Mem0 2.2.1, Basic Memory 0.24.1, and Auxly 1.5.0 across 470 non-abstention questions from the official LongMemEval-S benchmark (~489 conversational turns per haystack). 95% confidence intervals are computed via 1,000-sample bootstrap:
 
 | Tool / Variant | Interface Class | Turn Recall@1 (95% CI) | Turn Recall@5 (95% CI) | Turn Recall@10 (95% CI) | Turn MRR (95% CI) | Turn NDCG@10 (95% CI) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Mesh SDK** | Class A (in-process) | 0.4128 [0.368, 0.455] | **0.8319** [0.798, 0.864] | 0.8894 [0.860, 0.917] | 0.5814 [0.546, 0.615] | 0.6022 [0.574, 0.633] |
+| **Mesh SDK (0.8.3)** | Class A (in-process) | 0.4128 [0.368, 0.455] | **0.8319** [0.798, 0.864] | 0.8894 [0.860, 0.917] | 0.5814 [0.546, 0.615] | 0.6022 [0.574, 0.633] |
 | **Mem0 SDK** | Class A (in-process) | 0.3872 [0.340, 0.432] | 0.7872 [0.751, 0.823] | 0.8957 [0.868, 0.921] | 0.5622 [0.527, 0.594] | 0.5807 [0.552, 0.611] |
 | **Basic Memory MCP** | Class C (stdio MCP) | **0.5213** [0.474, 0.568] | 0.8362 [0.804, 0.868] | **0.9277** [0.904, 0.949] | **0.6601** [0.626, 0.696] | **0.6673** [0.639, 0.698] |
 | **Auxly MCP (Ollama)** | Class C (stdio MCP) | 0.1191 [0.089, 0.149] | 0.4596 [0.413, 0.502] | 0.5234 [0.477, 0.566] | 0.2596 [0.227, 0.289] | 0.2938 [0.257, 0.329] |
@@ -108,7 +122,7 @@ Mesh was evaluated against Mem0, Basic Memory, and Auxly across 470 non-abstenti
 
 | Tool / Variant | Sess Recall@1 (95% CI) | Sess Recall@5 (95% CI) | Sess Recall@10 (95% CI) | Sess MRR (95% CI) | Sess NDCG@10 (95% CI) |
 | :--- | :---: | :---: | :---: | :---: | :---: |
-| **Mesh SDK** | **0.8894** [0.860, 0.917] | **0.9787** [0.966, 0.992] | **0.9894** [0.981, 0.998] | **0.9259** [0.906, 0.945] | **0.9133** [0.896, 0.930] |
+| **Mesh SDK (0.8.3)** | **0.8894** [0.860, 0.917] | **0.9787** [0.966, 0.992] | **0.9894** [0.981, 0.998] | **0.9259** [0.906, 0.945] | **0.9133** [0.896, 0.930] |
 | **Mem0 SDK** | **0.8894** [0.860, 0.917] | 0.9617 [0.943, 0.979] | 0.9830 [0.970, 0.994] | 0.9200 [0.899, 0.941] | 0.9256 [0.909, 0.941] |
 | **Basic Memory MCP** | 0.8745 [0.843, 0.904] | 0.9617 [0.945, 0.979] | 0.9830 [0.970, 0.994] | 0.9101 [0.887, 0.931] | 0.9054 [0.887, 0.924] |
 | **Auxly MCP (Ollama)** | 0.3681 [0.326, 0.413] | 0.7255 [0.687, 0.766] | 0.7511 [0.713, 0.791] | 0.5178 [0.483, 0.554] | 0.7360 [0.702, 0.771] |
@@ -118,7 +132,7 @@ Mesh was evaluated against Mem0, Basic Memory, and Auxly across 470 non-abstenti
 - At **Session Recall@5**, Mesh achieves **0.9787**, outperforming both Mem0 (**0.9617**) and Basic Memory (**0.9617**).
 - **Where Mesh is behind:** Basic Memory leads Mesh by +10.85 percentage points at **Turn Recall@1** (0.5213 vs. 0.4128) ; our analysis suggests Mesh's BM25 lexical component overweights exact conversational keywords in broad questions.
 
-### Performance & Resource Summary
+### Historical Performance & Resource Summary (Mesh 0.8.3)
 
 *Source: `benchmarks/results/pass2/` (bare-metal Windows 11 AMD Ryzen 7 5700U, Python 3.14.0 GA, NVMe SSD)*
 
@@ -137,7 +151,7 @@ Mesh was evaluated against Mem0, Basic Memory, and Auxly across 470 non-abstenti
 | Dimension | Mesh Context Layer | Basic Memory | Mem0 | Auxly |
 | :--- | :--- | :--- | :--- | :--- |
 | **Repository** | [billighost/mesh](https://github.com/billighost/mesh) | [basicmachines-co/basic-memory](https://github.com/basicmachines-co/basic-memory) | [mem0ai/mem0](https://github.com/mem0ai/mem0) | [Tzamun-Arabia-IT-Co/auxly-memory-cli](https://github.com/Tzamun-Arabia-IT-Co/auxly-memory-cli) |
-| **Package / Version** | PyPI `mesh-context-layer` 0.8.3 | PyPI `basic-memory` 1.0.0 (eval: 0.24.1) | PyPI `mem0ai` 2.2.1 (eval: 2.2.1) | GitHub v1.5.0 (eval: 1.5.0) |
+| **Package / Version** | Source `mesh-context-layer` 0.9.0 (historical evaluation: 0.8.3) | PyPI `basic-memory` 1.0.0 (eval: 0.24.1) | PyPI `mem0ai` 2.2.1 (eval: 2.2.1) | GitHub v1.5.0 (eval: 1.5.0) |
 | **License** | MIT | AGPL-3.0 | Apache-2.0 | MIT |
 | **Local-Only Operation** | Yes (default) | Yes | Optional (cloud default; local supported) | Yes |
 | **Search Mechanism** | Hybrid (dense cosine + BM25 + exact) | Hybrid (vector + SQLite FTS) | Vector similarity (Qdrant) | Vector (Ollama) or Substring scan |
@@ -173,9 +187,9 @@ Mesh stores data transparently in standard SQLite tables. You can inspect, query
 
 ## 8. Security & Distribution Verification
 
-- **Pure Python Distribution:** Distributed exclusively as architecture-independent pure Python wheels (`py3-none-any.whl`). No compiled C/C++ binaries, DLLs, `.so`, or `.dylib` files.
+- **Distribution:** Mesh ships a platform-independent Python wheel (`py3-none-any.whl`). Its required APSW dependency supplies native SQLite binaries for the target platform; Mesh verifies the patched runtime, FTS5 and thread safety before storage use.
 - **Trusted Publishing & Attestation:** Official releases are built and published through GitHub Actions using cryptographic OpenID Connect (OIDC) Trusted Publishing to PyPI, including GitHub build provenance attestations.
-- **Audited Secret Redaction:** Client-side regex and heuristic scanning redacts API keys, tokens, and credentials before persistence.
+- **Audited Secret Redaction:** Ingestion paths apply secret detection and redaction before persistence; server privacy locks remain authoritative.
 - **Audit Trails:** Security and lifecycle events are recorded in local `audit_<namespace>.db` without memory contents, task summaries, or sensitive strings.
 - **Security Reporting:** See [SECURITY.md](SECURITY.md) and [THREAT_MODEL.md](THREAT_MODEL.md) for vulnerability disclosure guidelines.
 
@@ -185,15 +199,15 @@ Mesh stores data transparently in standard SQLite tables. You can inspect, query
 
 Mesh is engineered for local, deterministic AI agent collaboration. It is not the optimal solution for every workload:
 
-1. **High-Concurrency Multi-Process Writes:** Writes from separate operating system processes serialize on an advisory file lock (`fcntl` / `msvcrt`). At 10 concurrent writing agents, p95 write latency reaches ~9.7 seconds (~8 writes/s). If your architecture requires hundreds of concurrent write processes, a client-server database like PostgreSQL or a dedicated vector cluster is preferable.
-2. **Default Ingestion Re-embedding Queue:** In default mode (`MESH_SYNC_ONNX` unset), Mesh accepts turns in ~13 ms using fast 384-dimensional lexical hashing while enqueuing background neural re-embedding (`mesh/memory.py`). Searches executed before the queue drains operate over lower-quality hash vectors.
-3. **Standalone CLI Fast Mode:** Standalone `mesh ask` commands run with lexical hash vectors by default to avoid loading the ~86 MB ONNX transformer model into short-lived CLI processes. Use the resident background daemon (`mesh daemon start`) or SDK `mesh.recall()` for full neural semantic precision.
-4. **Top-1 Retrieval Accuracy Deficit:** Our analysis suggests Mesh's hybrid retrieval gives significant weight to BM25 keyword matching. While this provides high top-5 turn recall (0.8319) and session recall (0.9787), it places Mesh turn Recall@1 (0.4128) behind Basic Memory (0.5213) on broad conversational queries where common words match distractors.
-5. **Disk Storage Footprint:** Mesh uses ~7.4 MB per 489 conversational turns compared to Mem0's ~3.3 MB (~2.2x larger) due to separate SQLite vector blobs and audit histories.
+1. **Concurrent Writes:** SQLite serializes writers within each namespace. Optional group commits coalesce supported server writes, but the measured 0.9.0 checkpoints establish no general storage speedup. Review the tested workload and deferred cells in [RESULTS.md](benchmarks/RESULTS.md) before selecting Mesh for a larger workload.
+2. **Indexing Readiness:** Foreground acceptance can precede neural indexing. Searches while jobs are pending may use hash or primary representations; callers needing neural readiness should use the documented indexing wait options.
+3. **Standalone CLI Fast Mode:** Short-lived CLI processes can use hash query embeddings to avoid loading the local transformer. Use the resident daemon or SDK with a verified neural model when semantic search is required; inspect the reported embedding mode.
+4. **First-Result Accuracy:** Current 0.9.0 retrieval qualification remains incomplete. Optional reranking succeeds on small direct-fact and positional-long-text fixtures, while conversational accuracy and public-corpus resource limits remain unresolved. The older comparison above measures 0.8.3.
+5. **Resource Footprint:** Stored vectors, indexing metadata, receipts and audit databases add disk and RAM costs. Passage caching trades query work against retained memory and indexing work; performance must be evaluated on the intended corpus.
 
 ---
 
-## 10. Traceable Microbenchmark Workloads
+## 10. Historical Microbenchmark Workloads (Mesh 0.8.3)
 
 ### Core SDK Operations (Microbenchmark)
 

@@ -13,6 +13,7 @@ import json
 import math
 import os
 import platform
+import re
 import stat
 import subprocess
 import sys
@@ -159,7 +160,7 @@ def manifest() -> dict[str, str]:
 
 def harness_manifest() -> dict[str, str]:
     return {f"benchmarks/{name}": sha_file(REPO / "benchmarks" / name, 4 * MIB)
-            for name in ("production_bench.py", "production_transport.py", "embedding_shadow.py", "retrieval_ci.py")}
+            for name in ("production_bench.py", "production_transport.py", "embedding_shadow.py", "retrieval_ci.py", "storage_profile.py")}
 
 
 def controller_manifest() -> dict[str, str]:
@@ -236,8 +237,8 @@ def cell(phase: str, backend: str, mode: str, agents: int, surface: str,
         "phase": phase, "repetition": repetition, "backend": backend, "mode": mode,
         "agents": agents, "surface": surface, "group_commit": group, "input_facts": count,
         "anchors": 12, "batch_size": 8 if mode == "atomic" else 1, "query_repetitions": 5,
-        "process_timeout_seconds": 600 if phase == "scale" else 300,
-        "outer_timeout_seconds": 1800 if phase == "scale" else 1200,
+        "process_timeout_seconds": 600 if phase in ("scale", "diagnostic") else 300,
+        "outer_timeout_seconds": 1800 if phase in ("scale", "diagnostic") else 1200,
     }
 
 
@@ -268,6 +269,9 @@ def prepare(options: argparse.Namespace) -> dict[str, Any]:
              for backend in ("hash", "neural") for g in (0, 1)]
     if len(primary) != 48 or len({item["id"] for item in pilots + primary + scale}) != 57:
         raise ControlError("MatrixRegistrationMismatch")
+    diagnostic = []
+    if getattr(options, "storage_profile", False):
+        diagnostic = [{**cell("diagnostic", "neural", "scalar", 16, "http", 1, 10000), "storage_profile": True}]
     if manifest() != runtime_before or harness_manifest() != harness_before:
         raise ControlError("SourcesChangedDuringPreparation")
     plan = {
@@ -275,14 +279,15 @@ def prepare(options: argparse.Namespace) -> dict[str, Any]:
         "run_root": str(run_root), "repo_root": str(REPO), "python": str(Path(sys.executable).resolve()),
         "runtime": runtime(), "runtime_sources": runtime_before, "harness_sources": harness_before,
         "controller_sources": controller_manifest(), "model": model,
-        "fixture_hashes": fixture_hashes, "anchor_labels": labels, "cells": pilots + primary + scale,
+        "fixture_hashes": fixture_hashes, "anchor_labels": labels, "cells": pilots + primary + scale + diagnostic,
+        "storage_profile_requested": bool(diagnostic),
         "primary_rounds": 1, "optional_repeats_registered": False,
         "limits": {
             "max_tree_rss_bytes": options.max_rss_mib * MIB,
             "minimum_available_ram_bytes": options.free_ram_mib * MIB,
             "critical_available_ram_bytes": 512 * MIB,
             "sdk_projection_multiplier": 1.25, "sdk_cache_margin_bytes": 256 * MIB,
-            "dispatch_budget_seconds": {"pilot_primary": 5400, "scale": 1200},
+            "dispatch_budget_seconds": {"pilot_primary": 5400, "scale": 1200, **({"diagnostic": 1200} if diagnostic else {})},
             "cleanup_reserve_seconds": 60, "dense_readiness_wait_seconds": 60,
             "rss_excess_stop_seconds": 1.0, "pressure_stop_seconds": 10.0,
             "paging_output_threshold_pages_per_second": 256.0,
@@ -431,6 +436,8 @@ def command(plan: dict[str, Any], item: dict[str, Any], output: Path) -> list[st
     ]
     if item["backend"] == "neural":
         args += ["--model-dir", plan["model"]["directory"]]
+    if item.get("storage_profile", False):
+        args += ["--storage-profile"]
     return args
 
 
@@ -486,11 +493,11 @@ def forecast(item: dict[str, Any], results: list[dict[str, Any]]) -> float:
     candidates = [result for result in results if result.get("headline_eligible") is True
                   and result["cell"]["backend"] == item["backend"]
                   and result["cell"]["surface"] == item["surface"]]
-    preferred_phase = "primary" if item["phase"] == "scale" else "pilot"
+    preferred_phase = "primary" if item["phase"] in ("scale", "diagnostic") else "pilot"
     preferred = [result for result in candidates if result["cell"]["phase"] == preferred_phase]
     candidates = preferred or candidates
     if not candidates:
-        return 600.0 if item["phase"] == "scale" else 120.0
+        return 600.0 if item["phase"] in ("scale", "diagnostic") else 120.0
     reference = min(candidates, key=lambda row: (
         abs(row["cell"]["agents"] - item["agents"]),
         row["cell"]["mode"] != item["mode"],
@@ -503,7 +510,7 @@ def forecast(item: dict[str, Any], results: list[dict[str, Any]]) -> float:
     row_ratio = item["input_facts"] / reference["cell"]["input_facts"]
     agent_ratio = max(1.0, item["agents"] / reference["cell"]["agents"])
     # Exact and receipt verification also scale with rows, not just ingestion.
-    factor = 2.0 if item["phase"] == "scale" else 1.5
+    factor = 2.0 if item["phase"] in ("scale", "diagnostic") else 1.5
     return max(30.0, factor * (startup * agent_ratio + max(0.0, total - startup) * row_ratio))
 
 
@@ -540,7 +547,7 @@ def resource_gate(plan: dict[str, Any], item: dict[str, Any], results: list[dict
         )
         if projected > min(limits["max_tree_rss_bytes"], available - limits["minimum_available_ram_bytes"]):
             return "resource"
-    if item["phase"] == "scale" and item["backend"] == "neural":
+    if item["phase"] in ("scale", "diagnostic") and item["backend"] == "neural":
         references = [row for row in results if row["cell"]["phase"] == "primary"
                       and row["cell"]["backend"] == "neural" and row["cell"]["surface"] == "http"
                       and row["cell"]["agents"] == 16 and row.get("headline_eligible") is True]
@@ -737,6 +744,7 @@ def interrupted_report(plan: dict[str, Any], item: dict[str, Any], private: Path
                        execution: dict[str, Any]) -> dict[str, Any]:
     """Recover flushed observations without restarting workers or replaying writes."""
     reports, metadata, recovery_errors = [], [], []
+    profile_configs = []
     progress_observed = False
     if execution.get("source_unchanged_after") is True:
         sys.path.insert(0, str(REPO))
@@ -750,7 +758,7 @@ def interrupted_report(plan: dict[str, Any], item: dict[str, Any], private: Path
             for path in sorted(evidence_root.glob("config-*.json")):
                 try:
                     config = read_json(path, MIB)
-                    if config.get("action") != "ingest":
+                    if config.get("action") not in {"ingest", "serve"}:
                         continue
                     if (config.get("repo") != str(REPO) or config.get("root") != str(evidence_root)
                             or config.get("source_manifest") != plan["runtime_sources"]
@@ -759,6 +767,20 @@ def interrupted_report(plan: dict[str, Any], item: dict[str, Any], private: Path
                             or config.get("surface") != item["surface"]
                             or config.get("group_commit") != item["group_commit"]):
                         raise ControlError("PrivateProgressBindingMismatch")
+                    if config.get("storage_profile", False) is not item.get("storage_profile", False):
+                        raise ControlError("PrivateProfileRequestMismatch")
+                    if config.get("storage_profile"):
+                        number = re.fullmatch(r"config-(\d+)\.json", path.name)
+                        if number is None or private_path(Path(config["storage_profile_output"])) != evidence_root / f"profile-{number[1]}.json":
+                            raise ControlError("PrivateProfilePathMismatch")
+                        if (config.get("storage_profile_agents") != item["agents"]
+                                or config.get("storage_profile_input_facts") != item["input_facts"]
+                                or config.get("storage_profile_mode") != item["mode"]
+                                or config.get("storage_profile_fixture_sha256") != plan["fixture_hashes"][str(item["input_facts"])]):
+                            raise ControlError("PrivateProfileCellMismatch")
+                        profile_configs.append(config)
+                    if config.get("action") != "ingest":
+                        continue
                     for name in ("journal", "result", "ready"):
                         if private_path(Path(config[name])).parent != evidence_root:
                             raise ControlError("PrivateProgressPathMismatch")
@@ -802,6 +824,9 @@ def interrupted_report(plan: dict[str, Any], item: dict[str, Any], private: Path
             "error_stage": "wrapper_collection", "writes": accounting,
             "worker_failures": [report for report in reports if report.get("worker_failure")],
             "recovered_worker_observations": reports, "worker_metadata": metadata,
+            "storage_profile_requested": item.get("storage_profile", False),
+            "storage_profile": (bench.profile_bundle(profile_configs, interrupted=True) if execution.get("source_unchanged_after") is True and profile_configs
+                                else ledger.storage_profile.unobserved(item.get("storage_profile", False))),
             "scenario_total_wall_seconds": execution["wrapper_wall_seconds"],
         }],
     }
@@ -825,6 +850,8 @@ def snapshot(plan: dict[str, Any], destination: Path | None = None) -> dict[str,
         numeric = root / "numeric" / (item["id"] + ".json")
         if numeric.exists():
             record["result"] = read_json(numeric)
+        if item.get("storage_profile"):
+            record["storage_profile"] = record.get("result", {}).get("storage_profile", ledger.storage_profile.unobserved(True))
         ledger.assert_safe_output(record)
         write_json(root / "public/cells" / (item["id"] + ".json"), record)
         records.append(record)
@@ -850,6 +877,7 @@ def snapshot(plan: dict[str, Any], destination: Path | None = None) -> dict[str,
             "retrieval_scope": "twelve_functional_anchors_not_competitor_superiority",
         },
         "controller_hashes": plan["controller_sources"],
+        "optional_storage_profile": "requested_separate_diagnostic" if plan.get("storage_profile_requested") else "not_requested",
     }
     ledger.assert_safe_output(header)
     header["runtime_source_manifest"] = ledger.source_manifest(plan["runtime_sources"])
@@ -880,6 +908,15 @@ def snapshot(plan: dict[str, Any], destination: Path | None = None) -> dict[str,
     write_json(destination, header)
     return {"status": header["status"], "ledger": str(destination),
             "status_counts": counts, "primary_planned_cells": 48}
+
+
+def storage_diagnostic_complete(item: dict[str, Any], projection: dict[str, Any]) -> bool:
+    profile = projection.get("storage_profile", {})
+    rows = profile.get("observations", [])
+    return (item.get("storage_profile") is True and item["surface"] == "http"
+            and projection.get("validation_passed") is True and profile.get("state") == "complete"
+            and profile.get("recovery_rejected_observations", 0) == 0 and isinstance(rows, list) and len(rows) == 1
+            and ledger.storage_profile.complete_observation(rows[0]))
 
 
 def step(options: argparse.Namespace) -> dict[str, Any]:
@@ -927,7 +964,12 @@ def step(options: argparse.Namespace) -> dict[str, Any]:
         entry["status"] == "planned" for name, entry in state["cells"].items() if name.startswith("primary-")
     ):
         raise ControlError("FinishPrimaryRegistrationBeforeScale")
-    bucket = "scale" if options.phase == "scale" else "pilot_primary"
+    if options.phase == "diagnostic" and any(
+        state["cells"][item["id"]]["status"] in {"planned", "dispatching"}
+        for item in plan["cells"] if item["phase"] != "diagnostic"
+    ):
+        raise ControlError("FinishOrdinaryMatrixBeforeDiagnostic")
+    bucket = options.phase if options.phase in ("scale", "diagnostic") else "pilot_primary"
     started = state["started_utc"].setdefault(bucket, utc())
     elapsed = (datetime.now(timezone.utc) - datetime.fromisoformat(started)).total_seconds()
     results = prior_results(plan)
@@ -972,7 +1014,8 @@ def step(options: argparse.Namespace) -> dict[str, Any]:
             execution["input_report_sha256"] = sha_file(output)
             projection = ledger.result_projection(read_json(output), item, plan, execution)
             write_json(root / "numeric" / (item["id"] + ".json"), projection)
-            entry["status"] = "completed" if projection["headline_eligible"] else (
+            diagnostic_valid = storage_diagnostic_complete(item, projection)
+            entry["status"] = "completed" if projection["headline_eligible"] or diagnostic_valid else (
                 "unavailable" if projection["harness_status"] == "unavailable" else "failed"
             )
             entry["reason"] = "none" if entry["status"] == "completed" else "child_failure"
@@ -1066,6 +1109,9 @@ def check(options: argparse.Namespace) -> dict[str, Any]:
     state = read_json(Path(plan["run_root"]) / "state.json")
     primary = [state["cells"][item["id"]] for item in plan["cells"] if item["phase"] == "primary"]
     scale = [state["cells"][item["id"]] for item in plan["cells"] if item["phase"] == "scale"]
+    diagnostic = [state["cells"][item["id"]] for item in plan["cells"] if item["phase"] == "diagnostic"]
+    if any(entry["status"] not in {"completed", "deferred"} for entry in diagnostic):
+        raise ControlError("ExecutedDiagnosticFailureRequiresReview")
     if any(entry["status"] in {"failed", "dispatching"} for entry in scale):
         raise ControlError("ExecutedScaleFailureRequiresReview")
     completed = sum(entry["status"] == "completed" for entry in primary)
@@ -1088,6 +1134,7 @@ def main() -> int:
     prep.add_argument("--max-rss-mib", type=int, default=4096)
     prep.add_argument("--free-ram-mib", type=int, default=2048)
     prep.add_argument("--allow-unavailable-model", action="store_true")
+    prep.add_argument("--storage-profile", action="store_true", help="Register a separate default-off instrumented sixteen-agent neural 10k HTTP diagnostic after the ordinary matrix.")
     sealing = actions.add_parser("seal")
     sealing.add_argument("--plan", type=Path, required=True)
     sealing.add_argument("--primary-junit", type=Path, required=True)
@@ -1098,7 +1145,7 @@ def main() -> int:
     sealing.add_argument("--ci-qualification", type=Path)
     dispatch = actions.add_parser("step")
     dispatch.add_argument("--plan", type=Path, required=True)
-    dispatch.add_argument("--phase", choices=("pilot", "primary", "scale"), required=True)
+    dispatch.add_argument("--phase", choices=("pilot", "primary", "scale", "diagnostic"), required=True)
     dispatch.add_argument("--quiet-window-open", action="store_true")
     dispatch.add_argument("--cell-id")
     export = actions.add_parser("snapshot")
@@ -1106,7 +1153,7 @@ def main() -> int:
     export.add_argument("--destination", type=Path)
     deferred = actions.add_parser("defer")
     deferred.add_argument("--plan", type=Path, required=True)
-    deferred.add_argument("--phase", choices=("pilot", "primary", "scale"), required=True)
+    deferred.add_argument("--phase", choices=("pilot", "primary", "scale", "diagnostic"), required=True)
     deferred.add_argument("--reason", choices=sorted(STATUS_REASONS - {"none"}), required=True)
     finishing = actions.add_parser("finalize")
     finishing.add_argument("--plan", type=Path, required=True)

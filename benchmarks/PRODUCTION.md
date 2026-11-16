@@ -1,5 +1,51 @@
 # Production process benchmark
 
+The default-off `--storage-profile` option is an Actions-only instrumented
+diagnostic. The controller registers a separate sixteen-agent, 10,000-fact,
+scalar grouped neural HTTP cell after the ordinary matrix when its `prepare`
+command receives this flag. The workflow exposes `run_storage_profile`, which
+requires `run_performance`. A push to the existing production CI branch may
+select the same diagnostic with the explicit `[storage-profile]` commit marker;
+this appends the instrumented cell to that run's ordinary matrix. All ordinary
+pilots, cells, qualification, readiness,
+WAL/FULL, resource budgets and failure gates remain required. Diagnostic results
+are labeled separately and are never eligible for headline performance tables.
+
+[storage_profile.py](storage_profile.py) installs fixed hooks only inside the
+isolated server or SDK workers; HTTP clients retain their thin import boundary.
+Bounded thread-local histograms separate active memory/audit COMMIT calls, writer
+admission and checkout, namespace acquisition and outer holds, OS lock waits,
+ready-command queueing, preparation/candidate CPU, model batch calls, embedding
+publication and event delivery. Original calls, results, exceptions and context
+manager suppression are preserved, and hooks are restored after runtime shutdown.
+The counters contain no SQL, memory bodies, inputs, actor/object/ticket identities,
+paths or exception text. Source and fixture digests bind each sidecar to its cell.
+
+Completion requires exactly one HTTP server observation, all four phases, and
+zero dropped spans, in-flight spans, checkpoint failures, restoration failures
+or rejected sidecars. A checkpoint thread that misses its bounded shutdown wait
+keeps the observation partial; final publication cannot race its temporary file.
+Malformed sidecars are diagnostic rejections and preserve the write report.
+SDK observations remain partial because their existing teardown does not own
+the global audit worker's final background delivery. They cannot complete the
+registered HTTP diagnostic. No runtime shutdown behavior is changed.
+
+The histogram quantiles are fixed-bin upper-bound estimates, with overflow
+reported as unavailable. Stage durations overlap and must not be summed into
+an end-to-end total. Calling-thread CPU excludes native inference threads;
+the ordinary process-tree sampler retains their CPU. A COMMIT span includes
+SQLite, checkpoint, storage and scheduling costs and is not physical fsync
+latency. Phase boundaries and in-progress snapshots are approximate. Registered
+thread buffers have a fixed cap and expose dropped and inflight spans; thread
+churn cannot allocate buffers in proportion to calls or writes.
+
+Best-effort periodic checkpoints permit source-checked recovery after process
+termination without replaying writes. They add diagnostic overhead and can lose
+unflushed observations. Complete, partial, unobserved and not-requested states
+are retained; deferred-before-dispatch cells contain no invented zero timings.
+The sanitizer preserves only fixed numeric fields and verified source digests.
+Diagnostic failures require review and cannot qualify a production default.
+
 [production_bench.py](production_bench.py) measures writes from one, four, eight,
 and sixteen independent local agent processes. Scalar calls and atomic batches
 receive the same total input fixture. All workers and the HTTP server use new

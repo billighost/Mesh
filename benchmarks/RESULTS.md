@@ -2,6 +2,27 @@
 
 This document provides empirical latency, throughput, memory, and scaling benchmarks for **Mesh** (`mesh-context-layer`). All tests measure real end-to-end execution paths including SQLite WAL transactions, token budgeting, FTS5 lexical matching, and ONNX SIMD cosine vector ranking.
 
+## Mesh 0.9.0 qualification checkpoint (2026-11-08, `2d67c704`)
+
+[Normal CI](https://github.com/billighost/Mesh/actions/runs/42485932114) passed all 18 jobs. The [production run](https://github.com/billighost/Mesh/actions/runs/42485932167) passed both full qualification jobs and failed the storage matrix, test-speed reporting, and all five retrieval jobs. The [provenance](results/production_20261108_2d67c704_provenance.json) verifies 54 bound source files against that Git commit, with Windows checkout newlines accounted for, and binds the five retained retrieval artifacts. Qualification logs and the artifact seals agree on 1,853 selected cases, with 3/4 skips and zero failures/errors in primary/floor; the raw qualification XML is no longer retained and cannot be rechecked from these exports.
+
+The [storage failure export](results/production_performance_20261108_2d67c704.json) records `UnsafeRelativeSourceManifest` during registration and finalization, before any matrix cell was measured. The [test-speed failure export](results/production_test_speed_20261108_2d67c704.json) records the same error during report publication. Producer/controller manifests list four benchmark files, while this tested ledger accepts only two. No valid storage ledger or published test-speed comparison exists for this source. The [comparison export](results/production_comparison_20261108_2d67c704.json) therefore remains unavailable; earlier measured rates below do not apply to this checkpoint.
+
+The [retrieval aggregate](results/production_retrieval_20261108_2d67c704.json) preserves all five failed jobs, all 95 phases, all 23 failed gates, and both resource-rejected native conditions as unscored. Hit@k measures retrieval of authorized annotated primary-source evidence, rather than generated-answer accuracy. Two bounded native `compact-80` conditions pass their own gates; no optional profile is globally qualified.
+
+| Fixture (answerable queries) | Fresh default Hit@1 / @5 / @10, % | Passages Hit@1 / @5 / @10, % | Native compact-80 |
+| --- | --- | --- | --- |
+| Direct facts (16) | 81.25 / 100 / 100 | 81.25 / 100 / 100 | 100 / 100 / 100; own gates pass |
+| Long-text regression (6) | 0 / 0 / 100 | 33.33 / 100 / 100 | 100 / 100 / 100; own gates pass |
+| Inspected LongMemEval subset (6) | 50 / 100 / 100 | 50 / 100 / 100 | 66.67 / 100 / 100; quality rejected |
+| NFCorpus (323) | 49.54 / 67.18 / 74.30 | 45.82 / 64.40 / 71.52 | Resource rejected; unscored |
+| SciFact (300) | 56 / 78.33 / 84.67 | 57.33 / 79.67 / 83.67 | Resource rejected; unscored |
+
+LongMemEval native retrieval still gets 4/6 first-result hits against the unchanged 5/6 requirement, with zero lost baseline first-result hits and native resource gates passing. Its separate later legacy C4 phase exceeds the sampled process-tree RSS cap; unavailable final paired resource observations remain `null`. That later failure does not erase the earlier native score.
+
+NFCorpus native added p95/p99 are 50.29/112.13 ms, exceeding the unchanged 50/100 ms ceilings; added CPU is 38.89 ms/query and passes. SciFact native added p95/p99/CPU are 143.58/1,210.89/121.09 ms, exceeding 50/100/50 ms. Both public native conditions stop before scoring. Their preceding passage conditions and fixed score diagnostics remain complete. The optional E5 shadow is explicitly unrun as a separate manual experiment. These single-pass observations and small bounded fixtures establish no competitor superiority, general speedup, qualified default, full LongMemEval result, generated-answer correctness, or physical power-cut validation.
+
+
 ## Mesh 0.9.0 measured checkpoint (2026-11-08, `db5e76a`)
 
 [Normal CI](https://github.com/billighost/Mesh/actions/runs/42431857693) passed all 18 jobs. [Production](https://github.com/billighost/Mesh/actions/runs/42431857665) passed both full qualification suites, primary installed-wheel validation, process-crash recovery, the registered storage matrix and test-speed observation. All five `compact-80` retrieval jobs failed overall; no profile is globally qualified. [Provenance](results/production_20261108_db5e76a_provenance.json) binds the evidence to `db5e76a`. Primary/floor suites selected 1,785 cases with 3/4 skips, zero failures/errors and 74.38%/74.29% coverage. Earlier failed and unscored checkpoints remain below.

@@ -13,6 +13,10 @@ name: Production qualification and performance
         description: "Include resource/readiness/budget-gated sixteen-agent 10k HTTP scalar pairs"
         type: boolean
         default: true
+      run_storage_profile:
+        description: "Separate bounded content-free sixteen-agent neural 10k storage diagnostic; requires run_performance"
+        type: boolean
+        default: false
       run_test_speed:
         description: "Run one serial full-suite 1-versus-2 worker observation without coverage"
         type: boolean
@@ -77,6 +81,13 @@ jobs:
       run:
         shell: pwsh
     steps:
+      - name: Validate the separate diagnostic request
+        if: >-
+          (github.event_name == 'workflow_dispatch' && inputs.run_storage_profile && !inputs.run_performance) ||
+          (github.event_name == 'push' && contains(github.event.head_commit.message, '[storage-profile]') &&
+           (contains(github.event.head_commit.message, '[retrieval-only]') ||
+            contains(github.event.head_commit.message, '[qualification-only]')))
+        run: throw "Storage profiling requires the ordinary uninstrumented performance matrix"
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
@@ -239,7 +250,12 @@ jobs:
       - name: Register the fixed single-pass scope and resource budget
         env:
           DECLARED_RSS_MIB: ${{ inputs.max_tree_rss_mib || '4096' }}
-        run: python benchmarks/production_runner.py prepare --run-root .work/production-performance --model-dir .work/production-models/embedding --max-rss-mib $env:DECLARED_RSS_MIB --free-ram-mib 2048 --allow-unavailable-model
+          STORAGE_PROFILE_REQUESTED: ${{ (github.event_name == 'workflow_dispatch' && inputs.run_storage_profile) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[storage-profile]')) }}
+        run: |
+          $taskStoragePrepareArgs = @("benchmarks/production_runner.py", "prepare", "--run-root", ".work/production-performance", "--model-dir", ".work/production-models/embedding", "--max-rss-mib", $env:DECLARED_RSS_MIB, "--free-ram-mib", "2048", "--allow-unavailable-model")
+          if ($env:STORAGE_PROFILE_REQUESTED -eq "true") { $taskStoragePrepareArgs += "--storage-profile" }
+          python @taskStoragePrepareArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Seal same-commit full-suite, recovery, coverage and packaging evidence
         id: seal
         run: python benchmarks/production_runner.py seal --plan .work/production-performance/plan.json --primary-junit .work/qualification/primary/full.xml --minimum-junit .work/qualification/floor/full.xml --coverage-xml .work/qualification/primary/coverage.xml --packaging-report .work/qualification/primary/package-final-validation.json --ci-qualification .work/qualification/primary/source-runtime.json --root-confirms-other-checks-and-source-binding
@@ -986,6 +1002,19 @@ jobs:
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-scale-r1-neural-scalar-16a-http-g1-10000
           path: .work/production-performance/public/cells/scale-r1-neural-scalar-16a-http-g1-10000.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Measure the separate bounded storage diagnostic
+        if: steps.seal.outcome == 'success' && ((github.event_name == 'workflow_dispatch' && inputs.run_storage_profile) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[storage-profile]')))
+        continue-on-error: true
+        timeout-minutes: 35
+        run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase diagnostic --cell-id diagnostic-r1-neural-scalar-16a-http-g1-10000 --quiet-window-open
+      - name: Preserve the separate storage diagnostic
+        if: always() && ((github.event_name == 'workflow_dispatch' && inputs.run_storage_profile) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[storage-profile]')))
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-storage-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .work/production-performance/public/cells/diagnostic-r1-neural-scalar-16a-http-g1-10000.json
           if-no-files-found: warn
           retention-days: 7
       - name: Stop remaining owned processes and finalize interrupted/deferred cells

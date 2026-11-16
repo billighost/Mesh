@@ -31,6 +31,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 from scripts.run_tests import isolated_environment
+from benchmarks import storage_profile
 from benchmarks.production_transport import (
     SURFACES,
     ReadonlyStore,
@@ -109,7 +110,7 @@ def source_manifest(repo: Path) -> dict[str, str]:
 
 def benchmark_source_manifest() -> dict[str, str]:
     return {"benchmarks/" + name: hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
-            for name in ("production_bench.py", "production_transport.py", "embedding_shadow.py", "retrieval_ci.py")}
+            for name in ("production_bench.py", "production_transport.py", "embedding_shadow.py", "retrieval_ci.py", "storage_profile.py")}
 
 
 def _sources_unchanged(config: dict[str, Any]) -> bool:
@@ -634,6 +635,9 @@ def _validate_config(path: Path) -> dict[str, Any]:
         raise ValueError("Unsupported benchmark backend.")
     data.setdefault("surface", "bare-sdk")
     data.setdefault("group_commit", 0)
+    data.setdefault("storage_profile", False)
+    if type(data["storage_profile"]) is not bool:
+        raise ValueError("Invalid storage profiling request.")
     if (
         data["surface"] not in SURFACES or type(data["group_commit"]) is not int or data["group_commit"] not in (0, 1)
         or data["surface"] != "http" and data["group_commit"] != 0
@@ -644,6 +648,12 @@ def _validate_config(path: Path) -> dict[str, Any]:
     number = re.fullmatch(r"config-(\d+)\.json", path.name)
     if number is None or path.resolve().parent != root:
         raise ValueError("Unexpected worker configuration location.")
+    if data["storage_profile"]:
+        target = Path(data.get("storage_profile_output", ""))
+        _reject_links(target)
+        if not target.is_absolute() or target != root / f"profile-{number[1]}.json":
+            raise ValueError("Profile output must stay inside its temporary benchmark root.")
+        storage_profile.binding(data)
     for key, name in {
         "result": f"result-{number[1]}.json", "ready": f"ready-{number[1]}.json",
         "journal": f"journal-{number[1]}.jsonl", "go": "go.json",
@@ -1175,6 +1185,46 @@ def _close_cached_runtime(http: Any = None) -> None:
             seen.add(id(mesh))
 
 
+def _storage_profiler(config: dict[str, Any]) -> Any:
+    if not config.get("storage_profile") or config["surface"] == "http" and config["action"] != "serve":
+        return None
+    return storage_profile.StorageProfiler(
+        True, output=Path(config["storage_profile_output"]), source_binding=storage_profile.binding(config),
+    ).install()
+
+
+def _profile_phase(profiler: Any, phase: str) -> None:
+    if profiler is not None:
+        profiler.phase(phase)
+
+
+def _profile_finish(profiler: Any, report: dict[str, Any], *, shutdown_observed: bool = False) -> None:
+    if profiler is not None:
+        report["storage_profile"] = profiler.close(shutdown_observed and not bool(report.get("worker_failure")))
+
+
+def profile_bundle(configs: list[dict[str, Any]], *, interrupted: bool = False) -> dict[str, Any]:
+    owners = [config for config in configs if config.get("storage_profile")
+              and (config["surface"] != "http" or config["action"] == "serve")]
+    if not owners:
+        return storage_profile.unobserved(any(config.get("storage_profile") for config in configs))
+    if len(owners) > 64:
+        raise ValueError("Profile process bound exceeded.")
+    observations = []
+    rejected = 0
+    for config in owners:
+        try:
+            observations.append(storage_profile.recover(Path(config["storage_profile_output"]),
+                                                        storage_profile.binding(config), interrupted=interrupted))
+        except (storage_profile.ProfileError, OSError, ValueError, TypeError, RecursionError):
+            rejected += 1
+            observations.append({"version": storage_profile.VERSION, "state": "unobserved", "binding": storage_profile.binding(config), "phases": {}})
+    return {"version": storage_profile.VERSION,
+            "state": "complete" if len(owners) == 1 and owners[0]["surface"] == "http" and not rejected
+            and storage_profile.complete_observation(observations[0]) else "partial" if any(row["state"] != "unobserved" for row in observations) else "unobserved",
+            "observations": observations, "recovery_rejected_observations": rejected}
+
+
 def _serve(config: dict[str, Any]) -> int:
     """Run an actual authenticated server without the interactive CLI startup."""
     report: dict[str, Any] = {}
@@ -1184,11 +1234,13 @@ def _serve(config: dict[str, Any]) -> int:
     watcher_errors: list[str] = []
     stage = "verify_runtime_source"
     started = time.perf_counter()
+    profiler = None
     try:
         repo = Path(config["repo"])
         if not _sources_unchanged(config):
             raise RuntimeError("Selected Mesh runtime changed before the server started.")
         sys.path.insert(0, str(repo))
+        profiler = _storage_profiler(config)
         stage = "import_http_runtime"
         import uvicorn
         from mesh import http_server as http
@@ -1211,6 +1263,14 @@ def _serve(config: dict[str, Any]) -> int:
             deadline = time.monotonic() + config["timeout"]
             try:
                 while not finished.wait(0.01):
+                    if profiler is not None:
+                        phase_marker = Path(config["root"]) / "profile-phase.json"
+                        try:
+                            phase = _read_json(phase_marker, 4096).get("phase") if phase_marker.exists() else "startup"
+                            if phase in storage_profile.PHASES:
+                                profiler.phase(phase)
+                        except (OSError, ValueError, TypeError, RecursionError):
+                            pass
                     if server.started and not published:
                         write_json(Path(config["ready"]), {"endpoint": endpoint, "metadata": metadata,
                                                             "group_commit_requested": config["group_commit"]})
@@ -1238,6 +1298,7 @@ def _serve(config: dict[str, Any]) -> int:
         finished.set()
         if watcher is not None:
             watcher.join(timeout=2)
+        _profile_phase(profiler, "shutdown")
         if listener is not None:
             listener.close()
         if http is not None:
@@ -1257,6 +1318,7 @@ def _serve(config: dict[str, Any]) -> int:
                       server_lifecycle_wall_seconds=round(time.perf_counter() - started, 6))
         if watcher_errors:
             report["monitor_error_types"] = watcher_errors
+        _profile_finish(profiler, report, shutdown_observed=watcher is None or not watcher.is_alive())
         write_json(Path(config["result"]), report)
     return int(bool(report.get("worker_failure")))
 
@@ -1269,12 +1331,14 @@ def worker(config_path: Path) -> int:
     metadata = None
     report = _empty_write_report()
     stage = "verify_runtime_source"
+    profiler = None
     try:
         repo = Path(config["repo"])
         if not _sources_unchanged(config):
             raise RuntimeError("Selected Mesh runtime changed before the worker started.")
         stage = "import_runtime"
         sys.path.insert(0, str(repo))
+        profiler = _storage_profiler(config)
         if config["surface"] == "http":
             stage = "construct_http_client"
             mesh = _receipt_surface(config)
@@ -1318,6 +1382,7 @@ def worker(config_path: Path) -> int:
         elif config["action"] == "verify-crash":
             report = _verify_crash(mesh, config)
         elif config["action"] == "verify":
+            _profile_phase(profiler, "verification")
             report = _verify(mesh, config)
         else:
             if config["action"] == "ingest":
@@ -1327,12 +1392,14 @@ def worker(config_path: Path) -> int:
                     if time.monotonic() > deadline:
                         raise TimeoutError("Coordinator barrier was not released.")
                     time.sleep(0.005)
+            _profile_phase(profiler, "ingestion" if config["action"] == "ingest" else "startup")
             report = _ingest(mesh, config)
     except Exception as exc:
         if config["action"] in {"seed", "ingest"}:
             report = recover_progress(config)
         report.update({"worker_failure": "OperationFailed", "error_type": type(exc).__name__, "error_stage": stage})
     finally:
+        _profile_phase(profiler, "shutdown")
         if mesh is not None:
             try:
                 if config["surface"] == "receipt-sdk":
@@ -1361,6 +1428,7 @@ def worker(config_path: Path) -> int:
         report["surface"] = config["surface"]
         report["group_commit_requested"] = config["group_commit"]
         report["process_cpu_seconds"] = round(time.process_time(), 6)
+        _profile_finish(profiler, report)
         write_json(Path(config["result"]), report)
     return int(bool(report.get("worker_failure")))
 
@@ -1441,12 +1509,19 @@ def footprint(root: Path) -> dict[str, int]:
 class Coordinator:
     def __init__(self, root: Path, repo: Path, backend: str, timeout: float,
                  expected_source: dict[str, str] | None = None, *, surface: str = "bare-sdk",
-                 group_commit: int = 0, sampler: ProcessTreeSampler | None = None):
+                 group_commit: int = 0, sampler: ProcessTreeSampler | None = None,
+                 storage_profile_requested: bool = False, agents: int = 1, input_facts: int = 512,
+                 profile_mode: str = "scalar"):
         root = _checked_benchmark_root(root, Path(tempfile.gettempdir()).resolve(strict=True))
         self.root, self.repo, self.backend, self.timeout = root, repo, backend, timeout
         self.token = uuid.uuid4().hex
         self.processes: list[subprocess.Popen] = []
         self.number = 0
+        self.configs: list[dict[str, Any]] = []
+        self.storage_profile_requested = storage_profile_requested
+        self.profile_cell = ({"storage_profile_agents": agents, "storage_profile_input_facts": input_facts,
+                              "storage_profile_mode": profile_mode, "storage_profile_fixture_sha256": fixture_digest(input_facts)}
+                             if storage_profile_requested else {})
         self.surface, self.group_commit, self.sampler = surface, group_commit, sampler
         self.server: tuple[subprocess.Popen, dict[str, Any]] | None = None
         self.server_connection: dict[str, Any] = {}
@@ -1470,7 +1545,11 @@ class Coordinator:
             "journal": str(self.root / ("journal-" + str(number) + ".jsonl")),
             "go": str(self.root / "go.json"),
             "stop": str(self.root / ("stop-" + str(number) + ".json")),
+            "storage_profile": self.storage_profile_requested,
         }
+        if self.storage_profile_requested:
+            config.update(self.profile_cell, storage_profile_output=str(self.root / f"profile-{number}.json"))
+        self.configs.append(config)
         path = self.root / ("config-" + str(number) + ".json")
         write_json(path, config)
         environment = worker_environment(self.root, self.root / ("home-" + str(number)), self.backend, self.repo,
@@ -1486,6 +1565,10 @@ class Coordinator:
             role = "http_server" if action == "serve" else "write_clients" if action in {"seed", "ingest"} else "verification_clients"
             self.sampler.register(process.pid, role)
         return process, config
+
+    def profile_phase(self, phase: str) -> None:
+        if self.storage_profile_requested:
+            write_json(self.root / "profile-phase.json", {"phase": phase})
 
     def wait_ready(self, pending: list[tuple[subprocess.Popen, dict[str, Any]]]) -> None:
         deadline = time.monotonic() + self.timeout
@@ -1572,11 +1655,14 @@ def run_case(options: argparse.Namespace, agents: int, mode: str, backend: str,
         root = Path(temporary).resolve(strict=True)
         sampler = ProcessTreeSampler()
         coordinator = Coordinator(root, options.repo_root, backend, options.timeout, getattr(options, "source_manifest", None),
-                                  surface=surface, group_commit=group_commit, sampler=sampler)
+                                  surface=surface, group_commit=group_commit, sampler=sampler,
+                                  storage_profile_requested=getattr(options, "storage_profile", False), agents=agents,
+                                  input_facts=options.memories, profile_mode=mode)
         started = time.perf_counter()
         sampler.start()
         report: dict[str, Any] = {"agents": agents, "mode": mode, "backend": backend, "surface": surface,
                                   "group_commit_requested": group_commit,
+                                  "storage_profile_requested": coordinator.storage_profile_requested,
                                   "runtime_source_manifest": coordinator.source_manifest}
         pending: list[tuple[subprocess.Popen, dict[str, Any]]] = []
         workers: list[dict[str, Any]] = []
@@ -1602,6 +1688,7 @@ def run_case(options: argparse.Namespace, agents: int, mode: str, backend: str,
             coordinator.wait_ready(pending)
             startup = time.perf_counter() - started
             sampler.mark_phase("ingestion")
+            coordinator.profile_phase("ingestion")
             work_started = time.perf_counter()
             write_started_ns = time.perf_counter_ns()
             write_json(root / "go.json", {"go": True})
@@ -1617,6 +1704,7 @@ def run_case(options: argparse.Namespace, agents: int, mode: str, backend: str,
             report["worker_failures"] = [worker for worker in workers if worker.get("worker_failure")]
             metadata = [worker.get("metadata") for worker in workers if worker.get("metadata")]
             sampler.mark_phase("verification")
+            coordinator.profile_phase("verification")
             if surface == "http":
                 stage = "verify_actual_group_commit_execution"
                 group_after = coordinator.telemetry()
@@ -1676,6 +1764,7 @@ def run_case(options: argparse.Namespace, agents: int, mode: str, backend: str,
                            "error_stage": stage})
         finally:
             sampler.mark_phase("shutdown")
+            coordinator.profile_phase("shutdown")
             coordinator.stop()
             if coordinator.server_shutdown is not None:
                 report["http_server_shutdown"] = coordinator.server_shutdown
@@ -1688,6 +1777,7 @@ def run_case(options: argparse.Namespace, agents: int, mode: str, backend: str,
             elif workers:
                 report.setdefault("writes", write_accounting(workers, options.memories))
             report["resources"] = sampler.stop()
+            report["storage_profile"] = profile_bundle(coordinator.configs)
             report["scenario_total_wall_seconds"] = round(time.perf_counter() - started, 6)
             report["footprint"] = footprint(root / "mesh") if (root / "mesh").exists() else {}
             # List only this validated newly created directory before automatic cleanup.
@@ -1748,6 +1838,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--model-dir", type=Path, help="Explicit verified model artifacts; no downloads.")
     result.add_argument("--output", type=Path, default=Path("production-bench.json"))
     result.add_argument("--skip-crash-probes", action="store_true")
+    result.add_argument("--storage-profile", action="store_true", help="Separate instrumented storage diagnostic with bounded content-free stage histograms; not headline performance.")
     result.add_argument("--worker-config", type=Path, help=argparse.SUPPRESS)
     return result
 
@@ -1761,6 +1852,8 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:
             print("Benchmark worker failed: " + type(exc).__name__, file=sys.stderr, flush=True)
             return 1
+    if options.storage_profile and (os.environ.get("GITHUB_ACTIONS") != "true" or not options.skip_crash_probes):
+        argument_parser.error("Storage profiling requires Actions and separate crash probes disabled.")
     if not 1 <= options.memories <= 100000 or not 1 <= options.batch_size <= 128:
         argument_parser.error("Use 1–100000 total memories and 1–128 rows per atomic batch.")
     if not 1 <= options.query_repetitions <= 100 or not 0 < options.timeout <= 3600:

@@ -26,7 +26,61 @@ finally:
 def test_registered_harness_sources_match_measured_report_sources():
     from benchmarks import production_bench
 
-    assert controller.harness_manifest() == production_bench.benchmark_source_manifest()
+    sources = controller.harness_manifest()
+    assert sources == production_bench.benchmark_source_manifest()
+    assert "benchmarks/storage_profile.py" in sources
+    assert controller.ledger.source_manifest(sources) == sources
+
+
+def test_matrix_registration_and_finalization_preserve_expanded_harness_sources(tmp_path, monkeypatch):
+    harness_sources = controller.harness_manifest()
+    runtime_sources = {"mesh/version.py": "a" * 64, "pyproject.toml": "b" * 64}
+    monkeypatch.setattr(controller, "REPO", tmp_path)
+    monkeypatch.setattr(controller, "manifest", lambda: runtime_sources)
+    monkeypatch.setattr(controller, "harness_manifest", lambda: harness_sources)
+    monkeypatch.setattr(controller, "runtime", lambda: {"python_version": "3.14.0", "packages": {}})
+    monkeypatch.setattr(controller, "fixture_data", lambda: (
+        {str(count): "c" * 64 for count in (128, 512, 10000)}, {},
+    ))
+    monkeypatch.setattr(controller, "execute", lambda *_: pytest.fail("Registration dispatched a worker"))
+
+    def unavailable_model(_):
+        raise controller.ControlError("ModelUnavailable")
+
+    monkeypatch.setattr(controller, "model_fixture", unavailable_model)
+    run_root = tmp_path / ".work/run"
+    result = controller.prepare(SimpleNamespace(
+        run_root=run_root, model_dir=tmp_path / ".work/model", allow_unavailable_model=True,
+        max_rss_mib=4096, free_ram_mib=2048,
+    ))
+    assert result["status"] == "prepared_not_executed"
+    initial = controller.read_json(run_root / "numeric/ledger.json")
+    assert initial["harness_source_manifest"] == harness_sources
+    assert initial["status_counts"]["completed"] == 0
+
+    controller.finalize(SimpleNamespace(plan=run_root / "plan.json"))
+    final = controller.read_json(run_root / "numeric/ledger.json")
+    assert final["harness_source_manifest"] == harness_sources
+    assert final["status_counts"]["completed"] == 0
+    assert final["status_counts"]["planned"] == 0
+
+
+@pytest.mark.parametrize("path,digest", [
+    ("benchmarks/unregistered.py", "a" * 64),
+    ("benchmarks/../embedding_shadow.py", "a" * 64),
+    ("benchmarks\\embedding_shadow.py", "a" * 64),
+    ("/benchmarks/embedding_shadow.py", "a" * 64),
+    ("benchmarks//embedding_shadow.py", "a" * 64),
+    ("C:/benchmarks/embedding_shadow.py", "a" * 64),
+    ("benchmarks/./embedding_shadow.py", "a" * 64),
+    ("benchmarks/embedding_shadow.py", "A" * 64),
+    ("benchmarks/retrieval_ci.py", "a" * 63),
+    ("benchmarks/storage_profile.py", "a" * 63),
+    ("benchmarks/../storage_profile.py", "a" * 64),
+])
+def test_expanded_source_manifest_still_rejects_unregistered_paths_and_invalid_digests(path, digest):
+    with pytest.raises(controller.ledger.LedgerError, match="UnsafeRelativeSourceManifest"):
+        controller.ledger.source_manifest({path: digest})
 
 
 @pytest.fixture
@@ -128,7 +182,7 @@ def test_public_projection_excludes_bodies_paths_and_unknown_fields():
     ledger = controller.ledger
     item = controller.cell("pilot", "hash", "scalar", 1, "receipt-sdk", 0, 128)
     runtime_sources = {"mesh/version.py": "b" * 64, "pyproject.toml": "c" * 64}
-    harness_sources = {"benchmarks/production_bench.py": "d" * 64, "benchmarks/production_transport.py": "e" * 64}
+    harness_sources = controller.harness_manifest()
     plan = {"runtime": {"python_version": "3.14.0"}, "fixture_hashes": {"128": "a" * 64},
             "runtime_sources": runtime_sources, "harness_sources": harness_sources,
             "model": {"hashes": {}}, "anchor_labels": {"cedar": "anchor_01"}}
@@ -168,6 +222,11 @@ def test_public_projection_excludes_bodies_paths_and_unknown_fields():
     assert projected["verification"]["receipt_transport_errors"] == {
         "cause_type_counts": {"OSError": 2, "other": 3}, "errno_counts": {"10048": 2}, "winerror_counts": {"10048": 2},
     }
+    for path in harness_sources:
+        mismatched = copy.deepcopy(report)
+        mismatched["benchmark_source_manifest"][path] = "0" * 64
+        with pytest.raises(ledger.LedgerError, match="HarnessManifestMismatch"):
+            ledger.result_projection(mismatched, item, plan, execution)
 
 
 def test_no_completed_baseline_cannot_be_reported_as_success(isolated_plan, monkeypatch):

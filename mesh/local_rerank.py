@@ -104,17 +104,23 @@ def verify_model_files(directory):
     _read_assets(directory)
 
 
-def _bounded_prefix(text, tokenizer, maximum):
+def _prefix_encoding(text, tokenizer, maximum):
     encoded = tokenizer.encode(text, add_special_tokens=False)
-    count = len(encoded.ids)
+    ids = encoded.ids
+    count = len(ids)
     if count <= maximum:
-        return text, count, count
+        return text, count, ids
     end = encoded.offsets[maximum - 1][1]
     prefix = text[:end]
-    kept = len(tokenizer.encode(prefix, add_special_tokens=False).ids)
-    if not prefix.strip() or kept > maximum:
+    kept_ids = tokenizer.encode(prefix, add_special_tokens=False).ids
+    if not prefix.strip() or len(kept_ids) > maximum:
         raise RerankUnavailable("tokenizer_prefix_invalid")
-    return prefix, count, kept
+    return prefix, count, kept_ids
+
+
+def _bounded_prefix(text, tokenizer, maximum):
+    prefix, count, ids = _prefix_encoding(text, tokenizer, maximum)
+    return prefix, count, len(ids)
 
 
 def _profile_limits(profile):
@@ -236,8 +242,9 @@ class _LocalCrossEncoder:
         passage_limit, pair_limit = _profile_limits(profile)
         if not 1 <= len(candidates) <= PARENT_CAP:
             raise RerankUnavailable("candidate_cap_exceeded")
-        query_text, query_count, kept_query = _bounded_prefix(query, self.tokenizer, QUERY_TOKENS)
-        query_ids = set(self.tokenizer.encode(query_text, add_special_tokens=False).ids) if profile != "full-256" else None
+        query_text, query_count, query_tokens = _prefix_encoding(query, self.tokenizer, QUERY_TOKENS)
+        kept_query = len(query_tokens)
+        query_ids = set(query_tokens) if profile != "full-256" else None
         pairs, accounting = [], []
         for row in candidates:
             source, mode, start = _source(row)
@@ -266,11 +273,12 @@ class _LocalCrossEncoder:
             encoded = self.tokenizer.encode_batch(pairs)
         finally:
             self.tokenizer.no_padding()
-        if len(encoded) != len(candidates) or any(len(item.ids) > pair_limit for item in encoded):
+        ids = [item.ids for item in encoded]
+        if len(encoded) != len(candidates) or any(len(item) > pair_limit for item in ids):
             raise RerankUnavailable("pair_token_cap_exceeded")
-        for item, account in zip(encoded, accounting):
-            account["pair_tokens"] = len(item.ids)
-        arrays = {"input_ids": self.np.asarray([item.ids for item in encoded], dtype=self.np.int64),
+        for item_ids, account in zip(ids, accounting):
+            account["pair_tokens"] = len(item_ids)
+        arrays = {"input_ids": self.np.asarray(ids, dtype=self.np.int64),
                   "attention_mask": self.np.asarray([item.attention_mask for item in encoded], dtype=self.np.int64),
                   "token_type_ids": self.np.asarray([item.type_ids for item in encoded], dtype=self.np.int64)}
         return {name: arrays[name] for name in self.names}, accounting
@@ -368,18 +376,19 @@ def _rerank_locked(query, candidates, revalidate):
         return _fallback(revalidate(guarded), str(exc))
     except Exception:
         return _fallback(revalidate(guarded), "tokenization_failed")
-    current = revalidate(guarded)
-    if current[:len(head)] != head:
-        return _fallback(current, "candidates_changed")
+    # Only these parents enter inference; the unchanged tail is checked again
+    # at return, including changes made while tokenization or inference runs.
+    if revalidate(head) != head:
+        return _fallback(revalidate(guarded), "candidates_changed")
     try:
         scores = engine.score(arrays, len(head))
     except RerankUnavailable as exc:
-        return _fallback(revalidate(current), str(exc))
+        return _fallback(revalidate(guarded), str(exc))
     ranked = [dict(row, rerank_status="applied", rerank_score=score,
                    rerank_original_rank=index + 1, rerank_input=account)
               for index, (row, score, account) in enumerate(zip(head, scores, accounting))]
     ranked.sort(key=lambda row: (-row["rerank_score"], row["rerank_original_rank"]))
-    tail = _fallback(current[len(head):], "outside_parent_cap")
+    tail = _fallback(guarded[len(head):], "outside_parent_cap")
     return revalidate(ranked + tail)
 
 

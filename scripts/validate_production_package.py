@@ -32,6 +32,7 @@ SDIST_HELPERS = (
     "benchmarks/concurrency_stress.py", "benchmarks/isolation.py", "benchmarks/sleep_guard.py",
     "benchmarks/production_bench.py", "benchmarks/production_transport.py",
     "benchmarks/production_runner.py", "benchmarks/production_ledger.py", "benchmarks/production_test_speed.py",
+    "benchmarks/storage_profile.py",
     "benchmarks/production_report.py", "benchmarks/freeze_production_dependencies.py",
     "benchmarks/provision_production_model.py",
     "benchmarks/production_retrieval.py", "benchmarks/prepare_retrieval_ci.py",

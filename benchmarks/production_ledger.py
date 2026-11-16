@@ -5,6 +5,11 @@ import math
 import re
 from typing import Any
 
+try:
+    from . import storage_profile
+except ImportError:
+    import storage_profile
+
 HEX = re.compile(r"^[a-f0-9]{64}$")
 SAFE_TAG = re.compile(r"^[A-Za-z0-9_.:@+#-]{1,160}$")
 LATENCY = ("successful_samples", "p50_ms", "p95_ms", "p99_ms", "mean_ms")
@@ -148,7 +153,11 @@ def source_manifest(value: Any) -> dict[str, str]:
             or not (
                 key == "pyproject.toml"
                 or key.startswith("mesh/") and key.endswith(".py")
-                or key in {"benchmarks/production_bench.py", "benchmarks/production_transport.py"}
+                or key in {
+                    "benchmarks/production_bench.py", "benchmarks/production_transport.py",
+                    "benchmarks/embedding_shadow.py", "benchmarks/retrieval_ci.py",
+                    "benchmarks/storage_profile.py",
+                }
             )
             or not isinstance(digest, str) or not HEX.fullmatch(digest)
         ):
@@ -269,6 +278,10 @@ def result_projection(report: dict[str, Any], cell: dict[str, Any], plan: dict[s
         if cell["surface"] == "http" else True
     )
     policy_matches = case.get("profile_policy") == POLICY
+    requested_profile = cell.get("storage_profile", False)
+    if case.get("storage_profile_requested", False) is not requested_profile:
+        raise LedgerError("ProfileRequestBindingMismatch")
+    profile = profile_result(case.get("storage_profile"), cell, plan)
     neural_ready = (
         dense.get("status") == "indexed"
         and dense.get("expected_rows") == expected_rows
@@ -321,7 +334,10 @@ def result_projection(report: dict[str, Any], cell: dict[str, Any], plan: dict[s
             "id", "phase", "repetition", "backend", "mode", "surface", "group_commit",
             "agents", "input_facts", "anchors", "batch_size", "query_repetitions",
         )},
-        "harness_status": status, "headline_eligible": bool(qualified),
+        "harness_status": status, "headline_eligible": bool(qualified and not requested_profile),
+        "validation_passed": bool(qualified),
+        "measurement_kind": "storage_diagnostic" if requested_profile else "uninstrumented",
+        "storage_profile": profile,
         "collection_kind": ("interrupted_dispatch_recovery" if report.get("collection_kind")
                             == "interrupted_dispatch_recovery" else "harness"),
         "input_report_sha256": execution["input_report_sha256"],
@@ -413,6 +429,56 @@ def result_projection(report: dict[str, Any], cell: dict[str, Any], plan: dict[s
     }
     assert_safe_output(result)
     return result
+
+
+def profile_result(value: Any, cell: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:
+    requested = cell.get("storage_profile", False)
+    if type(requested) is not bool:
+        raise LedgerError("ProfileRequestInvalid")
+    if not requested:
+        if value is not None and value != storage_profile.unobserved(False):
+            raise LedgerError("UnrequestedProfileObservation")
+        return storage_profile.unobserved(False)
+    if not isinstance(value, dict) or value.get("version") != storage_profile.VERSION:
+        return storage_profile.unobserved(True)
+    rows = value.get("observations")
+    if not isinstance(rows, list) or len(rows) > 64:
+        raise LedgerError("ProfileProcessBoundInvalid")
+    if value.get("state") not in ("complete", "partial", "unobserved"):
+        raise LedgerError("ProfileBundleStateInvalid")
+    if cell["surface"] == "http" and len(rows) > 1:
+        raise LedgerError("ProfileServerCardinalityInvalid")
+    expected = storage_profile.binding({
+        "source_manifest": plan["runtime_sources"], "benchmark_source_manifest": plan["harness_sources"],
+        "storage_profile_fixture_sha256": plan["fixture_hashes"][str(cell["input_facts"])],
+        "backend": cell["backend"], "surface": cell["surface"], "group_commit": cell["group_commit"],
+        "storage_profile_mode": cell["mode"], "storage_profile_agents": cell["agents"],
+        "storage_profile_input_facts": cell["input_facts"],
+    })
+    projected = []
+    for row in rows:
+        if isinstance(row, dict) and row.get("state") == "unobserved":
+            if row.get("binding") != expected or row.get("phases") != {}:
+                raise LedgerError("UnobservedProfileBindingInvalid")
+            projected.append({"version": storage_profile.VERSION, "state": "unobserved", "binding": expected, "phases": {}})
+        else:
+            try:
+                projected.append(storage_profile.sanitize(row, expected))
+            except storage_profile.ProfileError as exc:
+                raise LedgerError("ProfileProjectionRejected") from exc
+    rejected = value.get("recovery_rejected_observations", 0)
+    if type(rejected) is not int or not 0 <= rejected <= 64:
+        raise LedgerError("ProfileRecoveryRejectionCountInvalid")
+    complete = (cell["surface"] == "http" and len(projected) == 1 and not rejected
+                and storage_profile.complete_observation(projected[0]))
+    if value["state"] == "complete" and not complete:
+        raise LedgerError("ProfileCompletionInvalid")
+    observed = any(row["state"] != "unobserved" for row in projected)
+    if value["state"] == "unobserved" and observed:
+        raise LedgerError("UnobservedProfileHasMeasurements")
+    state = "complete" if complete and value["state"] == "complete" else "partial" if observed else "unobserved"
+    return {"version": storage_profile.VERSION, "state": state, "observations": projected,
+            "recovery_rejected_observations": rejected}
 
 
 def assert_safe_output(value: Any) -> None:

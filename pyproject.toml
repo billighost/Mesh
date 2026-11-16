@@ -130,6 +130,7 @@ include = [
     "/benchmarks/production_transport.py",
     "/benchmarks/production_runner.py",
     "/benchmarks/production_ledger.py",
+    "/benchmarks/storage_profile.py",
     "/benchmarks/production_test_speed.py",
     "/benchmarks/production_report.py",
     "/benchmarks/freeze_production_dependencies.py",
