@@ -71,10 +71,65 @@ PROFILES = {
     "basic-memory": {"interface": "MCP stdio", "ranking": "local keyword search", "embedding": "none; keyword-only configuration"},
     "auxly": {"interface": "MCP stdio", "ranking": "native substring search; unordered results", "embedding": "none; keyword-only configuration"},
 }
+WORKER_FAILURE_CODES = frozenset({
+    "SourceBodyChangedDuringSearch", "StoredBodyMismatch", "UnknownReturnedIdentity",
+    "CompetitorIndexFailed", "MissingCompetitorExecutable", "McpToolError",
+    "ChildEnvironmentChanged", "ChildEnvironmentFilesChanged", "ChildInterpreterMismatch",
+    "ChildEncoderVersionMismatch", "CompetitorVersionMismatch", "KeywordProfileHasVectorRuntime",
+    "ReturnedBodyMismatch", "IncompleteWorkerAccounting", "ExternalNetworkForbidden",
+    "MissingAcknowledgedIdentity", "UnrecognizedCompetitorOutput", "Bm25IncompleteNativeAccounting",
+    "Bm25SparseWriteFailed", "Bm25SparseQueryFailed", "Bm25EncodingFailed",
+})
+WORKER_FAILURE_FILES = frozenset({
+    "competitor_comparison.py", "stdio.py", "session.py", "main.py", "project_service.py",
+    "project_readiness.py", "sync_service.py", "config.py", "config_models.py",
+})
+WORKER_FAILURE_TYPES = frozenset({
+    "Exception", "ComparisonError", "RuntimeError", "ValueError", "TypeError", "KeyError",
+    "OSError", "FileNotFoundError", "PermissionError", "TimeoutError", "ModuleNotFoundError",
+    "ImportError", "ExceptionGroup", "BaseExceptionGroup", "CancelledError", "ConnectionError",
+    "KeyboardInterrupt", "SystemExit", "IncompleteReadError",
+})
 
 
 class ComparisonError(RuntimeError):
     """Fixed content-free diagnostic code."""
+
+
+def worker_failure_projection(error: BaseException) -> dict:
+    """Project bounded diagnostic identities without third-party exception text."""
+    pending, failures = [error], []
+    while pending and len(failures) < 8:
+        item = pending.pop(0)
+        nested = getattr(item, "exceptions", ())
+        if isinstance(nested, tuple):
+            pending.extend(nested[:8])
+        name = type(item).__name__
+        if name not in WORKER_FAILURE_TYPES:
+            name = "Exception"
+        code = item.args[0] if isinstance(item, ComparisonError) and len(item.args) == 1 and type(item.args[0]) is str and item.args[0] in WORKER_FAILURE_CODES else None
+        frames, trace = [], item.__traceback__
+        while trace is not None and len(frames) < 12:
+            source = Path(trace.tb_frame.f_code.co_filename).name
+            if source in WORKER_FAILURE_FILES and 0 < trace.tb_lineno < 1000000:
+                frames.append({"source": source, "line": trace.tb_lineno})
+            trace = trace.tb_next
+        failures.append({"exception_type": name, "code": code, "frames": frames})
+    return {"protocol": "comparison-worker-failure-v1", "failures": failures}
+
+
+def checked_worker_failure(value: dict) -> dict:
+    if not isinstance(value, dict) or value.get("protocol") != "comparison-worker-failure-v1" or set(value) != {"protocol", "failures"} or not isinstance(value["failures"], list) or not 1 <= len(value["failures"]) <= 8:
+        raise ComparisonError("InvalidWorkerDiagnostic")
+    for item in value["failures"]:
+        if not isinstance(item, dict) or set(item) != {"exception_type", "code", "frames"}:
+            raise ComparisonError("InvalidWorkerDiagnostic")
+        if type(item["exception_type"]) is not str or item["exception_type"] not in WORKER_FAILURE_TYPES or item["code"] is not None and (type(item["code"]) is not str or item["code"] not in WORKER_FAILURE_CODES) or not isinstance(item["frames"], list) or len(item["frames"]) > 12:
+            raise ComparisonError("InvalidWorkerDiagnostic")
+        for frame in item["frames"]:
+            if not isinstance(frame, dict) or set(frame) != {"source", "line"} or type(frame["source"]) is not str or frame["source"] not in WORKER_FAILURE_FILES or type(frame["line"]) is not int or not 0 < frame["line"] < 1000000:
+                raise ComparisonError("InvalidWorkerDiagnostic")
+    return value
 
 
 def digest(path: Path) -> str:
@@ -480,9 +535,10 @@ async def mcp_group(tool: str, root: Path, rows: list[dict], queries: list[dict]
     for index, row in enumerate(rows):
         body = row["content"]
         path = vault / f"d{index:06d}.md"
-        source = f"---\ntitle: d{index:06d}\n---\n{body}\n" if tool == "basic-memory" else body
+        # Native sync adds a missing permalink; seed it to preserve note bytes.
+        source = f"---\ntitle: d{index:06d}\ntype: note\npermalink: d{index:06d}\n---\n{body}\n" if tool == "basic-memory" else body
         path.write_text(source, encoding="utf-8", newline="\n")
-        if path.read_text(encoding="utf-8") != source:
+        if path.read_bytes() != source.encode("utf-8"):
             raise ComparisonError("StoredBodyMismatch")
     env = dict(os.environ)
     env["BASIC_MEMORY_CONFIG_DIR"] = str(root / "config")
@@ -527,8 +583,8 @@ async def mcp_group(tool: str, root: Path, rows: list[dict], queries: list[dict]
                 accounting["queried"] += 1
                 progress()
     for index, row in enumerate(rows):
-        body = f"---\ntitle: d{index:06d}\n---\n{row['content']}\n" if tool == "basic-memory" else row["content"]
-        if (vault / f"d{index:06d}.md").read_text(encoding="utf-8") != body:
+        body = f"---\ntitle: d{index:06d}\ntype: note\npermalink: d{index:06d}\n---\n{row['content']}\n" if tool == "basic-memory" else row["content"]
+        if (vault / f"d{index:06d}.md").read_bytes() != body.encode("utf-8"):
             raise ComparisonError("SourceBodyChangedDuringSearch")
 
 
@@ -1015,6 +1071,9 @@ def run(args) -> int:
     summary["status"] = "failed" if failure else "complete"
     summary["cleanup"] = cleanup
     summary["failure_code"] = failure
+    worker_diagnostic = out / "worker-failure.json"
+    if worker_diagnostic.exists():
+        summary["worker_failure"] = checked_worker_failure(json.loads(checked(worker_diagnostic, out, exists=True).read_text(encoding="utf-8")))
     progress = out / "progress.json"
     if progress.exists():
         summary["accounting"] = json.loads(progress.read_text(encoding="utf-8"))
@@ -1079,7 +1138,12 @@ def main() -> int:
         return 0
     if args.command == "worker":
         config = json.loads(checked(args.config, exists=True).read_text(encoding="utf-8"))
-        return worker(config)
+        try:
+            return worker(config)
+        except BaseException as error:
+            destination = checked(Path(config["output"]) / "worker-failure.json", REPO / ".work")
+            write_json(destination, worker_failure_projection(error))
+            return 1
     if args.command == "provision-bm25":
         provision_bm25(args.directory)
         return 0

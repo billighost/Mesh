@@ -48,6 +48,9 @@ unfaithful parents remain in the unconditional relevance denominator. The first
 faithfully preserved source is canonical by input order when a tool coalesces
 duplicate parents to one native identity. An unfaithful
 returned slot stays at its original rank and receives no relevance credit.
+Basic Memory notes receive canonical title, type and permalink metadata at
+materialization because native indexing otherwise adds a missing permalink.
+The original parent body and the complete note bytes must remain unchanged.
 
 Scoring opens qrels only after worker shutdown and ranked-export closure. It
 preserves graded judgments and reports Hit@1/@5/@10, document Recall@1/@5/@10,
@@ -71,6 +74,8 @@ are removed from workers. Automatic Mesh daemons, synchronization, downloads
 and updates are disabled. The measured process group is stopped before cleanup.
 Any missing binary/model, network-isolation failure, native exception, incomplete
 accounting or resource rejection stays visible and unscored.
+Worker failures retain fixed error codes and bounded source-file line references;
+exception text and private worker logs are excluded.
 
 Each cell has a 45-minute native wall limit and a 4 GiB sampled worker-tree RSS
 limit. Reports retain sampled CPU/RSS, single-pass query latency, original corpus

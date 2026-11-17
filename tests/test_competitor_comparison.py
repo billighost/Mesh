@@ -4,6 +4,7 @@ from __future__ import annotations
 import io
 import json
 import hashlib
+from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 import sys
@@ -452,3 +453,97 @@ def test_child_inventory_cannot_change_the_qualified_resource_sampler(tmp_path, 
     qualification["primary"]["runtime"]["packages"]["psutil"] = "7.0.0"
     with pytest.raises(comparison.ComparisonError, match="ChildEnvironmentSelectionMismatch"):
         comparison.verify_child_environment(args.directory, qualification, "basic-memory")
+
+
+def test_worker_failure_projection_excludes_exception_text_and_unknown_paths():
+    marker = "YOUR_TOKEN_HERE private note body"
+    try:
+        raise RuntimeError(marker)
+    except RuntimeError as error:
+        report = comparison.worker_failure_projection(error)
+    rendered = json.dumps(report)
+    assert marker not in rendered and "test_competitor_comparison.py" not in rendered
+    assert report["failures"] == [{"exception_type": "RuntimeError", "code": None, "frames": []}]
+    comparison.checked_worker_failure(report)
+    code = comparison.worker_failure_projection(comparison.ComparisonError("SourceBodyChangedDuringSearch"))
+    assert code["failures"][0]["code"] == "SourceBodyChangedDuringSearch"
+    unknown = comparison.worker_failure_projection(comparison.ComparisonError(marker))
+    assert unknown["failures"][0]["code"] is None and marker not in json.dumps(unknown)
+
+
+def test_worker_failure_projection_bounds_nested_errors_and_rejects_full_paths():
+    class Group(Exception):
+        exceptions = tuple(RuntimeError("private fixture body") for _ in range(100))
+    report = comparison.worker_failure_projection(Group("private group body"))
+    assert len(report["failures"]) == 8 and "private" not in json.dumps(report)
+    comparison.checked_worker_failure(report)
+    report["failures"][0]["frames"] = [{"source": "private/path/main.py", "line": 1}]
+    with pytest.raises(comparison.ComparisonError, match="InvalidWorkerDiagnostic"):
+        comparison.checked_worker_failure(report)
+
+
+def test_worker_diagnostic_uses_registered_exception_types_only():
+    custom = type("PrivateNoteClass", (Exception,), {})
+    report = comparison.worker_failure_projection(custom("private fixture body"))
+    assert report["failures"][0]["exception_type"] == "Exception"
+    assert "PrivateNoteClass" not in json.dumps(report)
+    report["failures"][0]["exception_type"] = "PrivateNoteClass"
+    with pytest.raises(comparison.ComparisonError, match="InvalidWorkerDiagnostic"):
+        comparison.checked_worker_failure(report)
+
+
+@pytest.mark.parametrize("failure", [None, {"exception_type": [], "code": None, "frames": []}, {"exception_type": "Exception", "code": [], "frames": []}, {"exception_type": "Exception", "code": None, "frames": [None]}])
+def test_malformed_worker_diagnostics_have_a_fixed_rejection(failure):
+    with pytest.raises(comparison.ComparisonError, match="InvalidWorkerDiagnostic"):
+        comparison.checked_worker_failure({"protocol": "comparison-worker-failure-v1", "failures": [failure]})
+
+
+@pytest.mark.parametrize("newline_mutation", [False, True])
+def test_native_note_metadata_does_not_trigger_permalink_rewrite_or_change_parent_body(tmp_path, monkeypatch, newline_mutation):
+    monkeypatch.setattr(comparison, "REPO", tmp_path)
+    interpreter = tmp_path / ".work/native/bin/python"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.write_bytes(b"copied fixture interpreter")
+    (interpreter.parent / "basic-memory").write_bytes(b"native fixture entrypoint")
+    monkeypatch.setattr(comparison.sys, "executable", str(interpreter))
+    root = tmp_path / ".work/worker"
+    root.mkdir()
+    body = "Original parent body.\n\n---\nThis remains source content."
+    def index(command, **kwargs):
+        note = root / "notes/d000000.md"
+        text = note.read_text(encoding="utf-8")
+        # The official batch indexer adds missing canonical permalink metadata.
+        if "\npermalink: d000000\n" not in text:
+            note.write_text(text.replace("title: d000000\n", "title: d000000\npermalink: d000000\n"), encoding="utf-8")
+        if newline_mutation:
+            note.write_bytes(text.replace("\n", "\r\n").encode("utf-8"))
+        return SimpleNamespace(returncode=0)
+    monkeypatch.setattr(comparison.subprocess, "run", index)
+    @asynccontextmanager
+    async def stdio(params):
+        assert params.command == str(interpreter.parent / "basic-memory")
+        yield None, None
+    class Session:
+        def __init__(self, *args):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            pass
+        async def initialize(self):
+            pass
+        async def call_tool(self, name, arguments):
+            assert name == "search_notes" and arguments["search_type"] == "text"
+            return SimpleNamespace(isError=False, structuredContent={"results": [{"type": "entity", "file_path": "d000000.md", "title": "d000000"}]})
+    monkeypatch.setitem(sys.modules, "mcp", SimpleNamespace(ClientSession=Session, StdioServerParameters=lambda **kwargs: SimpleNamespace(**kwargs)))
+    monkeypatch.setitem(sys.modules, "mcp.client.stdio", SimpleNamespace(stdio_client=stdio))
+    accounting = {"ingested": 0, "faithful": 0, "ingest_seconds": 0, "queried": 0}
+    output = io.StringIO()
+    invoke = comparison.mcp_group("basic-memory", root, [{"id": "source", "content": body}], [{"id": "query", "query": "fixture question"}], output, accounting, lambda: None)
+    if newline_mutation:
+        with pytest.raises(comparison.ComparisonError, match="SourceBodyChangedDuringSearch"):
+            comparison.asyncio.run(invoke)
+        return
+    comparison.asyncio.run(invoke)
+    assert (root / "notes/d000000.md").read_text(encoding="utf-8") == "---\ntitle: d000000\ntype: note\npermalink: d000000\n---\n" + body + "\n"
+    assert accounting["queried"] == 1
