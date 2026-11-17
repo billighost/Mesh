@@ -401,6 +401,7 @@ def base_environment(private: Path) -> dict[str, str]:
     preserved = {
         "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "SYSTEMDRIVE",
         "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE", "LANG", "LC_ALL", "LC_CTYPE",
+        "GITHUB_ACTIONS",  # The optional diagnostic checks this nonsecret host marker before dispatch.
     }
     env = {key: value for key, value in os.environ.items() if key.upper() in preserved}
     for name, leaf in {

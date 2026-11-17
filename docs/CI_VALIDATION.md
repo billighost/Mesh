@@ -1,6 +1,42 @@
 # Remote qualification for Mesh 0.9.0
 
-## Current completed checkpoint (reviewed November 16, 2026)
+## Current completed checkpoint (reviewed November 17, 2026)
+
+At `e4284c8`, [normal CI](https://github.com/billighost/Mesh/actions/runs/43906485367)
+passed all 18 jobs after attempt 2 completed the two macOS jobs that had not
+received runners on the first attempt. The
+[production run](https://github.com/billighost/Mesh/actions/runs/43906485048)
+passed both full qualification suites. Their independently checked XMLs each
+contain 1,915 cases: primary has 1,912 passes and three skips; floor has 1,911
+passes and four skips, with zero failures/errors and 74.38%/74.34% coverage.
+Real process-crash recovery and primary wheel/sdist, installed-wheel, CLI,
+doctor and installer dry-run qualification passed.
+
+The registered storage ledger retains all 58 cells: 53 completed, four deferred
+and one optional diagnostic failure. Primary coverage is 46/48, with zero
+primary failures and two resource deferrals. Two grouped 10,000-fact scale
+cells completed; the two ungrouped cells are budget deferred. The optional
+diagnostic exited 2 before workload startup because its child environment
+omitted the required Actions marker. It provides no storage-stage measurements.
+The same-selection test-speed observation completed with one and two workers.
+
+All five `compact-80` retrieval jobs failed overall. The runtime reranker meets
+its own gates on the bounded direct-fact and long-text fixtures, while the
+inspected LongMemEval first-result score remains 4/6 against the required 5/6.
+SciFact and NFCorpus native reranking exceed added latency and CPU gates and
+remain unscored. In the separate
+[E5 run](https://github.com/billighost/Mesh/actions/runs/43909369990), all five
+native baselines completed their selected queries and then exited 1. E5 itself
+is `not_run`, with zero queries and null paired resource observations; this
+does not measure E5 quality or resource rejection.
+
+[RESULTS.md](../benchmarks/RESULTS.md) publishes the content-free numerical
+exports and source provenance. This checkpoint qualifies its tested source and
+environments. Subsequent source changes require their own qualification;
+experimental fixture gains do not qualify a default or establish a competitor
+result. The historical 470-query comparison evaluates Mesh 0.8.3.
+
+## Earlier source checkpoints
 
 At `2d67c704`, [normal CI](https://github.com/billighost/Mesh/actions/runs/42485932114)
 and both full primary/minimum suites in the
@@ -25,8 +61,6 @@ measurements. Neither an earlier passing suite nor an experimental fixture gain
 qualifies a changed default or establishes a competitor result. The historical
 470-query comparison evaluates Mesh 0.8.3; the five-dataset workflow below
 qualifies Mesh configurations rather than running its competitors.
-
-## Earlier source checkpoints
 
 At `e353bc1`, [normal CI](https://github.com/billighost/Mesh/actions/runs/42378934838)
 passed, and [the production run](https://github.com/billighost/Mesh/actions/runs/42378934727)

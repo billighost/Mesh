@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 Candidate release for durable concurrent storage, retrieval, bounded resource use, and persistent context for agents sharing one machine. Python entry points are retained; native SQLite is supplied by the required APSW dependency. Schema 6 upgrades require a backup and must not be reopened by older packages. Performance and accuracy evidence remains tied to each tested source; see the [release notes](docs/releases/RELEASE_NOTES_v0.9.0.md).
 
+At `e4284c8`, normal CI and both full qualification suites passed. The source-bound storage ledger and same-selection test-speed observation completed; the ledger preserves four deferrals and one optional diagnostic startup failure. Retrieval and E5 jobs failed overall, with E5 itself never executed. These checkpoint results do not qualify the default-off experimental features or a later release source; see [RESULTS.md](benchmarks/RESULTS.md).
+
 ### Added
 - **Patched SQLite runtime**: A lazy DB-API facade uses APSW's bundled SQLite for storage, audit, encryption helpers, backup, and maintenance. Runtime verification rejects vulnerable WAL versions and missing FTS5 or thread safety. Persistent transactions use `synchronous=FULL` by default.
 - **Durable indexing and mutation delivery**: Revision-bound embedding jobs and content-free mutation events commit with authoritative state. Durable operation receipts support reconciliation after a lost reply without replaying a write under a new ID.
@@ -22,7 +24,7 @@ Candidate release for durable concurrent storage, retrieval, bounded resource us
 - **Embedding-Downgrade Protections & Re-Embedding CLI (`mesh reembed`, `mesh/memory.py`)**: Enforced dimension and model validation preventing high-dimensional ONNX vectors from being silently overwritten by lexical hash vectors. Added `mesh reembed` CLI command and API to explicitly drain and upgrade memory stores to target neural embedding models.
 - **Daemon Readiness Probe (`mesh/daemon.py`, `mesh/cli.py`)**: Added deterministic health and readiness endpoints (`/healthz`, `/readyz`) with keep-alive socket checks to confirm transformer model readiness before CLI query delegation.
 - **Access Controls & Privacy Defaults (`mesh/mcp_server.py`, `mesh/guard.py`)**: Server-side security enforcement for `local_only` flags and namespace isolation locks. Audit events remain strictly content-free (tool names, counts, and timings only, never payload text or secrets).
-- **Release Documentation & Security Gate (`scripts/check_docs.py --release`)**: Automated release gate enforcing resolution of external reviewer findings and sign-offs in `docs/REVIEWS.md` prior to packaging.
+- **Release documentation gate (`scripts/check_docs.py --release`)**: Rejects unresolved review placeholders in addition to ordinary documentation consistency checks. Review scope and status are recorded in `docs/REVIEWS.md`.
 
 ### Changed
 - **Passage cache layout**: Validated long-parent passages share a metered lexical generation without redundant whole-body primary terms. Short, pending, malformed, and model-incompatible cases retain a complete primary fallback. Native CPU and accuracy qualification remains required.

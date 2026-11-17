@@ -224,8 +224,42 @@ def grouped_parent_identities(records, expected_tag):
     return {corpus: original_parent_identities(group, expected_tag) for corpus, group in groups.items()}
 
 
+def worker_failure_projection(manifest):
+    """Export registered codes and bounded source locations without exception text."""
+    details = manifest.get("failure_details", {}) if isinstance(manifest, dict) else {}
+    if not isinstance(details, dict):
+        details = {}
+    name = details.get("exception_type", manifest.get("failure_type")) if isinstance(manifest, dict) else None
+    allowed_types = production.WORKER_FAILURE_TYPES | {"C4Failure", "C4Unavailable", "C4Aborted"}
+    allowed_sources = production.WORKER_FAILURE_SOURCES | {"embedding_shadow.py"}
+    result = {"stage": "e5-shadow", "exception_type": name if type(name) is str and name in allowed_types else "other",
+              "source_frames": []}
+    code = details.get("failure_code", manifest.get("failure_code")) if isinstance(manifest, dict) else None
+    if type(code) is str and code in FAILURE_CODES:
+        result["failure_code"] = code
+    frames = details.get("source_frames", [])
+    if isinstance(frames, list):
+        result["source_frames"] = [{"source": frame["source"], "line": frame["line"]} for frame in frames[-4:]
+                                   if isinstance(frame, dict) and type(frame.get("source")) is str
+                                   and frame["source"] in allowed_sources and type(frame.get("line")) is int and frame["line"] > 0]
+    return result
+
+
+def worker_failure_details(exc):
+    details = {"exception_type": type(exc).__name__, "source_frames": []}
+    trace = exc.__traceback__
+    while trace is not None:
+        source = Path(trace.tb_frame.f_code.co_filename).name
+        if source in production.WORKER_FAILURE_SOURCES | {"embedding_shadow.py"}:
+            details["source_frames"].append({"source": source, "line": trace.tb_lineno})
+        trace = trace.tb_next
+    if isinstance(exc, C4Failure) and len(exc.args) == 1 and type(exc.args[0]) is str and exc.args[0] in FAILURE_CODES:
+        details["failure_code"] = exc.args[0]
+    return worker_failure_projection({"failure_details": details})
+
+
 def failed_native_phase(exc, elapsed_seconds, ceiling):
-    # Exception text, filenames and arbitrary nested diagnostics are never copied.
+    # Exception text, full paths and arbitrary nested diagnostics are never copied.
     result = {"status": "failed",
               "phase_wall_seconds": elapsed_seconds if type(elapsed_seconds) in {int, float} and math.isfinite(elapsed_seconds) and elapsed_seconds >= 0 else None,
               "rss_limit_bytes": ceiling if type(ceiling) is int and ceiling >= 0 else None}
@@ -238,6 +272,9 @@ def failed_native_phase(exc, elapsed_seconds, ceiling):
         value = evidence.get("phase_wall_seconds")
         if type(value) in {int, float} and math.isfinite(value) and value >= 0:
             result["phase_wall_seconds"] = value
+        child = evidence.get("child_failure_diagnostics")
+        if isinstance(child, dict):
+            result["child_failure_diagnostics"] = worker_failure_projection({"failure_details": child})
     if isinstance(exc, C4Failure) and exc.args and isinstance(exc.args[0], str) and exc.args[0] in FAILURE_CODES:
         result["failure_code"] = exc.args[0]
     return result
@@ -367,6 +404,24 @@ def measure_queries(mesh, queries, records, memory, model, output, metadata, bas
                     helpers.write_json(output / "run-manifest.json", metadata)
 
 
+def close_worker_namespaces(meshes, audit, memory, store):
+    try:
+        for mesh in meshes:
+            mesh.close()
+    finally:
+        # Mutation delivery can reopen earlier corpus stores; stop it before removing the worker-owned root.
+        audit.stop_audit_worker()
+        for mesh in meshes:
+            try:
+                store._evict_vector_cache_for_db_path(mesh.store.db_path)
+                store.close_store_readers(mesh.store.db_path)
+                store.close_store_connection(mesh.store.db_path)
+                memory.evict_memory_namespace_cache(mesh.namespace)
+                audit.evict_audit_cache(mesh.namespace)
+            finally:
+                store.evict_namespace_write_lock(mesh.namespace, data_root=mesh.store.db_path.parent)
+
+
 def measure(args):
     output = helpers.isolated_artifact_path(args.output, args.repository)
     output.mkdir(parents=True, exist_ok=False)
@@ -382,7 +437,7 @@ def measure(args):
                 "all_queries_accounted": False, "output_sha256": {}, "indexing": {}}
     helpers.write_json(output / "run-manifest.json", metadata)
     try:
-        with tempfile.TemporaryDirectory(prefix="mesh-retrieval-ci-e5-native-") as owned:
+        with tempfile.TemporaryDirectory(prefix="mesh-retrieval-ci-e5-native-") as owned, contextlib.ExitStack() as cleanup:
             root = Path(owned).resolve(strict=True)
             helpers.configure_isolation(root)
             os.environ.update(MESH_FORCE_HASH_EMBED="0", MESH_SYNC_ONNX="1", MESH_QUERY_MODE="neural",
@@ -394,6 +449,8 @@ def measure(args):
             import mesh.audit as audit
             import mesh.memory as memory
             import mesh.store as store
+            owned_meshes = []
+            cleanup.callback(close_worker_namespaces, owned_meshes, audit, memory, store)
             if Path(memory.__file__).resolve().parent != implementation / "mesh" or store.DEFAULT_MAX_VECTOR_CACHE_BYTES != 256 * 1024**2:
                 raise C4Failure("ShadowImportedRuntimeMismatch")
             memory._trigger_background_bootstrap = lambda: None
@@ -417,6 +474,7 @@ def measure(args):
                 selected = [row for row in records if row["corpus_id"] == corpus_id]
                 production.copy_guarded_corpus(args.source_run, args.snapshot_home, namespace, root, selected, store)
                 mesh = memory.Mesh(namespace=namespace, agent_id="offline-e5-shadow")
+                owned_meshes.append(mesh)
                 try:
                     metadata["sqlite"] = production.verify_sqlite(mesh, store)
                     started, cpu = time.perf_counter(), time.process_time()
@@ -447,6 +505,7 @@ def measure(args):
             metadata["status"] = "complete"
     except BaseException as exc:
         metadata.update(status="failed", failure_type=type(exc).__name__)
+        metadata["failure_details"] = worker_failure_details(exc)
         if isinstance(exc, C4Failure) and exc.args and exc.args[0] in FAILURE_CODES:
             metadata["failure_code"] = exc.args[0]
         raise
@@ -535,7 +594,8 @@ def run(args):
                 metadata["active_phase"] = phase
                 started = time.monotonic()
                 try:
-                    phases[phase] = dict(supervised_measure(command, args.repository, ceiling, phase_output, helpers), status="passed")
+                    phases[phase] = dict(supervised_measure(command, args.repository, ceiling, phase_output, helpers,
+                                                           failure_projector=worker_failure_projection), status="passed")
                 except BaseException as exc:
                     phases[phase] = failed_native_phase(exc, time.monotonic() - started, ceiling)
                     raise
@@ -710,6 +770,8 @@ def failure_projection(directory):
             manifest = {}
         status = manifest.get("status")
         selected = {"status": status if isinstance(status, str) and status in {"running", "complete", "failed"} else "unknown"}
+        if status == "failed":
+            selected["failure_details"] = worker_failure_projection(manifest)
         code = manifest.get("failure_code")
         if isinstance(code, str) and code in FAILURE_CODES:
             selected["failure_code"] = code

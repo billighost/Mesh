@@ -1193,12 +1193,14 @@ completed neural indexing, retrieval quality, latency, CPU and sampled RAM are
 separate observations. Failed, resource-rejected, deferred and unscored
 conditions remain visible.
 
-Normal CI and both full qualification suites passed at `2d67c704` on November 8,
-2026. Its storage benchmark failed before measurement registration, and its
-test-speed report failed source-manifest validation. All five retrieval jobs
-failed overall. Those failures do not establish a new storage or test-speed
-result. See [remote qualification](docs/CI_VALIDATION.md) for the complete status
-and prerequisites for another source to be qualified.
+Normal CI and both full qualification suites passed for the November 16, 2026
+source `e4284c8`. The primary and floor suites each selected 1,915 cases with
+zero failures or errors. The storage ledger retains 53 completed cells, four deferrals and one
+optional diagnostic failure before workload startup; none of the primary cells
+failed. The same-selection test-speed observation completed. All five retrieval
+jobs failed overall, and all five separate E5 jobs stopped in their baseline
+before E5 executed. See [remote qualification](docs/CI_VALIDATION.md) and
+[RESULTS.md](benchmarks/RESULTS.md) for source-bound measurements and limitations.
 
 Passage retrieval and optional local reranking remain default off. Gains on
 small bounded fixtures do not establish general accuracy, and no profile is

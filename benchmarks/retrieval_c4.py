@@ -582,7 +582,7 @@ def terminate_tree(process, psutil, observed_children=()):
     psutil.wait_procs(descendants, timeout=5)
 
 
-def supervised_measure(command, repository, rss_limit, phase_output, helpers):
+def supervised_measure(command, repository, rss_limit, phase_output, helpers, *, failure_projector=None):
     import psutil
 
     wrapper = psutil.Process()
@@ -613,7 +613,7 @@ def supervised_measure(command, repository, rss_limit, phase_output, helpers):
             failure = {}
             if manifest_path.exists():
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-                failure = failure_projection(manifest)
+                failure = (failure_projector or failure_projection)(manifest)
             raise C4Failure("MeasuredSubprocessFailed", evidence={"child_failure_diagnostics": failure,
                 "child_returncode": process.returncode, "process_tree_peak_rss_bytes": peak,
                 "process_tree_sample_count": samples})

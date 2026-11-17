@@ -41,16 +41,19 @@ MCP clients/daemons, and preview integration updates with `mesh install AGENT
 
 [RESULTS.md](../../benchmarks/RESULTS.md) records each measured source and preserves
 failed, deferred and unscored conditions. Normal CI and both full qualification
-suites passed at `2d67c704`; its latest storage and test-speed measurements failed
-source-manifest validation. Later release changes need their own qualification.
+suites passed at `e4284c8`, with 1,915 selected cases in each full suite. Its
+storage ledger retains 53 completed cells, four deferrals and one optional
+diagnostic startup failure; primary cells have zero failures. The same-selection
+test-speed observation completed. Later release changes need their own qualification.
 Process-crash checks support observed recovery and do not establish physical
 power-cut survival.
 
 `MESH_PASSAGE_INDEX=1` and `MESH_RERANK_ENABLED=1` explicitly enable separate
 experimental features. The default remains off. Small direct-fact and positional
 long-text reranker gains do not establish population accuracy; conversational
-quality and public-corpus resource qualification remain incomplete. The E5
-shadow is a benchmark-only model trial and does not select a production model.
+quality and public-corpus resource qualification remain incomplete. All five
+separate E5 jobs stopped in the native baseline after its selected queries;
+E5 itself did not run. The shadow remains a benchmark-only model trial.
 
 The historical 470-query comparison uses Mesh 0.8.3, Mem0 2.2.1, Basic Memory
 0.24.1 and Auxly 1.5.0. It does not measure this release candidate. No generalized

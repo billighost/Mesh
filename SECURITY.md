@@ -127,4 +127,4 @@ gh attestation verify mesh_context_layer-0.8.3-py3-none-any.whl --owner billigho
 
 ## 6. Independent Reviews
 
-Independently reviewed by 3 people (Jason, Mark and Adesire); see [docs/REVIEWS.md](docs/REVIEWS.md).
+See [docs/REVIEWS.md](docs/REVIEWS.md) for recorded qualification, coding-agent reviews and the historical independent field test. Human code and security review of Mesh 0.9.0 is unverified from the published record.

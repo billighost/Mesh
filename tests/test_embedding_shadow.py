@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import re
 import sys
+import tempfile
 import threading
 from types import SimpleNamespace
 
@@ -15,6 +16,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "benchmarks"))
 import embedding_shadow as shadow
+import retrieval_c4 as c4
 from retrieval_c4 import C4Failure
 import mesh.memory as memory
 
@@ -301,6 +303,120 @@ def test_native_child_failure_code_survives_sanitized_projection(tmp_path):
     assert "untrusted_message" not in projected["phases"]["e5"]
     (phase / "run-manifest.json").write_text(json.dumps({"status": "failed", "failure_code": "unregistered-fake-message"}))
     assert "failure_code" not in shadow.failure_projection(tmp_path)["phases"]["e5"]
+
+
+@pytest.mark.parametrize("dataset_name", ["prospective", "longmemeval"])
+@pytest.mark.parametrize("fail_query", [False, True])
+def test_shadow_worker_releases_owned_handles_before_temp_cleanup(monkeypatch, tmp_path, fake_runtime, dataset_name, fail_query):
+    import mesh.audit as audit
+    import mesh.store as store
+
+    source, dataset, fixture = (tmp_path / name for name in ("source", "dataset", "fixture"))
+    for directory in (source, dataset, fixture):
+        directory.mkdir()
+    queries = ([{"id": "q1", "query": "safe fixture"}] if dataset_name == "prospective" else
+               [{"id": "q1", "query": "safe first fixture", "corpus": "first"},
+                {"id": "q2", "query": "safe second fixture", "corpus": "second"}])
+    namespaces = {"complete": "e5-owned-handles"} if dataset_name == "prospective" else {
+        "first": "e5-owned-first", "second": "e5-owned-second"}
+    source_manifest = {"query_target": len(queries), "dataset_manifest_sha256": "a" * 64, "runtime_files": {}, "ingestion": {}}
+    shadow.helpers.write_json(source / "run-manifest.json", source_manifest)
+    (source / "ingestion-fidelity.jsonl").write_text("", encoding="utf-8")
+    (dataset / "queries-selected.jsonl").write_text("".join(json.dumps(query) + "\n" for query in queries), encoding="utf-8")
+    for name in ("model.onnx", "tokenizer.json"):
+        (fixture / name).write_bytes(b"model-free placeholder")
+    owned_roots, measured_locks = [], []
+    temporary_directory = tempfile.TemporaryDirectory
+
+    def owned_directory(**kwargs):
+        directory = temporary_directory(**kwargs)
+        owned_roots.append(Path(directory.name))
+        return directory
+
+    def freeze(_repository, implementation):
+        (implementation / "mesh").mkdir(parents=True)
+        monkeypatch.setattr(memory, "__file__", str(implementation / "mesh" / "memory.py"))
+        return {}
+
+    def one_query(mesh, group, _records, _memory, _model, _output, metadata, _baseline):
+        with store.namespace_write_lock(mesh.namespace, data_root=mesh.store.db_path.parent):
+            pass
+        measured_locks.extend(path for path in store._OPEN_LOCK_FDS if path.parent == mesh.store.db_path.parent)
+        metadata["completed_queries"] += len(group)
+        if fail_query:
+            raise RuntimeError("FAKE_PRIVATE_QUERY_ERROR")
+
+    fake_runtime.session = SimpleNamespace()
+    monkeypatch.setattr(memory, "_DirectOnnxEmbedding", lambda *_args: fake_runtime)
+    monkeypatch.setattr(shadow.tempfile, "TemporaryDirectory", owned_directory)
+    monkeypatch.setattr(shadow.helpers, "freeze_runtime", freeze)
+    monkeypatch.setattr(shadow, "verify_baseline_fixture", lambda *_args: None)
+    monkeypatch.setattr(shadow.importlib.metadata, "version", lambda _name: "fake")
+    monkeypatch.setattr(shadow.production, "copy_guarded_corpus", lambda *_args: None)
+    monkeypatch.setattr(shadow, "measure_queries", one_query)
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    args = SimpleNamespace(output=tmp_path / ".work" / "baseline", repository=tmp_path, source_run=source,
+                           dataset=dataset_name, phase="baseline", embedding_model_directory=fixture,
+                           dataset_directory=dataset, snapshot_home=tmp_path / "snapshot",
+                           namespaces=namespaces)
+    try:
+        if fail_query:
+            with pytest.raises(RuntimeError, match="FAKE_PRIVATE_QUERY_ERROR"):
+                shadow.measure(args)
+        else:
+            shadow.measure(args)
+        manifest = json.loads((args.output / "run-manifest.json").read_text(encoding="utf-8"))
+        assert manifest["status"] == ("failed" if fail_query else "complete")
+        assert manifest["all_queries_accounted"] is not fail_query
+        assert "FAKE_PRIVATE" not in json.dumps(manifest)
+        assert measured_locks and all(path not in store._OPEN_LOCK_FDS for path in measured_locks)
+        assert owned_roots and all(not root.exists() for root in owned_roots)
+    finally:
+        audit._close_all_audit_connections()
+        store.close_store_readers()
+        for path in list(store._CONNECTION_POOL):
+            store.close_store_connection(path)
+        store._cleanup_open_lock_fds()
+
+
+@pytest.mark.parametrize("failure_type,failure_code", [("PermissionError", None), ("C4Failure", "ShadowPendingJobs")])
+def test_e5_supervisor_preserves_bounded_child_diagnostics(monkeypatch, tmp_path, failure_type, failure_code):
+    details = {"exception_type": failure_type, "source_frames": [
+        {"source": "embedding_shadow.py", "line": 450, "message": "FAKE_PRIVATE_BODY"},
+        {"source": "FAKE_PRIVATE_PATH", "line": 2}, {"source": "embedding_shadow.py", "line": True}],
+        "message": "FAKE_PRIVATE_BODY", "child_failure_diagnostics": {"message": "FAKE_PRIVATE_BODY"}}
+    if failure_code:
+        details["failure_code"] = failure_code
+    shadow.helpers.write_json(tmp_path / "run-manifest.json", {"status": "failed", "failure_details": details})
+    polls = iter((None, 1))
+    child = SimpleNamespace(pid=123, returncode=1, poll=lambda: next(polls))
+    process = SimpleNamespace(children=lambda **_kwargs: [], memory_info=lambda: SimpleNamespace(rss=100))
+    monkeypatch.setitem(sys.modules, "psutil", SimpleNamespace(Process=lambda *_args: process, NoSuchProcess=ProcessLookupError))
+    monkeypatch.setattr(c4.subprocess, "Popen", lambda *_args, **_kwargs: child)
+    monkeypatch.setattr(c4, "terminate_tree", lambda *_args: None)
+    monkeypatch.setattr(c4.time, "sleep", lambda *_args: None)
+    with pytest.raises(C4Failure) as raised:
+        c4.supervised_measure(["FAKE_PROCESS_NOT_LAUNCHED"], tmp_path, 500, tmp_path, shadow.helpers,
+                             failure_projector=shadow.worker_failure_projection)
+    measured = shadow.failed_native_phase(raised.value, 1.0, 500)
+    expected = {"stage": "e5-shadow", "exception_type": failure_type,
+                "source_frames": [{"source": "embedding_shadow.py", "line": 450}]}
+    if failure_code:
+        expected["failure_code"] = failure_code
+    assert measured["child_failure_diagnostics"] == expected
+    shadow.helpers.write_json(tmp_path / "run-manifest.json", {"phases": {"baseline": measured}})
+    projected = shadow.failure_projection(tmp_path)
+    assert projected["phases"]["baseline"]["failed_native_measurement"]["child_failure_diagnostics"] == expected
+    assert "FAKE_PRIVATE" not in json.dumps(projected)
+
+
+def test_e5_worker_failure_projection_bounds_frames_and_unknown_details():
+    details = {"exception_type": "FAKE_PRIVATE_CLASS", "failure_code": "FAKE_PRIVATE_BODY",
+               "source_frames": [{"source": "embedding_shadow.py", "line": index} for index in range(1, 10)]}
+    projected = shadow.worker_failure_projection({"failure_details": details})
+    assert projected == {"stage": "e5-shadow", "exception_type": "other",
+                         "source_frames": [{"source": "embedding_shadow.py", "line": index} for index in range(6, 10)]}
+    assert shadow.worker_failure_projection([]) == {"stage": "e5-shadow", "exception_type": "other", "source_frames": []}
 
 
 def test_shadow_baseline_export_matches_instrumented_fresh_default(tmp_path):

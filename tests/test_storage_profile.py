@@ -286,6 +286,41 @@ def test_http_clients_do_not_install_runtime_instrumentation(monkeypatch):
     assert bench._storage_profiler({"storage_profile": False, "surface": "receipt-sdk", "action": "ingest"}) is None
 
 
+@pytest.mark.parametrize("actions,skip_crash_probes,accepted", [
+    ("true", True, True), ("true", False, False), ("false", True, False), (None, True, False),
+])
+def test_controller_environment_preserves_diagnostic_actions_gate(
+    tmp_path, monkeypatch, capsys, actions, skip_crash_probes, accepted,
+):
+    if actions is None:
+        monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    else:
+        monkeypatch.setenv("GITHUB_ACTIONS", actions)
+    monkeypatch.setenv("GH_TOKEN", "YOUR_TOKEN_HERE")
+    environment = runner.base_environment(tmp_path / "private")
+    assert "GH_TOKEN" not in environment
+
+    class StartupReached(Exception):
+        pass
+
+    def before_workload(_):
+        raise StartupReached
+
+    monkeypatch.setattr(bench.os, "environ", environment)
+    monkeypatch.setattr(bench, "source_manifest", before_workload)
+    arguments = ["--storage-profile"]
+    if skip_crash_probes:
+        arguments.append("--skip-crash-probes")
+    if accepted:
+        with pytest.raises(StartupReached):
+            bench.main(arguments)
+    else:
+        with pytest.raises(SystemExit) as error:
+            bench.main(arguments)
+        assert error.value.code == 2
+        assert "Storage profiling requires Actions and separate crash probes disabled." in capsys.readouterr().err
+
+
 def test_default_off_controller_and_ledger_keep_diagnostics_separate():
     cell = runner.cell("scale", "neural", "scalar", 16, "http", 1, 10000)
     plan = {"python": "FAKE_PYTHON", "model": {"directory": "FAKE_MODEL"},

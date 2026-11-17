@@ -2,6 +2,44 @@
 
 This document provides empirical latency, throughput, memory, and scaling benchmarks for **Mesh** (`mesh-context-layer`). All tests measure real end-to-end execution paths including SQLite WAL transactions, token budgeting, FTS5 lexical matching, and ONNX SIMD cosine vector ranking.
 
+## Mesh 0.9.0 measured checkpoint (2026-11-16, `e4284c8`)
+
+[Normal CI](https://github.com/billighost/Mesh/actions/runs/43906485367) passed all 18 jobs after attempt 2 completed the two macOS jobs that had not received runners. The [production run](https://github.com/billighost/Mesh/actions/runs/43906485048) passed both full qualification suites and the same-selection test-speed observation, while its storage job and all five retrieval jobs failed overall. The storage failure belongs to an optional diagnostic that stopped before its workload; the primary cells have no failures. The separate [E5 run](https://github.com/billighost/Mesh/actions/runs/43909369990) failed all five baseline subprocesses before E5 executed. [Provenance](results/production_20261116_e4284c8_provenance.json) binds these observations to `e4284c8fb5ba565043accccbdd6353839c3eb43a` and records 60 Git source hashes, accounting for Windows checkout newlines.
+
+Both qualification XMLs were independently checked: each selected 1,915 cases, with 1,912 passes/three skips on primary and 1,911 passes/four skips on floor, zero failures/errors, and 74.38%/74.34% coverage. Real process-crash recovery passed. Primary wheel/sdist, installed-wheel smoke, CLI, doctor and installer dry-run validation passed; the sdist collected the complete selection. Primary uses Python 3.14.0, APSW 3.54.1.0 and ONNX Runtime 1.32.0; floor uses Python 3.10.11, APSW 3.51.3.0 and ONNX Runtime 1.23.2. These checks qualify this source and these environments; later changes require fresh qualification.
+
+The [storage ledger](results/production_performance_20261116_e4284c8.json) retains all 58 cells: 53 completed, four deferred and one optional diagnostic startup failure. Five pilots completed separately. Primary coverage is 46/48 with 23,552 attempted and acknowledged measured facts, zero failed acknowledgements, unknown outcomes or observed unacknowledged committed facts. Every completed primary cell passed independent identity/content/revision, receipt, integrity, policy, resource and cleanup checks. Two sixteen-agent neural receipt-SDK cells remain resource deferred, and the two ungrouped 10,000-fact HTTP cells remain budget deferred. The grouped scale cells completed. Selected sixteen-agent grouped HTTP rates, excluding anchors and process close:
+
+| Backend | Measured facts | Call | Durable facts/s | Indexed facts/s |
+| --- | ---: | --- | ---: | ---: |
+| Hash | 512 | Scalar | 78.09 | — |
+| Hash | 512 | Atomic 8 | 141.37 | — |
+| Neural | 512 | Scalar | 74.23 | 45.11 |
+| Neural | 512 | Atomic 8 | 131.73 | 61.22 |
+| Hash | 10,000 | Scalar | 67.30 | — |
+| Neural | 10,000 | Scalar | 50.59 | 35.70 |
+
+This single serial pass uses Windows 2025Server, four logical CPUs and 15.99 GiB RAM, patched SQLite 3.54.1 and WAL/FULL. The optional storage diagnostic exited 2 after 0.506 seconds because its child environment omitted the required Actions marker; its profile remains unobserved and it supports no storage-stage optimization claim. The ledger retains its failure and all deferrals. The scale rates establish no generalized storage speedup; different hosted passes do not establish identical host load. Summed sampled RSS can count shared pages twice and miss short peaks. Twelve anchor queries are functional checks, and process-crash tests do not establish physical power-cut survival.
+
+The [same-source test-speed observation](results/production_test_speed_20261116_e4284c8.json) completed the identical 1,915-case selection, with four skips and zero failures/errors, once with one worker and once with two: 236.447 → 144.240 seconds (39.00% lower; 1.639× observed ratio). Sampled summed peak RSS rose from 962.36 to 1,164.56 MiB and sampled CPU from 199.234 to 232.109 seconds. This fixed-order, single-host observation establishes no generalized speedup or repeatability claim; both invocations used fresh isolated homes and retained source/dependency/cleanup checks.
+
+The [retrieval aggregate](results/production_retrieval_20261116_e4284c8.json) preserves all ten failed jobs, all 24 failed gates and all 155 phases. The table reports annotated authorized primary-source evidence Hit@1 on answerable queries; direct-fact and long-text complete accounting also includes unanswered queries. It does not measure generated-answer correctness or the complete LongMemEval population.
+
+| Fixture (answerable queries) | Fresh default Hit@1 | Runtime passages Hit@1 | Native compact-80 Hit@1 |
+| --- | ---: | ---: | --- |
+| Direct facts (16) | 13/16 (81.25%) | 13/16 (81.25%) | 16/16; own gates pass |
+| Long-text regression (6) | 0/6 (0%) | 2/6 (33.33%) | 6/6; own gates pass |
+| Inspected LongMemEval subset (6) | 3/6 (50%) | 3/6 (50%) | 4/6; required 5/6, quality rejected |
+| SciFact (300) | 168/300 (56%) | 172/300 (57.33%) | Resource rejected; unscored |
+| NFCorpus (323) | 159/323 (49.23%) | 147/323 (45.51%) | Resource rejected; unscored |
+
+The bounded native direct-fact and long-text conditions pass their own gates, but their overall jobs still fail default/passage accuracy gates. LongMemEval native resource gates pass and its score remains below the quality target. A separate later legacy C4 phase exceeds sampled process-tree RSS (811,372,544 bytes against 805,306,368); its scoring is not run and paired resources remain null. That failure does not erase the earlier native score.
+
+SciFact native added p95/p99/CPU are 158.344/1,067.601/80.104 ms, and NFCorpus 107.860/1,254.468/85.720 ms, against unchanged 50/100/50 ms ceilings. Both resource-rejected native conditions retain complete query/resource progress but remain unscored. No optional profile is qualified across these datasets, and passage indexing and reranking remain default off.
+
+The five separate E5 jobs completed all selected native-baseline queries (22/9/6/300/323 for direct facts/long text/LongMemEval/SciFact/NFCorpus), then each baseline subprocess exited 1 with generic `MeasuredSubprocessFailed`. Their baseline RSS stayed below the unchanged ceiling. E5 itself is `not_run`, zero queries, and paired normal-cache/cache-cold resource observations remain null. This is a baseline completion failure, not an E5 quality or resource rejection. The exports retain the failed baseline progress, model/source bindings and unavailable paired observations. No competitor superiority, qualified experimental default or generalized speedup follows from this checkpoint.
+
+
 ## Mesh 0.9.0 qualification checkpoint (2026-11-08, `2d67c704`)
 
 [Normal CI](https://github.com/billighost/Mesh/actions/runs/42485932114) passed all 18 jobs. The [production run](https://github.com/billighost/Mesh/actions/runs/42485932167) passed both full qualification jobs and failed the storage matrix, test-speed reporting, and all five retrieval jobs. The [provenance](results/production_20261108_2d67c704_provenance.json) verifies 54 bound source files against that Git commit, with Windows checkout newlines accounted for, and binds the five retained retrieval artifacts. Qualification logs and the artifact seals agree on 1,853 selected cases, with 3/4 skips and zero failures/errors in primary/floor; the raw qualification XML is no longer retained and cannot be rechecked from these exports.

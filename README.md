@@ -97,13 +97,13 @@ Mesh integrates with AI coding agents through its Model Context Protocol (MCP) s
 
 ## 4. Independent Review
 
-Independently reviewed by 3 people (Jason, Mark and Adesire); see [docs/REVIEWS.md](docs/REVIEWS.md).
+See [docs/REVIEWS.md](docs/REVIEWS.md) for recorded qualification, coding-agent reviews and the historical independent field test. Human code and security review of Mesh 0.9.0 is unverified from the published record.
 
 ---
 
 ## 5. Benchmarks & Empirical Evidence
 
-Current **Mesh 0.9.0** qualification and measured checkpoints are recorded in [benchmarks/RESULTS.md](benchmarks/RESULTS.md), including failed and deferred conditions. The comparative tables and microbenchmarks below are historical **Mesh 0.8.3** evidence; they do not measure the 0.9.0 changes. See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for the historical accuracy methodology and [docs/PERFORMANCE.md](docs/PERFORMANCE.md) for its resource measurements.
+Current **Mesh 0.9.0** qualification and measured checkpoints are recorded in [benchmarks/RESULTS.md](benchmarks/RESULTS.md), including failed and deferred conditions. At `e4284c8`, normal CI and both full qualification suites passed; 46/48 primary storage cells completed, with two resource deferrals and no primary failures. Optional retrieval remains unqualified, and the separate E5 trial stopped in its baseline before E5 ran. The comparative tables and microbenchmarks below are historical **Mesh 0.8.3** evidence; they do not measure the 0.9.0 changes. See [docs/BENCHMARKS.md](docs/BENCHMARKS.md) for the historical accuracy methodology and [docs/PERFORMANCE.md](docs/PERFORMANCE.md) for its resource measurements.
 
 ### Historical Retrieval Accuracy (Mesh 0.8.3; $N=470$ LongMemEval-S)
 

@@ -59,7 +59,7 @@ jobs:
           python-version: "3.12"
           cache: "pip"
 
-      - name: Verify the exact release tag and same-source qualification
+      - name: Verify the release tag, current qualification and source-bound measurements
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: python scripts/release_check.py --checks-only --verify-publication
@@ -73,7 +73,7 @@ jobs:
         run: |
           python -m ruff check .
           python scripts/check_skill.py
-          python scripts/check_docs.py
+          python scripts/check_docs.py --release
 
       - name: Build Distributions & Generate SBOM / Provenance
         run: PYTHONPATH=. python scripts/build_release.py

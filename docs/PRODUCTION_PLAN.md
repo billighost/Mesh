@@ -5,22 +5,24 @@ Inspected branch: feat/ci-evidence, HEAD 61ec16de97a5604a19a81c6396f8bfc46d982c4
 
 ## Implementation checkpoint
 
-Latest completed candidate: `2d67c704` on `ci/mesh-production-run-c4-20261106`.
-[Normal CI](https://github.com/billighost/Mesh/actions/runs/42485932114) and both
-full primary/minimum qualification suites passed. The
-[production run](https://github.com/billighost/Mesh/actions/runs/42485932167)
-finished on November 8 with storage registration and test-speed reporting
-failures caused by a stale benchmark source-manifest allowlist. All five
-retrieval jobs failed overall. Current native reranking misses conversational
-quality or public-corpus resource targets; no optional default is qualified.
-The separately enabled E5 shadow remains unrun. These results supersede the
-older checkpoints below where their status differs.
+Latest completed candidate checkpoint: `e4284c8` on
+`ci/mesh-production-run-c4-20261106`. [Normal CI](https://github.com/billighost/Mesh/actions/runs/43906485367)
+and both full primary/floor qualification suites passed. The
+[production run](https://github.com/billighost/Mesh/actions/runs/43906485048)
+completed on November 16 with source-bound storage and test-speed measurements.
+The storage ledger retains four deferrals and an optional diagnostic startup
+failure; its primary cells have no failures. All five retrieval jobs failed
+overall, and the separate [E5 run](https://github.com/billighost/Mesh/actions/runs/43909369990)
+stopped in all five native baselines before E5 executed. These results qualify
+the tested source and environments; subsequent changes remain pending fresh
+qualification. See [RESULTS.md](../benchmarks/RESULTS.md) for the measurements,
+provenance and retained failures. No optional default is qualified.
 
 The candidate includes patched APSW/WAL-FULL storage, schema-6 identity and
 receipts, atomic work history, bounded bulk/group execution, namespace recovery,
 cache/backfill changes and agent transport fallback. Release preparation must
-repair the benchmark manifest boundary, qualify changed sources, publish honest
-results and complete the fresh matched competitor comparison. The earlier
+finish the diagnostic and E5 baseline harness repairs, qualify changed sources,
+publish source-bound results and complete the fresh matched competitor comparison. The earlier
 470-query competitor evidence measures Mesh 0.8.3. See
 [CI_VALIDATION.md](CI_VALIDATION.md) for the current qualification requirements.
 
