@@ -1,13 +1,13 @@
 # Mesh User Documentation
 
-Complete user guide for **Mesh** (`mesh-context-layer`) **0.9.0** (Beta): installation, agent setup, the memory and task model, the full CLI/MCP/HTTP/Python reference, privacy, encryption, performance evidence, and troubleshooting.
+Complete user guide for **Mesh** (`mesh-context-layer`) **0.9.1** (Beta): installation, agent setup, the memory and task model, the full CLI/MCP/HTTP/Python reference, privacy, encryption, performance evidence, and troubleshooting.
 
 - New here? Start with [Install](#1-install) and the [60-minute tutorial](#2-first-run-tutorial).
 - Evaluating? Read [Privacy and data handling](#12-privacy-data-and-network) and [Evidence](#14-performance-and-evidence).
 - Looking for one specific command? Jump to the [CLI reference](#6-cli-reference).
 - README overview and FAQ: [README.md](README.md).
 
-> Current API descriptions reflect Mesh 0.9.0; check the installed version before using them with an older package. Historical field-test observations retain their tested versions and dates. Commands marked **verified** refer to the named isolated run; no cloud provider was called.
+> Current API descriptions reflect Mesh 0.9.1; check the installed version before using them with an older package. Historical field-test observations retain their tested versions and dates. Commands marked **verified** refer to the named isolated run; no cloud provider was called.
 
 ---
 

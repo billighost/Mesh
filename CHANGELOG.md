@@ -4,6 +4,14 @@ All notable changes to Mesh Context Layer are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (pre-1.0: minor versions may include behavior changes).
 
+## [0.9.1] - 2026-11-17
+
+### Changed
+- Replace README's 0.8.3 tables with source-bound Mesh 0.9.0 retrieval, SDK latency, and concurrent-ingestion results. GitHub and PyPI use the same README with documentation links that work on both sites.
+- Require agents to save verified durable information found after a recall miss, check for an existing memory before creating another, and correct outdated memories by ID while preserving ownership and privacy limits.
+
+The runtime implementation and measured benchmark evidence are retained from 0.9.0. This patch changes documentation, the packaged agent protocol, and release-version metadata.
+
 ## [0.9.0] - 2026-11-17
 
 Mesh 0.9.0 includes durable concurrent storage, retrieval, bounded resource use, and persistent context for agents sharing one machine. Python entry points are retained; native SQLite is supplied by the required APSW dependency. Schema 6 upgrades require a backup and must not be reopened by older packages. Performance and accuracy evidence remains tied to each tested source; see the [release notes](docs/releases/RELEASE_NOTES_v0.9.0.md).

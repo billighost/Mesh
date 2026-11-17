@@ -1,14 +1,14 @@
 ---
 name: mesh-context-layer
 description: >-
-  Persistent project memory and task tracking for coding agents (v0.9.0).
+  Persistent project memory and task tracking for coding agents (v0.9.1).
   Load a bounded project brief at session or project start; recall relevant facts
   before substantive decisions, implementation, or project questions. Record
   durable findings, update changed facts, track work, and preserve handoffs.
   Use verified CLI, SDK, or existing authenticated HTTP access if MCP is unavailable.
 ---
 
-# Mesh Context Layer (v0.9.0)
+# Mesh Context Layer (v0.9.1)
 
 Use Mesh to carry project evidence and unfinished work across sessions and agents.
 The user's current instructions and verified repository state take precedence over
@@ -80,8 +80,18 @@ not satisfy this protocol, and a broad startup brief does not replace topic reca
   tags, and confidence that reflects the evidence.
 - Store architectural decisions with their reason: "Decided X because Y."
   Include a non-sensitive source or verification pointer where useful.
-- When a known fact changes, recall its ID and use `mesh_update`. Inspect and
-  resolve genuine contradictions with `mesh_contradictions` and
+- When recall misses an answer and you later verify durable information from
+  current files, tests, or explicit user input, repair the memory gap before
+  finishing the task. Use focused recall or filtered `mesh_inspect` to find an
+  existing relevant memory; update it with `mesh_update`, or use `mesh_learn`
+  when no matching memory is found. A missed search result alone does not prove
+  the information was never stored. Include the verified fact and its source.
+- When recalled information is outdated or incorrect, verify the replacement
+  against current evidence and correct that memory by ID with `mesh_update`.
+  Include the reason and a non-sensitive evidence pointer. Preserve namespace,
+  ownership, privacy, and read-only limits; if an update is unavailable or
+  rejected, report the correction and persistence limit without bypassing them.
+  Inspect and resolve genuine contradictions with `mesh_contradictions` and
   `mesh_resolve_contradiction`; do not create duplicate versions accidentally.
 - Use `mesh_task_create` to track authorized multi-step work, then
   `mesh_task_update` as it progresses. Use returned IDs; never invent them.

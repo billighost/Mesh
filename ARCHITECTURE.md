@@ -1,6 +1,6 @@
-# Mesh Architecture (v0.9.0)
+# Mesh Architecture (v0.9.1)
 
-This document describes the 0.9.0 source branch: modules, data flows, storage schema, search, work items, installation, concurrency, and security boundaries. Historical field-test evidence is versioned separately. User-facing instructions are in [DOCS.md](DOCS.md); development workflows are in [DEVELOPER_GUIDE.md](DEVELOPER_GUIDE.md).
+This document describes the 0.9.1 source branch: modules, data flows, storage schema, search, work items, installation, concurrency, and security boundaries. Historical field-test evidence is versioned separately. User-facing instructions are in [DOCS.md](DOCS.md); development workflows are in [DEVELOPER_GUIDE.md](DEVELOPER_GUIDE.md).
 
 ---
 
