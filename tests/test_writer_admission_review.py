@@ -300,13 +300,19 @@ def test_saturated_background_delivery_defers_without_blocking_audit_admission(m
     for source in (first, second):
         with source._connect():
             pass
+    foreground_namespace = "writer-delivery-foreground"
+    # Cold audit schema/ACL work is separate from contention at writer admission.
+    audit._connect_audit(audit._get_audit_db_path(foreground_namespace))
+    queued_before = audit.get_audit_queue_stats()["pending_events"]
     monkeypatch.setenv("MESH_MAX_POOL_SIZE", "2")
     requested = threading.Event()
+    resume_delivery = threading.Event()
     original = MeshStore._connect
 
     def observe(source, *args, **kwargs):
         if source is pending:
             requested.set()
+            assert resume_delivery.wait(10)
         return original(source, *args, **kwargs)
 
     monkeypatch.setattr(MeshStore, "_connect", observe)
@@ -320,17 +326,30 @@ def test_saturated_background_delivery_defers_without_blocking_audit_admission(m
         except TimeoutError as exc:
             return exc
 
+    def admit_foreground():
+        # Force the lock ordering a cold admission needs without cold disk I/O.
+        assert audit._AUDIT_LOCK.acquire(blocking=False), "Delivery held the audit lock before writer admission."
+        try:
+            audit.log_recall("A bounded foreground query", foreground_namespace, "foreground", [])
+        finally:
+            audit._AUDIT_LOCK.release()
+
     with ThreadPoolExecutor(max_workers=4) as executor:
         holders = [executor.submit(hold_writer, store, event, release) for store, event in zip((first, second), ready)]
         try:
             assert all(event.wait(3) for event in ready)
             delivery = executor.submit(deliver)
             assert requested.wait(3)
-            foreground = executor.submit(audit.log_recall, "A bounded foreground query", "writer-delivery-foreground", "foreground", [])
-            assert foreground.result(timeout=1) is None
-            assert isinstance(delivery.result(timeout=1), TimeoutError)
+            foreground = executor.submit(admit_foreground)
+            assert foreground.result(timeout=3) is None
+            assert audit.get_audit_queue_stats()["pending_events"] == queued_before + 1
+            assert not delivery.done()
+            assert not release.is_set()
+            resume_delivery.set()
+            assert isinstance(delivery.result(timeout=3), TimeoutError)
             assert len(pending.list_mutation_events()) == 1
         finally:
+            resume_delivery.set()
             release.set()
         for holder in holders:
             holder.result(timeout=3)
