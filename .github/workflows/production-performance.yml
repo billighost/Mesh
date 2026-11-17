@@ -88,12 +88,12 @@ jobs:
            (contains(github.event.head_commit.message, '[retrieval-only]') ||
             contains(github.event.head_commit.message, '[qualification-only]')))
         run: throw "Storage profiling requires the ordinary uninstrumented performance matrix"
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
           fetch-depth: 2
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
           cache: pip
@@ -136,7 +136,7 @@ jobs:
         run: python benchmarks/freeze_production_dependencies.py --directory .work/qualification
       - name: Preserve qualification evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-qualification-${{ matrix.kind }}
           path: .work/qualification/
@@ -179,15 +179,15 @@ jobs:
       run:
         shell: pwsh
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.14.0"
           cache: pip
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: production-qualification-primary
           path: .work/qualification/primary
@@ -197,7 +197,7 @@ jobs:
         run: python benchmarks/production_test_speed.py --qualified-source .work/qualification/primary/source-runtime.json --output-directory .work/test-speed
       - name: Preserve numerical test-speed evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-test-speed-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -225,19 +225,19 @@ jobs:
       run:
         shell: pwsh
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.14.0"
           cache: pip
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: production-qualification-primary
           path: .work/qualification/primary
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: production-qualification-floor
           path: .work/qualification/floor
@@ -270,7 +270,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase pilot --cell-id pilot-r0-hash-scalar-16a-http-g1-128 --quiet-window-open
       - name: Preserve pilot-r0-hash-scalar-16a-http-g1-128
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-pilot-r0-hash-scalar-16a-http-g1-128
           path: .work/production-performance/public/cells/pilot-r0-hash-scalar-16a-http-g1-128.json
@@ -283,7 +283,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase pilot --cell-id pilot-r0-neural-scalar-1a-receipt-sdk-g0-128 --quiet-window-open
       - name: Preserve pilot-r0-neural-scalar-1a-receipt-sdk-g0-128
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-pilot-r0-neural-scalar-1a-receipt-sdk-g0-128
           path: .work/production-performance/public/cells/pilot-r0-neural-scalar-1a-receipt-sdk-g0-128.json
@@ -296,7 +296,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase pilot --cell-id pilot-r0-neural-scalar-4a-receipt-sdk-g0-128 --quiet-window-open
       - name: Preserve pilot-r0-neural-scalar-4a-receipt-sdk-g0-128
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-pilot-r0-neural-scalar-4a-receipt-sdk-g0-128
           path: .work/production-performance/public/cells/pilot-r0-neural-scalar-4a-receipt-sdk-g0-128.json
@@ -309,7 +309,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase pilot --cell-id pilot-r0-neural-scalar-16a-http-g0-128 --quiet-window-open
       - name: Preserve pilot-r0-neural-scalar-16a-http-g0-128
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-pilot-r0-neural-scalar-16a-http-g0-128
           path: .work/production-performance/public/cells/pilot-r0-neural-scalar-16a-http-g0-128.json
@@ -322,7 +322,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase pilot --cell-id pilot-r0-neural-scalar-16a-http-g1-128 --quiet-window-open
       - name: Preserve pilot-r0-neural-scalar-16a-http-g1-128
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-pilot-r0-neural-scalar-16a-http-g1-128
           path: .work/production-performance/public/cells/pilot-r0-neural-scalar-16a-http-g1-128.json
@@ -335,7 +335,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-hash-scalar-1a-receipt-sdk-g0-512 --quiet-window-open
       - name: Preserve primary-r1-hash-scalar-1a-receipt-sdk-g0-512
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-hash-scalar-1a-receipt-sdk-g0-512
           path: .work/production-performance/public/cells/primary-r1-hash-scalar-1a-receipt-sdk-g0-512.json
@@ -348,7 +348,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-hash-scalar-1a-http-g0-512 --quiet-window-open
       - name: Preserve primary-r1-hash-scalar-1a-http-g0-512
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-hash-scalar-1a-http-g0-512
           path: .work/production-performance/public/cells/primary-r1-hash-scalar-1a-http-g0-512.json
@@ -361,7 +361,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-hash-scalar-1a-http-g1-512 --quiet-window-open
       - name: Preserve primary-r1-hash-scalar-1a-http-g1-512
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-hash-scalar-1a-http-g1-512
           path: .work/production-performance/public/cells/primary-r1-hash-scalar-1a-http-g1-512.json
@@ -374,7 +374,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-hash-scalar-4a-receipt-sdk-g0-512 --quiet-window-open
       - name: Preserve primary-r1-hash-scalar-4a-receipt-sdk-g0-512
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-hash-scalar-4a-receipt-sdk-g0-512
           path: .work/production-performance/public/cells/primary-r1-hash-scalar-4a-receipt-sdk-g0-512.json
@@ -387,7 +387,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-hash-scalar-4a-http-g0-512 --quiet-window-open
       - name: Preserve primary-r1-hash-scalar-4a-http-g0-512
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-hash-scalar-4a-http-g0-512
           path: .work/production-performance/public/cells/primary-r1-hash-scalar-4a-http-g0-512.json
@@ -400,7 +400,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-hash-scalar-4a-http-g1-512 --quiet-window-open
       - name: Preserve primary-r1-hash-scalar-4a-http-g1-512
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-hash-scalar-4a-http-g1-512
           path: .work/production-performance/public/cells/primary-r1-hash-scalar-4a-http-g1-512.json
@@ -413,7 +413,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-hash-scalar-8a-receipt-sdk-g0-512 --quiet-window-open
       - name: Preserve primary-r1-hash-scalar-8a-receipt-sdk-g0-512
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-hash-scalar-8a-receipt-sdk-g0-512
           path: .work/production-performance/public/cells/primary-r1-hash-scalar-8a-receipt-sdk-g0-512.json
@@ -426,7 +426,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-hash-scalar-8a-http-g0-512 --quiet-window-open
       - name: Preserve primary-r1-hash-scalar-8a-http-g0-512
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-hash-scalar-8a-http-g0-512
           path: .work/production-performance/public/cells/primary-r1-hash-scalar-8a-http-g0-512.json
@@ -439,7 +439,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-hash-scalar-8a-http-g1-512 --quiet-window-open
       - name: Preserve primary-r1-hash-scalar-8a-http-g1-512
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-hash-scalar-8a-http-g1-512
           path: .work/production-performance/public/cells/primary-r1-hash-scalar-8a-http-g1-512.json
@@ -452,7 +452,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-hash-scalar-16a-receipt-sdk-g0-512 --quiet-window-open
       - name: Preserve primary-r1-hash-scalar-16a-receipt-sdk-g0-512
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-hash-scalar-16a-receipt-sdk-g0-512
           path: .work/production-performance/public/cells/primary-r1-hash-scalar-16a-receipt-sdk-g0-512.json
@@ -465,7 +465,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-hash-scalar-16a-http-g0-512 --quiet-window-open
       - name: Preserve primary-r1-hash-scalar-16a-http-g0-512
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-hash-scalar-16a-http-g0-512
           path: .work/production-performance/public/cells/primary-r1-hash-scalar-16a-http-g0-512.json
@@ -478,7 +478,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-hash-scalar-16a-http-g1-512 --quiet-window-open
       - name: Preserve primary-r1-hash-scalar-16a-http-g1-512
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-hash-scalar-16a-http-g1-512
           path: .work/production-performance/public/cells/primary-r1-hash-scalar-16a-http-g1-512.json
@@ -491,7 +491,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-hash-atomic-1a-receipt-sdk-g0-512 --quiet-window-open
       - name: Preserve primary-r1-hash-atomic-1a-receipt-sdk-g0-512
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-hash-atomic-1a-receipt-sdk-g0-512
           path: .work/production-performance/public/cells/primary-r1-hash-atomic-1a-receipt-sdk-g0-512.json
@@ -504,7 +504,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-hash-atomic-1a-http-g0-512 --quiet-window-open
       - name: Preserve primary-r1-hash-atomic-1a-http-g0-512
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-hash-atomic-1a-http-g0-512
           path: .work/production-performance/public/cells/primary-r1-hash-atomic-1a-http-g0-512.json
@@ -517,7 +517,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-hash-atomic-1a-http-g1-512 --quiet-window-open
       - name: Preserve primary-r1-hash-atomic-1a-http-g1-512
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-hash-atomic-1a-http-g1-512
           path: .work/production-performance/public/cells/primary-r1-hash-atomic-1a-http-g1-512.json
@@ -530,7 +530,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-hash-atomic-4a-receipt-sdk-g0-512 --quiet-window-open
       - name: Preserve primary-r1-hash-atomic-4a-receipt-sdk-g0-512
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-hash-atomic-4a-receipt-sdk-g0-512
           path: .work/production-performance/public/cells/primary-r1-hash-atomic-4a-receipt-sdk-g0-512.json
@@ -543,7 +543,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-hash-atomic-4a-http-g0-512 --quiet-window-open
       - name: Preserve primary-r1-hash-atomic-4a-http-g0-512
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-hash-atomic-4a-http-g0-512
           path: .work/production-performance/public/cells/primary-r1-hash-atomic-4a-http-g0-512.json
@@ -556,7 +556,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-hash-atomic-4a-http-g1-512 --quiet-window-open
       - name: Preserve primary-r1-hash-atomic-4a-http-g1-512
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-hash-atomic-4a-http-g1-512
           path: .work/production-performance/public/cells/primary-r1-hash-atomic-4a-http-g1-512.json
@@ -569,7 +569,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-hash-atomic-8a-receipt-sdk-g0-512 --quiet-window-open
       - name: Preserve primary-r1-hash-atomic-8a-receipt-sdk-g0-512
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-hash-atomic-8a-receipt-sdk-g0-512
           path: .work/production-performance/public/cells/primary-r1-hash-atomic-8a-receipt-sdk-g0-512.json
@@ -582,7 +582,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-hash-atomic-8a-http-g0-512 --quiet-window-open
       - name: Preserve primary-r1-hash-atomic-8a-http-g0-512
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-hash-atomic-8a-http-g0-512
           path: .work/production-performance/public/cells/primary-r1-hash-atomic-8a-http-g0-512.json
@@ -595,7 +595,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-hash-atomic-8a-http-g1-512 --quiet-window-open
       - name: Preserve primary-r1-hash-atomic-8a-http-g1-512
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-hash-atomic-8a-http-g1-512
           path: .work/production-performance/public/cells/primary-r1-hash-atomic-8a-http-g1-512.json
@@ -608,7 +608,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-hash-atomic-16a-receipt-sdk-g0-512 --quiet-window-open
       - name: Preserve primary-r1-hash-atomic-16a-receipt-sdk-g0-512
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-hash-atomic-16a-receipt-sdk-g0-512
           path: .work/production-performance/public/cells/primary-r1-hash-atomic-16a-receipt-sdk-g0-512.json
@@ -621,7 +621,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-hash-atomic-16a-http-g0-512 --quiet-window-open
       - name: Preserve primary-r1-hash-atomic-16a-http-g0-512
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-hash-atomic-16a-http-g0-512
           path: .work/production-performance/public/cells/primary-r1-hash-atomic-16a-http-g0-512.json
@@ -634,7 +634,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-hash-atomic-16a-http-g1-512 --quiet-window-open
       - name: Preserve primary-r1-hash-atomic-16a-http-g1-512
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-hash-atomic-16a-http-g1-512
           path: .work/production-performance/public/cells/primary-r1-hash-atomic-16a-http-g1-512.json
@@ -647,7 +647,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-neural-scalar-1a-receipt-sdk-g0-512 --quiet-window-open
       - name: Preserve primary-r1-neural-scalar-1a-receipt-sdk-g0-512
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-neural-scalar-1a-receipt-sdk-g0-512
           path: .work/production-performance/public/cells/primary-r1-neural-scalar-1a-receipt-sdk-g0-512.json
@@ -660,7 +660,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-neural-scalar-1a-http-g0-512 --quiet-window-open
       - name: Preserve primary-r1-neural-scalar-1a-http-g0-512
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-neural-scalar-1a-http-g0-512
           path: .work/production-performance/public/cells/primary-r1-neural-scalar-1a-http-g0-512.json
@@ -673,7 +673,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-neural-scalar-1a-http-g1-512 --quiet-window-open
       - name: Preserve primary-r1-neural-scalar-1a-http-g1-512
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-neural-scalar-1a-http-g1-512
           path: .work/production-performance/public/cells/primary-r1-neural-scalar-1a-http-g1-512.json
@@ -686,7 +686,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-neural-scalar-4a-receipt-sdk-g0-512 --quiet-window-open
       - name: Preserve primary-r1-neural-scalar-4a-receipt-sdk-g0-512
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-neural-scalar-4a-receipt-sdk-g0-512
           path: .work/production-performance/public/cells/primary-r1-neural-scalar-4a-receipt-sdk-g0-512.json
@@ -699,7 +699,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-neural-scalar-4a-http-g0-512 --quiet-window-open
       - name: Preserve primary-r1-neural-scalar-4a-http-g0-512
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-neural-scalar-4a-http-g0-512
           path: .work/production-performance/public/cells/primary-r1-neural-scalar-4a-http-g0-512.json
@@ -712,7 +712,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-neural-scalar-4a-http-g1-512 --quiet-window-open
       - name: Preserve primary-r1-neural-scalar-4a-http-g1-512
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-neural-scalar-4a-http-g1-512
           path: .work/production-performance/public/cells/primary-r1-neural-scalar-4a-http-g1-512.json
@@ -725,7 +725,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-neural-scalar-8a-receipt-sdk-g0-512 --quiet-window-open
       - name: Preserve primary-r1-neural-scalar-8a-receipt-sdk-g0-512
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-neural-scalar-8a-receipt-sdk-g0-512
           path: .work/production-performance/public/cells/primary-r1-neural-scalar-8a-receipt-sdk-g0-512.json
@@ -738,7 +738,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-neural-scalar-8a-http-g0-512 --quiet-window-open
       - name: Preserve primary-r1-neural-scalar-8a-http-g0-512
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-neural-scalar-8a-http-g0-512
           path: .work/production-performance/public/cells/primary-r1-neural-scalar-8a-http-g0-512.json
@@ -751,7 +751,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-neural-scalar-8a-http-g1-512 --quiet-window-open
       - name: Preserve primary-r1-neural-scalar-8a-http-g1-512
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-neural-scalar-8a-http-g1-512
           path: .work/production-performance/public/cells/primary-r1-neural-scalar-8a-http-g1-512.json
@@ -764,7 +764,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-neural-scalar-16a-receipt-sdk-g0-512 --quiet-window-open
       - name: Preserve primary-r1-neural-scalar-16a-receipt-sdk-g0-512
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-neural-scalar-16a-receipt-sdk-g0-512
           path: .work/production-performance/public/cells/primary-r1-neural-scalar-16a-receipt-sdk-g0-512.json
@@ -777,7 +777,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-neural-scalar-16a-http-g0-512 --quiet-window-open
       - name: Preserve primary-r1-neural-scalar-16a-http-g0-512
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-neural-scalar-16a-http-g0-512
           path: .work/production-performance/public/cells/primary-r1-neural-scalar-16a-http-g0-512.json
@@ -790,7 +790,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-neural-scalar-16a-http-g1-512 --quiet-window-open
       - name: Preserve primary-r1-neural-scalar-16a-http-g1-512
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-neural-scalar-16a-http-g1-512
           path: .work/production-performance/public/cells/primary-r1-neural-scalar-16a-http-g1-512.json
@@ -803,7 +803,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-neural-atomic-1a-receipt-sdk-g0-512 --quiet-window-open
       - name: Preserve primary-r1-neural-atomic-1a-receipt-sdk-g0-512
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-neural-atomic-1a-receipt-sdk-g0-512
           path: .work/production-performance/public/cells/primary-r1-neural-atomic-1a-receipt-sdk-g0-512.json
@@ -816,7 +816,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-neural-atomic-1a-http-g0-512 --quiet-window-open
       - name: Preserve primary-r1-neural-atomic-1a-http-g0-512
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-neural-atomic-1a-http-g0-512
           path: .work/production-performance/public/cells/primary-r1-neural-atomic-1a-http-g0-512.json
@@ -829,7 +829,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-neural-atomic-1a-http-g1-512 --quiet-window-open
       - name: Preserve primary-r1-neural-atomic-1a-http-g1-512
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-neural-atomic-1a-http-g1-512
           path: .work/production-performance/public/cells/primary-r1-neural-atomic-1a-http-g1-512.json
@@ -842,7 +842,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-neural-atomic-4a-receipt-sdk-g0-512 --quiet-window-open
       - name: Preserve primary-r1-neural-atomic-4a-receipt-sdk-g0-512
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-neural-atomic-4a-receipt-sdk-g0-512
           path: .work/production-performance/public/cells/primary-r1-neural-atomic-4a-receipt-sdk-g0-512.json
@@ -855,7 +855,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-neural-atomic-4a-http-g0-512 --quiet-window-open
       - name: Preserve primary-r1-neural-atomic-4a-http-g0-512
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-neural-atomic-4a-http-g0-512
           path: .work/production-performance/public/cells/primary-r1-neural-atomic-4a-http-g0-512.json
@@ -868,7 +868,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-neural-atomic-4a-http-g1-512 --quiet-window-open
       - name: Preserve primary-r1-neural-atomic-4a-http-g1-512
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-neural-atomic-4a-http-g1-512
           path: .work/production-performance/public/cells/primary-r1-neural-atomic-4a-http-g1-512.json
@@ -881,7 +881,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-neural-atomic-8a-receipt-sdk-g0-512 --quiet-window-open
       - name: Preserve primary-r1-neural-atomic-8a-receipt-sdk-g0-512
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-neural-atomic-8a-receipt-sdk-g0-512
           path: .work/production-performance/public/cells/primary-r1-neural-atomic-8a-receipt-sdk-g0-512.json
@@ -894,7 +894,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-neural-atomic-8a-http-g0-512 --quiet-window-open
       - name: Preserve primary-r1-neural-atomic-8a-http-g0-512
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-neural-atomic-8a-http-g0-512
           path: .work/production-performance/public/cells/primary-r1-neural-atomic-8a-http-g0-512.json
@@ -907,7 +907,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-neural-atomic-8a-http-g1-512 --quiet-window-open
       - name: Preserve primary-r1-neural-atomic-8a-http-g1-512
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-neural-atomic-8a-http-g1-512
           path: .work/production-performance/public/cells/primary-r1-neural-atomic-8a-http-g1-512.json
@@ -920,7 +920,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-neural-atomic-16a-receipt-sdk-g0-512 --quiet-window-open
       - name: Preserve primary-r1-neural-atomic-16a-receipt-sdk-g0-512
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-neural-atomic-16a-receipt-sdk-g0-512
           path: .work/production-performance/public/cells/primary-r1-neural-atomic-16a-receipt-sdk-g0-512.json
@@ -933,7 +933,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-neural-atomic-16a-http-g0-512 --quiet-window-open
       - name: Preserve primary-r1-neural-atomic-16a-http-g0-512
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-neural-atomic-16a-http-g0-512
           path: .work/production-performance/public/cells/primary-r1-neural-atomic-16a-http-g0-512.json
@@ -946,7 +946,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase primary --cell-id primary-r1-neural-atomic-16a-http-g1-512 --quiet-window-open
       - name: Preserve primary-r1-neural-atomic-16a-http-g1-512
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-primary-r1-neural-atomic-16a-http-g1-512
           path: .work/production-performance/public/cells/primary-r1-neural-atomic-16a-http-g1-512.json
@@ -959,7 +959,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase scale --cell-id scale-r1-hash-scalar-16a-http-g0-10000 --quiet-window-open
       - name: Preserve scale-r1-hash-scalar-16a-http-g0-10000
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-scale-r1-hash-scalar-16a-http-g0-10000
           path: .work/production-performance/public/cells/scale-r1-hash-scalar-16a-http-g0-10000.json
@@ -972,7 +972,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase scale --cell-id scale-r1-hash-scalar-16a-http-g1-10000 --quiet-window-open
       - name: Preserve scale-r1-hash-scalar-16a-http-g1-10000
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-scale-r1-hash-scalar-16a-http-g1-10000
           path: .work/production-performance/public/cells/scale-r1-hash-scalar-16a-http-g1-10000.json
@@ -985,7 +985,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase scale --cell-id scale-r1-neural-scalar-16a-http-g0-10000 --quiet-window-open
       - name: Preserve scale-r1-neural-scalar-16a-http-g0-10000
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-scale-r1-neural-scalar-16a-http-g0-10000
           path: .work/production-performance/public/cells/scale-r1-neural-scalar-16a-http-g0-10000.json
@@ -998,7 +998,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase scale --cell-id scale-r1-neural-scalar-16a-http-g1-10000 --quiet-window-open
       - name: Preserve scale-r1-neural-scalar-16a-http-g1-10000
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-${{ github.run_id }}-${{ github.run_attempt }}-scale-r1-neural-scalar-16a-http-g1-10000
           path: .work/production-performance/public/cells/scale-r1-neural-scalar-16a-http-g1-10000.json
@@ -1011,7 +1011,7 @@ jobs:
         run: python benchmarks/production_runner.py step --plan .work/production-performance/plan.json --phase diagnostic --cell-id diagnostic-r1-neural-scalar-16a-http-g1-10000 --quiet-window-open
       - name: Preserve the separate storage diagnostic
         if: always() && ((github.event_name == 'workflow_dispatch' && inputs.run_storage_profile) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[storage-profile]')))
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-storage-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
           path: .work/production-performance/public/cells/diagnostic-r1-neural-scalar-16a-http-g1-10000.json
@@ -1031,7 +1031,7 @@ jobs:
           }
       - name: Preserve all sanitized cell records and final numerical ledger
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: production-numerical-ledger-${{ github.run_id }}-${{ github.run_attempt }}
           path: |

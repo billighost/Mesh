@@ -98,7 +98,7 @@ jobs:
       TOKENIZERS_PARALLELISM: "false"
       PYTHONUTF8: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
@@ -130,19 +130,19 @@ jobs:
       - name: Validate the requested runtime reranker profile set
         if: inputs.rerank_profile_set != 'standard' && inputs.rerank_profile_set != 'compact-80'
         run: throw "Unsupported runtime reranker profile set"
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.14.0"
           cache: pip
       - name: Download same-source primary qualification
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: production-qualification-primary
           path: .work/qualification/primary
           run-id: ${{ inputs.qualification_run_id || github.run_id }}
           github-token: ${{ github.token }}
       - name: Download same-source minimum qualification
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: production-qualification-floor
           path: .work/qualification/floor
@@ -156,7 +156,7 @@ jobs:
         id: embedding_cache
         timeout-minutes: 7
         continue-on-error: true
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: |
             ${{ env.RETRIEVAL_MODELS }}/model.onnx
@@ -173,7 +173,7 @@ jobs:
       - name: Save only the verified embedding files
         if: steps.embedding_cache.outputs.cache-hit != 'true' && steps.embedding_fixture.outputs.verified == 'true'
         continue-on-error: true
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: |
             ${{ env.RETRIEVAL_MODELS }}/model.onnx
@@ -184,7 +184,7 @@ jobs:
         id: c4_cache
         timeout-minutes: 7
         continue-on-error: true
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: |
             .work/production-models/c4-minilm-ce/model.onnx
@@ -195,7 +195,7 @@ jobs:
         id: e5_cache
         timeout-minutes: 7
         continue-on-error: true
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: |
             .work/production-models/e5-small-v2-q8/model.onnx
@@ -213,7 +213,7 @@ jobs:
       - name: Save only the verified optional cross encoder files
         if: inputs.run_c4 && steps.c4_cache.outputs.cache-hit != 'true' && steps.c4_fixture.outputs.verified == 'true'
         continue-on-error: true
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: |
             .work/production-models/c4-minilm-ce/model.onnx
@@ -239,7 +239,7 @@ jobs:
       - name: Save only verified optional E5 shadow assets
         if: always() && inputs.run_e5_shadow && steps.e5_cache.outputs.cache-hit != 'true' && steps.e5_fixture.outputs.verified == 'true'
         continue-on-error: true
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: |
             .work/production-models/e5-small-v2-q8/model.onnx
@@ -252,7 +252,7 @@ jobs:
           --output-root $env:RETRIEVAL_ROOT
       - name: Always preserve sanitized success or failure evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: retrieval-quality-${{ matrix.dataset }}-${{ matrix.profile }}-${{ github.sha }}
           path: ${{ env.RETRIEVAL_ROOT }}/job-summary.json
