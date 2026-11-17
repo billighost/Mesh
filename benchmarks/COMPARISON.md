@@ -76,6 +76,9 @@ Any missing binary/model, network-isolation failure, native exception, incomplet
 accounting or resource rejection stays visible and unscored.
 Worker failures retain fixed error codes and bounded source-file line references;
 exception text and private worker logs are excluded.
+Only actual content-length, empty-body or ingestion-guard rejections count as
+rejected Mesh parents. Invalid caller settings and internal errors fail the
+measurement; the supported indexing wait is validated before ingestion.
 
 Each cell has a 45-minute native wall limit and a 4 GiB sampled worker-tree RSS
 limit. Reports retain sampled CPU/RSS, single-pass query latency, original corpus

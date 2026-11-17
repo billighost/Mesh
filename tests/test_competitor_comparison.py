@@ -547,3 +547,34 @@ def test_native_note_metadata_does_not_trigger_permalink_rewrite_or_change_paren
     comparison.asyncio.run(invoke)
     assert (root / "notes/d000000.md").read_text(encoding="utf-8") == "---\ntitle: d000000\ntype: note\npermalink: d000000\n---\n" + body + "\n"
     assert accounting["queried"] == 1
+
+
+def test_mesh_comparison_wait_uses_actual_supported_timeout_and_invalid_config_is_unscored():
+    from mesh.memory import _validate_index_wait
+    adapter = comparison.MeshAdapter.__new__(comparison.MeshAdapter)
+    adapter.ids, adapter.bodies, adapter.unfaithful = {}, {}, set()
+    stored = {"id": "native", "content": "Original source parent.", "embedding_model": "onnx-minilm-l6-v2", "local_only": False, "quarantined": False}
+    def learn(body, **kwargs):
+        _validate_index_wait(kwargs["wait_for_indexed"], kwargs["index_timeout"])
+        return {"memory_id": "native"}
+    adapter.mesh = SimpleNamespace(learn=learn, store=SimpleNamespace(get=lambda identifier: stored))
+    assert adapter.add({"id": "source", "content": stored["content"]}) is True
+    adapter.mesh.learn = lambda *args, **kwargs: _validate_index_wait(True, 120)
+    with pytest.raises(comparison.ComparisonError, match="MeshLearnFailed"):
+        adapter.add({"id": "source", "content": stored["content"]})
+
+
+def test_only_mesh_content_boundary_rejection_counts_as_rejected_parent():
+    from mesh.memory import Mesh
+    mesh = Mesh.__new__(Mesh)
+    mesh.namespace, mesh.agent_id, mesh.trusted_local = "comparison-fixture", "comparison", True
+    adapter = comparison.MeshAdapter.__new__(comparison.MeshAdapter)
+    adapter.mesh = SimpleNamespace(learn=lambda body, **kwargs: mesh._prepare_learn(body))
+    with pytest.raises(comparison.ParentRejected):
+        adapter.add({"id": "source", "content": ""})
+    adapter.mesh.learn = lambda body, **kwargs: mesh._prepare_learn(body, local_only="invalid fixture flag")
+    with pytest.raises(comparison.ComparisonError, match="MeshLearnFailed"):
+        adapter.add({"id": "source", "content": "Original source parent."})
+    adapter.mesh.learn = lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("fixture internal failure"))
+    with pytest.raises(comparison.ComparisonError, match="MeshLearnFailed"):
+        adapter.add({"id": "source", "content": "Original source parent."})

@@ -79,6 +79,7 @@ WORKER_FAILURE_CODES = frozenset({
     "ReturnedBodyMismatch", "IncompleteWorkerAccounting", "ExternalNetworkForbidden",
     "MissingAcknowledgedIdentity", "UnrecognizedCompetitorOutput", "Bm25IncompleteNativeAccounting",
     "Bm25SparseWriteFailed", "Bm25SparseQueryFailed", "Bm25EncodingFailed",
+    "MeshLearnFailed",
 })
 WORKER_FAILURE_FILES = frozenset({
     "competitor_comparison.py", "stdio.py", "session.py", "main.py", "project_service.py",
@@ -94,6 +95,31 @@ WORKER_FAILURE_TYPES = frozenset({
 
 class ComparisonError(RuntimeError):
     """Fixed content-free diagnostic code."""
+
+
+class ParentRejected(Exception):
+    """Only Mesh's content-ingestion boundary can reject a source parent."""
+
+
+def mesh_content_rejection(error: ValueError) -> bool:
+    trace = error.__traceback__
+    while trace is not None and trace.tb_next is not None:
+        trace = trace.tb_next
+    if trace is None or trace.tb_frame.f_code.co_name != "_prepare_learn" or Path(trace.tb_frame.f_code.co_filename).name != "memory.py":
+        return False
+    # Do not treat scope, metadata or fixed caller-argument errors as data loss.
+    values = trace.tb_frame.f_locals
+    limit = trace.tb_frame.f_globals.get("MAX_CONTENT_LENGTH")
+    if type(limit) is not int or limit <= 0:
+        return False
+    content = values.get("content")
+    if not isinstance(content, str) or not content.strip() or len(content) > limit:
+        return True
+    guarded = values.get("guarded")
+    if guarded is not None and getattr(guarded, "rejected", False) is True:
+        return True
+    clean_content = values.get("clean_content")
+    return "clean_content" in values and isinstance(clean_content, str) and (not clean_content or len(clean_content) > limit)
 
 
 def worker_failure_projection(error: BaseException) -> dict:
@@ -365,14 +391,20 @@ class MeshAdapter:
         for name in ("model.onnx", "tokenizer.json"):
             shutil.copyfile(models / name, installed / name)
         os.environ.update(MESH_REQUIRE_MODEL="1", MESH_QUERY_MODE="neural", MESH_SYNC_ONNX="1", MESH_FORCE_HASH_EMBED="0")
-        from mesh.memory import Mesh
+        from mesh.memory import Mesh, _validate_index_wait
+        _validate_index_wait(True, 60)
         self.mesh = Mesh(namespace="comparison-" + corpus.replace(".", "-"), agent_id="comparison")
         self.ids = {}
         self.bodies = {}
         self.unfaithful = set()
 
     def add(self, row):
-        result = self.mesh.learn(row["content"], local_only=False, wait_for_indexed=True, index_timeout=120)
+        try:
+            result = self.mesh.learn(row["content"], local_only=False, wait_for_indexed=True, index_timeout=60)
+        except ValueError as error:
+            if mesh_content_rejection(error):
+                raise ParentRejected() from None
+            raise ComparisonError("MeshLearnFailed") from None
         identifier = result.get("memory_id", result.get("id"))
         if not identifier:
             raise ComparisonError("MissingAcknowledgedIdentity")
@@ -635,7 +667,7 @@ def worker(config: dict) -> int:
                 for row in rows:
                     try:
                         faithful = adapter.add(row)
-                    except ValueError:
+                    except ParentRejected:
                         if tool != "mesh":
                             raise
                         accounting["rejected"] += 1
