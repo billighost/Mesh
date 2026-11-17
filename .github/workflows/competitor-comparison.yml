@@ -1,0 +1,204 @@
+name: Matched competitor retrieval comparison
+
+on:
+  push:
+    branches: ["ci/mesh-comparison-*"]
+  workflow_dispatch:
+    inputs:
+      qualification_run_id:
+        description: Completed production run containing byte-identical primary and floor qualification
+        required: true
+        type: string
+      qualification_commit:
+        description: Exact Git commit whose complete source qualification artifacts are reused
+        required: false
+        default: e4284c8fb5ba565043accccbdd6353839c3eb43a
+        type: string
+  workflow_call:
+    inputs:
+      qualification_run_id:
+        required: true
+        type: string
+      qualification_commit:
+        required: false
+        default: e4284c8fb5ba565043accccbdd6353839c3eb43a
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: competitor-comparison-${{ github.ref }}-${{ inputs.qualification_run_id || '43906485048' }}
+  cancel-in-progress: false
+
+jobs:
+  comparison:
+    name: ${{ matrix.tool }} / ${{ matrix.dataset }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix:
+        tool: [mesh, mem0, basic-memory, auxly]
+        dataset: [prospective, longtext-prospective, longmemeval, nfcorpus, scifact]
+    defaults:
+      run:
+        shell: bash
+    env:
+      COMPARISON_TOOL: ${{ matrix.tool }}
+      COMPARISON_DATASET: ${{ matrix.dataset }}
+      COMPARISON_OUTPUT: .work/comparison/${{ matrix.tool }}/${{ matrix.dataset }}
+      MESH_NO_AUTO_DAEMON: "1"
+      MESH_NO_MODEL_DOWNLOAD: "1"
+      MESH_NO_UPDATE_CHECK: "1"
+      MESH_NO_IMPLICIT_CLOUD: "1"
+      MESH_AUTO_APPROVE: "0"
+      MESH_ENABLE_AUTO_SYNC: "0"
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      PYTHONUTF8: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Initialize failure-visible artifact and isolated setup homes
+        run: |
+          python benchmarks/competitor_comparison.py init --tool "$COMPARISON_TOOL" --dataset "$COMPARISON_DATASET" --output "$COMPARISON_OUTPUT"
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          root = Path(os.environ['RUNNER_TEMP']) / 'comparison-setup'
+          with Path(os.environ['GITHUB_ENV']).open('a', encoding='utf-8') as stream:
+              for name, leaf in {'HOME':'home','USERPROFILE':'home','MESH_HOME':'mesh','APPDATA':'appdata','LOCALAPPDATA':'localappdata','XDG_CONFIG_HOME':'xdg-config','XDG_CACHE_HOME':'xdg-cache','XDG_DATA_HOME':'xdg-data','CODEX_HOME':'codex','CLAUDE_CONFIG_DIR':'claude'}.items():
+                  path = root / leaf
+                  path.mkdir(parents=True, exist_ok=True)
+                  stream.write(f'{name}={path}\n')
+          PY
+      - name: Download byte-identical primary source qualification
+        uses: actions/download-artifact@v4
+        with:
+          name: production-qualification-primary
+          path: .work/qualification/primary
+          run-id: ${{ inputs.qualification_run_id || '43906485048' }}
+          github-token: ${{ github.token }}
+      - name: Download byte-identical minimum source qualification
+        uses: actions/download-artifact@v4
+        with:
+          name: production-qualification-floor
+          path: .work/qualification/floor
+          run-id: ${{ inputs.qualification_run_id || '43906485048' }}
+          github-token: ${{ github.token }}
+      - name: Install comparison host and current candidate
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          from benchmarks.competitor_comparison import verify_qualification, write_json
+          output = Path(os.environ['COMPARISON_OUTPUT']) / 'summary.json'
+          summary = json.loads(output.read_text(encoding='utf-8'))
+          summary['qualification'] = verify_qualification(Path('.work/qualification/primary'), Path('.work/qualification/floor'), os.environ['COMPARISON_QUALIFICATION_COMMIT'])
+          summary['preparation_stage'] = 'verified_source_and_dependency_qualification'
+          write_json(output, summary)
+          PY
+          python -m pip install --constraint .work/qualification/primary/constraints.txt ".[test,secrets]" psutil
+        env:
+          COMPARISON_QUALIFICATION_COMMIT: ${{ inputs.qualification_commit || 'e4284c8fb5ba565043accccbdd6353839c3eb43a' }}
+      - name: Fetch and verify pinned competitor distribution
+        if: matrix.tool == 'mem0' || matrix.tool == 'basic-memory'
+        run: |
+          mkdir -p .work/competitor-wheels
+          if [ "$COMPARISON_TOOL" = "mem0" ]; then
+            python -m pip download --no-deps --only-binary=:all: --dest .work/competitor-wheels "mem0ai==2.2.1"
+          else
+            python -m pip download --no-deps --only-binary=:all: --dest .work/competitor-wheels "basic-memory==0.24.1"
+          fi
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          from benchmarks.competitor_comparison import PINS, digest
+          wheels = list(Path('.work/competitor-wheels').glob('*.whl'))
+          assert len(wheels) == 1 and digest(wheels[0]) == PINS[os.environ['COMPARISON_TOOL']]['sha256'], 'Competitor distribution digest mismatch'
+          PY
+          python -m pip install --constraint .work/qualification/primary/constraints.txt .work/competitor-wheels/*.whl
+      - name: Install exact native BM25 runtime and provision pinned static assets
+        if: matrix.tool == 'mem0'
+        run: |
+          python -m pip install --constraint .work/qualification/primary/constraints.txt "fastembed==0.9.1"
+          python benchmarks/competitor_comparison.py provision-bm25 --directory .work/production-models/bm25
+      - name: Align every installed shared distribution and check resolver consistency
+        run: |
+          python - <<'PY'
+          import importlib.metadata
+          from pathlib import Path
+          from benchmarks.competitor_comparison import frozen_constraints, normalized_distribution
+          qualified = frozen_constraints(Path('.work/qualification/primary/constraints.txt'))
+          installed = {normalized_distribution(item.metadata['Name']) for item in importlib.metadata.distributions()}
+          lines = [name + '==' + qualified[name] for name in sorted(installed & qualified.keys())]
+          Path('.work/qualified-shared-versions.txt').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+          PY
+          python -m pip install --constraint .work/qualification/primary/constraints.txt --requirement .work/qualified-shared-versions.txt
+          python -m pip check
+      - name: Disable Basic Memory optional vector runtime for explicit keyword profile
+        if: matrix.tool == 'basic-memory'
+        run: |
+          python -m pip uninstall -y sqlite-vec
+          python -c "import importlib.util; assert importlib.util.find_spec('sqlite_vec') is None, 'Keyword profile still has vector runtime'"
+      - name: Fetch and verify pinned native Auxly executable
+        if: matrix.tool == 'auxly'
+        run: |
+          mkdir -p .work/competitor-bin
+          curl --fail --location --max-time 120 --retry 2 "https://github.com/Tzamun-Arabia-IT-Co/auxly-memory-cli/releases/download/v1.5.0/auxly-linux-amd64" --output .work/competitor-bin/auxly
+          python -c "from pathlib import Path; from benchmarks.competitor_comparison import PINS,digest; assert digest(Path('.work/competitor-bin/auxly')) == PINS['auxly']['sha256'], 'Auxly binary digest mismatch'"
+          chmod +x .work/competitor-bin/auxly
+      - name: Verify model-free comparison contracts
+        run: python scripts/run_tests.py --workers 1 -- -q tests/test_competitor_comparison.py
+      - name: Restore static pinned MiniLM pair
+        uses: actions/cache/restore@v4
+        with:
+          path: .work/production-models/minilm
+          key: retrieval-minilm-1110a243fdf4706b-6fd5d72fe4589f18-be50c3628f2bf5bb
+      - name: Provision only verified static model assets
+        run: python benchmarks/provision_production_model.py --directory .work/production-models/minilm
+      - name: Prepare the complete fixed dataset
+        run: python benchmarks/prepare_retrieval_ci.py "$COMPARISON_DATASET" --repository . --output-root .work/comparison-inputs --model-directory .work/production-models/minilm
+      - name: Run native comparison inside a disconnected network namespace
+        run: |
+          python benchmarks/competitor_comparison.py run --tool "$COMPARISON_TOOL" --dataset "$COMPARISON_DATASET" --output "$COMPARISON_OUTPUT" --data ".work/comparison-inputs/data/$COMPARISON_DATASET" --models .work/production-models/minilm --bm25 .work/production-models/bm25 --auxly .work/competitor-bin/auxly --qualification-directory .work/qualification/primary --floor-qualification-directory .work/qualification/floor --qualification-commit "$COMPARISON_QUALIFICATION_COMMIT"
+        env:
+          COMPARISON_QUALIFICATION_COMMIT: ${{ inputs.qualification_commit || 'e4284c8fb5ba565043accccbdd6353839c3eb43a' }}
+      - name: Retain actual installed dependency evidence for every cell
+        if: always()
+        run: |
+          python - <<'PY'
+          import importlib.metadata, json, os
+          from pathlib import Path
+          from benchmarks.competitor_comparison import dependency_report, write_json
+          output = Path(os.environ['COMPARISON_OUTPUT']) / 'summary.json'
+          summary = json.loads(output.read_text(encoding='utf-8'))
+          packages = {item.metadata['Name']: item.version for item in importlib.metadata.distributions()}
+          summary['setup_packages'] = packages
+          if 'qualification' in summary:
+              summary['setup_dependencies'] = dependency_report(summary['qualification'], packages)
+          if summary['status'] == 'not_run':
+              summary['failure_code'] = 'PreparationIncomplete'
+          write_json(output, summary)
+          PY
+      - name: Preserve content-free measurements, including failed or unrun cells
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: competitor-${{ matrix.tool }}-${{ matrix.dataset }}
+          path: |
+            .work/comparison/${{ matrix.tool }}/${{ matrix.dataset }}/summary.json
+            .work/comparison/${{ matrix.tool }}/${{ matrix.dataset }}/progress.json
+            .work/comparison/${{ matrix.tool }}/${{ matrix.dataset }}/ranked.jsonl
+          if-no-files-found: error
+          retention-days: 30
