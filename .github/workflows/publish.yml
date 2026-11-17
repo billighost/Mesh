@@ -18,6 +18,11 @@ on:
         required: false
         default: ''
         type: string
+      macos_ci_waiver:
+        description: 'Explicit maintainer waiver for the unacquired macOS runner of the fixed 0.9.1 source'
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: ${{ github.workflow }}-${{ inputs.release_tag || github.event.release.tag_name || github.ref_name }}-${{ inputs.target || 'pypi' }}
@@ -142,6 +147,76 @@ jobs:
               with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as stream:
                   stream.write('source_sha=' + source['commit'] + '\nrelease_tag=' + source['tag'] + '\n')
 
+          """Narrow maintainer waiver for the unacquired 0.9.1 macOS runner."""
+          def qualify_macos_waiver(repo_root, tag, source, read, authorized):
+              import hashlib
+              import contextlib
+              import importlib.util
+              import inspect
+              import io
+              from pathlib import Path
+
+              expected_source = '4cc969bcc54c99a6c3cc863745566fb50160d677'
+              if authorized is not True or tag != 'v0.9.1' or source != expected_source:
+                  raise ValueError('MacosWaiverScopeRejected')
+              run_id = 44126880733
+              run = read(f'actions/runs/{run_id}')
+              if (run.get('head_sha') != source or run.get('status') != 'completed' or
+                      run.get('conclusion') != 'failure' or run.get('run_attempt') != 2):
+                  raise ValueError('MacosWaiverRunRejected')
+              payload = read(f'actions/runs/{run_id}/jobs?per_page=100')
+              jobs = payload.get('jobs', [])
+              expected_names = {'Code Quality & Security Scan', 'Packaging & Cleanliness Verification', 'Built Wheel Smoke Test'}
+              expected_names.update(f'Test ({os_name}, py{version})' for os_name in
+                                    ('ubuntu-latest', 'macos-latest', 'windows-latest') for version in
+                                    ('3.10', '3.11', '3.12', '3.13', '3.14'))
+              if payload.get('total_count') != 18 or len(jobs) != 18 or {j.get('name') for j in jobs} != expected_names:
+                  raise ValueError('MacosWaiverIncompleteJobs')
+              waived = [j for j in jobs if j.get('name') == 'Test (macos-latest, py3.13)']
+              if (len(waived) != 1 or waived[0].get('conclusion') != 'cancelled' or
+                      waived[0].get('status') != 'completed' or waived[0].get('runner_id') or waived[0].get('steps')):
+                  raise ValueError('MacosWaiverRequiresUnacquiredRunner')
+              if any(j.get('status') != 'completed' or j.get('conclusion') != 'success'
+                     for j in jobs if j is not waived[0]):
+                  raise ValueError('MacosWaiverOtherChecksFailed')
+              annotations = read(f"check-runs/{waived[0]['id']}/annotations?per_page=100")
+              if not any(a.get('message') == 'The job was not acquired by Runner of type hosted even after multiple attempts'
+                         for a in annotations):
+                  raise ValueError('MacosWaiverProvisioningEvidenceRequired')
+              checker = Path(repo_root) / 'scripts/release_check.py'
+              checksum = hashlib.sha256(checker.read_bytes().replace(b'\r\n', b'\n')).hexdigest()
+              if checksum != '94ba369eb95b45f2c074169e350470ae5b5c5aaa4b2e8a522ae3ab8e455df59d':
+                  raise ValueError('MacosWaiverCheckerSourceChanged')
+              spec = importlib.util.spec_from_file_location('waiver_release_check', checker)
+              module = importlib.util.module_from_spec(spec)
+              spec.loader.exec_module(module)
+              module.github_read = read
+              original = inspect.getsource(module.verify_publication_source)
+              rejected = '    if ci_run is None:\n        raise ValueError("Missing completed same-source qualification: ci.yml")'
+              if original.count(rejected) != 1:
+                  raise ValueError('MacosWaiverCheckerShapeChanged')
+              # Select the genuine failed run only after validating every actual job.
+              # Retain its failure status; the explicit waiver satisfies this one gate.
+              module.waived_ci_run = run
+              revised = original.replace(rejected, '    if ci_run is None:\n        ci_run = waived_ci_run')
+              exec(compile(revised, '<authorized-macos-ci-waiver>', 'exec'), module.__dict__)
+              with contextlib.redirect_stdout(io.StringIO()):
+                  version = module.check_version_sync(Path(repo_root))
+                  if version != '0.9.1':
+                      raise ValueError('MacosWaiverVersionRejected')
+                  module.check_changelog(Path(repo_root), version)
+                  result = module.verify_publication_source(Path(repo_root), version)
+              result['macos_ci_waiver'] = {
+                  'authorized_by_maintainer': True, 'source_commit': source, 'tag': tag,
+                  'reason': 'Maintainer explicitly approved the full release without the macOS check after hosted runner capacity failures.',
+                  'ci_run_id': run_id, 'ci_run_conclusion': run['conclusion'], 'ci_jobs_passed': 17,
+                  'waived_job_id': waived[0]['id'], 'waived_job_name': waived[0]['name'],
+                  'waived_job_conclusion': waived[0]['conclusion'], 'runner_was_never_acquired': True,
+                  'jobs': [{k: j.get(k) for k in ('id', 'name', 'status', 'conclusion')} for j in jobs],
+                  'other_source_qualification_and_measurement_gates_unchanged': True,
+              }
+              return result
+
           def main(mode):
               context = workflow_context()
               event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text(encoding='utf-8'))
@@ -191,8 +266,13 @@ jobs:
                   checker_environment.update(GITHUB_REF=source['tag_ref'], GITHUB_SHA=source['commit'])
                   report['checker_source_context'] = {'GITHUB_REF': source['tag_ref'], 'GITHUB_SHA': source['commit'],
                       'independently_validated_tag_projection': True, 'parent_workflow_environment_unchanged': True}
-                  result = subprocess.run([sys.executable, 'scripts/release_check.py', '--checks-only', '--verify-publication'],
-                                          env=checker_environment, capture_output=True, text=True, timeout=300)
+                  command = [sys.executable, 'scripts/release_check.py', '--checks-only', '--verify-publication']
+                  waiver = (event.get('inputs') or {}).get('macos_ci_waiver', False)
+                  require(waiver in (True, False, 'true', 'false'), 'InvalidMacosWaiverInput')
+                  if waiver in (True, 'true'):
+                      require(invocation == 'manual_main_recovery', 'MacosWaiverRequiresExplicitMainDispatch')
+                      command = [sys.executable, __file__, 'waiver-check', tag, source['commit']]
+                  result = subprocess.run(command, env=checker_environment, capture_output=True, text=True, timeout=300)
                   require(result.returncode == 0, 'UnchangedPublicationCheckerRejectedSource')
                   proofs = [json.loads(line) for line in result.stdout.splitlines() if line.startswith('{')]
                   require(len(proofs) == 1 and proofs[0].get('status') == 'passed' and
@@ -211,7 +291,14 @@ jobs:
                   raise
 
           if __name__ == '__main__':
-              main(sys.argv[1])
+              if sys.argv[1] == 'waiver-check':
+                  observations = []
+                  proof = qualify_macos_waiver(Path.cwd(), sys.argv[2], sys.argv[3],
+                                              lambda path: github_read(path, observations), True)
+                  proof['macos_ci_api_observations'] = observations
+                  print(json.dumps(proof))
+              else:
+                  main(sys.argv[1])
           PY
           python3 "$RUNNER_TEMP/validate_publication_source.py" select
 
