@@ -1,8 +1,7 @@
 """A transient 'database is locked' while a namespace is first initialised is retried (bounded); real errors are not."""
 from __future__ import annotations
 
-import sqlite3
-
+from mesh.sqlite_runtime import sqlite3
 import pytest
 
 from mesh import store as st

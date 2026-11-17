@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import pathlib
 import re
 import sys
@@ -28,8 +29,9 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from mesh.mcp_server import _MCP_TOOLS
-from mesh.version import VERSION
+from scripts.schema_sources import read_cli_commands, read_mcp_tool_schemas, read_version
+
+VERSION = read_version(REPO_ROOT)
 
 CORE_DOCS = [
     REPO_ROOT / "README.md",
@@ -99,13 +101,14 @@ REGISTERED_CLI_COMMANDS = {
     "digest",
     "install-skills",
     "audit",
+    "reembed",
     "version",
     "help",
 }
 
 
 def get_mcp_tool_names() -> set[str]:
-    return {tool.name for tool in _MCP_TOOLS}
+    return set(read_mcp_tool_schemas(REPO_ROOT))
 
 
 def check_version_stamps(errors: list[str]) -> None:
@@ -339,6 +342,7 @@ def check_public_manifest(errors: list[str]) -> None:
 
 def check_cli_references(errors: list[str]) -> None:
     """Verify CLI subcommand mentions in docs match real commands."""
+    cli_commands = read_cli_commands(REPO_ROOT)
     cmd_pattern = re.compile(r"`mesh\s+([a-z][a-z0-9_-]*)(?:\s+[^`]+)?`")
     ignored_subcommands = {"--help", "--version", "-y", "--yes", "--dir", "--apply"}
 
@@ -358,7 +362,7 @@ def check_cli_references(errors: list[str]) -> None:
             subcmd = match.group(1).lower()
             if subcmd.startswith("-") or subcmd in ignored_subcommands:
                 continue
-            if subcmd not in REGISTERED_CLI_COMMANDS:
+            if subcmd not in cli_commands:
                 errors.append(f"[{rel_doc}] Documented CLI command 'mesh {subcmd}' is not in registered CLI commands.")
 
 
@@ -415,8 +419,169 @@ def check_no_fernet_references(errors: list[str]) -> None:
                 )
 
 
+def check_performance_tables_traceability(errors: list[str]) -> None:
+    """
+    Verify that every performance table in docs/PERFORMANCE.md cites a valid raw source
+    file and key, and that any pilot v2 citations include the mandatory disclosure.
+    """
+    perf_file = REPO_ROOT / "docs" / "PERFORMANCE.md"
+    if not perf_file.exists():
+        return
+    text = perf_file.read_text(encoding="utf-8")
+    lines = text.splitlines()
+
+    in_table = False
+    table_start_line = -1
+    table_end_line = -1
+    tables = []
+
+    for idx, line in enumerate(lines):
+        is_table_row = bool(re.match(r"^\s*\|.*\|\s*$", line))
+        if is_table_row:
+            if not in_table:
+                in_table = True
+                table_start_line = idx
+            table_end_line = idx
+        else:
+            if in_table:
+                tables.append((table_start_line, table_end_line))
+                in_table = False
+    if in_table:
+        tables.append((table_start_line, table_end_line))
+
+    for start, end in tables:
+        context_lines = lines[max(0, start - 6) : min(len(lines), end + 7)]
+        context_text = "\n".join(context_lines)
+
+        # Allow descriptive/architectural mapping tables
+        if "Architectural Enabler" in lines[start] or "Architectural Takeaway" in context_text:
+            continue
+
+        source_match = re.search(
+            r"(?:Source|\*Source\*|\*\*Source\*\*):\s*`?([a-zA-Z0-9_\-\./\\]+\.json[l]?)`?",
+            context_text,
+            re.IGNORECASE,
+        )
+        if not source_match:
+            errors.append(
+                f"[docs/PERFORMANCE.md:{start+1}] Table lacks mandatory raw source citation (`Source: <raw_file.json> (keys: ...)`)."
+            )
+            continue
+
+        raw_rel = source_match.group(1).replace("\\", "/")
+        raw_path = REPO_ROOT / raw_rel
+        if not raw_path.exists():
+            errors.append(
+                f"[docs/PERFORMANCE.md:{start+1}] Cited raw source file '{raw_rel}' does not exist on disk."
+            )
+
+        if "pilot_20_results.json" in raw_rel or "pilot" in raw_rel.lower():
+            if "pilot v2, 20 questions, single run, not exclusive repeats" not in context_text.lower():
+                errors.append(
+                    f"[docs/PERFORMANCE.md:{start+1}] Table citing pilot data must include mandatory disclosure: "
+                    "'pilot v2, 20 questions, single run, not exclusive repeats'."
+                )
+
+
+def check_review_markers(errors: list[str] | None = None, release_mode: bool = False) -> list[str]:
+    """
+    Check for {{EDIT: ...}} markers, 'EXAMPLE ROW', and legacy review placeholders.
+    In normal mode:
+      - {{EDIT...}} is allowed ONLY in docs/REVIEWS.md.
+      - 'EXAMPLE ROW' is allowed ONLY in docs/REVIEWS.md.
+      - Legacy review placeholders are forbidden in all tracked files.
+    In release mode (--release):
+      - {{EDIT...}} is forbidden in ALL tracked files, including docs/REVIEWS.md.
+      - 'EXAMPLE ROW' is forbidden in ALL tracked files.
+      - Legacy review placeholders are forbidden in ALL tracked files.
+    """
+    if errors is None:
+        errors = []
+    legacy_placeholders = [
+        "[AFFILIATION_OR_HANDLE]",
+        "[DATE]",
+        "[SCOPE]",
+        "[REPORT_LINK]",
+        "[FINDINGS_SUMMARY]",
+    ]
+
+    import subprocess
+    try:
+        tracked_output = subprocess.check_output(
+            ["git", "ls-files"], cwd=REPO_ROOT, text=True, errors="replace"
+        )
+        tracked_rel_paths = [p.strip() for p in tracked_output.splitlines() if p.strip()]
+    except Exception:
+        # An isolated checkout may lack Git's user-level ownership settings.
+        # Prune generated trees and compare paths relative to this source root:
+        # a hidden ancestor must not suppress checks on published files.
+        tracked_rel_paths = []
+        generated = {"build", "dist", "node_modules", "__pycache__", "scratch"}
+        for base, directories, filenames in os.walk(REPO_ROOT):
+            directories[:] = [name for name in directories if not name.startswith(".") and name not in generated]
+            for name in filenames:
+                if not name.startswith("."):
+                    tracked_rel_paths.append(str((pathlib.Path(base) / name).relative_to(REPO_ROOT)))
+
+    for rel_str in tracked_rel_paths:
+        norm_rel = rel_str.replace("\\", "/")
+        if norm_rel == "scripts/check_docs.py" or norm_rel.startswith("tests/"):
+            continue
+        fpath = REPO_ROOT / rel_str
+        if not fpath.exists() or fpath.is_dir():
+            continue
+        suffix = fpath.suffix.lower()
+        if suffix in {".onnx", ".png", ".jpg", ".jpeg", ".ico", ".tar", ".gz", ".zip", ".db", ".sqlite", ".pyc"}:
+            continue
+        try:
+            content = fpath.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            continue
+
+        is_reviews_md = (rel_str.replace("\\", "/") == "docs/REVIEWS.md")
+
+        # 1. {{EDIT check
+        if "{{EDIT" in content:
+            if not is_reviews_md:
+                errors.append(
+                    f"[{rel_str}] Unresolved '{{{{EDIT' marker found outside docs/REVIEWS.md."
+                )
+            elif release_mode:
+                errors.append(
+                    "[docs/REVIEWS.md] Release gate failure: unresolved '{{EDIT' marker remains in docs/REVIEWS.md."
+                )
+
+        # 2. EXAMPLE ROW check
+        if "EXAMPLE ROW" in content:
+            if release_mode or not is_reviews_md:
+                errors.append(
+                    f"[{rel_str}] Literal text 'EXAMPLE ROW' found in tracked file."
+                )
+
+        # 3. Legacy placeholders check
+        for ph in legacy_placeholders:
+            if ph in content:
+                if release_mode or not is_reviews_md:
+                    errors.append(
+                        f"[{rel_str}] Legacy review placeholder '{ph}' found in tracked file."
+                    )
+
+    return errors
+
+
+def check_no_review_placeholders_in_published_files(errors: list[str] | None = None) -> list[str]:
+    """Backwards-compatible alias for review placeholder checks."""
+    return check_review_markers(errors=errors, release_mode=False)
+
+
 def main() -> int:
-    print(f"Checking Mesh Documentation Consistency (Package version: v{VERSION})...")
+    import argparse
+    parser = argparse.ArgumentParser(description="Automated verification of Mesh documentation consistency.")
+    parser.add_argument("--release", action="store_true", help="Enforce release gates (no edit markers or review placeholders anywhere).")
+    args = parser.parse_args()
+
+    mode_label = " (RELEASE MODE)" if args.release else ""
+    print(f"Checking Mesh Documentation Consistency (Package version: v{VERSION}){mode_label}...")
     errors: list[str] = []
 
     check_version_stamps(errors)
@@ -428,6 +593,8 @@ def main() -> int:
     check_field_test_version_labels(errors)
     check_public_manifest(errors)
     check_no_fernet_references(errors)
+    check_review_markers(errors, release_mode=args.release)
+    check_performance_tables_traceability(errors)
 
     if errors:
         print(f"\n[FAIL] Documentation verification found {len(errors)} error(s):")

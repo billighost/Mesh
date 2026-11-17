@@ -10,6 +10,14 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
+try:
+    import tomllib
+except ModuleNotFoundError:
+    try:
+        import tomli as tomllib  # type: ignore[no-redef]
+    except ModuleNotFoundError:
+        tomllib = None  # type: ignore[assignment]
+
 import pytest
 
 from mesh.installer import (
@@ -230,8 +238,17 @@ def test_all_agent_adapters_user_scope(isolated_env):
         mcp_path = adapter.get_mcp_config_path("user")
         if mcp_path and r["mcp"]:
             assert mcp_path.exists(), f"MCP config for {agent_id} not created at {mcp_path}"
-            data = json.loads(mcp_path.read_text(encoding="utf-8"))
-            assert "mesh" in data["mcpServers"]
+            raw = mcp_path.read_text(encoding="utf-8")
+            if mcp_path.suffix == ".toml":
+                assert tomllib is not None
+                data = tomllib.loads(raw)
+                assert "mesh" in data.get("mcp_servers", {})
+            elif "opencode" in mcp_path.name:
+                data = json.loads(raw)
+                assert "mesh" in data.get("mcp", {})
+            else:
+                data = json.loads(raw)
+                assert "mesh" in data["mcpServers"]
 
         rules_path = adapter.get_rules_path("user")
         if rules_path and r["rules"]:
@@ -259,8 +276,17 @@ def test_all_agent_adapters_user_scope(isolated_env):
         adapter = ADAPTER_MAP[agent_id]
         mcp_path = adapter.get_mcp_config_path("user")
         if mcp_path and mcp_path.exists():
-            data = json.loads(mcp_path.read_text(encoding="utf-8"))
-            assert "mesh" not in data.get("mcpServers", {})
+            raw = mcp_path.read_text(encoding="utf-8")
+            if mcp_path.suffix == ".toml":
+                if tomllib is not None:
+                    data = tomllib.loads(raw)
+                    assert "mesh" not in data.get("mcp_servers", {})
+            elif "opencode" in mcp_path.name:
+                data = json.loads(raw)
+                assert "mesh" not in data.get("mcp", {})
+            else:
+                data = json.loads(raw)
+                assert "mesh" not in data.get("mcpServers", {})
 
 
 def test_project_scope_installation_with_dir(isolated_env):
@@ -651,6 +677,128 @@ def test_safe_replace_dir_exhaustion(tmp_path):
     with patch("os.replace", side_effect=PermissionError(5, "Access is denied")):
         with pytest.raises(PermissionError):
             _safe_replace_dir(src_dir, dst_dir, max_retries=3, backoff=0.001)
+
+
+def test_codex_toml_mcp_config_write_and_parse_with_tomllib(tmp_path):
+    """
+    Verify Codex TOML configuration writes valid TOML under [mcp_servers.mesh]
+    and parses cleanly with tomllib, preserving existing TOML configuration.
+    """
+    assert tomllib is not None, "tomllib or tomli must be available"
+
+    cfg = tmp_path / "config.toml"
+    initial_toml = (
+        '# Existing OpenAI Codex CLI configuration\n'
+        'model = "o3-mini"\n'
+        '\n'
+        '[mcp_servers.other_tool]\n'
+        'command = "npx"\n'
+        'args = ["-y", "other-tool"]\n'
+    )
+    cfg.write_text(initial_toml, encoding="utf-8")
+
+    # 1. Update TOML config with Mesh and env
+    changed, diff, bak = update_mcp_config_file(
+        cfg, "mesh", ["server"], env={"MESH_NAMESPACE": "test_ns"}
+    )
+    assert changed is True
+    assert bak is not None and bak.exists()
+
+    parsed = tomllib.loads(cfg.read_text(encoding="utf-8"))
+    assert parsed["model"] == "o3-mini"
+    assert "other_tool" in parsed["mcp_servers"]
+    assert "mesh" in parsed["mcp_servers"]
+    assert parsed["mcp_servers"]["mesh"]["command"] == "mesh"
+    assert parsed["mcp_servers"]["mesh"]["args"] == ["server"]
+    assert parsed["mcp_servers"]["mesh"]["env"]["MESH_NAMESPACE"] == "test_ns"
+
+    # 2. Idempotent check
+    changed, diff, _ = update_mcp_config_file(
+        cfg, "mesh", ["server"], env={"MESH_NAMESPACE": "test_ns"}
+    )
+    assert changed is False
+    assert diff == ""
+
+    # 3. Removal preserves other sections
+    changed, diff, _ = remove_mcp_config_entry(cfg)
+    assert changed is True
+    parsed_after = tomllib.loads(cfg.read_text(encoding="utf-8"))
+    assert parsed_after["model"] == "o3-mini"
+    assert "other_tool" in parsed_after["mcp_servers"]
+    assert "mesh" not in parsed_after.get("mcp_servers", {})
+
+
+def test_gemini_cli_settings_json_write_and_parse(isolated_env):
+    """Verify Gemini CLI adapter writes to settings.json with mcpServers schema."""
+    adapter = ADAPTER_MAP["gemini-cli"]
+    mcp_user = adapter.get_mcp_config_path("user")
+    assert mcp_user is not None
+    assert mcp_user.name == "settings.json"
+    assert ".gemini" in str(mcp_user)
+
+    plan = plan_installation(agents=["gemini-cli"], scope="user")
+    results = apply_installation(plan, dry_run=False)
+    assert results[0]["mcp"]["status"] == "updated"
+    assert mcp_user.is_file()
+
+    data = json.loads(mcp_user.read_text(encoding="utf-8"))
+    assert "mcpServers" in data
+    assert "mesh" in data["mcpServers"]
+
+
+def test_windsurf_no_project_mcp_scope(isolated_env):
+    """
+    Verify Windsurf adapter returns None for project MCP config path,
+    as Windsurf official documentation only supports user-scoped MCP configuration.
+    """
+    adapter = ADAPTER_MAP["windsurf"]
+    proj_dir = isolated_env["home"] / "windsurf_project"
+    proj_dir.mkdir(parents=True)
+
+    assert adapter.get_mcp_config_path("project", proj_dir) is None
+
+    plan = plan_installation(agents=["windsurf"], scope="project", project_dir=proj_dir)
+    assert len(plan) == 1
+    assert plan[0]["mcp"] is None
+    # Rules and skill are still supported in project scope
+    assert plan[0]["rules"] is not None
+    assert plan[0]["skill"] is not None
+
+
+def test_opencode_json_mcp_config_write_and_parse(tmp_path):
+    """
+    Verify OpenCode adapter writes to opencode.json using the official
+    'mcp' object schema with local command list and enabled flag.
+    """
+    cfg = tmp_path / "opencode.json"
+    initial_content = {
+        "$schema": "https://opencode.ai/config.json",
+        "theme": "dark",
+    }
+    cfg.write_text(json.dumps(initial_content, indent=2), encoding="utf-8")
+
+    changed, diff, bak = update_mcp_config_file(
+        cfg, "mesh", ["server"], env={"MESH_NAMESPACE": "opencode_ns"}
+    )
+    assert changed is True
+    assert bak is not None and bak.exists()
+
+    data = json.loads(cfg.read_text(encoding="utf-8"))
+    assert data["theme"] == "dark"
+    assert "mcp" in data
+    assert "mesh" in data["mcp"]
+    assert data["mcp"]["mesh"]["type"] == "local"
+    assert data["mcp"]["mesh"]["command"] == ["mesh", "server"]
+    assert data["mcp"]["mesh"]["enabled"] is True
+    assert data["mcp"]["mesh"]["environment"]["MESH_NAMESPACE"] == "opencode_ns"
+
+    # Removal check
+    changed, diff, _ = remove_mcp_config_entry(cfg)
+    assert changed is True
+    data_after = json.loads(cfg.read_text(encoding="utf-8"))
+    assert data_after["theme"] == "dark"
+    assert "mesh" not in data_after.get("mcp", {})
+
 
 
 

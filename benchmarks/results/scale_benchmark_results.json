@@ -1,0 +1,272 @@
+[
+  {
+    "scale": 1000,
+    "work_items_count": 200,
+    "ingest_time_seconds": 40.354,
+    "ingest_throughput_eps": 24.8,
+    "db_size_kb": 6923.5,
+    "ram_delta_mb": 217.29,
+    "latencies": {
+      "dense_simd": {
+        "label": "Dense SIMD Recall (top-5)",
+        "reps": 20,
+        "mean_ms": 22.655,
+        "min_ms": 15.925,
+        "max_ms": 57.291,
+        "p50_ms": 19.293,
+        "p95_ms": 57.291,
+        "p99_ms": 57.291
+      },
+      "exact_bm25": {
+        "label": "Exact Token BM25 Recall",
+        "reps": 20,
+        "mean_ms": 23.392,
+        "min_ms": 18.681,
+        "max_ms": 30.179,
+        "p50_ms": 22.449,
+        "p95_ms": 30.179,
+        "p99_ms": 30.179
+      },
+      "filtered": {
+        "label": "Filtered Recall (tags=['database'], type='fact')",
+        "reps": 20,
+        "mean_ms": 13.796,
+        "min_ms": 9.105,
+        "max_ms": 31.232,
+        "p50_ms": 13.002,
+        "p95_ms": 31.232,
+        "p99_ms": 31.232
+      },
+      "inspect": {
+        "label": "Namespace Inspect (top-50)",
+        "reps": 20,
+        "mean_ms": 4.478,
+        "min_ms": 3.203,
+        "max_ms": 13.06,
+        "p50_ms": 4.025,
+        "p95_ms": 13.06,
+        "p99_ms": 13.06
+      },
+      "brief": {
+        "label": "Project Brief (budget 1000 tokens)",
+        "reps": 15,
+        "mean_ms": 3.204,
+        "min_ms": 2.544,
+        "max_ms": 4.249,
+        "p50_ms": 3.131,
+        "p95_ms": 4.249,
+        "p99_ms": 4.249
+      },
+      "task_list": {
+        "label": "Task List (status=todo, limit=50)",
+        "reps": 20,
+        "mean_ms": 2.802,
+        "min_ms": 1.692,
+        "max_ms": 6.02,
+        "p50_ms": 2.409,
+        "p95_ms": 6.02,
+        "p99_ms": 6.02
+      },
+      "changelog": {
+        "label": "Changelog Generation (markdown)",
+        "reps": 15,
+        "mean_ms": 6.854,
+        "min_ms": 3.854,
+        "max_ms": 11.903,
+        "p50_ms": 6.533,
+        "p95_ms": 11.903,
+        "p99_ms": 11.903
+      },
+      "schema_check": {
+        "label": "Schema Verification Reopen",
+        "reps": 10,
+        "mean_ms": 1.537,
+        "min_ms": 1.074,
+        "max_ms": 1.84,
+        "p50_ms": 1.589,
+        "p95_ms": 1.84,
+        "p99_ms": 1.84
+      }
+    }
+  },
+  {
+    "scale": 5000,
+    "work_items_count": 1000,
+    "ingest_time_seconds": 142.83,
+    "ingest_throughput_eps": 35.0,
+    "db_size_kb": 19334.8,
+    "ram_delta_mb": 158.77,
+    "latencies": {
+      "dense_simd": {
+        "label": "Dense SIMD Recall (top-5)",
+        "reps": 20,
+        "mean_ms": 41.057,
+        "min_ms": 23.94,
+        "max_ms": 71.19,
+        "p50_ms": 41.914,
+        "p95_ms": 71.19,
+        "p99_ms": 71.19
+      },
+      "exact_bm25": {
+        "label": "Exact Token BM25 Recall",
+        "reps": 20,
+        "mean_ms": 30.269,
+        "min_ms": 23.456,
+        "max_ms": 53.17,
+        "p50_ms": 27.893,
+        "p95_ms": 53.17,
+        "p99_ms": 53.17
+      },
+      "filtered": {
+        "label": "Filtered Recall (tags=['database'], type='fact')",
+        "reps": 20,
+        "mean_ms": 31.253,
+        "min_ms": 24.378,
+        "max_ms": 42.072,
+        "p50_ms": 29.479,
+        "p95_ms": 42.072,
+        "p99_ms": 42.072
+      },
+      "inspect": {
+        "label": "Namespace Inspect (top-50)",
+        "reps": 20,
+        "mean_ms": 29.098,
+        "min_ms": 15.258,
+        "max_ms": 128.155,
+        "p50_ms": 23.794,
+        "p95_ms": 128.155,
+        "p99_ms": 128.155
+      },
+      "brief": {
+        "label": "Project Brief (budget 1000 tokens)",
+        "reps": 15,
+        "mean_ms": 6.043,
+        "min_ms": 5.531,
+        "max_ms": 7.125,
+        "p50_ms": 6.003,
+        "p95_ms": 7.125,
+        "p99_ms": 7.125
+      },
+      "task_list": {
+        "label": "Task List (status=todo, limit=50)",
+        "reps": 20,
+        "mean_ms": 2.835,
+        "min_ms": 2.409,
+        "max_ms": 4.49,
+        "p50_ms": 2.673,
+        "p95_ms": 4.49,
+        "p99_ms": 4.49
+      },
+      "changelog": {
+        "label": "Changelog Generation (markdown)",
+        "reps": 15,
+        "mean_ms": 16.288,
+        "min_ms": 14.894,
+        "max_ms": 18.647,
+        "p50_ms": 16.196,
+        "p95_ms": 18.647,
+        "p99_ms": 18.647
+      },
+      "schema_check": {
+        "label": "Schema Verification Reopen",
+        "reps": 10,
+        "mean_ms": 0.998,
+        "min_ms": 0.819,
+        "max_ms": 1.303,
+        "p50_ms": 0.939,
+        "p95_ms": 1.303,
+        "p99_ms": 1.303
+      }
+    }
+  },
+  {
+    "scale": 10000,
+    "work_items_count": 2000,
+    "ingest_time_seconds": 257.897,
+    "ingest_throughput_eps": 38.8,
+    "db_size_kb": 34581.8,
+    "ram_delta_mb": 268.09,
+    "latencies": {
+      "dense_simd": {
+        "label": "Dense SIMD Recall (top-5)",
+        "reps": 20,
+        "mean_ms": 90.82,
+        "min_ms": 58.724,
+        "max_ms": 144.246,
+        "p50_ms": 79.836,
+        "p95_ms": 144.246,
+        "p99_ms": 144.246
+      },
+      "exact_bm25": {
+        "label": "Exact Token BM25 Recall",
+        "reps": 20,
+        "mean_ms": 75.742,
+        "min_ms": 47.078,
+        "max_ms": 103.734,
+        "p50_ms": 89.845,
+        "p95_ms": 103.734,
+        "p99_ms": 103.734
+      },
+      "filtered": {
+        "label": "Filtered Recall (tags=['database'], type='fact')",
+        "reps": 20,
+        "mean_ms": 45.127,
+        "min_ms": 25.242,
+        "max_ms": 68.014,
+        "p50_ms": 49.044,
+        "p95_ms": 68.014,
+        "p99_ms": 68.014
+      },
+      "inspect": {
+        "label": "Namespace Inspect (top-50)",
+        "reps": 20,
+        "mean_ms": 48.857,
+        "min_ms": 24.646,
+        "max_ms": 219.445,
+        "p50_ms": 27.894,
+        "p95_ms": 219.445,
+        "p99_ms": 219.445
+      },
+      "brief": {
+        "label": "Project Brief (budget 1000 tokens)",
+        "reps": 15,
+        "mean_ms": 10.429,
+        "min_ms": 9.032,
+        "max_ms": 13.367,
+        "p50_ms": 10.345,
+        "p95_ms": 13.367,
+        "p99_ms": 13.367
+      },
+      "task_list": {
+        "label": "Task List (status=todo, limit=50)",
+        "reps": 20,
+        "mean_ms": 4.234,
+        "min_ms": 3.022,
+        "max_ms": 6.45,
+        "p50_ms": 4.26,
+        "p95_ms": 6.45,
+        "p99_ms": 6.45
+      },
+      "changelog": {
+        "label": "Changelog Generation (markdown)",
+        "reps": 15,
+        "mean_ms": 79.576,
+        "min_ms": 48.019,
+        "max_ms": 289.456,
+        "p50_ms": 61.326,
+        "p95_ms": 289.456,
+        "p99_ms": 289.456
+      },
+      "schema_check": {
+        "label": "Schema Verification Reopen",
+        "reps": 10,
+        "mean_ms": 1.721,
+        "min_ms": 1.11,
+        "max_ms": 2.624,
+        "p50_ms": 1.597,
+        "p95_ms": 2.624,
+        "p99_ms": 2.624
+      }
+    }
+  }
+]

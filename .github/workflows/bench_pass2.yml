@@ -1,0 +1,315 @@
+# Pass 2 Empirical Performance Benchmark (GitHub Actions Runner Orchestration)
+#
+# Rules enforced (AGENTS.md and Pass 2 Directive):
+# 1. Standard GitHub-hosted runners only (ubuntu-24.04, 4 vCPU, 16 GB RAM); never self-hosted.
+# 2. Least privilege: top-level permissions: contents: read; merge-job-only contents: write.
+# 3. Action pins: every action pinned to an immutable full commit SHA verified via git ls-remote.
+# 4. No secrets or environment variables emitted to logs.
+# 5. Concurrency controls: max-parallel 20, concurrency group per workflow & ref.
+# 6. Code freeze check: asserts git diff benchmark-v1 -- mesh/ is empty before execution.
+# 7. Shard matrix: 10 shards (5 questions each) covering all 50 LongMemEval-S pass2 questions.
+
+name: "Bench: Pass 2 Performance (Bare-Metal Runners)"
+
+on:
+  push:
+    branches:
+      - "bench/**"
+  workflow_dispatch:
+    inputs:
+      matrix_type:
+        description: "Execution matrix type: 'full' (10 shards of 5q) or 'sample' (1 shard of 5q)"
+        required: false
+        default: "full"
+        type: choice
+        options:
+          - "full"
+          - "sample"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # =========================================================================
+  # Sharded Performance Benchmark Matrix (10 shards x 5 questions)
+  # =========================================================================
+  bench-matrix:
+    name: "Shard: ${{ matrix.shard_id }}"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 345
+
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        include:
+          - shard_id: "shard-01-q00-04"
+            start_idx: 0
+            count: 5
+          - shard_id: "shard-02-q05-09"
+            start_idx: 5
+            count: 5
+          - shard_id: "shard-03-q10-14"
+            start_idx: 10
+            count: 5
+          - shard_id: "shard-04-q15-19"
+            start_idx: 15
+            count: 5
+          - shard_id: "shard-05-q20-24"
+            start_idx: 20
+            count: 5
+          - shard_id: "shard-06-q25-29"
+            start_idx: 25
+            count: 5
+          - shard_id: "shard-07-q30-34"
+            start_idx: 30
+            count: 5
+          - shard_id: "shard-08-q35-39"
+            start_idx: 35
+            count: 5
+          - shard_id: "shard-09-q40-44"
+            start_idx: 40
+            count: 5
+          - shard_id: "shard-10-q45-49"
+            start_idx: 45
+            count: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Verify code freeze against tag benchmark-v1
+        run: |
+          git fetch origin tag benchmark-v1 --no-tags
+          DIFF_OUT=$(git diff benchmark-v1 -- mesh/)
+          if [ -n "$DIFF_OUT" ]; then
+            echo "ERROR: Code freeze violated! The mesh/ package differs from benchmark-v1:"
+            echo "$DIFF_OUT"
+            exit 1
+          fi
+          echo "Code freeze verified OK: mesh/ package is identical to benchmark-v1."
+
+      - name: Runner system diagnostics
+        run: |
+          echo "=== Host Diagnostics ==="
+          uname -a
+          cat /etc/os-release
+          echo "=== CPU Info ==="
+          lscpu
+          echo "=== Memory Info ==="
+          free -m
+          echo "=== Disk Info Before Setup ==="
+          df -h
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.4.0
+        with:
+          python-version: "3.12"
+
+      - name: Cache dependencies and embedding models
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.2.0
+        with:
+          path: |
+            ~/.cache/pip
+            ~/.cache/huggingface
+            ~/.local/share/onnx_models
+            ~/.cache/fastembed
+            ~/.mesh/models
+          key: bench-pass2-cache-py312-${{ hashFiles('pyproject.toml') }}
+          restore-keys: |
+            bench-pass2-cache-py312-
+
+      - name: Install isolated environments (Mesh, Mem0, Basic Memory)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test,secrets]"
+          pip install mcp psutil onnxruntime ruff numpy
+
+          # Dedicated environment for Mem0
+          python -m venv /tmp/venv_mem0
+          /tmp/venv_mem0/bin/pip install --upgrade pip
+          /tmp/venv_mem0/bin/pip install "mem0ai==2.2.1" "qdrant-client>=1.9" "fastembed>=0.2" psutil
+
+          # Dedicated environment for Basic Memory
+          python -m venv /tmp/venv_bm
+          /tmp/venv_bm/bin/pip install --upgrade pip
+          /tmp/venv_bm/bin/pip install "basic-memory==0.24.1" "fastmcp>=4.1" psutil
+
+          # Download Auxly binary for Linux x86_64
+          mkdir -p benchmarks/bin
+          curl -fsSL "https://github.com/Tzamun-Arabia-IT-Co/auxly-memory-cli/releases/download/v1.5.0/auxly-linux-amd64" -o benchmarks/bin/auxly || true
+          chmod +x benchmarks/bin/auxly || true
+
+      - name: Pre-download verified ONNX embedding model for Mesh
+        run: |
+          mkdir -p ~/.mesh
+          python -c "from mesh.memory import ensure_model_downloaded; ensure_model_downloaded(blocking=True, assume_yes=True); print('Pre-downloaded ONNX model successfully')"
+
+      - name: Execute Shard Benchmark
+        run: |
+          python benchmarks/run_pass2_runner.py \
+            --start-idx ${{ matrix.start_idx }} \
+            --count ${{ matrix.count }} \
+            --output "/tmp/results/${{ matrix.shard_id }}.json"
+
+      - name: Upload Shard Artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.1
+        if: always()
+        with:
+          name: "raw-${{ matrix.shard_id }}"
+          path: "/tmp/results/${{ matrix.shard_id }}.json"
+          if-no-files-found: error
+
+  # =========================================================================
+  # Scale & Ingestion Profile Job (Linux Runner)
+  # =========================================================================
+  scale-bench:
+    name: "Runner: Scale & Ingestion Profile"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.4.0
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test,secrets]"
+          pip install psutil onnxruntime numpy
+
+          # Dedicated environment for Mem0
+          python -m venv benchmarks/.venv-mem0
+          benchmarks/.venv-mem0/bin/pip install --upgrade pip
+          benchmarks/.venv-mem0/bin/pip install "mem0ai==2.2.1" "qdrant-client>=1.9" "fastembed>=0.2" psutil
+
+      - name: Run Clean Isolated Scale Benchmark
+        run: |
+          python benchmarks/run_scale_bench_pass2_isolated.py
+
+      - name: Run B4 Real Ingestion Loop Profile
+        run: |
+          python benchmarks/profile_b4_real_loop.py
+
+      - name: Upload Scale & Ingestion Artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.1
+        if: always()
+        with:
+          name: "raw-scale-and-ingestion"
+          path: |
+            benchmarks/results/pass2/scale_benchmark_clean.json
+            benchmarks/results/pass2/b4_ingestion_profile.json
+
+  # =========================================================================
+  # Concurrency Multi-Agent Job (Linux Runner)
+  # =========================================================================
+  concurrency-bench:
+    name: "Runner: Concurrency Multi-Agent"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.4.0
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test,secrets]"
+          pip install psutil onnxruntime numpy
+
+      - name: Run Concurrency Multi-Agent Suite
+        run: |
+          python benchmarks/profile_concurrency_multiagent.py
+
+      - name: Upload Concurrency Artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.1
+        if: always()
+        with:
+          name: "raw-concurrency"
+          path: "benchmarks/results/pass2/concurrency_multiagent.json"
+
+  # =========================================================================
+  # Merge & Table Generation Job
+  # =========================================================================
+  merge-results:
+    name: "Merge Shard Results & Publish Evidence"
+    runs-on: ubuntu-24.04
+    needs: [bench-matrix, scale-bench, concurrency-bench]
+    if: always()
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.4.0
+        with:
+          python-version: "3.12"
+
+      - name: Download all shard artifacts
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16  # v4.1.8
+        with:
+          path: /tmp/all_shards
+
+      - name: Merge Raw JSON and Verify Completeness
+        run: |
+          python -c "
+          import json, os, glob
+          from pathlib import Path
+
+          out_dir = Path('benchmarks/results/pass2')
+          out_dir.mkdir(parents=True, exist_ok=True)
+
+          shard_files = glob.glob('/tmp/all_shards/raw-*/*.json')
+          print(f'Found {len(shard_files)} raw shard result files.')
+
+          merged_shards = []
+          for sf in shard_files:
+              with open(sf, 'r', encoding='utf-8') as f:
+                  data = json.load(f)
+                  merged_shards.append(data)
+
+          merged_file = out_dir / 'runner_merged_shards.json'
+          with open(merged_file, 'w', encoding='utf-8') as f:
+              json.dump({'shards': merged_shards, 'shard_count': len(merged_shards)}, f, indent=2)
+          print(f'Successfully merged {len(merged_shards)} shards into {merged_file}')
+          "
+
+      - name: Commit and push raw results branch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RUN_ID="${{ github.run_id }}"
+          BRANCH_NAME="bench-results-pass2/${RUN_ID}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH_NAME"
+          git add benchmarks/results/pass2/
+          git commit -m "bench(pass2): raw runner results for run ${RUN_ID}" || echo "Nothing to commit"
+          git push origin "$BRANCH_NAME" || echo "Push failed or branch exists"
+

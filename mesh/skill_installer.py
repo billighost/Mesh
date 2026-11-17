@@ -20,6 +20,8 @@ Supported agents (verified global skill directories):
 from __future__ import annotations
 
 import os
+import errno
+import math
 import shutil
 import sys
 from pathlib import Path
@@ -179,8 +181,8 @@ def _candidate_skill_roots() -> list[tuple[str, Path]]:
 
 
 def _is_already_up_to_date(dst: Path) -> bool:
-    """Return True if `dst` has `.mesh-skill-version` matching `VERSION` and `SKILL.md` exists."""
-    if not (dst.exists() or _is_symlink_or_junction(dst)):
+    """Match both the release marker and every maintained source file."""
+    if not dst.is_dir() or _is_symlink_or_junction(dst):
         return False
     version_file = dst / _VERSION_MARKER_FILE
     skill_md = dst / "SKILL.md"
@@ -188,7 +190,22 @@ def _is_already_up_to_date(dst: Path) -> bool:
         return False
     try:
         installed_ver = version_file.read_text(encoding="utf-8").strip()
-        return installed_ver == VERSION
+        if installed_ver != VERSION:
+            return False
+        source = _skill_source()
+        for path in source.rglob("*"):
+            if path.is_file():
+                installed_path = dst / path.relative_to(source)
+                for parent in installed_path.parents:
+                    if parent == dst:
+                        break
+                    if _is_symlink_or_junction(parent):
+                        return False
+                if _is_symlink_or_junction(installed_path) or not installed_path.is_file():
+                    return False
+                if installed_path.read_bytes() != path.read_bytes():
+                    return False
+        return True
     except OSError:
         return False
 
@@ -199,17 +216,21 @@ def _safe_replace_dir(src: Path, dst: Path, max_retries: int = 5, backoff: float
     Handles transient [WinError 5] Access is denied during rapid directory renames
     caused by Windows file indexers, antivirus locks, or pending handle cleanup (Issue T-001).
     """
+    if isinstance(max_retries, bool) or not isinstance(max_retries, int) or max_retries < 1:
+        raise ValueError("max_retries must be a positive integer.")
+    if not math.isfinite(backoff) or backoff < 0:
+        raise ValueError("backoff must be finite and nonnegative.")
+    retryable_errnos = {errno.EACCES, errno.EPERM, errno.EBUSY, errno.ETXTBSY}
     for attempt in range(max_retries):
         try:
             os.replace(src, dst)
             return
-        except (PermissionError, OSError):
-            if attempt == max_retries - 1:
+        except OSError as exc:
+            transient = isinstance(exc, PermissionError) or exc.errno in retryable_errnos or getattr(exc, "winerror", None) in (5, 32, 33)
+            if not transient or attempt == max_retries - 1:
                 raise
-            import gc
             import time
 
-            gc.collect()
             time.sleep(backoff * (2**attempt))
 
 
@@ -223,13 +244,16 @@ def install_skill(
     """
     Atomically copy the bundled `mesh-context-layer` skill folder into `target_skills_root`:
       1. If `overwrite=False` and `dst` exists, skip with `"already installed"`.
-      2. If `overwrite=True`, `force=False`, and `.mesh-skill-version == VERSION`, skip with `"already up to date"`.
+      2. If the version marker and maintained source bytes match, skip with `"already up to date"`.
       3. Copy to `dst.with_name(dst.name + ".tmp")`, write `.mesh-skill-version`, then atomically replace `dst`
          (unlinking `dst` first if it is a symlink or Windows junction so `rmtree` never fails).
 
     Returns `(status_message, was_changed)`.
     """
     src = _skill_source()
+    for parent in (target_skills_root.absolute(), *target_skills_root.absolute().parents):
+        if _is_symlink_or_junction(parent):
+            raise ValueError(f"Refusing linked skill installation parent: {parent}")
     dst = target_skills_root / _SKILL_NAME
     dst_exists = dst.exists() or _is_symlink_or_junction(dst)
 

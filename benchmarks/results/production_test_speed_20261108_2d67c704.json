@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "mesh_version": "0.9.0",
+  "source_commit": "2d67c704e45d4f3eb2da1bcd0f0477749528ec8e",
+  "production_run_id": 42485932167,
+  "job_id": 128749391653,
+  "status": "failed_during_report_publication",
+  "failure_code": "UnsafeRelativeSourceManifest",
+  "comparison_available": false,
+  "headline_eligible": false,
+  "failure_log_sha256": "40c5a3ac7bbcd6263cff5fc679f864dffb8c39015cfcae406e73b7ca8ed2be78"
+}

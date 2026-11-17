@@ -207,9 +207,13 @@ def test_case_variant_namespaces_do_not_share_cached_rows(tmp_path, monkeypatch)
     upper = Mesh(namespace="CaseTest", agent_id="upper-agent", create=True)
     marker = upper.learn("upper-only marker 41897")["memory_id"]
 
-    lower = Mesh(namespace="casetest", agent_id="lower-agent", create=True)
-    assert [m["content"] for m in lower.inspect(include_private=True)] == []
-    assert lower.recall("upper-only marker", n=5) == []
+    if (tmp_path / "mesh_casetest.db").exists():
+        with pytest.raises(ValueError, match="namespace spelling"):
+            Mesh(namespace="casetest", agent_id="lower-agent", create=True)
+    else:
+        lower = Mesh(namespace="casetest", agent_id="lower-agent", create=True)
+        assert [m["content"] for m in lower.inspect(include_private=True)] == []
+        assert lower.recall("upper-only marker", n=5) == []
 
     # The original namespace still sees its own row, and only its own row.
     assert [m["content"] for m in upper.inspect(include_private=True)] == [
@@ -311,8 +315,7 @@ def test_delete_scrubs_pending_query_telemetry(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_transient_fts_errors_keep_fts_enabled(tmp_path, monkeypatch):
-    import sqlite3
-
+    from mesh.sqlite_runtime import sqlite3
     from mesh import store as store_mod
 
     assert store_mod._is_permanent_fts_error(
@@ -341,13 +344,26 @@ def test_transient_fts_errors_keep_fts_enabled(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_collection_upsert_replacement_scrubs_audit_log(tmp_path, monkeypatch):
-    from mesh.audit import get_audit_log
+    from mesh.audit import _get_audit_db_path, get_audit_log
+    from mesh.sqlite_runtime import sqlite3
 
     monkeypatch.setenv("MESH_HOME", str(tmp_path))
     ns = "test_collection_upsert_scrub"
     mesh = Mesh(namespace=ns, agent_id="upsert-agent", create=True)
     mid = mesh.learn("rotation code abc123zyx")["memory_id"]
-    assert any("abc123zyx" in (e.get("content") or "") for e in get_audit_log(ns))
+    entries = get_audit_log(ns)
+    assert any(e.get("memory_id") == mid for e in entries)
+    assert all("abc123zyx" not in str(e) for e in entries)
+    # An older release may have persisted bodies; replacements must scrub those too.
+    connection = sqlite3.connect(_get_audit_db_path(ns))
+    try:
+        connection.execute(
+            "INSERT INTO audit_log(timestamp,action,namespace,content,memory_id) VALUES(?,?,?,?,?)",
+            ("2026-01-01T00:00:00+00:00", "learn", ns, "rotation code abc123zyx", mid),
+        )
+        connection.commit()
+    finally:
+        connection.close()
 
     mesh.store.collection.upsert(
         ids=[mid],
@@ -358,6 +374,11 @@ def test_collection_upsert_replacement_scrubs_audit_log(tmp_path, monkeypatch):
     for entry in get_audit_log(ns):
         if entry.get("memory_id") == mid:
             assert "abc123zyx" not in (entry.get("content") or "")
+    connection = sqlite3.connect(_get_audit_db_path(ns))
+    try:
+        assert all("abc123zyx" not in str(row[0]) for row in connection.execute("SELECT content FROM audit_log WHERE memory_id=?", (mid,)))
+    finally:
+        connection.close()
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,202 @@
+{
+  "short": {
+    "turn_count": 50,
+    "mesh_stages": {
+      "guards_ms": {
+        "mean_ms": 0.06,
+        "p50_ms": 0.05,
+        "p95_ms": 0.09
+      },
+      "embedding_ms": {
+        "mean_ms": 0.47,
+        "p50_ms": 0.39,
+        "p95_ms": 0.86
+      },
+      "lock_ms": {
+        "mean_ms": 0.4,
+        "p50_ms": 0.34,
+        "p95_ms": 0.7
+      },
+      "dedupe_ms": {
+        "mean_ms": 0.69,
+        "p50_ms": 0.65,
+        "p95_ms": 0.99
+      },
+      "contradiction_ms": {
+        "mean_ms": 0.25,
+        "p50_ms": 0.19,
+        "p95_ms": 0.52
+      },
+      "db_write_ms": {
+        "mean_ms": 2.26,
+        "p50_ms": 2.18,
+        "p95_ms": 2.79
+      },
+      "audit_ms": {
+        "mean_ms": 0.67,
+        "p50_ms": 0.25,
+        "p95_ms": 0.61
+      },
+      "total_ms": {
+        "mean_ms": 4.86,
+        "p50_ms": 4.48,
+        "p95_ms": 6.57
+      }
+    },
+    "mem0_sdk": {
+      "mean_ms": 22.77,
+      "p50_ms": 18.29,
+      "p95_ms": 44.16
+    }
+  },
+  "medium": {
+    "turn_count": 50,
+    "mesh_stages": {
+      "guards_ms": {
+        "mean_ms": 1.27,
+        "p50_ms": 0.22,
+        "p95_ms": 4.29
+      },
+      "embedding_ms": {
+        "mean_ms": 4.25,
+        "p50_ms": 2.73,
+        "p95_ms": 13.25
+      },
+      "lock_ms": {
+        "mean_ms": 1.11,
+        "p50_ms": 0.92,
+        "p95_ms": 2.07
+      },
+      "dedupe_ms": {
+        "mean_ms": 1.88,
+        "p50_ms": 1.09,
+        "p95_ms": 4.74
+      },
+      "contradiction_ms": {
+        "mean_ms": 4.49,
+        "p50_ms": 1.63,
+        "p95_ms": 8.02
+      },
+      "db_write_ms": {
+        "mean_ms": 11.85,
+        "p50_ms": 6.25,
+        "p95_ms": 23.88
+      },
+      "audit_ms": {
+        "mean_ms": 2.09,
+        "p50_ms": 0.69,
+        "p95_ms": 3.43
+      },
+      "total_ms": {
+        "mean_ms": 27.13,
+        "p50_ms": 15.18,
+        "p95_ms": 65.16
+      }
+    },
+    "mem0_sdk": {
+      "mean_ms": 74.79,
+      "p50_ms": 60.21,
+      "p95_ms": 143.12
+    }
+  },
+  "long": {
+    "turn_count": 50,
+    "mesh_stages": {
+      "guards_ms": {
+        "mean_ms": 5.95,
+        "p50_ms": 4.78,
+        "p95_ms": 10.23
+      },
+      "embedding_ms": {
+        "mean_ms": 9.8,
+        "p50_ms": 8.62,
+        "p95_ms": 15.68
+      },
+      "lock_ms": {
+        "mean_ms": 0.72,
+        "p50_ms": 0.67,
+        "p95_ms": 0.97
+      },
+      "dedupe_ms": {
+        "mean_ms": 1.18,
+        "p50_ms": 1.13,
+        "p95_ms": 1.68
+      },
+      "contradiction_ms": {
+        "mean_ms": 3.32,
+        "p50_ms": 2.76,
+        "p95_ms": 5.0
+      },
+      "db_write_ms": {
+        "mean_ms": 8.14,
+        "p50_ms": 7.79,
+        "p95_ms": 13.36
+      },
+      "audit_ms": {
+        "mean_ms": 1.38,
+        "p50_ms": 0.85,
+        "p95_ms": 1.91
+      },
+      "total_ms": {
+        "mean_ms": 30.56,
+        "p50_ms": 28.1,
+        "p95_ms": 49.71
+      }
+    },
+    "mem0_sdk": {
+      "mean_ms": 145.13,
+      "p50_ms": 135.73,
+      "p95_ms": 220.41
+    }
+  },
+  "very_long": {
+    "turn_count": 30,
+    "mesh_stages": {
+      "guards_ms": {
+        "mean_ms": 11.3,
+        "p50_ms": 10.45,
+        "p95_ms": 21.25
+      },
+      "embedding_ms": {
+        "mean_ms": 23.39,
+        "p50_ms": 21.03,
+        "p95_ms": 44.53
+      },
+      "lock_ms": {
+        "mean_ms": 0.88,
+        "p50_ms": 0.56,
+        "p95_ms": 3.21
+      },
+      "dedupe_ms": {
+        "mean_ms": 2.26,
+        "p50_ms": 1.82,
+        "p95_ms": 3.17
+      },
+      "contradiction_ms": {
+        "mean_ms": 9.03,
+        "p50_ms": 7.12,
+        "p95_ms": 15.63
+      },
+      "db_write_ms": {
+        "mean_ms": 20.99,
+        "p50_ms": 17.83,
+        "p95_ms": 43.45
+      },
+      "audit_ms": {
+        "mean_ms": 6.73,
+        "p50_ms": 5.87,
+        "p95_ms": 15.54
+      },
+      "total_ms": {
+        "mean_ms": 74.66,
+        "p50_ms": 65.17,
+        "p95_ms": 140.4
+      }
+    },
+    "mem0_sdk": {
+      "mean_ms": 156.5,
+      "p50_ms": 116.74,
+      "p95_ms": 340.19
+    }
+  }
+}

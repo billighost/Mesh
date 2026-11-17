@@ -115,17 +115,18 @@ def test_update_reset_ttl_without_days_restarts_existing_ttl():
         _cleanup(mesh, ns)
 
 
-def test_update_content_scrubs_matching_query_telemetry():
+def test_update_content_scrubs_matching_query_telemetry(monkeypatch):
+    monkeypatch.setenv("MESH_LOG_QUERY_TEXT", "1")
     ns = _ns()
     mesh = Mesh(namespace=ns, agent_id="test")
     try:
         old_content = "customer email is alice@example.com"
         mid = mesh.learn(old_content)["memory_id"]
         mesh.store.log_query(old_content, agent_id="test")
+        mesh.store.flush_telemetry()
 
         def query_rows() -> int:
-            import sqlite3
-
+            from mesh.sqlite_runtime import sqlite3
             with sqlite3.connect(mesh.store.db_path) as conn:
                 return conn.execute(
                     "SELECT COUNT(*) FROM queries WHERE namespace = ? AND query_text = ?",

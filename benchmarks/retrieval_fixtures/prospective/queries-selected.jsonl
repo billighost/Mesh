@@ -1,0 +1,22 @@
+{"id": "p01", "query": "Which port does Cedar production's web listener use?"}
+{"id": "p02", "query": "What database keeps Cedar's operational records?"}
+{"id": "p03", "query": "How much total time can a Cedar payment request spend retrying?"}
+{"id": "p04", "query": "At what UTC time is Cedar's nightly database backup taken?"}
+{"id": "p05", "query": "What tool formats the Python source in Cedar?"}
+{"id": "p06", "query": "How does Sana like release notes to be written?"}
+{"id": "p07", "query": "Where is the reference to Cedar's deployment credential?"}
+{"id": "p08", "query": "Does Cedar production send invoices automatically by email?"}
+{"id": "p09", "query": "Which region is Cedar primarily deployed in?"}
+{"id": "p10", "query": "In which city is Cedar's European tenant support office?"}
+{"id": "p11", "query": "QUEUE_RETRY_4821"}
+{"id": "p12", "query": "How many queue worker processes does Cedar run in production?"}
+{"id": "p13", "query": "Which port does the Cedar staging HTTP listener bind?"}
+{"id": "p14", "query": "Where is Cedar's deployment runbook stored?"}
+{"id": "p15", "query": "How long does Cedar keep its nightly database backups?"}
+{"id": "p16", "query": "What is Cedar's individual gateway-attempt timeout?"}
+{"id": "u01", "query": "Who is responsible for administering Cedar's operational database?"}
+{"id": "u02", "query": "Which weekday does Cedar rotate deployment credentials?"}
+{"id": "u03", "query": "What maximum invoice amount triggers manual review in Cedar?"}
+{"id": "u04", "query": "What was Cedar's previous primary deployment region?"}
+{"id": "u05", "query": "How many engineers report directly to Sana?"}
+{"id": "u06", "query": "What is the street address of Cedar's Málaga tenant-support office?"}

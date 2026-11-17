@@ -1,0 +1,259 @@
+{
+  "schema_version": 1,
+  "mesh_version": "0.9.0",
+  "source_commit": "db5e76a7775aadc66ebcc6d8f0ef85193c3f20b7",
+  "normal_ci_run_id": 42431857693,
+  "normal_ci_status": "passed",
+  "normal_ci_successful_jobs": 18,
+  "production_run_id": 42431857665,
+  "production_status": "failed_retrieval",
+  "production_successful_jobs": 4,
+  "production_failed_jobs": 5,
+  "primary_full_qualification_status": "passed",
+  "floor_full_qualification_status": "passed",
+  "qualification": {
+    "primary": {
+      "xml": {
+        "sha256": "088b34861e3acc6eee246c5b72f4653df3adfed3debca1e451f160d4cfc9933f",
+        "tests": 1785,
+        "skipped": 3,
+        "failures": 0,
+        "errors": 0,
+        "real_recovery_case_passed": true
+      },
+      "coverage": {
+        "sha256": "146253bc88a5fb9783f5ca4e03a94014fb15031e5d92771e092ace8d7a89a2cc",
+        "line_rate": 0.7438
+      },
+      "selection_sha256": "b9f44246488b4ed6212817dd046e54d27f48d51d8cd19f26eed48c379296081a"
+    },
+    "floor": {
+      "xml": {
+        "sha256": "ad9a2354f1e875377a301414de9290dd1792d86212fa98b9ce56068b41b15c40",
+        "tests": 1785,
+        "skipped": 4,
+        "failures": 0,
+        "errors": 0,
+        "real_recovery_case_passed": true
+      },
+      "coverage": {
+        "sha256": "7066124260f9d89da059c720bd2e2366ffd9046c94604410dc1cf0faf0b1bf51",
+        "line_rate": 0.7429
+      },
+      "selection_sha256": "b9f44246488b4ed6212817dd046e54d27f48d51d8cd19f26eed48c379296081a"
+    }
+  },
+  "primary_installed_wheel_validation": "passed",
+  "source_files_verified": 58,
+  "windows_checkout_line_endings_accounted": true,
+  "source_files_sha256": {
+    "benchmarks/passage_retrieval.py": "63b4c6c848e9456c17efb106e879fbc2a55a19e0de022e907c0b2986de51c27c",
+    "benchmarks/prepare_retrieval_ci.py": "92991c7d217cbcef799de68caaa0404c5b120314f641598f1bbabde05e00a160",
+    "benchmarks/production_bench.py": "8840e767e4e743783b800b3baa79158c11bc1fbcdc9b61ee46e6ac620fa6b4fc",
+    "benchmarks/production_ledger.py": "146b14ec0cabc83933ecbce9b97c219feee1104f48fd871f0b8ef08d088ef5a7",
+    "benchmarks/production_retrieval.py": "73a8e3496ce2991cd2d21c8e3fc2a92fb38ff6fd39836263252e68bc5dc956d3",
+    "benchmarks/production_runner.py": "fcc0ea5dd2bdc300f914d462961e85c9d2a8c1149e94e1db64f0fd8725d41d4b",
+    "benchmarks/production_test_speed.py": "30e948ef748000f043da9e4b469c05889b888c798a4561332d81b1eb9fe473a3",
+    "benchmarks/production_transport.py": "ec699eb6cab512b235e34c9e35383a4c6b5c05e8ddc3d30cb0790a2facfbdb76",
+    "benchmarks/provision_production_model.py": "80d3c9b3707268326fbe6c0b036dcc98fa156be447008f83115e051de49b37b3",
+    "benchmarks/provision_retrieval_c4.py": "1472d5262e061af29e3e6a7690e8bc3bd0502c40dffbfe66392b6ab6c62e6c87",
+    "benchmarks/replay_retrieval.py": "31d980ef54cb0ad2ca690eb9f58ca499211f4ab70762afc9090bbdee3c436d2d",
+    "benchmarks/retrieval_c4.py": "cc195359f1ca71654af992a6a56a7549679659e1fb2edda46f75b453dff210b6",
+    "benchmarks/retrieval_c4_model.py": "7650c96554b675734b160c6518342e0222005881d9016de27f40bcc19016095f",
+    "benchmarks/retrieval_ci.py": "acdbd5733109815b27872a950a30e38eae63ad1e50c31982917250d1039da32b",
+    "benchmarks/retrieval_telemetry.py": "c9be98d362b9302a5cb73f5b7bfc4c298d1a2be286483c37e1612296b744dee3",
+    "benchmarks/runtime_rerank_c4.py": "f846c6d9c2d74d39ce3f5eb9a06b15eac6d5eb7a0a1f7d42f894cf89e4ddf8a6",
+    "mesh/__init__.py": "cf1fb34aefc1810854d1a89e056a8657778341c4b86d9fa425cb7d92d287dca6",
+    "mesh/__main__.py": "57f523be54277aee1168d441a3b8efa78cfd8ddb0a1af926d79efed553190a46",
+    "mesh/_model_download.py": "df9f343d0466bb88143257087a4acc94aba5502373f32ae78740ca2a126dfc8d",
+    "mesh/audit.py": "770e62f284cf7a035bae1c6b969e3e1fc934cba94aa10d0e9be3a18bd00e2421",
+    "mesh/brief.py": "593dcb90cde97a23f18254768a949b2c4db60863956ced82086cf51feed87650",
+    "mesh/cli.py": "1d016555a3c287848f8d25122fb642b51d89da526169a83d755e16ce78ea540d",
+    "mesh/client.py": "c7c9a4a555aaed70c4d5e734d6c4c5c09336622446a5b3e812bc0695c50cc370",
+    "mesh/context_builder.py": "eb96770df23492e0fc0c9860e37c9889aee64bfa0395580deab24e90e5d6d709",
+    "mesh/crypto.py": "06592a4cd299357511cf29627b3a568c6dc68ac9052e9f8e7a0464e269bac051",
+    "mesh/daemon.py": "d2a8556b0458e887ac0ebd64be8642fba0e46264774db078816f7822a239a2f4",
+    "mesh/dashboard.py": "0d590337ddc30b0fa86e349bfec779c0b8ab761902ad9d5cd2783c009e211f1f",
+    "mesh/digest.py": "8d96e8671b13ba9b653d7cc49fbf29c66494461ec31c02e2b58848db0bfb4f86",
+    "mesh/envutil.py": "d55c37c1f474a9ebb3079c5017f874d358d90e3999b507dbb59a2058f8dc744b",
+    "mesh/execution.py": "05b56ed8e9ff2f082c7ff22afcad5926b12bb356ec87b2937e907969d646e321",
+    "mesh/group_commit.py": "ad6dce0f03c58e74729a1856f7ac32f35ac0bc80fd753a53399ff5f682d435e7",
+    "mesh/guards.py": "befe8e63d4871b74666f8e997d77b4b54680b2894995c84375bd2032daf8d501",
+    "mesh/hooks.py": "8af37171816da3ee20026ac9008d5dd32c8016d3e9134254be2cd0550487add1",
+    "mesh/http_server.py": "8dbaa1659502265fbd7a51ff6f4096fecdee941fb4bb00fa34d9e69225789ec8",
+    "mesh/installer.py": "ab3469ead58cbb18ff29754db4b11627cb1f2919295088ea962962a1503590e5",
+    "mesh/io.py": "7ba94d489352df8a50275ab339d534556086bbb8c3ba5ba9bf03248a818af411",
+    "mesh/local_rerank.py": "4020186182e2b36034e79115300898544f094e7815fcdd61f1bb794c9774155c",
+    "mesh/mcp_server.py": "155349bfbc37bf3943a7767b261cb8e13f88fc9c48eee59e9e5701f6900ed160",
+    "mesh/memory.py": "403bbd8634b1246ea59de27959153a95e77606655727eced271fe7d9ae0419ab",
+    "mesh/mutation_delivery.py": "303a392743b7b8700297945f8a05dbfc4a4c21f0b04df51e56c85f9d747516a1",
+    "mesh/namespace_maintenance.py": "d6bfb8521a8ba02f58e7d34bd7d283429cf6ba9fc2e57273dfa72f1654c9e8ec",
+    "mesh/namespace_resolution.py": "b32f8c29c89c1a93686bc7c54cbeeaa80714f9896f28145316ebab07e9ca35e6",
+    "mesh/namespaces.py": "5cd3d7011d46a9a55a5661356c0aba74800a0de5e0b3860096e45ac0f0da6cdf",
+    "mesh/operation_contract.py": "fa4e4b0be17802686eb1e76ae897224dfc7647d0d5134c5d53c0ab5deade8fbf",
+    "mesh/operations.py": "30a1e516ffbff31386b86576fcb5aceba37581d6a5b464a0155c5019d47d8815",
+    "mesh/output.py": "9de84d3af6339315b5e08f12f7bd845d9232e5e7a2a287d143a3fd4b6ee5c4c5",
+    "mesh/passage_search.py": "002225c2abd3edb7bb243dea99fa466cef013accb4fcfe8e844fbcfcd67b724c",
+    "mesh/passages.py": "543bb8a68d2eaa97e9f0aeba27de340fea33ab8ec65eb4c9f570ddc4affc73f4",
+    "mesh/passive.py": "00f20fd97271f00915f9eb31eb0dafe714d6f8b953a77ff53f1f0e0eb275b21f",
+    "mesh/secrets.py": "0831ba8e3c7836ff4a8844af06d10cdfb7a0cf519a3a7c32a564df46d89c4151",
+    "mesh/skill_installer.py": "b36636eef5bbde2532d33b8d9aa11e4058f7eec2696b317efcb259a32594474d",
+    "mesh/skills/__init__.py": "3040de0d484a99a23a0378b317d99b7d9c5f2eae79dbb1e7df5f0710ca160bd5",
+    "mesh/sqlite_runtime.py": "668e79b90b3a3d13474f35f039a50c4f1526401d117b53edcee363ba195ad2d4",
+    "mesh/store.py": "56dc5a0223943a21e8fd48e620ee7f50163fc74deed35a7141e3e750db72f33a",
+    "mesh/ui.py": "a6a8d99e97cae1ece26be74a458e5d39430c433d1197162f139ec132fb3a696e",
+    "mesh/version.py": "4d3b9478bfa217b38805d5441e62ee41bd0b2157d3d608d82be1ce042b589283",
+    "pyproject.toml": "e25e7b15c269c73ba5a8e09c0b58ee870e5b1648ceb7b1c8bc5d06c1024e9df8",
+    "scripts/run_tests.py": "04a89eacb39841b37bba09d27914667a9c6624992988c6653db519189208291a"
+  },
+  "input_artifacts": {
+    "13597704086-job-summary.json": {
+      "sha256": "4e7929aad66d4510842a4e70b1f37ab0b1cc23533a78f8c6ac84b26a18be981b",
+      "artifact_id": 13597704086,
+      "artifact_name": "retrieval-quality-longtext-prospective-compact-80-db5e76a7775aadc66ebcc6d8f0ef85193c3f20b7"
+    },
+    "13597704086.zip": {
+      "sha256": "a6da62928305f2890b520ba903995bc3f4b3bccd4ff0513cd56f3cf99097f1b9",
+      "artifact_id": 13597704086,
+      "artifact_name": "retrieval-quality-longtext-prospective-compact-80-db5e76a7775aadc66ebcc6d8f0ef85193c3f20b7"
+    },
+    "13597799161-comparison.json": {
+      "sha256": "8a99a7a6ac650b501376c28988d4c8b16e07d3ef66316b3d452fdfa2ef75d42d",
+      "artifact_id": 13597799161,
+      "artifact_name": "production-test-speed-42431857665-1"
+    },
+    "13597799161-checkpoint.json": {
+      "sha256": "9a975de00ffeb43bf9084d97df957c20a85b65bd347bc6bbfdf869f41a6fe0bf",
+      "artifact_id": 13597799161,
+      "artifact_name": "production-test-speed-42431857665-1"
+    },
+    "13597799161-observation-1.json": {
+      "sha256": "7822d9ac51cc1c25760565d990a12a3962d012bb31f4d958ef3d86c8d07120ea",
+      "artifact_id": 13597799161,
+      "artifact_name": "production-test-speed-42431857665-1"
+    },
+    "13597799161-observation-2.json": {
+      "sha256": "17da2bf2919943f12cfa76fab1aeae4830d9588200ab5875e730b998ba1ac19f",
+      "artifact_id": 13597799161,
+      "artifact_name": "production-test-speed-42431857665-1"
+    },
+    "13597799161.zip": {
+      "sha256": "ea10d3125c4846b47764e2f57e8b062bae0e648dcf829dd43065c3e8ed95dc55",
+      "artifact_id": 13597799161,
+      "artifact_name": "production-test-speed-42431857665-1"
+    },
+    "13598201739-full-run.json": {
+      "sha256": "305b6651e6e3e1febcfd79c3a819922214d5cbf25f370900fdc6c8b7acb923f0",
+      "artifact_id": 13598201739,
+      "artifact_name": "production-qualification-primary"
+    },
+    "13598201739-package-final-validation.json": {
+      "sha256": "b502aadb29b8f6b066f195b6a6f6e09bf5a3f566b124327f863ab8fff6ade981",
+      "artifact_id": 13598201739,
+      "artifact_name": "production-qualification-primary"
+    },
+    "13598201739-source-runtime.json": {
+      "sha256": "37faa390acad9ded833534a3528c8f7549f7e04f98e09dd0fc5a41eba1aba717",
+      "artifact_id": 13598201739,
+      "artifact_name": "production-qualification-primary"
+    },
+    "13598201739.zip": {
+      "sha256": "fc855cf1116b82a36f1c912787fc972b4bbb16be68ae06e9746b8cce46b88518",
+      "artifact_id": 13598201739,
+      "artifact_name": "production-qualification-primary"
+    },
+    "13598241537-full-run.json": {
+      "sha256": "ec69f6f506bbf911cc78169e212b54c6a8c3400ebe07f2dba50c1f86e1a34911",
+      "artifact_id": 13598241537,
+      "artifact_name": "production-qualification-floor"
+    },
+    "13598241537-source-runtime.json": {
+      "sha256": "6ebe28e37e12813120dc9eb8ba54da328b00fd7945eeda2b6a318ab8c4e0b678",
+      "artifact_id": 13598241537,
+      "artifact_name": "production-qualification-floor"
+    },
+    "13598241537.zip": {
+      "sha256": "440016ce96dd68372d9f54b6d71f9ca085ee6ee1efaa17860ec8c6a83e41a2b9",
+      "artifact_id": 13598241537,
+      "artifact_name": "production-qualification-floor"
+    },
+    "13598623753-job-summary.json": {
+      "sha256": "ce0d41771ac3607455679c503aaa7441ff23119eb9834376eca914e18ea92a4b",
+      "artifact_id": 13598623753,
+      "artifact_name": "retrieval-quality-nfcorpus-compact-80-db5e76a7775aadc66ebcc6d8f0ef85193c3f20b7"
+    },
+    "13598623753.zip": {
+      "sha256": "a941c7bf1bda780ae3599e5310fd5b6f350f6908667fd8bc1c9a06e319220fd4",
+      "artifact_id": 13598623753,
+      "artifact_name": "retrieval-quality-nfcorpus-compact-80-db5e76a7775aadc66ebcc6d8f0ef85193c3f20b7"
+    },
+    "13598695096-job-summary.json": {
+      "sha256": "aa2c4e7ec7329b59ca3c3f26e458abf6a1b88be2c4048af59a57b45902294e61",
+      "artifact_id": 13598695096,
+      "artifact_name": "retrieval-quality-prospective-compact-80-db5e76a7775aadc66ebcc6d8f0ef85193c3f20b7"
+    },
+    "13598695096.zip": {
+      "sha256": "10638d9fe346d15d2e6dea40f69c96f20209e26a2ad950fb8aba0692900667c4",
+      "artifact_id": 13598695096,
+      "artifact_name": "retrieval-quality-prospective-compact-80-db5e76a7775aadc66ebcc6d8f0ef85193c3f20b7"
+    },
+    "13598700359-job-summary.json": {
+      "sha256": "e9133ee99e87e2f97a72aef0553e6b3aa75b06c0581a9ff321dde8eedd2462e0",
+      "artifact_id": 13598700359,
+      "artifact_name": "retrieval-quality-longmemeval-compact-80-db5e76a7775aadc66ebcc6d8f0ef85193c3f20b7"
+    },
+    "13598700359.zip": {
+      "sha256": "ef33d0ab503a2fe5c8ed58473e0270e06b19e0f8e2605e599eecbb9afc8539b3",
+      "artifact_id": 13598700359,
+      "artifact_name": "retrieval-quality-longmemeval-compact-80-db5e76a7775aadc66ebcc6d8f0ef85193c3f20b7"
+    },
+    "13598951488-ledger.json": {
+      "sha256": "2b9670fdcdd22494504c95ce49fec1fffe477402263485873286d39c1fe7a66b",
+      "artifact_id": 13598951488,
+      "artifact_name": "production-numerical-ledger-42431857665-1"
+    },
+    "13598951488.zip": {
+      "sha256": "f314966ec365290b26097b6db19150301bc3a9aa9ce92ce6812fc8f3360351aa",
+      "artifact_id": 13598951488,
+      "artifact_name": "production-numerical-ledger-42431857665-1"
+    },
+    "13598961643-job-summary.json": {
+      "sha256": "eed6f1d406fb7b1a687d5f79d36eef0e920dd5ce77569f8daab18d336f6a18f1",
+      "artifact_id": 13598961643,
+      "artifact_name": "retrieval-quality-scifact-compact-80-db5e76a7775aadc66ebcc6d8f0ef85193c3f20b7"
+    },
+    "13598961643.zip": {
+      "sha256": "660354206acbfb8ff9d47ad50cd3d06d438d078fbdcb2d2fc4a4a5832a653f2b",
+      "artifact_id": 13598961643,
+      "artifact_name": "retrieval-quality-scifact-compact-80-db5e76a7775aadc66ebcc6d8f0ef85193c3f20b7"
+    }
+  },
+  "review_file_sha256": "e7ef95045608c78a38273a4fd86dc4e2f925e6c92d4b6259b04f02ba60b33446",
+  "numerical_inventory_sha256": "0de6acd1f4dade9c12a233036938502f6774a66fe05957e2bfa8455dcc343789",
+  "completed_actions_snapshot_sha256": "25b2903f4baeb98038127d996d41e8637ea90a2ed2a98b2efc442f57005da6b7",
+  "files_sha256": {
+    "production_performance_20261108_db5e76a.json": "2b9670fdcdd22494504c95ce49fec1fffe477402263485873286d39c1fe7a66b",
+    "production_test_speed_20261108_db5e76a.json": "8a99a7a6ac650b501376c28988d4c8b16e07d3ef66316b3d452fdfa2ef75d42d",
+    "production_retrieval_20261108_db5e76a.json": "f0e2eaaba615b7520ee3ff56f4f7994a0775ae249432f02476a9f2d803b369f7",
+    "production_comparison_20261108_db5e76a.json": "188e4602b34ca8f17a52874bd88c4666f0ea12b356a025fb314887fcd8d2dfc3"
+  },
+  "matrix_status_counts": {
+    "planned": 0,
+    "dispatching": 0,
+    "failed": 0,
+    "accounting_recovered": 0,
+    "unavailable": 0,
+    "deferred": 3,
+    "completed": 54
+  },
+  "native_c4_status_counts": {
+    "scored_gates_rejected": 1,
+    "scored_gates_passed": 2,
+    "resource_rejected_unscored": 2
+  },
+  "failed_retrieval_gate_count": 24,
+  "retrieval_globally_qualified": false,
+  "storage_speedup_confirmed": false,
+  "physical_power_cut_validated": false,
+  "local_tests_models_or_daemons_started": false
+}

@@ -382,9 +382,10 @@ def main() -> None:
 
     scale_tiers = [int(s.strip()) for s in args.scales.split(",") if s.strip()]
 
-    print("=" * 86)
-    print("  MESH SCALE & LATENCY BENCHMARK SUITE (Memories + Work Items + Project Brief)")
-    print("=" * 86)
+    if not args.json:
+        print("=" * 86)
+        print("  MESH SCALE & LATENCY BENCHMARK SUITE (Memories + Work Items + Project Brief)")
+        print("=" * 86)
 
     results: List[Dict[str, Any]] = []
     for tier in scale_tiers:

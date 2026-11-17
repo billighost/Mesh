@@ -2,12 +2,26 @@ name: CI
 
 on:
   push:
-    branches: [ main, "chore/*", "feat/*", "fix/*", "docs/*" ]
+    branches: [ main, "chore/*", "feat/*", "fix/*", "docs/*", "ci/mesh-production-*" ]
   pull_request:
     branches: [ main ]
   schedule:
     - cron: '0 4 * * 1'
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  MESH_NO_AUTO_DAEMON: "1"
+  MESH_NO_MODEL_DOWNLOAD: "1"
+  MESH_NO_UPDATE_CHECK: "1"
+  MESH_NO_IMPLICIT_CLOUD: "1"
+  MESH_AUTO_APPROVE: "0"
+  MESH_ENABLE_AUTO_SYNC: "0"
+  HF_HUB_OFFLINE: "1"
+  TRANSFORMERS_OFFLINE: "1"
+  PYTHONUTF8: "1"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -17,8 +31,11 @@ jobs:
   lint-and-security:
     name: Code Quality & Security Scan
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
@@ -40,25 +57,39 @@ jobs:
       - name: Run Mesh Documentation Consistency Checks
         run: python scripts/check_docs.py
 
-      - name: Run Bandit Security Analysis (Medium+ Severity)
-        run: bandit -r mesh -c pyproject.toml -ll
+      - name: Run Bandit Security Analysis
+        run: |
+          bandit -r mesh -c pyproject.toml -f json -o bandit-report.json || true
+          bandit -r mesh -c pyproject.toml -ll
+
+      - name: Upload Bandit Scan JSON Artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bandit-security-report
+          path: bandit-report.json
+          retention-days: 7
 
   test:
     name: Test (${{ matrix.os }}, py${{ matrix.python-version }})
     needs: [lint-and-security]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
 
     env:
       MESH_NO_AUTO_DAEMON: "1"
       MESH_AUTO_APPROVE: "0"
+      HYPOTHESIS_PROFILE: "ci"
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
@@ -69,19 +100,31 @@ jobs:
       - name: Install Package & Test Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install .[test,secrets]
+          pip install .[test,secrets] psutil
 
       - name: Run Pytest Suite with Coverage
         env:
           MESH_HOME: ${{ runner.temp }}/.mesh_ci
         run: python scripts/run_ci_tests.py
 
+      - name: Preserve test and coverage evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tests-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: .work/ci/
+          if-no-files-found: warn
+          retention-days: 7
+
   dist-check:
     name: Packaging & Cleanliness Verification
     needs: [lint-and-security]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
@@ -99,15 +142,22 @@ jobs:
       - name: Twine Check
         run: twine check --strict dist/*
 
-      - name: Verify Clean Tarballs and Zero Leaks
+      - name: Verify Clean Pure-Python Package and Zero Binary Artifacts
         run: |
           python -c "
-          import glob, tarfile, zipfile, sys
+          import glob, os, tarfile, zipfile, sys
 
           sdists = glob.glob('dist/*.tar.gz')
           wheels = glob.glob('dist/*.whl')
           if not sdists or not wheels:
               sys.exit('Error: Missing build artifacts in dist/')
+
+          # Wheel must be pure-Python py3-none-any
+          whl_name = os.path.basename(wheels[0])
+          if not whl_name.endswith('-py3-none-any.whl'):
+              sys.exit(f'Error: Expected pure-Python py3-none-any wheel, got: {whl_name}')
+
+          forbidden_binary_exts = ('.dll', '.so', '.dylib', '.pyd', '.exe')
 
           # Verify sdist
           with tarfile.open(sdists[0], 'r:gz') as tar:
@@ -117,6 +167,10 @@ jobs:
               if leaks:
                   sys.exit(f'Error: Leaked files in sdist: {leaks}')
 
+              binaries_in_sdist = [n for n in sdist_names if any(n.lower().endswith(ext) for ext in forbidden_binary_exts)]
+              if binaries_in_sdist:
+                  sys.exit(f'Error: Forbidden binary artifacts found in sdist: {binaries_in_sdist}')
+
           # Verify wheel
           with zipfile.ZipFile(wheels[0], 'r') as whl:
               whl_names = whl.namelist()
@@ -124,6 +178,10 @@ jobs:
               leaks_whl = [n for n in whl_names if any(ext in n.lower() for ext in ['.mp4', '.mp3', '.wav', '.png', 'marketing/', 'node_modules/'])]
               if leaks_whl:
                   sys.exit(f'Error: Leaked files in wheel: {leaks_whl}')
+
+              binaries_in_whl = [n for n in whl_names if any(n.lower().endswith(ext) for ext in forbidden_binary_exts)]
+              if binaries_in_whl:
+                  sys.exit(f'Error: Forbidden binary artifacts found in wheel: {binaries_in_whl}')
 
               # Check essential bundled assets
               if 'mesh/skills/mesh-context-layer/SKILL.md' not in whl_names:
@@ -135,7 +193,7 @@ jobs:
               if any(n.startswith('tests/') for n in whl_names):
                   sys.exit('Error: Test files must not be present in wheel!')
 
-          print('Packaging verification PASSED: zero leaks, correct skill & module payloads.')
+          print('Packaging verification PASSED: pure py3-none-any wheel, zero binary artifacts, zero leaks.')
           "
 
       - name: Upload Build Artifacts for Smoke Test
@@ -149,12 +207,11 @@ jobs:
     name: Built Wheel Smoke Test
     needs: [dist-check]
     runs-on: ubuntu-latest
-    env:
-      MESH_NO_AUTO_DAEMON: "1"
-      MESH_AUTO_APPROVE: "0"
+    timeout-minutes: 15
     steps:
-      - name: Configure Isolated Environment
-        run: echo "MESH_HOME=${{ runner.temp }}/.mesh_smoke" >> $GITHUB_ENV
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Download Build Artifacts
         uses: actions/download-artifact@v4
@@ -170,16 +227,16 @@ jobs:
       - name: Install Wheel in Isolated Environment
         run: |
           python -m pip install --upgrade pip
-          pip install dist/*.whl
+          pip install dist/*.whl pytest pytest-xdist pytest-asyncio pytest-cov hypothesis keyring psutil
 
-      - name: Verify CLI Doctor Command
-        run: mesh doctor
+      - name: Validate the installed wheel and collect the extracted source archive
+        run: python scripts/validate_production_package.py dist --collect-sdist
 
-      - name: Verify CLI Install Dry-Run
-        run: mesh install --dry-run
-
-      - name: Verify Smoke Memory Lifecycle
-        run: |
-          mesh add "Smoke test architectural decision for release" --type decision --tags smoke,ci
-          mesh ask "architectural decision"
-          mesh brief --max-tokens 500
+      - name: Preserve installed-wheel smoke evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: installed-wheel-smoke
+          path: .work/package-final-validation.json
+          if-no-files-found: warn
+          retention-days: 7

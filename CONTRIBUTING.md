@@ -1,6 +1,6 @@
 # Contributing to Mesh
 
-Thanks for helping improve Mesh. Mesh is a Beta project (`mesh-context-layer`, currently `0.8.1b2`), so behavior and interfaces can change between minor versions. Contributions are welcome as bug reports, documentation fixes, tests, and focused pull requests.
+Thanks for helping improve Mesh. Mesh is a Beta project (`mesh-context-layer`, source version `0.9.0`), so behavior and interfaces can change between minor versions. Contributions are welcome as bug reports, documentation fixes, tests, and focused pull requests.
 
 By participating you agree to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 
@@ -34,7 +34,7 @@ python scripts/check_docs.py
 pytest -q
 ```
 
-CI runs these on Ubuntu, macOS, and Windows with Python 3.10–3.13. A pull request should not weaken an existing check to make it pass; fix the underlying inconsistency.
+CI runs these on Ubuntu, macOS, and Windows with Python 3.10–3.14. A pull request should not weaken an existing check to make it pass; fix the underlying inconsistency.
 
 ## Pull request expectations
 

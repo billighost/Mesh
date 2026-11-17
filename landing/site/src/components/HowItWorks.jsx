@@ -71,7 +71,7 @@ export default function HowItWorks() {
           route="HOW IT WORKS"
           id="how-title"
           title="One agent learns. Every agent knows."
-          lede="Run the story. Agent A learns a production fact. Mesh embeds it, deduplicates it, and indexes it five ways. Agent B asks a different question and still gets the answer — without ever talking to Agent A."
+          lede="Agent A learns a production fact — a port, a constraint, a decision. Mesh embeds it locally, deduplicates it, and indexes it five ways. Agent B asks a completely different question hours later in a different session and still gets the right answer. No re-explaining. No wasted tokens."
           meta="simulated example"
         />
 

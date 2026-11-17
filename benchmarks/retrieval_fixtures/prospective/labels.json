@@ -1,0 +1,60 @@
+{
+  "qrels": {
+    "p01": {
+      "cedar-port": 1
+    },
+    "p02": {
+      "cedar-database": 1
+    },
+    "p03": {
+      "cedar-retry": 1
+    },
+    "p04": {
+      "cedar-snapshot": 1
+    },
+    "p05": {
+      "cedar-format": 1
+    },
+    "p06": {
+      "sana-preference": 1
+    },
+    "p07": {
+      "cedar-secret-ref": 1
+    },
+    "p08": {
+      "cedar-feature": 1
+    },
+    "p09": {
+      "cedar-region": 1
+    },
+    "p10": {
+      "cedar-tenant": 1
+    },
+    "p11": {
+      "cedar-error": 1
+    },
+    "p12": {
+      "cedar-worker": 1
+    },
+    "p13": {
+      "cedar-stage-port": 1
+    },
+    "p14": {
+      "cedar-runbook": 1
+    },
+    "p15": {
+      "cedar-retention": 1
+    },
+    "p16": {
+      "cedar-attempt": 1
+    }
+  },
+  "unanswered_query_ids": [
+    "u01",
+    "u02",
+    "u03",
+    "u04",
+    "u05",
+    "u06"
+  ]
+}

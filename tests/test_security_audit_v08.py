@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
+from mesh.sqlite_runtime import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -43,12 +43,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 from mesh import Mesh
-from mesh.audit import get_audit_log
+from mesh.audit import get_audit_log, stop_audit_worker
 from mesh.context_builder import _sanitize_prompt_text, build_context
 from mesh.crypto import (
     disable_encryption_at_rest,
     enable_encryption_at_rest,
     encrypt_namespace_db,
+    is_encryption_enabled,
 )
 from mesh.daemon import get_or_create_auth_token, rotate_auth_token
 from mesh.dashboard import api as dash_app
@@ -219,6 +220,9 @@ def test_n2_url_redaction_does_not_corrupt_json_with_later_email():
 
 def test_s5_encryption_at_rest_and_fts_suppression(tmp_path, monkeypatch):
     monkeypatch.setenv("MESH_HOME", str(tmp_path))
+    for name in ("MESH_ENCRYPT_AT_REST", "MESH_PASSPHRASE", "MESH_ENCRYPTION_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    assert is_encryption_enabled() is False
     ns = "s5_enc_ns"
 
     # 1. Even before full encryption is enabled, `local_only=True` rows must NEVER sit in `memories_fts`
@@ -501,6 +505,8 @@ def test_s12_recall_secret_query_redaction_and_clear_purges_audit(tmp_path, monk
     patterns_pub = mesh.patterns(include_private=False)
     assert secret_q.lower() not in json.dumps(patterns_pub).lower()
 
+    # Join any claimed batch before the audit read flushes the remaining queue.
+    stop_audit_worker()
     audit_entries = get_audit_log(ns)
     assert secret_q not in json.dumps(audit_entries)
 
@@ -541,7 +547,7 @@ def test_n1_n3_n4_n6_n7_n8_deep_dive_regressions(tmp_path, monkeypatch):
             json={"query": "test", "namespace": "shared", "agent_id": f"rot_agent_{i}"},
             headers=headers,
         )
-    assert any(k[0] == "ns_work" for k in __import__("mesh.http_server", fromlist=["_MESH_REGISTRY"])._MESH_REGISTRY)
+    assert any(k[1] == "ns_work" for k in __import__("mesh.http_server", fromlist=["_MESH_REGISTRY"])._MESH_REGISTRY)
 
     # N6: Symlinked `.db` in `MESH_HOME` is ignored by `list_namespaces()` and rejected on export
     outside_file = tmp_path / "outside.txt"
@@ -692,4 +698,110 @@ def test_issue_t002_secret_detection_and_task_quarantine(tmp_path, monkeypatch):
     data = json.loads(export_content)
     assert len(data.get("work_items", [])) == 0
     assert data.get("skipped_local_only_work_items", 0) == 2
+
+
+def test_vault_write_fail_closed_when_encryption_fails(tmp_path, monkeypatch):
+    """When encryption is enabled and encryption fails, vault write must fail closed without writing plaintext."""
+    monkeypatch.setenv("MESH_HOME", str(tmp_path))
+    monkeypatch.setenv("MESH_PASSPHRASE", "super-secret-passphrase")
+
+    from mesh.secrets import _local_vault_path, _write_local_vault_locked
+
+    vault_file = _local_vault_path()
+    assert not vault_file.exists()
+
+    with patch("mesh.crypto.encrypt_text_for_storage", side_effect=RuntimeError("Cipher subsystem failure")):
+        with pytest.raises(RuntimeError, match="Cipher subsystem failure"):
+            _write_local_vault_locked({"secret_key": "top_secret_value"})
+
+    assert not vault_file.exists(), "Vault file must not exist if encryption failed"
+
+
+def test_vault_write_plaintext_when_encryption_not_configured(tmp_path, monkeypatch):
+    """When encryption is NOT configured, vault writes plaintext with owner-only permissions."""
+    monkeypatch.setenv("MESH_HOME", str(tmp_path))
+    monkeypatch.delenv("MESH_PASSPHRASE", raising=False)
+    monkeypatch.delenv("MESH_ENCRYPTION_KEY", raising=False)
+    monkeypatch.delenv("MESH_ENCRYPT_AT_REST", raising=False)
+
+    from mesh.secrets import _local_vault_path, _read_local_vault_locked, _write_local_vault_locked
+
+    vault_file = _local_vault_path()
+    assert not vault_file.exists()
+
+    _write_local_vault_locked({"plain_key": "plain_val"})
+    assert vault_file.exists()
+
+    # Verify content is plaintext JSON
+    content = vault_file.read_text(encoding="utf-8")
+    assert not content.startswith("enc:v1:")
+    data = json.loads(content)
+    assert data == {"plain_key": "plain_val"}
+
+    # Permissions on POSIX must be owner-only (0600)
+    if os.name != "nt":
+        mode = vault_file.stat().st_mode & 0o777
+        assert mode == 0o600, f"Expected 0600, got {oct(mode)}"
+
+    # Can read back
+    read_back = _read_local_vault_locked()
+    assert read_back == {"plain_key": "plain_val"}
+
+
+def test_failed_encryption_rolls_back_cleanly_without_partial_rows(tmp_path, monkeypatch):
+    """
+    Verify that an encryption failure during store add/update:
+      1. Rolls back the active transaction cleanly.
+      2. Leaves no partial memory rows or orphaned data in SQLite.
+      3. Propagates a clear, actionable error message without leaving database locks.
+      4. Leaves the store in a healthy state for subsequent operations.
+    """
+    from unittest.mock import patch
+    from mesh.sqlite_runtime import sqlite3
+    from mesh.memory import Mesh
+
+    monkeypatch.setenv("MESH_HOME", str(tmp_path))
+    monkeypatch.setenv("MESH_NO_AUTO_DAEMON", "1")
+    monkeypatch.setenv("MESH_AUTO_APPROVE", "0")
+    monkeypatch.setenv("MESH_ENCRYPT_AT_REST", "1")
+
+    mesh = Mesh(namespace="fail_closed_ns", agent_id="tester")
+
+    # 1. Store baseline memory to verify db works
+    m1 = mesh.learn("Baseline initial fact", memory_type="fact")
+    assert m1 is not None
+
+    db_path = mesh.store.db_path
+    assert db_path.exists()
+
+    with sqlite3.connect(str(db_path)) as conn:
+        count_before = conn.execute("SELECT count(*) FROM memories WHERE namespace = 'fail_closed_ns'").fetchone()[0]
+    assert count_before == 1
+
+    # 2. Simulate encryption failure during subsequent learn
+    error_msg = "Vector encryption failed: key derivation corrupted"
+    with patch("mesh.store.encrypt_blob_for_storage", side_effect=RuntimeError(error_msg)):
+        with pytest.raises(RuntimeError) as exc_info:
+            mesh.learn("Secret payload that must not be committed", memory_type="fact")
+
+    assert error_msg in str(exc_info.value)
+
+    # 3. Verify database state is untouched (rolled back)
+    with sqlite3.connect(str(db_path)) as conn:
+        count_after = conn.execute("SELECT count(*) FROM memories WHERE namespace = 'fail_closed_ns'").fetchone()[0]
+        rows = conn.execute("SELECT content FROM memories WHERE namespace = 'fail_closed_ns'").fetchall()
+
+    assert count_after == 1, "Failed write must not leave partial rows in database"
+    for r in rows:
+        assert "Secret payload" not in str(r[0])
+
+    # 4. Verify subsequent write succeeds without database locks
+    m2 = mesh.learn("Subsequent valid fact", memory_type="fact")
+    assert m2 is not None
+
+    with sqlite3.connect(str(db_path)) as conn:
+        final_count = conn.execute("SELECT count(*) FROM memories WHERE namespace = 'fail_closed_ns'").fetchone()[0]
+    assert final_count == 2
+
+
 

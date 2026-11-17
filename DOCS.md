@@ -1,13 +1,13 @@
 # Mesh User Documentation
 
-Complete user guide for **Mesh** (`mesh-context-layer`) **0.8.3** (Beta): installation, agent setup, the memory and task model, the full CLI/MCP/HTTP/Python reference, privacy, encryption, performance evidence, and troubleshooting.
+Complete user guide for **Mesh** (`mesh-context-layer`) **0.9.0** (Beta): installation, agent setup, the memory and task model, the full CLI/MCP/HTTP/Python reference, privacy, encryption, performance evidence, and troubleshooting.
 
 - New here? Start with [Install](#1-install) and the [60-minute tutorial](#2-first-run-tutorial).
 - Evaluating? Read [Privacy and data handling](#12-privacy-data-and-network) and [Evidence](#14-performance-and-evidence).
 - Looking for one specific command? Jump to the [CLI reference](#6-cli-reference).
 - README overview and FAQ: [README.md](README.md).
 
-> Everything in this document was checked against source version `0.8.1b2` at commit `5348d00` on 2026-10-20. Commands marked **verified** were run in an isolated `MESH_HOME`; items not run are labelled as such. No cloud provider was called.
+> Current API descriptions reflect Mesh 0.9.0; check the installed version before using them with an older package. Historical field-test observations retain their tested versions and dates. Commands marked **verified** refer to the named isolated run; no cloud provider was called.
 
 ---
 
@@ -20,7 +20,7 @@ Complete user guide for **Mesh** (`mesh-context-layer`) **0.8.3** (Beta): instal
 | Python | 3.10 or newer |
 | OS | Windows, macOS, or Linux |
 | Disk | A few MB for the package; roughly 90 MB for the optional ONNX model (approximate; exact size depends on the mirror assets) |
-| Database | None. SQLite is bundled with Python. |
+| Database | No external database service. Mesh installs APSW with a privately bundled patched SQLite runtime and verifies it before use. |
 | Network | Not required for memory operations. Required only if you choose to download the embedding model or check PyPI. |
 
 ### Standard install
@@ -35,6 +35,25 @@ pip install mesh-context-layer
 mesh --help
 mesh doctor
 ```
+
+### Upgrading to 0.9.0
+
+Stop agents and any Mesh daemon, and back up the complete `MESH_HOME` before
+upgrading. Populated namespace upgrades verify a pre-migration backup before
+applying schema 6. The new schema tracks revisions, incarnations, store
+generations, indexing jobs and operation receipts. Older packages must not open
+an upgraded store; rollback requires restoring its backup with the matching
+older package. Do not rely on a public-only JSON export as the sole backup of
+private data.
+
+```bash
+pip install --upgrade mesh-context-layer
+mesh version
+```
+
+Restart the daemon and MCP clients after upgrading. Preview the integration
+changes before reinstalling rules, profiles or skills with `mesh install AGENT
+--dry-run`, replacing `AGENT` with the supported agent name.
 
 ### Optional extras
 
@@ -55,8 +74,8 @@ pip install "mesh-context-layer[secrets,crypto]"
 ### Verify the install
 
 ```bash
-mesh version           # -> mesh 0.8.3
-mesh doctor            # storage, SQLite/FTS5, model, daemon, MCP configs, 17 tools
+mesh version           # -> mesh 0.9.0
+mesh doctor            # storage, SQLite/FTS5, model, daemon, MCP configs, 20 tools
 mesh status --json     # machine-readable state
 ```
 
@@ -98,12 +117,12 @@ mesh doctor
 Expected shape (values vary):
 
 ```text
-Doctor  mesh v0.8.2 - Windows AMD64 - Python 3.14.0
+Doctor  mesh v0.9.0 - Windows AMD64 - Python 3.14.0
 Data directory    ~/.mesh
-SQLite + FTS5     SQLite 3.50.4 with Porter stemming
+SQLite + FTS5     SQLite 3.54.1 with Porter stemming
 Daemon            not running (optional)
 Embedding model   not downloaded — using hash-384 fallback (lower search quality)
-MCP Server tools  17 tools defined in schema
+MCP Server tools  20 tools defined in schema
 Namespaces        none yet
 ```
 
@@ -204,6 +223,7 @@ What it writes per agent:
 1. An MCP server entry named `mesh`, using an absolute executable path.
 2. The `mesh-context-layer` skill directory.
 3. A versioned rules block between `<!-- mesh:begin v=... -->` and `<!-- mesh:end -->`.
+4. A reviewed connection profile binding the namespace, data root, attribution label, and preserved restrictions. Project profiles live in `.mesh/connections/<agent>.json`; the first absent shared `.mesh/connection.json` is also created. Shared profiles and data survive uninstall.
 
 Safety behavior:
 
@@ -215,7 +235,7 @@ Safety behavior:
 - `--dry-run` and `--json` for review and automation.
 - `--force` reinstalls even when the version matches.
 
-**Lifecycle hooks:** `mesh install --hooks` (or answering yes to the interactive confirmation prompt during `mesh install`) optionally configures a `SessionStart` hook for Claude Code (`.claude/settings.json`) and Antigravity (`hooks.json`) to invoke `mesh brief` when a session begins. When running `mesh install` interactively in a terminal, it prompts for confirmation before applying configuration and before enabling hooks. In automated environments, pass `--apply` (and optionally `--hooks`).
+**Lifecycle hooks:** `mesh install --hooks` optionally configures Claude Code `SessionStart` and the existing Antigravity `PreInvocation` event to invoke the bounded `mesh-hook brief` entry point with a managed profile pointer. Antigravity may invoke this on each tool invocation; it is not a verified session-only event. User-scope hooks discover the closest project profile and emit no context when a verified binding is absent. Codex lifecycle hooks remain unverified. When running `mesh install` interactively in a terminal, it prompts for confirmation before applying configuration and before enabling hooks. In automated environments, pass `--apply` (and optionally `--hooks`).
 
 ### Agent paths
 
@@ -250,7 +270,7 @@ Use this when an agent is not supported by the installer or you manage config yo
 }
 ```
 
-`mesh-server` is the MCP stdio entry point. `mesh server` is the equivalent CLI form, and `mesh-http` / `mesh http` start the HTTP API. There is no `/identity` endpoint.
+`mesh-server` is the MCP stdio entry point. `mesh server` is the equivalent CLI form, and `mesh-http` / `mesh http` start the HTTP API. The HTTP server provides `/identity` challenge-response proofs before clients transmit bearer tokens; reviewed profiles also verify the configured store identity.
 
 ### Claude Code caveat (measured)
 
@@ -274,10 +294,10 @@ Mesh cannot force a model to call a tool. It provides three persuasion layers pl
 
 | Layer | Implemented | What it guarantees |
 |---|---|---|
-| MCP tools | Yes, 17 | Callable if the agent loads the server and is allowed to use tools |
+| MCP tools | Yes, 20 | Callable if the agent loads the server and is allowed to use tools |
 | Skill | Yes | A discoverable protocol document with references; progressive disclosure |
 | Rules block | Yes | Visible every session if the agent reads its rules file |
-| Hooks (Optional) | Yes (Claude Code, Antigravity) | Automatically runs `mesh brief` on session start when installed with `--hooks` |
+| Hooks (Optional) | Yes (Claude Code, Antigravity) | Runs profile-bound `mesh-hook brief` on Claude Code `SessionStart` or Antigravity `PreInvocation`; the latter may run before each invocation |
 
 The rules block source of truth is [`mesh/skills/mesh-context-layer/rules_block.md`](mesh/skills/mesh-context-layer/rules_block.md), embedded verbatim in [README.md](README.md#rules-block-verbatim-source-of-truth).
 
@@ -345,7 +365,7 @@ Statuses: `todo`, `in_progress`, `blocked`, `done`, `cancelled`. `reopened` is a
 
 ### Brief and log
 
-- **Brief:** health, up to 5 open items, up to 4 completed in the last 48 hours, up to 4 key facts/decisions, unresolved-contradiction warning. Default 500 tokens (4 chars/token), excludes private and quarantined by default.
+- **Brief:** namespace health, current facts and decisions with IDs, bounded open work and recent completions, a handoff, and contradiction notices. The API selects up to twenty facts within a default 500-token Markdown estimate; the agent skill requests 2000 tokens at session or project start. Counts, continuation offsets, and a selection revision show what was included or omitted. MCP and HTTP exclude unauthorized private and quarantined data; direct SDK and CLI access retain their documented privacy defaults.
 - **Log:** completed `done` items and `decision` memories in a window (`7d` default), with summaries and evidence.
 
 ### Audit
@@ -383,6 +403,49 @@ Reads stdin when `content` is omitted. Examples are printed by `--help`.
 Hybrid search.
 
 Flags: `--count/-n/--n`, `--namespace`, `--type`, `--tags`, `--min-confidence`, `--min-similarity`, `--no-stale`, `--no-other`, `--no-private`, `--include-quarantined`, `--json`.
+
+The optional local reranker is off by default. With `MESH_RERANK_ENABLED=1`, it reorders the first four authorized parent results using one pinned CPU cross encoder. Candidate collection retains four results before trimming even for `-n 1`. Existing similarity thresholds, primary/passage vectors, original IDs, revisions, incarnations, store generations and supporting spans remain intact. The reranker is separate from query embedding mode: forcing hash embeddings alone never enables it.
+
+Supply these two files separately from [`Xenova/ms-marco-MiniLM-L-6-v2`](https://huggingface.co/Xenova/ms-marco-MiniLM-L-6-v2/tree/a09144355adeed5f58c8ed011d209bf8ee5a1fec), revision `a09144355adeed5f58c8ed011d209bf8ee5a1fec`. Copy `onnx/model_quantized.onnx` into an ordinary local directory as `model.onnx`, alongside `tokenizer.json`. Mesh verifies the fixed sizes and SHA-256 hashes before loading. Linked directories/files and mismatched files are rejected. Runtime and the verifier never download files or contact a provider.
+
+| Local filename | Bytes | SHA-256 |
+|---|---:|---|
+| `model.onnx` | 23143499 | `e9d8ebf845c413e981c175bfe49a3bfa9b3dcce2a3ba54875ee5df5a58639fbe` |
+| `tokenizer.json` | 711396 | `d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66` |
+
+Verify an offline copy without loading a model:
+
+```bash
+python -m mesh.local_rerank verify models/minilm-reranker
+```
+
+Set both variables in the SDK/server process, or for a CLI invocation:
+
+```bash
+MESH_RERANK_MODEL_DIR=models/minilm-reranker MESH_RERANK_ENABLED=1 mesh ask "How do we deploy?" --json
+```
+
+In PowerShell:
+
+```powershell
+$env:MESH_RERANK_MODEL_DIR = "models/minilm-reranker"
+$env:MESH_RERANK_ENABLED = "1"
+mesh ask "How do we deploy?" --json
+```
+
+The default input profile is `full-256`. The query uses its original-source prefix of at most 29 reranker tokens. A selected derived passage must fit verbatim within 224 tokens; original parents use a deterministic original-source prefix at that limit. Pair inputs have at most 256 tokens and never truncate silently. `rerank_score` is a separate, uncalibrated relevance logit; `rerank_original_rank` records base order, and `rerank_input` records the actual source range, original/kept token counts and removed character counts. Original supporting spans still describe base retrieval evidence. Privacy, filters and complete parent identity are checked before and after inference.
+
+Three experimental input profiles can be selected explicitly with `MESH_RERANK_PROFILE=compact-128`, `compact-96`, or `compact-80`. They retain the 29-token query limit and allow 96, 64, or 48 passage tokens respectively, plus three pair-special tokens. An oversized accepted source is reduced to one verbatim contiguous excerpt inside the selected passage, or inside the original body when no passage is selected. Selection maximizes distinct query-token coverage, then total query-token matches, then balances context around matches; ties use the earliest source window. No-match sources use a deterministic prefix. The excerpt's exact source range, removed characters, original/kept token counts and profile are recorded in `rerank_input`; the original supporting span remains intact. Compact profiles are opt-in candidates requiring independent native quality/resource qualification.
+
+`compact-80` is an unqualified experiment to measure the cost of smaller inputs. Its pairs contain at most 80 tokens, and it keeps the same first four parents, pinned model, one CPU thread, original evidence and resource ceilings. Shorter excerpts can omit useful context, so native accuracy and resource gates must pass before qualification; no speed or quality improvement is established.
+
+For example, after the offline files are configured, select a compact profile in the same PowerShell process:
+
+```powershell
+$env:MESH_RERANK_PROFILE = "compact-128"
+```
+
+The process shares one lazy CPU session and tokenizer across namespaces, with one inference batch of at most four pairs and no query/body cache. Busy inference, unavailable or invalid files, invalid profiles/spans, and oversized selected spans in `full-256` retain base order with a content-free `rerank_status`. An invalid profile reports `profile_invalid` before loading a model. Results beyond four retain their order and report `outside_parent_cap`; default-off results have no reranker fields. The existing idle watchdog uses `MESH_IDLE_UNLOAD_SECONDS` for both models, including a reranker used with hash embeddings. Active inference and passage backfill finish before unloading, and idle time restarts after that work; `mesh.unload_model()` also releases idle sessions. Broader independent quality/resource qualification is required before changing the default.
 
 #### `mesh inspect`
 
@@ -441,13 +504,24 @@ mesh task reopen <id> [--note TEXT]
 mesh task show <id> [--json]
 ```
 
-There is **no `mesh task update` action** in 0.8.1b2. Use `start`, `block`, `done`, `cancel`, or `reopen`. The SDK and MCP do expose a general update (`mesh_task_update`, `task_update`).
+There is **no `mesh task update` action**. Use `mesh call mesh_task_update` for structured updates. Use `start`, `block`, `done`, `cancel`, or `reopen`. The SDK and MCP do expose a general update (`mesh_task_update`, `task_update`).
 
 `mesh tasks` is an alias for `mesh task`.
 
 #### `mesh brief`
 
-Flags: `--namespace`, `--max-tokens` (default 500), `--format {plain,markdown,json}`, `--no-private`.
+Flags: `--namespace`, `--max-tokens` (1-32768, default 500), `--max-facts` (0-100, default 20), `--fact-offset` (nonnegative, default 0), `--format {plain,markdown,json,antigravity}`, `--no-private`.
+
+```bash
+mesh brief --max-tokens 2000 --max-facts 20 --no-private
+```
+
+This requests a public startup window of up to twenty facts. Read the omission
+and continuation metadata before paging, then recall the current topic before
+a substantive decision. Agent fallbacks use profile-bound
+`mesh call mesh_project_brief`; legacy `mesh brief` is trusted local access and
+includes private items unless `--no-private` is supplied. See the
+[brief bounds and budget estimates](#7-mcp-tools-reference).
 
 #### `mesh log`
 
@@ -505,17 +579,42 @@ No flags. Checks data directory, SQLite/FTS5, daemon, model/engine, MCP configs,
 
 Flags: `--yes`, `--json`. Examples: `mesh namespaces stats work`, `mesh namespaces rename old new`, `mesh namespaces delete scratch`.
 
-#### `mesh export <output.json>`
+Rename carries memories, tasks, history, pending indexing jobs, operation receipts,
+and durable mutation audit events to the destination. It stages hidden copies,
+retires the source, and activates the destination through a synchronized journal;
+the next namespace open recovers an interrupted publication or rollback. Existing
+SDK store objects retain their original identity and must be reopened after a
+rename or database replacement. Optional queued read telemetry can be dropped
+after its original database is retired; durable mutation events remain recoverable.
 
-Flags: `--namespace`, `--no-embeddings`, `--encrypt`, `--passphrase`. Private memories are never exported.
+#### `mesh export <output>`
+
+Exports memories from the selected namespace to JSON, Markdown, or CSV.
+
+- **Formats (`--format {json,markdown,csv}`)**: Inferred from the output extension (`.json`, `.md`, `.csv`) if omitted.
+- **JSON**: The only lossless round-trip format; can be restored with `mesh import`. Supports `--encrypt` (authenticated envelope) and vector embeddings (toggle with `--no-embeddings`).
+- **Markdown (`.md`)**: One-way human-readable summary of memories and work items (cannot be re-imported). Memory bodies and summaries are rendered in fenced code blocks to prevent markdown headings, links, or HTML injection. Vector embeddings are omitted by default.
+- **CSV (`.csv`)**: One-way tabular export for spreadsheets (cannot be re-imported). Vector embeddings are omitted by default. Neutralizes spreadsheet formula injection (CWE-1236) by automatically prefixing cells starting with `=`, `+`, `-`, `@`, `\t`, or `\r` with a single quote (`'`). Note that bullet-style text such as `- use pnpm` or `+ add test` will appear with a leading quote (`'- use pnpm`) in CSV to prevent formula execution in Excel/Calc.
+- **Privacy & Security**: Private (`local_only`) memories are strictly omitted from all exports. Export files are written with owner-only permissions (mode `0600` on POSIX, owner-only ACL on Windows). All exports contain plain text unless JSON `--encrypt` is used.
+- Flags: `--format`, `--namespace`, `--no-embeddings`, `--encrypt` (JSON only), `--passphrase`. Private memories are never exported in any format.
 
 #### `mesh import <input.json>`
 
 Flags: `--namespace`, `--overwrite`, `--dry-run`, `--passphrase`.
 
+#### `mesh reembed`
+
+Re-embed memories using the active ONNX model to resolve mixed vector spaces and eliminate `hash-384` fallback vectors.
+
+Flags: `--namespace NAME` (target namespace; default: active or shared), `--all` (re-embed across all namespaces), `--force` (re-embed all memories even if already on ONNX), `--batch-size N` (batch size, default 32), `--dry-run` (preview memories needing re-embedding without writing).
+
 #### `mesh encrypt-db`
 
-Flags: `--namespace`, `--all`, `--passphrase`, `--no-backup`. Encrypts the memory and audit databases at rest; creates a backup and vacuums. Requires the `[crypto]` extra or a SQLCipher-capable environment.
+Flags: `--namespace`, `--all`, `--passphrase`, `--no-backup`. Encrypts memory, task, task-event, and legacy audit text at rest; creates pre-encryption backups and rewrites database pages using `VACUUM`.
+
+Retained pre-encryption backups intentionally contain plaintext. Protect them separately; `--no-backup` removes the copies created by a successful migration. Encryption works with the built-in envelope implementation; the `[crypto]` extra provides AES-256-GCM acceleration.
+
+If active readers block WAL cleanup, the command reports an error. Finish those readers and retry `mesh encrypt-db`. Encryption may already have committed when cleanup fails; the memory database retains a cleanup marker so a later store open can retry its cleanup.
 
 #### `mesh audit export`
 
@@ -548,9 +647,79 @@ Print the version or command help.
 
 ---
 
+### Structured calls and policy-preserving recovery
+
+Use a reviewed project profile for agent fallback. Native MCP comes first, then
+`mesh call`, then the Python client, then an already running authenticated HTTP
+endpoint. Only unavailable or unsupported compatible transports permit fallback.
+Policy, authentication, invalid input and unsafe runtime errors are terminal.
+A timeout after sending a mutation is an unknown outcome; retain its original ID.
+Do not start another daemon or download a model merely to recover a transport.
+
+```bash
+mesh call mesh_recall --profile .mesh/connection.json --args-file query.json
+mesh call mesh_learn --profile .mesh/connection.json --operation-id example-write-1 --args-file fact.json
+mesh call mesh_operation_get --profile .mesh/connection.json --args-file receipt-query.json
+```
+
+Arguments are a JSON object from stdin or `--args-file`. `--namespace` is subject
+to the profile and server locks. `--transport auto` uses the local SDK and then
+an existing configured HTTP endpoint if the SDK dependency is absent; `sdk` and
+`http` select one path. JSON exit codes are 0 for success, 1 for rejection/error,
+2 for unavailable transport, and 3 for unknown mutation outcome.
+
+```python
+from mesh.client import ConnectionProfile, MeshClient
+
+profile = ConnectionProfile.from_file(".mesh/connection.json")
+with MeshClient(profile) as client:
+    result = client.call("mesh_recall", {"query": "Which port serves the fake API?"})
+    receipt = client.call("mesh_operation_get", {"operation_id": "example-write-1"})
+```
+
+For repeated HTTP calls, reuse one client and close it when finished, either with
+the context manager above or `client.close()`. Calls on a client serialize access
+to its HTTP connection; it replaces that connection after 512 successful calls
+or 60 seconds. Every call reads the token pointer and verifies a fresh identity
+challenge before dispatch. A closed identity connection is rejected before
+sending the token, and dispatched mutations are never automatically replayed.
+
+Profile version 1 requires `version`, `namespace`, `mesh_home`, `agent_id`, and
+`policy`. Relative paths resolve against the profile file. Unknown fields,
+duplicate JSON keys and linked paths are rejected. Policy defaults are public
+reads, writable access, ownership enforcement off, and namespace overrides off;
+applicable server restrictions always remain effective. Optional `endpoint`
+must be a literal loopback HTTP(S) origin with a `token_file` pointer. Never put
+a token value in the profile. Agent labels describe attribution rather than
+separate shared-token principals. The HTTP client verifies a signed store
+identity before transmitting the token. Before sending a mutation, it also
+requires the signed `operation_receipt_version=1` capability from `/identity`.
+An older endpoint can still serve compatible reads; it cannot receive a reviewed
+mutation without proving receipt support. The request carries the verified
+`expected_store_id`, and a mismatch is refused before execution.
+
+Structured mutations accept `operation_id`. Clients generate one when omitted
+and preserve it in dispatch outcomes and exceptions; use explicit IDs when
+recording an attempt before submission. IDs contain 1–128 ASCII letters,
+digits, dots, underscores, colons or hyphens, and start with a letter or digit.
+Retries and transport changes must reuse the original ID. Effects and the
+content-free receipt commit together. Reusing an ID with another operation,
+actor or argument digest is rejected. A receipt records creation time,
+disposition, IDs and revisions rather than bodies; replay rechecks current scope
+and access. Valid recorded rejection receipts remain terminal rejection results.
+
+An acknowledgement must match the operation ID, namespace, receipt and result
+identity. A bare success, missing receipt, or mismatched receipt after dispatch
+raises `UnknownOutcome`, even when HTTP returned 200. The exception retains
+`operation_id`; SDK logical `ValueError` rejections also retain the original ID.
+The client never changes transports after dispatching a mutation. An `unknown`
+lookup does not prove that an in-flight operation has failed. Retrying the same
+ID against the same approved binding serializes with its original transaction.
+See [the complete fallback guide](mesh/skills/mesh-context-layer/references/transport_fallbacks.md).
+
 ## 7. MCP tools reference
 
-The server defines exactly **17** tools. All are namespaced by an optional `namespace` argument, subject to `MESH_LOCKED_NAMESPACE`. Tool results are untrusted reference data.
+The server defines **20** tools. All are namespaced by an optional `namespace` argument, subject to `MESH_LOCKED_NAMESPACE`. Tool results are untrusted reference data.
 
 | Tool | Purpose | Required | Key arguments and defaults |
 |---|---|---|---|
@@ -565,12 +734,32 @@ The server defines exactly **17** tools. All are namespaced by an optional `name
 | `mesh_contradictions` | List conflicts | — | `resolved=false` |
 | `mesh_resolve_contradiction` | Resolve a conflict | `contradiction_id` | — |
 | `mesh_sync` | Store a turn summary; optional log capture when enabled | `summary` | `include_history=false`, `quarantine` |
-| `mesh_project_brief` | Session-start brief | — | `max_tokens=500`, `include_work_items=true` |
+| `mesh_project_brief` | Session-start brief | — | `max_tokens=500`, `max_facts=20`, `fact_offset=0`, `include_work_items=true` |
 | `mesh_task_create` | Create a goal/task | `title` | `kind=task`, `parent_id`, `description=""`, `priority=medium`, `tags` |
 | `mesh_task_update` | Update status/fields | `item_id` | `status`, `priority`, `title`, `description`, `note` |
 | `mesh_task_complete` | Complete with mandatory summary | `item_id`, `summary` | `evidence` |
+| `mesh_learn_many` | Guarded atomic batch learning | `items` | `atomic=true`, `deduplicate=true`, `operation_id` |
+| `mesh_task_get` | Fetch one visible work item | `item_id` | Full ID, short ID, or unambiguous prefix |
+| `mesh_operation_get` | Reconcile a mutation | `operation_id` | Content-free receipt or `unknown`; same namespace and approved producer |
 | `mesh_task_list` | List work items | — | `status=open`, `kind`, `parent_id`, `limit=20` |
 | `mesh_log` | Project changelog | — | `since=7d`, `format=markdown` |
+
+`mesh_learn` and `mesh_learn_many` accept `wait_for_indexed=false` and
+`index_timeout=5` (0–60 seconds). A wait timeout preserves durable acceptance.
+`mesh_project_brief` accepts integer `max_tokens` from 1 to 32768,
+`max_facts` from 0 to 100, and a nonnegative integer `fact_offset`.
+Booleans, floats, strings, and explicit null are invalid for these JSON options.
+`max_tokens` limits `brief_markdown`, including omission notices, at four
+characters per estimated token. `payload_estimated_tokens` reports the complete
+compact logical JSON payload; JSON-RPC wrappers, pretty printing, and CLI banners
+are additional framing. Missing namespaces return bounded empty briefs without
+creating storage. `mesh brief` accepts `--max-facts` and `--fact-offset` and exits
+nonzero for invalid input or operational errors, including in JSON mode.
+Recall and inspect return `revision`, `incarnation`, and `store_generation`.
+Pass these as `expected_revision`, `expected_incarnation`, and
+`expected_store_generation` to update, approve, or forget when acting on
+previously read evidence; an edit, reused ID, or replaced store rejects the
+stale mutation.
 
 Privacy behavior:
 
@@ -596,13 +785,17 @@ Auth: every route except `GET /health` requires the bearer token from `~/.mesh/a
 ```bash
 TOKEN=$(cat ~/.mesh/auth_token)
 curl -s http://127.0.0.1:7701/health
+curl -s http://127.0.0.1:7701/ready
 curl -s http://127.0.0.1:7701/engine -H "Authorization: Bearer $TOKEN"
 ```
 
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/health` | Liveness; unauthenticated |
+| GET | `/ready` | Readiness probe; returns 200 when models are warmed, 503 while warming; unauthenticated |
+| GET / POST | `/identity` | Unauthenticated nonce challenge; proves store identity and receipt version with token HMACs |
 | GET | `/engine` | Engine/model state |
+| GET | `/stats` | Authenticated group-commit and mutation-outbox delivery counters; no memory bodies |
 | POST | `/warmup` | Load the model (`namespace`, `namespaces`, `blocking=false`) |
 | POST | `/unload` | Release model memory |
 | POST | `/mcp` | Proxy a JSON-RPC MCP call |
@@ -629,12 +822,36 @@ curl -s http://127.0.0.1:7701/engine -H "Authorization: Bearer $TOKEN"
 
 Request bodies:
 
-- `/learn`: `content`, `memory_type`, `confidence`, `tags`, `local_only`, `ttl_days`, `namespace`, `agent_id`, `secret_ref`, `vault_secrets`, `quarantined`.
+- `/learn`: `content`, `memory_type`, `confidence`, `tags`, `local_only`, `ttl_days`, `namespace`, `agent_id`, `secret_ref`, `vault_secrets`, `quarantined`, `wait_for_indexed`, `index_timeout`, `operation_id`.
 - `/recall`: `query`, `count` or `n`, `memory_type`, `tags`, `source_agent`, `min_similarity`, `min_confidence`, `include_stale`, `include_private`, `include_quarantined`, `include_other_possible`, `max_other_possible`, `namespace`, `agent_id`.
-- `/update`: `memory_id` plus any of `content`, `memory_type`, `confidence`, `tags`, `local_only`, `ttl_days`, `clear_ttl`, `secret_ref`, `quarantined`, `namespace`, `agent_id`.
+- `/update`: `memory_id` plus any of `content`, `memory_type`, `confidence`, `tags`, `local_only`, `ttl_days`, `clear_ttl`, `secret_ref`, `quarantined`, `namespace`, `agent_id`, `expected_revision`, `expected_incarnation`, `expected_store_generation`, `operation_id`. The three expected identity fields also apply to `/approve`, `/forget`, and REST DELETE query arguments.
 - `/tasks`: `title`, `description`, `kind`, `parent_id`, `priority`, `tags`, `local_only`, `namespace`, `agent_id`.
 - `/tasks/{id}`: any of `title`, `description`, `status`, `priority`, `note`, `namespace`, `agent_id`.
 - `/tasks/{id}/complete`: `summary` (required), `evidence`, `note`, `namespace`, `agent_id`.
+
+`/mcp` returns execution-level tool rejections as HTTP 200 with `isError=true`
+and an error payload carrying the original operation ID. Request parsing,
+authentication and expected-store refusals retain HTTP 4xx responses. A capacity
+refusal returns HTTP 503 with `not_admitted=true`. A dispatched mutation whose
+acknowledgement cannot be confirmed is an unknown outcome; retain its ID and
+reconcile before another write.
+
+The memory REST routes `/learn`, `/update`, `/approve`, `/forget` and
+`DELETE /memories/{memory_id}` accept an optional explicit `operation_id`
+(a query argument for DELETE). These identified requests use the shared guarded
+execution and receipt transaction. Their success envelope contains `result`,
+`operation_id`, `namespace`, `replayed` and `receipt`; repeating the same approved
+request returns its receipt without repeating the effect. Requests without an ID
+keep their existing response shapes and have no receipt-based retry guarantee.
+Task REST routes do not offer this optional receipt contract; use structured
+calls for identified task mutations.
+
+Identified REST conflicts return HTTP 409 with the original ID. Rejections
+preserve the usual authorization, validation and not-found status mapping.
+Capacity refusals return HTTP 503 with `not_admitted=true`; uncertain outcomes
+return HTTP 503 with `status="unknown"` and the original ID. The authenticated
+principal, namespace locks, privacy controls and ownership rules remain
+server-bound for both REST and `/mcp`.
 
 Example:
 
@@ -678,11 +895,13 @@ for item in agent_b.recall("what port does production postgres use?", n=3):
     print(item["similarity"], item["content"], item["source_agent"])
 ```
 
-Public methods on `Mesh` (0.8.2):
+Public methods on `Mesh` (0.9.0):
 
 | Method | Purpose |
 |---|---|
-| `learn(content, memory_type=..., confidence=..., tags=..., ttl_days=..., local_only=..., secret_ref=..., vault_secrets=...)` | Store a memory |
+| `learn(content, memory_type=..., confidence=..., tags=..., ttl_days=..., local_only=..., secret_ref=..., vault_secrets=..., wait_for_indexed=False, index_timeout=5.0)` | Durably store a guarded memory; report its revision, disposition, embedding model, and indexing state |
+| `learn_many(items, atomic=True, wait_for_indexed=False, index_timeout=5.0)` | Guarded bulk ingestion with ordered per-item outcomes; an atomic batch rolls back on rejection |
+| `wait_for_indexed(memory_ids, timeout=5.0, expected_revisions=..., expected_incarnations=..., expected_store_generation=..., target_model=..., target_representation=...)` | Wait for document readiness, or explicitly request `paragraph-sentences-v1` passage readiness, without replaying writes; report pending, superseded, unavailable, or disabled indexing |
 | `recall(query, n=..., min_similarity=..., min_confidence=..., include_stale=..., memory_type=..., tags=..., source_agent=..., include_private=...)` | Hybrid search |
 | `update(memory_id, ...)` | Update in place |
 | `forget(memory_id)` | Delete |
@@ -691,11 +910,11 @@ Public methods on `Mesh` (0.8.2):
 | `contradictions(resolved=False)` | Conflicts |
 | `clear()` | Delete all memories in the namespace |
 | `count()` | Count memories |
-| `get_project_brief(max_tokens=500, ...)` | Brief |
-| `get_changelog(since="7d", format="markdown", ...)` | Changelog |
+| `project_brief(max_tokens=500, max_facts=20, fact_offset=0, ...)` | Brief with bounded fact pagination |
+| `changelog(since="7d", format="markdown", ...)` | Changelog |
 | `task_create(...)`, `task_update(...)`, `task_complete(...)`, `task_list(...)`, `task_get(...)`, `log(...)` | Aliases mirroring MCP tool names |
 
-`Mesh.learn()` returns the stored row, including `local_only` (fixed in C-002). Private data follows the same rules as the CLI/MCP: excluded from default reads, never exported.
+`Mesh.learn()` returns a mutation outcome, including `memory_id`, `revision`, `local_only`, and `indexing_state`; use `get(memory_id)` for the current row. Durable acceptance includes lexical availability, a required indexing job when needed, and a content-free mutation event. It can precede neural indexing. A timed-out indexing wait preserves the committed write. Use `ConnectionProfile` and `MeshClient` for the policy-preserving transport workflow described above; a bare SDK instance is intended for trusted local application code.
 
 ---
 
@@ -728,9 +947,10 @@ It binds loopback by default. Non-loopback binding requires an explicit `--host`
 | `MESH_HOME`, `MESH_DIR` | Data root. Default `~/.mesh`. |
 | `MESH_NAMESPACE` | Default namespace. Default `shared`. |
 | `MESH_AGENT_ID` | Agent identity recorded on writes. |
-| `MESH_AGENT_SCOPES` | Comma-separated scopes limiting what an agent identity may access. |
+| `MESH_AGENT_SCOPES` | JSON object keyed by agent label or `*`; each rule accepts `namespaces` (array) and `mode` (`rw`/`ro` and documented read-only aliases). Invalid rules fail closed. Labels sharing a bearer token are not separate authenticated principals. |
 | `MESH_WORKSPACE` | Workspace root used by capture/sync inference. |
-| `MESH_LOCKED_NAMESPACE` | `1` locks to the active namespace; a value pins that namespace. |
+| `MESH_LOCKED_NAMESPACE` | `1`/`true`/`yes` locks to `MESH_NAMESPACE`; every other nonempty value is a literal namespace, including `0`, `false`, and `no`. Unset to remove the lock. |
+| `MESH_LOCK_NAMESPACE` | Equivalent namespace-lock spelling; when both are set, both restrictions apply. |
 | `MESH_ENFORCE_AGENT_OWNERSHIP` | `1` blocks cross-agent update/delete. CLI/dashboard exempt. |
 | `MESH_INCLUDE_PRIVATE` | `0`/`false` globally excludes private data from SDK recall/inspect. |
 | `MESH_MCP_INCLUDE_PRIVATE` | Controls whether MCP tools may include private data. |
@@ -756,7 +976,9 @@ It binds loopback by default. Non-loopback binding requires an explicit `--host`
 
 | Variable | Meaning |
 |---|---|
-| `MESH_NO_MODEL_DOWNLOAD` | `1` disables ONNX download; stays on `hash-384`. |
+| `MESH_REQUIRE_MODEL` | `1` enables strict embedding mode: raises an error immediately if the ONNX model is unavailable, forbidding silent fallback to `hash-384`. |
+| `MESH_AUTO_DOWNLOAD_MODEL` | `1` automatically downloads and verifies the canonical ONNX model without interactive confirmation prompts (automation/CI mode). |
+| `MESH_NO_MODEL_DOWNLOAD` | `1` disables model downloads; an already installed verified local model remains usable. |
 | `MESH_SKIP_CHECKSUM` | Skips model checksum verification. Not recommended. |
 | `MESH_MODEL_SHA256` | Additional/replacement ONNX SHA-256 allowlist entry. |
 | `MESH_TOKENIZER_SHA256` | Additional/replacement tokenizer SHA-256 allowlist entry. |
@@ -768,19 +990,24 @@ It binds loopback by default. Non-loopback binding requires an explicit `--host`
 | `MESH_SYNC_ONNX` | `1` forces synchronous ONNX embedding on learn rather than fast-path hash indexing. |
 | `MESH_BG_ONNX` | `0` disables background stage-2 ONNX re-embedding (default `1`). |
 | `MESH_BG_ONNX_IDLE_MS` | Idle time in milliseconds before background ONNX worker re-embeds queued items. |
+| `MESH_BG_ONNX_MAX_WAIT_MS` | Maximum foreground delay before attempting an indexing batch, so continuous requests do not indefinitely starve indexing. Default 250 ms, range 0–5000. |
+| `MESH_BG_ONNX_BATCH_BYTES` | Maximum content bytes per indexing batch, except that one eligible item can occupy a batch alone. Default 32768, range 16384–262144. |
 | `MESH_BG_ONNX_DRAIN_ON_EXIT` | `auto`, `1` (force drain on exit), or `0` (skip drain). |
 | `MESH_BG_ONNX_DRAIN_TIMEOUT` | Max seconds to wait for background re-embedding queue drain on exit. Default 10.0. |
 | `MESH_MODEL_DISCOVERY_TTL` | TTL in seconds for model discovery cache. |
 | `MESH_MODEL_PAIR_RECHECK_SECONDS` | Interval in seconds to re-verify model pair integrity. |
 | `MESH_EMBED_CACHE_SIZE` | In-memory embedding LRU size. Default 1024. |
-| `MESH_IDLE_UNLOAD_SECONDS` | Idle seconds before unloading the model; `0` never unloads. |
-
-### Native acceleration (C core)
-
-| Variable | Meaning |
-|---|---|
-| `MESH_DISABLE_NATIVE` | `1` disables native C acceleration library (`mesh/_c_core.dll` / `.so`), forcing pure-Python fallbacks. |
-| `MESH_C_CORE_PATH` | Custom path to the native compiled library (`_c_core.dll` / `_c_core.so`). |
+| `MESH_EMBED_CACHE_BYTES` | Embedding-cache byte budget including keys and vector allocations. Default 8 MiB; `0` disables caching. |
+| `MESH_QUERY_CACHE_SIZE` | Normalized query-vector cache entry limit. Default 256; `0` disables caching. |
+| `MESH_QUERY_CACHE_BYTES` | Query-cache byte budget including keys and vectors. Default 4 MiB; `0` disables caching. |
+| `MESH_QUERY_MODE` | `auto` (default) uses the configured verified neural model when ready and reports fallback when unavailable; `neural` requires that model; `hash` forces hash queries. This is separate from fast-stage ingestion. |
+| `MESH_RECALL_FUSION` | Hybrid ranking mode: `calibrated` (default) or experimental `rrf`. Scores from fusion are separate from cosine similarity. |
+| `MESH_PASSAGE_INDEX` | `1` enables the schema-6 passage candidate in the active SDK/server process; default `0`. Text queries require an authorized, complete compatible passage generation. Ready compatible long memories use original paragraph/sentence spans, while single-window and pending memories retain a primary representation. Completed zero-child generations also activate the authorized body-only scorer. Vector-only learning lookups keep primary vectors. Quality/resource qualification is pending. |
+| `MESH_RERANK_ENABLED` | `1` enables the optional local four-parent CPU reranker in the active SDK/server process; default `0`. Requires separately supplied pinned files. Existing similarity thresholds and evidence stay intact; unavailable/busy inference keeps base order with `rerank_status`. |
+| `MESH_RERANK_MODEL_DIR` | Explicit local directory containing the pinned `model.onnx` and `tokenizer.json` described under [`mesh ask`](#mesh-ask-query). No default discovery, automatic download, cloud provider or per-namespace model copy. |
+| `MESH_RERANK_PROFILE` | Input profile for an explicitly enabled reranker: `full-256` (default), `compact-128`, `compact-96`, or experimental unqualified `compact-80`. Compact profiles use recorded verbatim query-conditioned excerpts and retain original supporting spans. Unknown or empty values report `profile_invalid`; selecting a profile never enables reranking. |
+| `MESH_RECALL_CANDIDATES` | Candidate-pool target for independent dense and lexical channels. Default 96, range 16–512; at least the requested result count. |
+| `MESH_IDLE_UNLOAD_SECONDS` | Idle seconds before the shared watchdog unloads embedding and optional reranker models; `0` never unloads automatically. |
 
 ### Storage and limits
 
@@ -791,9 +1018,34 @@ It binds loopback by default. Non-loopback binding requires an explicit `--host`
 | `MESH_MAX_OPEN_NAMESPACES` | Limit on simultaneously open namespace handles. |
 | `MESH_MAX_POOL_SIZE` | SQLite connection pool cap. |
 | `MESH_MAX_VECTOR_CACHE_SIZE` | In-memory vector cache cap. |
-| `MESH_MAX_QUERY_ROWS` | Query result cap. |
+| `MESH_MAX_VECTOR_CACHE_BYTES` | Aggregate vector/lexical cache allocation budget, including active snapshots and transaction deltas. Oversized namespaces use bounded streaming retrieval. Default 256 MiB. |
+| `MESH_MAX_CACHE_DELTA_BYTES` | Per-transaction cache-delta byte budget. Default 8 MiB; exceeding it invalidates the derived cache without losing committed content. |
+| `MESH_READERS_PER_NAMESPACE` | Read-only SQLite connections per namespace. Default 2, range 1–8. |
+| `MESH_MAX_READER_CONNECTIONS` | Global read-only connection cap. Default 32, range 1–256. |
+| `MESH_SQLITE_CACHE_KIB` | Writer SQLite page-cache limit in KiB. Default 2048, range 256–65536. |
+| `MESH_SQLITE_READER_CACHE_KIB` | Page-cache limit per reader in KiB. Default 512, range 256–4096. |
+| `MESH_AUDIT_SQLITE_CACHE_KIB` | Audit page-cache limit in KiB. Default 2048, range 256–65536. |
+| `MESH_MAX_BULK_ITEMS` | Low-level storage/import/receipt item bound. Default 1000; the public `learn_many` API separately caps each call at 128 items. |
+| `MESH_MAX_LIST_ITEMS` | Maximum materialized memory-list request. Default 10000; use bounded requests or streaming export for larger stores. |
+| `MESH_MAX_IMPORT_BYTES` | Maximum import-file size before parsing. Default 128 MiB; split larger files or explicitly raise the limit. |
+| `MESH_IMPORT_BATCH_SIZE` | Maximum records per import commit. Default 32, range 1–128, also constrained by the low-level bulk limit. |
+| `MESH_IMPORT_BATCH_BYTES` | Approximate content/vector bytes per import commit. Default 256 KiB, range 64 KiB–4 MiB. |
+| `MESH_MAX_PENDING_EMBEDDING_JOBS` | Durable pending-indexing-job cap per store. Default 100000; new required jobs are rejected transactionally when full. |
+| `MESH_MAX_MUTATION_OUTBOX` | Durable undelivered mutation-event cap per store. Default 100000; reject further required mutations transactionally when full. |
+| `MESH_MAX_OPERATION_RECEIPTS` | Retained operation-receipt cap per store. Default 100000; receipts are not automatically expired to admit new writes. |
+| `MESH_MAX_OPERATION_RECEIPT_BYTES` | Maximum serialized content-free receipt size. Default 1 MiB. |
+| `MESH_NO_OUTBOX_WORKER` | `1` disables background outbox discovery/delivery. Durable events remain stored; use only when managing delivery explicitly. |
+| `MESH_MAX_QUERY_ROWS` | Retention cap on stored search query records per namespace (default 10000). Pruned automatically in FIFO order. |
+| `MESH_LOG_QUERY_TEXT` | `1` (default) stores redacted search queries in the local `queries` table. `0` or `false` disables query-text logging entirely (stores empty query string, preserving query count metrics with zero search terms recorded). |
+| `MESH_TRACKING_BATCH` | In-memory access tracking batch write limit before flushing to SQLite. Default 128. |
+| `MESH_TRACKING_FLUSH_SECONDS` | In-memory access tracking maximum flush interval in seconds. Default 5.0. |
+| `MESH_MAX_ACCESS_TRACKING_ENTRIES` | Buffered access/query entry cap. Default 10000; this loss-tolerant telemetry can drop new observations at the limit. |
+| `MESH_MAX_ACCESS_TRACKING_BYTES` | Buffered access/query byte budget. Default 8 MiB; required mutations do not use this buffer. |
 | `MESH_MAX_AUDIT_ROWS` | Audit row cap. |
-| `MESH_STRICT_FSYNC` | `1` enforces SQLite `PRAGMA synchronous=NORMAL` instead of `OFF` for strict durability. |
+| `MESH_AUDIT_BATCH_SIZE` | Background access-audit batch size. Default 256, range 1–1000. |
+| `MESH_MAX_AUDIT_QUEUE_EVENTS` | Loss-tolerant access-audit queue entry cap. Default 10000; overflow is reported and required mutation events stay in the durable outbox. |
+| `MESH_MAX_AUDIT_QUEUE_BYTES` | Access-audit queue byte budget. Default 8 MiB, minimum 1024. |
+| `MESH_STRICT_FSYNC` | Legacy setting; storage now uses WAL `synchronous=FULL` regardless of this value. |
 | `MESH_INIT_LOCK_RETRY_SECONDS` | Seconds to wait/retry acquiring initialization lock for database creation/migration. Default 10. |
 | `MESH_FS_MEMO_MS` | Window in milliseconds (default 10 ms) during which lstat-verified file paths are memoized. `0` disables. |
 | `MESH_PATH_RECHECK_SECONDS` | Interval in seconds (default 60 s) to cache verified safe path evaluations for audit logging. |
@@ -808,8 +1060,12 @@ It binds loopback by default. Non-loopback binding requires an explicit `--host`
 | `MESH_UNIX_SOCKET` | POSIX Unix socket path (mode `0600`). |
 | `MESH_AUTH_TOKEN`, `MESH_TOKEN` | Token overrides for server/client. Prefer the generated `~/.mesh/auth_token`. |
 | `MESH_FORCE_DAEMON_PROBE` | `1` forces port probing even if `daemon.pid` is absent. |
+| `MESH_DAEMON_REQUEST_TIMEOUT` | CLI-to-daemon HTTP request timeout in seconds (default 10.0 s, minimum 1.0 s). |
+| `MESH_DAEMON_VERIFY_TIMEOUT` | Daemon identity verification timeout in seconds (default 1.0 s, minimum 0.2 s). |
+| `MESH_DAEMON_READY_TIMEOUT` | Daemon model-warming readiness probe timeout in seconds (default 30.0 s, minimum 1.0 s). |
 | `MESH_CSRF` | CSRF protection control for browser surfaces. |
 | `MESH_IN_DAEMON` | Internal: marks a process running inside the daemon. |
+| `MESH_GROUP_COMMIT` | `1` enables bounded local group commits for supported receipt-bearing learn, learn-many, and update calls through an existing HTTP/MCP server. Default `0`. Each request retains its own savepoint/outcome; acknowledgements follow the outer FULL commit. Calls that wait for indexing or vault secrets use ordinary execution. |
 
 ### Encryption and secrets
 
@@ -885,9 +1141,9 @@ Mesh embeds locally with ONNX Runtime (`all-MiniLM-L6-v2`, 384 dimensions) or th
 - A version string and package name during an opt-in update check.
 - Log text or summaries only if you explicitly enable cloud capture; `--local-only` prevents it.
 
-### Telemetry
+### Local access tracking and telemetry policy
 
-No remote telemetry. Local audit events are content-free. `mesh audit export` exports them to a file you choose.
+No remote telemetry or phone-home. Local access tracking records (`access_count`, `accessed_at`, `queries`) and operational audit events remain strictly on the local machine in SQLite. They are never transmitted over the network and are completely excluded from all exports (`mesh export`, CSV, Markdown, JSON). Query text records are automatically pruned according to `MESH_MAX_QUERY_ROWS` (default 10,000) and can be disabled via `MESH_LOG_QUERY_TEXT=0`. Local audit events are content-free and only exportable via `mesh audit export` to a local file you explicitly choose.
 
 ### Log capture
 
@@ -928,56 +1184,51 @@ mesh run --env STRIPE_KEY=keyring://mesh/shared/STRIPE_KEY -- ./deploy.sh
 
 ## 14. Performance and evidence
 
-### Method
+### Current source measurements
 
-From [`benchmarks/RESULTS.md`](benchmarks/RESULTS.md): local ONNX embeddings, Windows AMD64 / Ubuntu 22.04 CI, Python 3.12/3.14, SQLite 3.50+ WAL with Porter FTS5, synthetic multi-domain corpus. These are not universal numbers.
+[benchmarks/RESULTS.md](benchmarks/RESULTS.md) is the authoritative record for
+**Mesh 0.9.0** measurements. Each checkpoint names its tested commit, local
+model, dependency versions, operating system and workload. Durable acceptance,
+completed neural indexing, retrieval quality, latency, CPU and sampled RAM are
+separate observations. Failed, resource-rejected, deferred and unscored
+conditions remain visible.
 
-### Core operations (p50)
+Normal CI and both full qualification suites passed at `b55c980` on November 17, 2026. Each XML retains 1,944 unique testcase records, with zero failures/errors; its separate suite-declared 2,149-test counter is preserved distinctly. The storage ledger completed 55 of 58 cells with three deferrals and zero failures, including the separate diagnostic. The same-selection one/two-worker test-speed observation completed. All five ordinary retrieval jobs failed overall. The separate E5 experiment completed all native baselines: two E5 shadows were scored and failed quality; three began indexing and exceeded their dynamic RSS ceilings before any shadow query, leaving quality unscored. See [remote qualification](docs/CI_VALIDATION.md) and [RESULTS.md](benchmarks/RESULTS.md) for exact source bindings, measurements and retained limitations.
 
-| Operation | p50 |
-|---|---:|
-| Brief (500-token) | 6.20 ms |
-| Brief (full) | 6.85 ms |
-| Task create | 39.55 ms |
-| Task list | 5.75 ms |
-| Task update | 22.04 ms |
-| Task complete | 21.36 ms |
-| Log (markdown) | 2.60 ms |
-| Log (JSON) | 2.54 ms |
-| Recall hybrid top-5 | 57.78 ms |
-| Recall top-1 | 47.50 ms |
-| Learn new | 140.96 ms |
-| Learn duplicate | 64.12 ms |
-| Inspect top-10 | 2.86 ms |
-| Count | 1.40 ms |
-| Embedding cache hit | 0.02 ms |
+Passage retrieval and optional local reranking remain default off. Gains on
+small bounded fixtures do not establish general accuracy, and no profile is
+qualified across all evaluated datasets. Process-crash checks establish the
+observed recovery behavior; physical power-cut survival requires separate
+hardware/filesystem testing.
 
-### Scale
+### Current competitor comparison
 
-| Memories | Work items | Ingest | DB | Dense recall p50 | Brief p50 | Task list p50 | Reopen | RAM delta |
-|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 500 | 100 | ~15/s | 5.39 MB | 143.7 ms | 7.04 ms | 4.11 ms | 5.52 ms | +195 MB |
-| 1,000 | 200 | ~16/s | 10.6 MB | 152.1 ms | 7.82 ms | 4.35 ms | 5.80 ms | +198 MB |
-| 5,000 | 1,000 | ~18/s | 52.4 MB | 178.4 ms | 9.15 ms | 5.12 ms | 6.20 ms | +215 MB |
-| 10,000 | 2,000 | ~19/s | 104.8 MB | 195.2 ms | 11.40 ms | 6.40 ms | 6.95 ms | +240 MB |
+The [twenty-cell comparison](benchmarks/RESULTS.md#mesh-090-native-competitor-comparison-2026-11-17-2db6229) at `2db6229` measures Mesh 0.9.0, Mem0 2.2.1, Basic Memory 0.24.1 and Auxly 1.5.0 across the same original parents and fixed queries. It retains all 660 selected queries per tool, including nine unanswered queries, and keeps unfaithful parents in original relevance denominators. Its Mesh runtime and package metadata are source-identical to qualified `b55c980`; the native Linux Python 3.12.16 host consumed Windows qualification snapshots from `e4284c8`. Official competitor child environments are separately frozen. Mesh/Mem0 SDK, Basic Memory/Auxly MCP, windowed/truncated MiniLM and keyword/substring profiles retain their differences; Auxly has subset metrics rather than ranked metrics. No general superiority or cross-interface speed ratio is established.
+
+### Historical comparisons
+
+The 470-answerable-query competitor comparison in
+[docs/BENCHMARKS.md](docs/BENCHMARKS.md) evaluates **Mesh 0.8.3**, Mem0 2.2.1,
+Basic Memory 0.24.1 and Auxly 1.5.0. Its scores and the corresponding
+[historical performance report](docs/PERFORMANCE.md) do not measure the 0.9.0
+candidate. The [field-test archive](docs/field-test/README.md) retains its own
+tested package versions and independent observations.
 
 ### Reproduce
 
-```bash
-python benchmarks/mesh_benchmark.py
-python benchmarks/concurrency_stress.py
-python benchmarks/scale_benchmark.py --scales 500,1000,5000
-pytest tests/bench/test_retrieval_benchmark.py -v
-```
+Follow the isolated, source-bound workloads in
+[PRODUCTION.md](benchmarks/PRODUCTION.md) and
+[RETRIEVAL.md](benchmarks/RETRIEVAL.md). The Actions workflows retain exact
+source/dependency hashes and failure artifacts. Model and corpus evaluations
+require verified local assets; the harnesses do not call a cloud LLM provider.
 
-### What is not measured
+### Scope limits
 
-- 100,000+ memories.
-- macOS/Linux independent runs.
-- Long-duration soak tests.
-- Real-world corpus retrieval quality.
-- Agent compliance rates beyond the small probe.
-- Cloud capture latency or cost.
+The recorded checkpoints do not establish a full-population LongMemEval result,
+complete multi-source answers, performance at 100,000+ memories, long-duration
+soak behavior, generalized competitor superiority, or physical power-cut
+validation. The current comparison is complete for its twenty configured
+cells; broader workloads and repeated independent evaluations remain separate work.
 
 ---
 
@@ -1180,9 +1431,9 @@ Deletion is irreversible; private memories are not in exports.
 
 ## 19. Provenance: PyPI vs source
 
-- This source tree is version `0.8.1b2`.
-- The field-tested wheel is `mesh_context_layer-0.8.1b2-py3-none-any.whl`, 283,989 bytes, SHA-256 `e1a7a0af71abe3f51b02150d9a2d5fdc1d9d8a618937e9d41bf899c08ead06ff`.
-- The field report states the wheel matches the repository version. To verify a release yourself:
+- These docs describe version `0.9.0`; use `mesh version` to check the installed package.
+- The historical field-tested wheel is `mesh_context_layer-0.8.1b2-py3-none-any.whl`, 283,989 bytes, SHA-256 `e1a7a0af71abe3f51b02150d9a2d5fdc1d9d8a618937e9d41bf899c08ead06ff`.
+- The field report describes that wheel and source revision. To verify the historical artifact yourself:
 
 ```bash
 pip download mesh-context-layer==0.8.1b2 --no-deps -d /tmp/mesh-wheel
@@ -1191,7 +1442,7 @@ sha256sum /tmp/mesh-wheel/*.whl
 
 Compare the hash with the release record. Building from source: `pip install .` or `python -m build`.
 
-The sdist excludes landing pages, marketing assets, benchmarks, docs, and media; the wheel includes the Python package and skill Markdown files.
+The wheel includes the Python package and packaged skill resources. The sdist also includes tests, scripts and the explicitly listed benchmark helpers and fixed fixtures needed for qualification. Landing pages, marketing assets, raw benchmark datasets/results, model binaries and media are excluded; inspect the release archive and package validation manifest for its exact contents.
 
 ---
 
@@ -1205,7 +1456,7 @@ The sdist excludes landing pages, marketing assets, benchmarks, docs, and media;
 | **Effective confidence** | Stored confidence × decay factor |
 | **FTS5** | SQLite full-text search, Porter stemming |
 | **`hash-384`** | Built-in fallback embedding, lower quality than ONNX |
-| **MCP** | Model Context Protocol; Mesh exposes 17 tools over stdio |
+| **MCP** | Model Context Protocol; Mesh exposes 20 tools over stdio |
 | **Namespace** | One SQLite database and logical project partition |
 | **`local_only`** | Privacy flag; not encryption |
 | **Quarantine** | Held from recall until approved |
@@ -1223,4 +1474,4 @@ For architecture and internals, see [ARCHITECTURE.md](ARCHITECTURE.md). For deve
 
 ---
 
-**Last verified:** 2026-10-20, Mesh `0.8.1b2`, source commit `5348d00`, Windows 11 Pro (10.0.22000), Python 3.14.0, isolated `MESH_HOME`.
+**Historical field-test verification:** 2026-10-20, Mesh `0.8.1b2`, source commit `5348d00`, Windows 11 Pro (10.0.22000), Python 3.14.0, isolated `MESH_HOME`. Current reproducible performance evidence belongs in [benchmarks/RESULTS.md](benchmarks/RESULTS.md).

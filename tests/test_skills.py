@@ -70,3 +70,39 @@ def test_check_skill_script():
     spec.loader.exec_module(mod)
     assert mod.main() == 0
 
+
+def test_same_version_stale_reference_is_repaired(tmp_path):
+    from mesh.skill_installer import _is_already_up_to_date
+
+    install_skill(tmp_path)
+    destination = tmp_path / _SKILL_NAME
+    reference = destination / "references" / "tool_reference.md"
+    reference.write_text("stale local reference", encoding="utf-8")
+    assert not _is_already_up_to_date(destination)
+    _, changed = install_skill(tmp_path)
+    assert changed
+    assert reference.read_bytes() == (_skill_source() / "references" / "tool_reference.md").read_bytes()
+    assert _is_already_up_to_date(destination)
+
+
+def test_permanent_replace_error_fails_without_retry(tmp_path, monkeypatch):
+    import errno
+    from mesh import skill_installer
+
+    calls = []
+    def replace(source, destination):
+        calls.append((source, destination))
+        raise OSError(errno.EXDEV, "cross-device replacement")
+    monkeypatch.setattr(skill_installer.os, "replace", replace)
+    with pytest.raises(OSError) as error:
+        skill_installer._safe_replace_dir(tmp_path / "source", tmp_path / "destination")
+    assert error.value.errno == errno.EXDEV and len(calls) == 1
+
+
+@pytest.mark.parametrize("retries", [0, -1, True])
+def test_replace_requires_at_least_one_attempt(tmp_path, retries):
+    from mesh.skill_installer import _safe_replace_dir
+
+    with pytest.raises(ValueError):
+        _safe_replace_dir(tmp_path / "source", tmp_path / "destination", max_retries=retries)
+

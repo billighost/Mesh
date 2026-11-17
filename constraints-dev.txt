@@ -10,7 +10,7 @@ attrs==26.1.0
 bandit==1.9.4
 boolean.py==5.0
 build==1.6.1
-certifi==2026.10.18
+certifi==2026.10.19
 cffi==2.1.1
 cfgv==3.5.0
 charset-normalizer==3.5.2

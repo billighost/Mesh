@@ -1,0 +1,157 @@
+{
+  "schema_version": 1,
+  "mesh_version": "0.9.0",
+  "source_commit": "2d67c704e45d4f3eb2da1bcd0f0477749528ec8e",
+  "normal_ci_run_id": 42485932114,
+  "normal_ci_status": "passed",
+  "normal_ci_successful_jobs": 18,
+  "production_run_id": 42485932167,
+  "production_status": "failed",
+  "production_successful_jobs": 2,
+  "production_failed_jobs": 7,
+  "primary_full_qualification_status": "passed",
+  "floor_full_qualification_status": "passed",
+  "qualification": {
+    "primary": {
+      "tests": 1853,
+      "skipped": 3,
+      "failures": 0,
+      "errors": 0,
+      "real_recovery_case_passed": true,
+      "sha256": "009b9dee1dbe69dd32c10c06c7ba8c345b3801a74ef64e82fd0670835d373684"
+    },
+    "floor": {
+      "tests": 1853,
+      "skipped": 4,
+      "failures": 0,
+      "errors": 0,
+      "real_recovery_case_passed": true,
+      "sha256": "3e551ea3262b4e393c93852ce946119e4fd1f39129b71e35cf8eab6c8e931e30"
+    },
+    "coverage": 0.7441,
+    "source_runtime_sha256": "510564a2724916dee82d0e4bfa4d8402f03df073d95c0132cd96c83a7136e0fb",
+    "constraints_sha256": "b1cb858d41de644d9b1ae5d768281593808889fb89f37e74f253ecaa80f93c8f",
+    "same_runtime_sources": true,
+    "same_primary_python_and_packages": true
+  },
+  "qualification_raw_xml_retained": false,
+  "qualification_log_and_summary_counts_verified": true,
+  "source_files_verified": 54,
+  "windows_checkout_line_endings_accounted": true,
+  "source_files_sha256": {
+    "mesh/__init__.py": "cf1fb34aefc1810854d1a89e056a8657778341c4b86d9fa425cb7d92d287dca6",
+    "mesh/__main__.py": "57f523be54277aee1168d441a3b8efa78cfd8ddb0a1af926d79efed553190a46",
+    "mesh/_model_download.py": "df9f343d0466bb88143257087a4acc94aba5502373f32ae78740ca2a126dfc8d",
+    "mesh/audit.py": "770e62f284cf7a035bae1c6b969e3e1fc934cba94aa10d0e9be3a18bd00e2421",
+    "mesh/brief.py": "593dcb90cde97a23f18254768a949b2c4db60863956ced82086cf51feed87650",
+    "mesh/cli.py": "1d016555a3c287848f8d25122fb642b51d89da526169a83d755e16ce78ea540d",
+    "mesh/client.py": "c7c9a4a555aaed70c4d5e734d6c4c5c09336622446a5b3e812bc0695c50cc370",
+    "mesh/context_builder.py": "eb96770df23492e0fc0c9860e37c9889aee64bfa0395580deab24e90e5d6d709",
+    "mesh/crypto.py": "06592a4cd299357511cf29627b3a568c6dc68ac9052e9f8e7a0464e269bac051",
+    "mesh/daemon.py": "d2a8556b0458e887ac0ebd64be8642fba0e46264774db078816f7822a239a2f4",
+    "mesh/dashboard.py": "0d590337ddc30b0fa86e349bfec779c0b8ab761902ad9d5cd2783c009e211f1f",
+    "mesh/digest.py": "8d96e8671b13ba9b653d7cc49fbf29c66494461ec31c02e2b58848db0bfb4f86",
+    "mesh/envutil.py": "d55c37c1f474a9ebb3079c5017f874d358d90e3999b507dbb59a2058f8dc744b",
+    "mesh/execution.py": "05b56ed8e9ff2f082c7ff22afcad5926b12bb356ec87b2937e907969d646e321",
+    "mesh/group_commit.py": "ad6dce0f03c58e74729a1856f7ac32f35ac0bc80fd753a53399ff5f682d435e7",
+    "mesh/guards.py": "befe8e63d4871b74666f8e997d77b4b54680b2894995c84375bd2032daf8d501",
+    "mesh/hooks.py": "8af37171816da3ee20026ac9008d5dd32c8016d3e9134254be2cd0550487add1",
+    "mesh/http_server.py": "8dbaa1659502265fbd7a51ff6f4096fecdee941fb4bb00fa34d9e69225789ec8",
+    "mesh/installer.py": "ab3469ead58cbb18ff29754db4b11627cb1f2919295088ea962962a1503590e5",
+    "mesh/io.py": "7ba94d489352df8a50275ab339d534556086bbb8c3ba5ba9bf03248a818af411",
+    "mesh/local_rerank.py": "4020186182e2b36034e79115300898544f094e7815fcdd61f1bb794c9774155c",
+    "mesh/mcp_server.py": "155349bfbc37bf3943a7767b261cb8e13f88fc9c48eee59e9e5701f6900ed160",
+    "mesh/memory.py": "759bd6cb96f249b20c877aa3f76f9537433adca22871a26724872df66929ed08",
+    "mesh/mutation_delivery.py": "303a392743b7b8700297945f8a05dbfc4a4c21f0b04df51e56c85f9d747516a1",
+    "mesh/namespace_maintenance.py": "d6bfb8521a8ba02f58e7d34bd7d283429cf6ba9fc2e57273dfa72f1654c9e8ec",
+    "mesh/namespace_resolution.py": "b32f8c29c89c1a93686bc7c54cbeeaa80714f9896f28145316ebab07e9ca35e6",
+    "mesh/namespaces.py": "5cd3d7011d46a9a55a5661356c0aba74800a0de5e0b3860096e45ac0f0da6cdf",
+    "mesh/operation_contract.py": "fa4e4b0be17802686eb1e76ae897224dfc7647d0d5134c5d53c0ab5deade8fbf",
+    "mesh/operations.py": "30a1e516ffbff31386b86576fcb5aceba37581d6a5b464a0155c5019d47d8815",
+    "mesh/output.py": "9de84d3af6339315b5e08f12f7bd845d9232e5e7a2a287d143a3fd4b6ee5c4c5",
+    "mesh/passage_search.py": "002225c2abd3edb7bb243dea99fa466cef013accb4fcfe8e844fbcfcd67b724c",
+    "mesh/passages.py": "543bb8a68d2eaa97e9f0aeba27de340fea33ab8ec65eb4c9f570ddc4affc73f4",
+    "mesh/passive.py": "00f20fd97271f00915f9eb31eb0dafe714d6f8b953a77ff53f1f0e0eb275b21f",
+    "mesh/secrets.py": "0831ba8e3c7836ff4a8844af06d10cdfb7a0cf519a3a7c32a564df46d89c4151",
+    "mesh/skill_installer.py": "b36636eef5bbde2532d33b8d9aa11e4058f7eec2696b317efcb259a32594474d",
+    "mesh/skills/__init__.py": "3040de0d484a99a23a0378b317d99b7d9c5f2eae79dbb1e7df5f0710ca160bd5",
+    "mesh/sqlite_runtime.py": "668e79b90b3a3d13474f35f039a50c4f1526401d117b53edcee363ba195ad2d4",
+    "mesh/store.py": "15b2d10a7b308f2477f29bb2f268dae0a924a0474b37569eb65156052c538eb3",
+    "mesh/ui.py": "a6a8d99e97cae1ece26be74a458e5d39430c433d1197162f139ec132fb3a696e",
+    "mesh/version.py": "4d3b9478bfa217b38805d5441e62ee41bd0b2157d3d608d82be1ce042b589283",
+    "benchmarks/production_retrieval.py": "eba801e0e66996a4c22fa82d102ef9c339c088fa3983ded515611eb989a8c5f5",
+    "benchmarks/replay_retrieval.py": "31d980ef54cb0ad2ca690eb9f58ca499211f4ab70762afc9090bbdee3c436d2d",
+    "benchmarks/prepare_retrieval_ci.py": "92991c7d217cbcef799de68caaa0404c5b120314f641598f1bbabde05e00a160",
+    "benchmarks/retrieval_ci.py": "119bff145035162082be1cb677438f330f4a914d03808f77d7aa791ddbedaa75",
+    "benchmarks/passage_retrieval.py": "63b4c6c848e9456c17efb106e879fbc2a55a19e0de022e907c0b2986de51c27c",
+    "benchmarks/provision_production_model.py": "80d3c9b3707268326fbe6c0b036dcc98fa156be447008f83115e051de49b37b3",
+    "benchmarks/production_runner.py": "7cc98a4c1add3812f9c6bd06a19c1fb383d9cbf44baee17aaadb732d4f529c87",
+    "benchmarks/production_ledger.py": "146b14ec0cabc83933ecbce9b97c219feee1104f48fd871f0b8ef08d088ef5a7",
+    "benchmarks/runtime_rerank_c4.py": "be6f3783d1b2da53855105fde064190ebc62de68fabacaee757559251f7f7060",
+    "benchmarks/retrieval_telemetry.py": "c9be98d362b9302a5cb73f5b7bfc4c298d1a2be286483c37e1612296b744dee3",
+    "benchmarks/embedding_shadow.py": "fc48eb517be43ce39585ec4166bc46ddd8d8fce136a9c1bfa46edbdb162575a8",
+    "benchmarks/retrieval_c4.py": "cc195359f1ca71654af992a6a56a7549679659e1fb2edda46f75b453dff210b6",
+    "benchmarks/retrieval_c4_model.py": "7650c96554b675734b160c6518342e0222005881d9016de27f40bcc19016095f",
+    "benchmarks/provision_retrieval_c4.py": "1472d5262e061af29e3e6a7690e8bc3bd0502c40dffbfe66392b6ab6c62e6c87"
+  },
+  "input_artifacts": {
+    "13621267232": {
+      "artifact_name": "retrieval-quality-scifact-compact-80-2d67c704e45d4f3eb2da1bcd0f0477749528ec8e",
+      "summary_sha256": "b20893092bcc8f54aa921658a571951d8bfc4f6a202db8e24ddb74ffd77469d7",
+      "zip_sha256": "c6b337cfe622b9edef84377d02f035b1e8291658817c3ee489a1aa8a473ab076",
+      "zip_summary_byte_equality_verified": true
+    },
+    "13620135884": {
+      "artifact_name": "retrieval-quality-prospective-compact-80-2d67c704e45d4f3eb2da1bcd0f0477749528ec8e",
+      "summary_sha256": "82ebd7a64048a87da6763a9f34d25159249bd0decd868655ad7610f02423e684",
+      "zip_sha256": "5d237f54138d047ceb5bca0ae42222b7517df56ac2579192f8554effad13c9fa",
+      "zip_summary_byte_equality_verified": true
+    },
+    "13620011329": {
+      "artifact_name": "retrieval-quality-longtext-prospective-compact-80-2d67c704e45d4f3eb2da1bcd0f0477749528ec8e",
+      "summary_sha256": "8e17309801bd570151c8328c2f88045ac242afefa0174d26afac28a679c531a6",
+      "zip_sha256": "23768ce9fb9eb829f36242b810fd55527ad8a15958516811232f6ac139f1a8d9",
+      "zip_summary_byte_equality_verified": true
+    },
+    "13619354143": {
+      "artifact_name": "retrieval-quality-nfcorpus-compact-80-2d67c704e45d4f3eb2da1bcd0f0477749528ec8e",
+      "summary_sha256": "121226c56bed475c92c0541f9b25b22abd28238dbd9d6d0e7866603cb63a51f3",
+      "zip_sha256": "d63f1606041f56a4448930c396ad34da43ddb762747d010980dbf42f0cf1a3c2",
+      "zip_summary_byte_equality_verified": true
+    },
+    "13619208553": {
+      "artifact_name": "retrieval-quality-longmemeval-compact-80-2d67c704e45d4f3eb2da1bcd0f0477749528ec8e",
+      "summary_sha256": "7c3d64aca2648322a8735d8b6e14347b446f6db8f35f8d6ef21b5534f18ade3f",
+      "zip_sha256": "6c9f5539a48c82ef0536de93e4c50ab7e1d50c93eaa008954c3e8c4dc5e4fd9a",
+      "zip_summary_byte_equality_verified": true
+    }
+  },
+  "outputs": {
+    "production_retrieval_20261108_2d67c704.json": {
+      "sha256": "a00d7b30de80fffa968a68bb3a3f8f007222833bdff56acc013d517a7ffd3916",
+      "bytes": 1295664
+    },
+    "production_performance_20261108_2d67c704.json": {
+      "sha256": "2a6d0ecd8f24aa6c8d6e8d78f2c118d987f72395bcde7844ecab265bb003c5dd",
+      "bytes": 455
+    },
+    "production_test_speed_20261108_2d67c704.json": {
+      "sha256": "4aadf3cb2bb12971a041d12314d1bd10b892af6e3ac3f476ff618bf2d787dac5",
+      "bytes": 431
+    },
+    "production_comparison_20261108_2d67c704.json": {
+      "sha256": "e09b2196498697da9277790dcba37e6bbcf9206a6526a31b58df0399aadafddc",
+      "bytes": 389
+    }
+  },
+  "limitations": [
+    "five_retained_retrieval_artifacts",
+    "qualification_xml_not_retained",
+    "resource_rejected_native_conditions_unscored",
+    "no_storage_measurements",
+    "no_published_test_speed_comparison",
+    "no_new_competitor_comparison",
+    "one_native_pass_per_condition",
+    "no_globally_qualified_profile"
+  ]
+}

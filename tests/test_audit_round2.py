@@ -358,6 +358,7 @@ def test_m5_mesh_sync_reports_captured_stored_deduplicated_and_error(tmp_path, m
     monkeypatch.setenv("MESH_HOME", str(tmp_path))
     monkeypatch.setenv("MESH_ALLOW_LOG_SYNC", "1")
     monkeypatch.setenv("MESH_NO_DAEMON_PROXY", "1")
+    monkeypatch.setenv("MESH_MCP_INCLUDE_PRIVATE", "1")
 
     with mcp_mod._LOG_WATERMARKS_LOCK:
         mcp_mod._LOG_WATERMARKS.clear()
@@ -508,6 +509,9 @@ def test_h6_http_mcp_endpoint_error_semantics(tmp_path, monkeypatch):
 
 def test_h7_stale_cached_mesh_revalidated_after_out_of_band_delete(tmp_path, monkeypatch):
     monkeypatch.setenv("MESH_HOME", str(tmp_path))
+    # This test deliberately removes a closed database. Delivery concurrency is
+    # covered separately; an audit worker can reopen it between close and unlink.
+    monkeypatch.setenv("MESH_NO_OUTBOX_WORKER", "1")
     http_app.dependency_overrides[verify_request_auth] = lambda: None
     client = TestClient(http_app, base_url="http://127.0.0.1:7701")
     ns = "stale_cache_ns"
@@ -519,8 +523,11 @@ def test_h7_stale_cached_mesh_revalidated_after_out_of_band_delete(tmp_path, mon
         # 2. Delete the namespace out-of-band without clearing http_server._MESH_REGISTRY
         db_file = tmp_path / f"mesh_{ns}.db"
         store_mod.close_store_connection(db_file.resolve())
-        for suffix in ("", "-wal", "-shm"):
-            Path(f"{db_file}{suffix}").unlink(missing_ok=True)
+        delete_paths = [Path(f"{db_file}{suffix}") for suffix in ("", "-wal", "-shm")]
+        print({"owned_namespace_delete_files": [path.name for path in delete_paths if path.exists()]})
+        for path in delete_paths:
+            assert path.resolve().parent == tmp_path.resolve()
+            path.unlink(missing_ok=True)
 
         # 3. Subsequent /learn must detect the missing DB, recreate it, and succeed
         r_learn = client.post("/learn", json={"content": "Recreated fact", "namespace": ns})
@@ -680,10 +687,17 @@ def test_dd1_dd2_dd3_dd4_dd5_deep_dive_regressions(tmp_path, monkeypatch):
     bundle_priv = mesh.recall_with_context("deploy", include_private=True)
     assert bundle_priv["total_in_namespace"] == 3
 
-    # DD-3: clear_namespace scopes FTS deletion to namespace
+    # DD-3: clear_namespace scopes FTS deletion to namespace. Case-insensitive
+    # filesystems must first refuse names which address the same database.
     m_upper = Mesh(namespace="CaseFTS", agent_id="agent")
-    m_lower = Mesh(namespace="casefts", agent_id="agent")
     m_upper.learn("UniqueIdentifierToken998877 in upper namespace")
+    lower_path = m_upper.store.db_path.with_name("mesh_casefts.db")
+    if lower_path.exists() and lower_path.samefile(m_upper.store.db_path):
+        with pytest.raises(ValueError, match="namespace|spelling"):
+            Mesh(namespace="casefts", agent_id="agent")
+        m_lower = Mesh(namespace="casefts-independent", agent_id="agent")
+    else:
+        m_lower = Mesh(namespace="casefts", agent_id="agent")
     m_lower.learn("Other token in lower namespace")
     m_lower.clear()
     assert len(m_upper.recall("UniqueIdentifierToken998877")) == 1

@@ -1,0 +1,1026 @@
+{
+  "metadata": {
+    "date": "2026-11-02",
+    "environment": "Windows 11 Home, AMD Ryzen 7 5700U, 16GB DDR4",
+    "repeats": 3,
+    "isolation": "Subprocess-per-repeat in fresh verified-empty temp directory"
+  },
+  "tiers": {
+    "scale_1000": {
+      "cold_run_headline": {
+        "target_scale": 1000,
+        "workload_type": "Short Synthetic Facts (~150 chars)",
+        "ingest_wall_sec": 18.51,
+        "ingest_throughput_wps": 54.04,
+        "pure_db_size_mb": 2.555,
+        "dense_simd_recall_p50_ms": 7.71,
+        "dense_simd_recall_p95_ms": 11.71,
+        "project_brief_p50_ms": 2.19,
+        "initial_ram_mb": 35.93,
+        "peak_ram_mb": 217.59,
+        "ram_delta_mb": 181.65,
+        "raw_query_samples_ms": [
+          6.59,
+          7.06,
+          7.22,
+          7.25,
+          7.27,
+          7.27,
+          7.4,
+          7.43,
+          7.44,
+          7.55,
+          7.59,
+          7.59,
+          7.6,
+          7.71,
+          7.77,
+          7.91,
+          8.28,
+          8.33,
+          8.47,
+          8.64,
+          8.69,
+          8.92,
+          9.19,
+          10.04,
+          10.58,
+          11.71,
+          12.91
+        ]
+      },
+      "stats": {
+        "ingest_wall_sec": {
+          "median": 17.86,
+          "mean": 18.0,
+          "min": 17.64,
+          "max": 18.51,
+          "range": [
+            17.64,
+            18.51
+          ]
+        },
+        "ingest_throughput_wps": {
+          "median": 56.0,
+          "mean": 55.58,
+          "min": 54.04,
+          "max": 56.7,
+          "range": [
+            54.04,
+            56.7
+          ]
+        },
+        "pure_db_size_mb": {
+          "median": 2.56,
+          "mean": 2.56,
+          "min": 2.56,
+          "max": 2.56,
+          "range": [
+            2.56,
+            2.56
+          ]
+        },
+        "dense_simd_recall_p50_ms": {
+          "median": 16.32,
+          "mean": 13.76,
+          "min": 7.71,
+          "max": 17.24,
+          "range": [
+            7.71,
+            17.24
+          ]
+        },
+        "dense_simd_recall_p95_ms": {
+          "median": 21.76,
+          "mean": 21.44,
+          "min": 11.71,
+          "max": 30.84,
+          "range": [
+            11.71,
+            30.84
+          ]
+        },
+        "project_brief_p50_ms": {
+          "median": 3.77,
+          "mean": 3.35,
+          "min": 2.19,
+          "max": 4.1,
+          "range": [
+            2.19,
+            4.1
+          ]
+        },
+        "peak_ram_mb": {
+          "median": 217.59,
+          "mean": 217.96,
+          "min": 217.53,
+          "max": 218.76,
+          "range": [
+            217.53,
+            218.76
+          ]
+        },
+        "ram_delta_mb": {
+          "median": 181.71,
+          "mean": 181.94,
+          "min": 181.65,
+          "max": 182.45,
+          "range": [
+            181.65,
+            182.45
+          ]
+        }
+      },
+      "all_repeats": [
+        {
+          "target_scale": 1000,
+          "workload_type": "Short Synthetic Facts (~150 chars)",
+          "ingest_wall_sec": 18.51,
+          "ingest_throughput_wps": 54.04,
+          "pure_db_size_mb": 2.555,
+          "dense_simd_recall_p50_ms": 7.71,
+          "dense_simd_recall_p95_ms": 11.71,
+          "project_brief_p50_ms": 2.19,
+          "initial_ram_mb": 35.93,
+          "peak_ram_mb": 217.59,
+          "ram_delta_mb": 181.65,
+          "raw_query_samples_ms": [
+            6.59,
+            7.06,
+            7.22,
+            7.25,
+            7.27,
+            7.27,
+            7.4,
+            7.43,
+            7.44,
+            7.55,
+            7.59,
+            7.59,
+            7.6,
+            7.71,
+            7.77,
+            7.91,
+            8.28,
+            8.33,
+            8.47,
+            8.64,
+            8.69,
+            8.92,
+            9.19,
+            10.04,
+            10.58,
+            11.71,
+            12.91
+          ]
+        },
+        {
+          "target_scale": 1000,
+          "workload_type": "Short Synthetic Facts (~150 chars)",
+          "ingest_wall_sec": 17.86,
+          "ingest_throughput_wps": 56.0,
+          "pure_db_size_mb": 2.555,
+          "dense_simd_recall_p50_ms": 17.24,
+          "dense_simd_recall_p95_ms": 30.84,
+          "project_brief_p50_ms": 3.77,
+          "initial_ram_mb": 35.82,
+          "peak_ram_mb": 217.53,
+          "ram_delta_mb": 181.71,
+          "raw_query_samples_ms": [
+            12.72,
+            14.89,
+            15.48,
+            15.65,
+            15.72,
+            15.91,
+            15.94,
+            16.52,
+            16.56,
+            17.01,
+            17.06,
+            17.08,
+            17.18,
+            17.24,
+            17.35,
+            17.39,
+            17.48,
+            17.52,
+            17.61,
+            18.36,
+            18.49,
+            20.04,
+            20.11,
+            21.81,
+            26.56,
+            30.84,
+            45.34
+          ]
+        },
+        {
+          "target_scale": 1000,
+          "workload_type": "Short Synthetic Facts (~150 chars)",
+          "ingest_wall_sec": 17.64,
+          "ingest_throughput_wps": 56.7,
+          "pure_db_size_mb": 2.555,
+          "dense_simd_recall_p50_ms": 16.32,
+          "dense_simd_recall_p95_ms": 21.76,
+          "project_brief_p50_ms": 4.1,
+          "initial_ram_mb": 36.31,
+          "peak_ram_mb": 218.76,
+          "ram_delta_mb": 182.45,
+          "raw_query_samples_ms": [
+            10.22,
+            10.52,
+            10.57,
+            11.45,
+            12.46,
+            12.46,
+            12.87,
+            13.74,
+            14.67,
+            14.85,
+            15.27,
+            15.37,
+            16.19,
+            16.32,
+            16.49,
+            16.57,
+            16.95,
+            17.51,
+            17.69,
+            18.08,
+            18.23,
+            18.34,
+            19.73,
+            20.88,
+            21.21,
+            21.76,
+            31.78
+          ]
+        }
+      ]
+    },
+    "scale_5000": {
+      "cold_run_headline": {
+        "target_scale": 5000,
+        "workload_type": "Short Synthetic Facts (~150 chars)",
+        "ingest_wall_sec": 81.1,
+        "ingest_throughput_wps": 61.66,
+        "pure_db_size_mb": 12.539,
+        "dense_simd_recall_p50_ms": 53.25,
+        "dense_simd_recall_p95_ms": 74.55,
+        "project_brief_p50_ms": 6.1,
+        "initial_ram_mb": 39.47,
+        "peak_ram_mb": 300.55,
+        "ram_delta_mb": 261.08,
+        "raw_query_samples_ms": [
+          23.51,
+          24.36,
+          24.5,
+          25.62,
+          26.01,
+          26.65,
+          26.9,
+          27.81,
+          29.19,
+          37.08,
+          48.01,
+          50.38,
+          52.53,
+          53.25,
+          54.54,
+          54.96,
+          55.94,
+          56.25,
+          57.49,
+          58.06,
+          58.92,
+          61.99,
+          62.02,
+          68.59,
+          71.67,
+          74.55,
+          123.27
+        ]
+      },
+      "stats": {
+        "ingest_wall_sec": {
+          "median": 81.1,
+          "mean": 81.62,
+          "min": 80.22,
+          "max": 83.54,
+          "range": [
+            80.22,
+            83.54
+          ]
+        },
+        "ingest_throughput_wps": {
+          "median": 61.66,
+          "mean": 61.28,
+          "min": 59.85,
+          "max": 62.33,
+          "range": [
+            59.85,
+            62.33
+          ]
+        },
+        "pure_db_size_mb": {
+          "median": 12.54,
+          "mean": 12.54,
+          "min": 12.54,
+          "max": 12.54,
+          "range": [
+            12.54,
+            12.54
+          ]
+        },
+        "dense_simd_recall_p50_ms": {
+          "median": 51.75,
+          "mean": 44.71,
+          "min": 29.13,
+          "max": 53.25,
+          "range": [
+            29.13,
+            53.25
+          ]
+        },
+        "dense_simd_recall_p95_ms": {
+          "median": 74.55,
+          "mean": 109.11,
+          "min": 63.91,
+          "max": 188.88,
+          "range": [
+            63.91,
+            188.88
+          ]
+        },
+        "project_brief_p50_ms": {
+          "median": 6.1,
+          "mean": 6.73,
+          "min": 4.54,
+          "max": 9.55,
+          "range": [
+            4.54,
+            9.55
+          ]
+        },
+        "peak_ram_mb": {
+          "median": 300.55,
+          "mean": 300.64,
+          "min": 300.14,
+          "max": 301.23,
+          "range": [
+            300.14,
+            301.23
+          ]
+        },
+        "ram_delta_mb": {
+          "median": 261.08,
+          "mean": 261.27,
+          "min": 260.79,
+          "max": 261.93,
+          "range": [
+            260.79,
+            261.93
+          ]
+        }
+      },
+      "all_repeats": [
+        {
+          "target_scale": 5000,
+          "workload_type": "Short Synthetic Facts (~150 chars)",
+          "ingest_wall_sec": 81.1,
+          "ingest_throughput_wps": 61.66,
+          "pure_db_size_mb": 12.539,
+          "dense_simd_recall_p50_ms": 53.25,
+          "dense_simd_recall_p95_ms": 74.55,
+          "project_brief_p50_ms": 6.1,
+          "initial_ram_mb": 39.47,
+          "peak_ram_mb": 300.55,
+          "ram_delta_mb": 261.08,
+          "raw_query_samples_ms": [
+            23.51,
+            24.36,
+            24.5,
+            25.62,
+            26.01,
+            26.65,
+            26.9,
+            27.81,
+            29.19,
+            37.08,
+            48.01,
+            50.38,
+            52.53,
+            53.25,
+            54.54,
+            54.96,
+            55.94,
+            56.25,
+            57.49,
+            58.06,
+            58.92,
+            61.99,
+            62.02,
+            68.59,
+            71.67,
+            74.55,
+            123.27
+          ]
+        },
+        {
+          "target_scale": 5000,
+          "workload_type": "Short Synthetic Facts (~150 chars)",
+          "ingest_wall_sec": 80.22,
+          "ingest_throughput_wps": 62.33,
+          "pure_db_size_mb": 12.539,
+          "dense_simd_recall_p50_ms": 51.75,
+          "dense_simd_recall_p95_ms": 63.91,
+          "project_brief_p50_ms": 4.54,
+          "initial_ram_mb": 39.31,
+          "peak_ram_mb": 301.23,
+          "ram_delta_mb": 261.93,
+          "raw_query_samples_ms": [
+            30.87,
+            33.27,
+            39.04,
+            39.32,
+            40.2,
+            47.51,
+            49.03,
+            49.26,
+            50.6,
+            50.83,
+            51.16,
+            51.34,
+            51.68,
+            51.75,
+            52.3,
+            53.74,
+            53.86,
+            54.46,
+            55.89,
+            56.05,
+            56.8,
+            57.11,
+            59.33,
+            59.83,
+            63.72,
+            63.91,
+            83.34
+          ]
+        },
+        {
+          "target_scale": 5000,
+          "workload_type": "Short Synthetic Facts (~150 chars)",
+          "ingest_wall_sec": 83.54,
+          "ingest_throughput_wps": 59.85,
+          "pure_db_size_mb": 12.539,
+          "dense_simd_recall_p50_ms": 29.13,
+          "dense_simd_recall_p95_ms": 188.88,
+          "project_brief_p50_ms": 9.55,
+          "initial_ram_mb": 39.35,
+          "peak_ram_mb": 300.14,
+          "ram_delta_mb": 260.79,
+          "raw_query_samples_ms": [
+            24.05,
+            24.61,
+            24.78,
+            25.12,
+            25.37,
+            25.76,
+            27.1,
+            27.31,
+            27.51,
+            27.62,
+            27.79,
+            28.03,
+            28.66,
+            29.13,
+            29.42,
+            29.48,
+            30.0,
+            54.38,
+            55.28,
+            55.46,
+            57.59,
+            57.66,
+            61.0,
+            63.56,
+            123.53,
+            188.88,
+            191.79
+          ]
+        }
+      ]
+    },
+    "scale_10000": {
+      "cold_run_headline": {
+        "target_scale": 10000,
+        "workload_type": "Short Synthetic Facts (~150 chars)",
+        "ingest_wall_sec": 164.12,
+        "ingest_throughput_wps": 60.93,
+        "pure_db_size_mb": 24.742,
+        "dense_simd_recall_p50_ms": 76.52,
+        "dense_simd_recall_p95_ms": 142.88,
+        "project_brief_p50_ms": 22.75,
+        "initial_ram_mb": 43.2,
+        "peak_ram_mb": 391.42,
+        "ram_delta_mb": 348.22,
+        "raw_query_samples_ms": [
+          49.92,
+          49.97,
+          50.91,
+          51.04,
+          52.8,
+          53.37,
+          54.66,
+          54.76,
+          54.97,
+          57.12,
+          61.64,
+          65.17,
+          75.86,
+          76.52,
+          82.06,
+          99.32,
+          99.62,
+          100.2,
+          102.99,
+          105.05,
+          106.52,
+          108.69,
+          110.47,
+          114.27,
+          118.57,
+          142.88,
+          174.05
+        ]
+      },
+      "stats": {
+        "ingest_wall_sec": {
+          "median": 164.12,
+          "mean": 166.16,
+          "min": 162.96,
+          "max": 171.4,
+          "range": [
+            162.96,
+            171.4
+          ]
+        },
+        "ingest_throughput_wps": {
+          "median": 60.93,
+          "mean": 60.21,
+          "min": 58.34,
+          "max": 61.37,
+          "range": [
+            58.34,
+            61.37
+          ]
+        },
+        "pure_db_size_mb": {
+          "median": 24.74,
+          "mean": 24.74,
+          "min": 24.74,
+          "max": 24.74,
+          "range": [
+            24.74,
+            24.74
+          ]
+        },
+        "dense_simd_recall_p50_ms": {
+          "median": 101.23,
+          "mean": 101.48,
+          "min": 76.52,
+          "max": 126.68,
+          "range": [
+            76.52,
+            126.68
+          ]
+        },
+        "dense_simd_recall_p95_ms": {
+          "median": 142.88,
+          "mean": 151.71,
+          "min": 135.33,
+          "max": 176.93,
+          "range": [
+            135.33,
+            176.93
+          ]
+        },
+        "project_brief_p50_ms": {
+          "median": 20.5,
+          "mean": 20.38,
+          "min": 17.9,
+          "max": 22.75,
+          "range": [
+            17.9,
+            22.75
+          ]
+        },
+        "peak_ram_mb": {
+          "median": 391.42,
+          "mean": 391.55,
+          "min": 391.1,
+          "max": 392.12,
+          "range": [
+            391.1,
+            392.12
+          ]
+        },
+        "ram_delta_mb": {
+          "median": 348.22,
+          "mean": 348.15,
+          "min": 347.52,
+          "max": 348.71,
+          "range": [
+            347.52,
+            348.71
+          ]
+        }
+      },
+      "all_repeats": [
+        {
+          "target_scale": 10000,
+          "workload_type": "Short Synthetic Facts (~150 chars)",
+          "ingest_wall_sec": 164.12,
+          "ingest_throughput_wps": 60.93,
+          "pure_db_size_mb": 24.742,
+          "dense_simd_recall_p50_ms": 76.52,
+          "dense_simd_recall_p95_ms": 142.88,
+          "project_brief_p50_ms": 22.75,
+          "initial_ram_mb": 43.2,
+          "peak_ram_mb": 391.42,
+          "ram_delta_mb": 348.22,
+          "raw_query_samples_ms": [
+            49.92,
+            49.97,
+            50.91,
+            51.04,
+            52.8,
+            53.37,
+            54.66,
+            54.76,
+            54.97,
+            57.12,
+            61.64,
+            65.17,
+            75.86,
+            76.52,
+            82.06,
+            99.32,
+            99.62,
+            100.2,
+            102.99,
+            105.05,
+            106.52,
+            108.69,
+            110.47,
+            114.27,
+            118.57,
+            142.88,
+            174.05
+          ]
+        },
+        {
+          "target_scale": 10000,
+          "workload_type": "Short Synthetic Facts (~150 chars)",
+          "ingest_wall_sec": 171.4,
+          "ingest_throughput_wps": 58.34,
+          "pure_db_size_mb": 24.742,
+          "dense_simd_recall_p50_ms": 126.68,
+          "dense_simd_recall_p95_ms": 176.93,
+          "project_brief_p50_ms": 20.5,
+          "initial_ram_mb": 43.58,
+          "peak_ram_mb": 391.1,
+          "ram_delta_mb": 347.52,
+          "raw_query_samples_ms": [
+            60.1,
+            63.24,
+            64.68,
+            74.37,
+            75.09,
+            78.13,
+            78.19,
+            109.95,
+            115.95,
+            117.85,
+            120.02,
+            123.26,
+            125.01,
+            126.68,
+            129.28,
+            131.42,
+            134.39,
+            139.12,
+            140.05,
+            140.26,
+            146.1,
+            146.36,
+            147.77,
+            150.61,
+            155.53,
+            176.93,
+            232.75
+          ]
+        },
+        {
+          "target_scale": 10000,
+          "workload_type": "Short Synthetic Facts (~150 chars)",
+          "ingest_wall_sec": 162.96,
+          "ingest_throughput_wps": 61.37,
+          "pure_db_size_mb": 24.742,
+          "dense_simd_recall_p50_ms": 101.23,
+          "dense_simd_recall_p95_ms": 135.33,
+          "project_brief_p50_ms": 17.9,
+          "initial_ram_mb": 43.42,
+          "peak_ram_mb": 392.12,
+          "ram_delta_mb": 348.71,
+          "raw_query_samples_ms": [
+            48.71,
+            48.93,
+            49.73,
+            49.9,
+            50.97,
+            53.33,
+            53.39,
+            55.61,
+            56.13,
+            66.09,
+            73.88,
+            96.3,
+            100.22,
+            101.23,
+            102.39,
+            103.35,
+            105.59,
+            105.6,
+            106.76,
+            107.51,
+            108.01,
+            110.43,
+            111.66,
+            112.29,
+            124.76,
+            135.33,
+            135.85
+          ]
+        }
+      ]
+    },
+    "scale_1000_realistic": {
+      "cold_run_headline": {
+        "target_scale": 1000,
+        "workload_type": "LongMemEval-S Realistic Text (~500 chars)",
+        "ingest_wall_sec": 278.69,
+        "ingest_throughput_wps": 3.59,
+        "pure_db_size_mb": 5.93,
+        "dense_simd_recall_p50_ms": 30.15,
+        "dense_simd_recall_p95_ms": 49.35,
+        "project_brief_p50_ms": 1.64,
+        "initial_ram_mb": 36.99,
+        "peak_ram_mb": 772.59,
+        "ram_delta_mb": 735.6,
+        "raw_query_samples_ms": [
+          10.2,
+          11.33,
+          14.0,
+          16.29,
+          16.57,
+          16.75,
+          18.36,
+          19.19,
+          21.28,
+          21.9,
+          22.18,
+          22.23,
+          25.22,
+          30.15,
+          32.51,
+          33.08,
+          33.63,
+          39.09,
+          41.5,
+          41.84,
+          42.31,
+          42.84,
+          43.76,
+          45.49,
+          47.51,
+          49.35,
+          71.32
+        ]
+      },
+      "stats": {
+        "ingest_wall_sec": {
+          "median": 273.05,
+          "mean": 270.17,
+          "min": 258.78,
+          "max": 278.69,
+          "range": [
+            258.78,
+            278.69
+          ]
+        },
+        "ingest_throughput_wps": {
+          "median": 3.66,
+          "mean": 3.7,
+          "min": 3.59,
+          "max": 3.86,
+          "range": [
+            3.59,
+            3.86
+          ]
+        },
+        "pure_db_size_mb": {
+          "median": 5.93,
+          "mean": 5.93,
+          "min": 5.93,
+          "max": 5.93,
+          "range": [
+            5.93,
+            5.93
+          ]
+        },
+        "dense_simd_recall_p50_ms": {
+          "median": 32.43,
+          "mean": 31.84,
+          "min": 30.15,
+          "max": 32.95,
+          "range": [
+            30.15,
+            32.95
+          ]
+        },
+        "dense_simd_recall_p95_ms": {
+          "median": 49.35,
+          "mean": 52.0,
+          "min": 48.05,
+          "max": 58.61,
+          "range": [
+            48.05,
+            58.61
+          ]
+        },
+        "project_brief_p50_ms": {
+          "median": 1.64,
+          "mean": 1.89,
+          "min": 1.51,
+          "max": 2.53,
+          "range": [
+            1.51,
+            2.53
+          ]
+        },
+        "peak_ram_mb": {
+          "median": 771.25,
+          "mean": 770.08,
+          "min": 766.39,
+          "max": 772.59,
+          "range": [
+            766.39,
+            772.59
+          ]
+        },
+        "ram_delta_mb": {
+          "median": 734.15,
+          "mean": 733.17,
+          "min": 729.76,
+          "max": 735.6,
+          "range": [
+            729.76,
+            735.6
+          ]
+        }
+      },
+      "all_repeats": [
+        {
+          "target_scale": 1000,
+          "workload_type": "LongMemEval-S Realistic Text (~500 chars)",
+          "ingest_wall_sec": 278.69,
+          "ingest_throughput_wps": 3.59,
+          "pure_db_size_mb": 5.93,
+          "dense_simd_recall_p50_ms": 30.15,
+          "dense_simd_recall_p95_ms": 49.35,
+          "project_brief_p50_ms": 1.64,
+          "initial_ram_mb": 36.99,
+          "peak_ram_mb": 772.59,
+          "ram_delta_mb": 735.6,
+          "raw_query_samples_ms": [
+            10.2,
+            11.33,
+            14.0,
+            16.29,
+            16.57,
+            16.75,
+            18.36,
+            19.19,
+            21.28,
+            21.9,
+            22.18,
+            22.23,
+            25.22,
+            30.15,
+            32.51,
+            33.08,
+            33.63,
+            39.09,
+            41.5,
+            41.84,
+            42.31,
+            42.84,
+            43.76,
+            45.49,
+            47.51,
+            49.35,
+            71.32
+          ]
+        },
+        {
+          "target_scale": 1000,
+          "workload_type": "LongMemEval-S Realistic Text (~500 chars)",
+          "ingest_wall_sec": 273.05,
+          "ingest_throughput_wps": 3.66,
+          "pure_db_size_mb": 5.93,
+          "dense_simd_recall_p50_ms": 32.95,
+          "dense_simd_recall_p95_ms": 58.61,
+          "project_brief_p50_ms": 2.53,
+          "initial_ram_mb": 37.11,
+          "peak_ram_mb": 771.25,
+          "ram_delta_mb": 734.15,
+          "raw_query_samples_ms": [
+            11.71,
+            12.04,
+            14.26,
+            14.31,
+            16.53,
+            18.29,
+            20.05,
+            20.71,
+            21.13,
+            22.76,
+            23.88,
+            28.18,
+            32.9,
+            32.95,
+            35.64,
+            36.22,
+            36.62,
+            36.98,
+            38.29,
+            43.15,
+            44.17,
+            44.26,
+            48.7,
+            51.95,
+            54.27,
+            58.61,
+            59.91
+          ]
+        },
+        {
+          "target_scale": 1000,
+          "workload_type": "LongMemEval-S Realistic Text (~500 chars)",
+          "ingest_wall_sec": 258.78,
+          "ingest_throughput_wps": 3.86,
+          "pure_db_size_mb": 5.93,
+          "dense_simd_recall_p50_ms": 32.43,
+          "dense_simd_recall_p95_ms": 48.05,
+          "project_brief_p50_ms": 1.51,
+          "initial_ram_mb": 36.63,
+          "peak_ram_mb": 766.39,
+          "ram_delta_mb": 729.76,
+          "raw_query_samples_ms": [
+            18.28,
+            20.79,
+            22.22,
+            24.77,
+            24.89,
+            26.04,
+            27.5,
+            28.91,
+            30.25,
+            30.37,
+            31.07,
+            32.04,
+            32.29,
+            32.43,
+            33.79,
+            38.09,
+            39.64,
+            41.44,
+            42.1,
+            43.46,
+            44.49,
+            46.43,
+            47.32,
+            47.47,
+            47.54,
+            48.05,
+            77.1
+          ]
+        }
+      ]
+    }
+  }
+}

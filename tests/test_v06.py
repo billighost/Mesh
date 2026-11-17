@@ -13,10 +13,11 @@ Covers:
 from __future__ import annotations
 
 import concurrent.futures
+import contextlib
 import json
 import math
 import os
-import sqlite3
+from mesh.sqlite_runtime import sqlite3
 import stat
 import tempfile
 import time
@@ -28,6 +29,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from mesh import Mesh
+from mesh.crypto import decrypt_text_if_encrypted
 from mesh.audit import (
     _get_audit_db_path,
     ensure_secure_mesh_dir,
@@ -208,9 +210,16 @@ def test_update_scrubs_audit_log_and_contradictions():
         r = mesh.learn("The staging deployment host is server12345")
         mid = r["memory_id"]
 
-        # Check that audit log has the content
+        # Current audit responses contain only metadata. Simulate a historical
+        # body on disk to keep exercising the upgrade-era erasure contract.
         logs_before = get_audit_log(ns)
-        assert any("server12345" in (e.get("content") or "") for e in logs_before)
+        assert any(e.get("memory_id") == mid for e in logs_before)
+        assert all(e.get("content") is None for e in logs_before)
+        audit_path = _get_audit_db_path(ns)
+        with contextlib.closing(sqlite3.connect(audit_path)) as conn:
+            conn.execute("UPDATE audit_log SET content=? WHERE namespace=? AND memory_id=? AND action='learn'",
+                         ("The staging deployment host is server12345", ns, mid))
+            conn.commit()
 
         # Update memory to redact secret and mark local_only
         mesh.update(mid, content="The staging deployment host is [REDACTED]", local_only=True)
@@ -219,21 +228,34 @@ def test_update_scrubs_audit_log_and_contradictions():
         for entry in logs_after:
             if entry["action"] == "learn" and entry.get("memory_id") == mid:
                 assert "server12345" not in (entry.get("content") or "")
-                assert entry.get("content") in ("[REDACTED local_only memory]", "[REDACTED_CONTENT]", "[UPDATED_CONTENT]", "[PURGED]")
+                assert entry.get("content") is None
+        with contextlib.closing(sqlite3.connect(audit_path)) as conn:
+            stored = conn.execute("SELECT content FROM audit_log WHERE namespace=? AND memory_id=? AND action='learn'",
+                                  (ns, mid)).fetchall()
+        assert stored
+        assert all("server12345" not in (decrypt_text_if_encrypted(row[0]) or "") for row in stored)
     finally:
         _cleanup(ns)
 
 
-def test_forget_secure_delete_and_query_scrubbing():
+def test_forget_secure_delete_and_query_scrubbing(monkeypatch):
     """forget() scrubs audit_log, removes queries rows, and enforces PRAGMA secure_delete=1."""
     ns = "test_forget_secure_delete"
+    monkeypatch.setenv("MESH_LOG_QUERY_TEXT", "1")
     try:
         mesh = Mesh(namespace=ns, agent_id="test")
         r = mesh.learn("Temporary auth code 987654")
         mid = r["memory_id"]
+        audit_path = _get_audit_db_path(ns)
+        assert any(entry.get("memory_id") == mid for entry in get_audit_log(ns))
+        with contextlib.closing(sqlite3.connect(audit_path)) as conn:
+            conn.execute("UPDATE audit_log SET content=? WHERE namespace=? AND memory_id=? AND action='learn'",
+                         ("Temporary auth code 987654", ns, mid))
+            conn.commit()
 
         # Perform a query that gets logged in queries table
         mesh.store.log_query("Temporary auth code 987654", "test", 0.95, 1)
+        mesh.store.flush_telemetry()
 
         # Verify secure_delete is active on MeshStore connections
         with mesh.store._connect() as conn:
@@ -248,10 +270,15 @@ def test_forget_secure_delete_and_query_scrubbing():
         for entry in logs:
             if entry.get("memory_id") == mid and entry["action"] in ("learn", "update"):
                 assert "987654" not in (entry.get("content") or "")
-                assert entry.get("content") == "[PURGED]"
+                assert entry.get("content") is None
+        with contextlib.closing(sqlite3.connect(audit_path)) as conn:
+            stored = conn.execute("SELECT content FROM audit_log WHERE namespace=? AND memory_id=? AND action='learn'",
+                                  (ns, mid)).fetchall()
+        assert stored
+        assert all(decrypt_text_if_encrypted(row[0]) == "[PURGED]" for row in stored)
 
         # Check queries table
-        with sqlite3.connect(mesh.store.db_path) as conn:
+        with contextlib.closing(sqlite3.connect(mesh.store.db_path)) as conn:
             matching_q = conn.execute(
                 "SELECT COUNT(*) FROM queries WHERE query_text = 'Temporary auth code 987654'"
             ).fetchone()[0]

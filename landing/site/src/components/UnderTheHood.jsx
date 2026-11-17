@@ -6,9 +6,11 @@ const specRows = [
   ["Storage", "SQLite WAL per namespace, ~/.mesh/, mode 0700"],
   ["Embeddings", "all-MiniLM-L6-v2 ONNX, 384d, optional ~90 MB download"],
   ["Fallback", "hash-384 feature-hash engine, <0.05 ms, auto-heals when ONNX arrives"],
-  ["Retrieval", "dense + BM25 + IDF + synonyms + exact tokens"],
-  ["Interfaces", "MCP (10 tools), HTTP REST, CLI, Python SDK, dashboard"],
-  ["Runtime", "Python 3.10+, MIT, v0.7.2"],
+  ["Retrieval", "dense + BM25 + IDF + synonyms + exact tokens — 5 stages fused"],
+  ["Interfaces", "MCP (17 tools), HTTP REST, CLI, Python SDK, dashboard"],
+  ["Tasks / Goals", "work_items table, separate from memories — status, priority, events, evidence"],
+  ["Secrets", "secret_ref pointers (env://, keyring://, op://), redaction, OS keyring vault"],
+  ["Runtime", "Python 3.10+, MIT, v0.8.3"],
   ["Network", "Local by default; cloud log sync and update checks are opt-in"],
 ];
 
@@ -20,8 +22,8 @@ export default function UnderTheHood() {
           index="05"
           route="UNDER THE HOOD"
           id="under-title"
-          title="A small local engine, not a cloud dependency."
-          lede="Mesh stores memory in SQLite WAL, embeds locally, and fuses five retrieval signals. It starts in milliseconds, works offline, and asks before it does anything in the background."
+          title="A small local engine. No cloud dependency."
+          lede="Mesh stores memory in SQLite WAL, embeds locally via ONNX, fuses five retrieval signals, tracks goals and tasks in a separate ledger, and handles secret pointers — all in one package, all on your machine."
           meta="local engine / documented figures"
         />
 
@@ -53,7 +55,7 @@ export default function UnderTheHood() {
         </div>
         <div className="arch__foot">
           <span className="presence-dot" aria-hidden="true">●</span>
-          local only · no external daemon · mode 0700
+          local only · no external daemon · mode 0700 · 17 MCP tools
         </div>
 
         <div className="under__grid">
@@ -69,17 +71,21 @@ export default function UnderTheHood() {
           <div className="doctor">
             <div className="doctor__bar">example output / mesh doctor</div>
             <div className="doctor__body">
-              <div><span className="term-ok">ok</span>sqlite fts5</div>
+              <div><span className="term-ok">ok</span>sqlite fts5 / porter stemming</div>
               <div><span className="term-ok">ok</span>permissions 0700</div>
-              <div><span className="term-ok">ok</span>onnx sha256</div>
+              <div><span className="term-ok">ok</span>onnx sha256 / 384d model</div>
+              <div><span className="term-ok">ok</span>17 mcp tools defined</div>
               <div><span className="term-ok">ok</span>daemon + mcp config</div>
             </div>
           </div>
         </div>
 
         <p className="footnote">
-          Performance figures are the documented dense-cosine and hash-384 fallback
-          figures, not an end-to-end benchmark.
+          Performance figures are from{" "}
+          <code className="inline-code">benchmarks/RESULTS.md</code>{" "}
+          — Mesh v0.8.3, Windows 11 AMD64, Python 3.14.0. Run{" "}
+          <code className="inline-code">benchmark_all_surfaces.py</code>{" "}
+          to measure on your hardware.
         </p>
       </div>
     </section>

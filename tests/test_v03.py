@@ -1,13 +1,16 @@
 """Tests for Mesh v0.3: privacy flags, export/import, namespace management."""
 
 import json
+import os
+import shutil
+import sys
 import tempfile
 from pathlib import Path
 
 import pytest
 
 from mesh import Mesh
-from mesh.io import export_namespace, import_namespace
+from mesh.io import export_namespace, import_namespace, sanitize_csv_cell
 from mesh.namespaces import (
     delete_namespace,
     list_namespaces,
@@ -18,12 +21,27 @@ from mesh.store import NamespaceNotFoundError
 from mesh.version import VERSION
 
 
+@pytest.fixture(autouse=True)
+def isolated_test_env(tmp_path, monkeypatch):
+    """Ensure all v0.3 tests run in an isolated temporary MESH_HOME directory."""
+    mesh_home = tmp_path / "mesh_home"
+    mesh_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("MESH_HOME", str(mesh_home))
+    monkeypatch.setenv("MESH_NO_AUTO_DAEMON", "1")
+    monkeypatch.setenv("MESH_AUTO_APPROVE", "0")
+    monkeypatch.delenv("MESH_ENCRYPT_AT_REST", raising=False)
+    monkeypatch.delenv("MESH_ENCRYPTION_KEY", raising=False)
+    monkeypatch.delenv("MESH_PASSPHRASE", raising=False)
+    yield mesh_home
+
+
 def _cleanup_ns(namespace: str) -> None:
     """Cleanup is best-effort: 0.6.3 made deleting a missing namespace an error."""
     try:
         delete_namespace(namespace)
     except NamespaceNotFoundError:
         pass
+
 
 
 # --- Privacy Flag Tests ---
@@ -250,3 +268,141 @@ def test_namespace_stats_accuracy():
         assert stats["exportable_count"] == 1
     finally:
         delete_namespace("test_ns_stats")
+
+
+def test_export_csv_formula_injection_protection(tmp_path):
+    """
+    Verify CSV export neutralizes formula injection (CWE-1236)
+    while preserving commas, quotes, multiline text, and Unicode.
+    """
+    import csv
+    from mesh.io import export_namespace
+
+    ns = "test_csv_formulas"
+    mesh = Mesh(namespace=ns, agent_id="test")
+
+    try:
+        # Ingest formula injection attempts and special characters
+        mesh.learn("=cmd|' /C calc'!A0", tags=["cwe1236", "calc"])
+        mesh.learn("+12345-formula", tags=["plus"])
+        mesh.learn("-1+1", tags=["minus"])
+        mesh.learn("@SUM(A1:B10)", tags=["at"])
+        mesh.learn("\t=tab_formula", tags=["tab"])
+        mesh.learn("\r=cr_formula", tags=["cr"])
+        mesh.learn("   =spaced_formula", tags=["space"])
+        mesh.learn('Regular, with "quotes", and\nnewlines and Unicode 🚀', tags=["benign", "unicode"])
+
+        csv_path = tmp_path / "export.csv"
+        export_namespace(namespace=ns, output_path=str(csv_path), format="csv")
+
+        assert csv_path.exists()
+        with open(csv_path, "r", encoding="utf-8", newline="") as f:
+            reader = list(csv.reader(f))
+
+        headers = reader[0]
+        assert "content" in headers
+        content_idx = headers.index("content")
+
+        contents = [row[content_idx] for row in reader[1:]]
+
+        # Verify unit behavior of sanitize_csv_cell
+        assert sanitize_csv_cell("\t=raw_tab") == "'\t=raw_tab"
+        assert sanitize_csv_cell("\r=raw_cr") == "'\r=raw_cr"
+        assert sanitize_csv_cell("=SUM(A1)") == "'=SUM(A1)"
+        assert sanitize_csv_cell("+cmd") == "'+cmd"
+        assert sanitize_csv_cell("-1+1") == "'-1+1"
+        assert sanitize_csv_cell("@SUM") == "'@SUM"
+        assert sanitize_csv_cell("   =spaced") == "'   =spaced"
+        assert sanitize_csv_cell("safe text") == "safe text"
+
+        # Verify all formula injection strings in CSV are prefixed with single quote (')
+        assert any(c.startswith("'=cmd|") for c in contents)
+        assert any(c.startswith("'+12345") for c in contents)
+        assert any(c.startswith("'-1+1") for c in contents)
+        assert any(c.startswith("'@SUM") for c in contents)
+        assert any(c.startswith("'=tab_formula") for c in contents)
+        assert any(c.startswith("'=cr_formula") for c in contents)
+        assert any(c.startswith("'=spaced_formula") for c in contents)
+
+        # Verify benign special character text parses correctly
+        benign_found = False
+        for c in contents:
+            if 'Regular, with "quotes"' in c and "Unicode 🚀" in c:
+                benign_found = True
+                assert not c.startswith("'")
+        assert benign_found, "Benign unicode text with quotes and newlines was not preserved properly"
+
+    finally:
+        delete_namespace(ns)
+
+
+def test_export_markdown_format(tmp_path):
+    """Verify Markdown export format produces structured human-readable markdown without vectors."""
+    from mesh.io import export_namespace
+
+    ns = "test_md_export"
+    mesh = Mesh(namespace=ns, agent_id="tester")
+
+    try:
+        mesh.learn("PostgreSQL 16 runs on port 5432", tags=["db", "infra"], memory_type="fact")
+        mesh.create_work_item(title="Set up database cluster", kind="task", priority="high")
+
+        md_path = tmp_path / "export.md"
+        export_namespace(namespace=ns, output_path=str(md_path), format="markdown")
+
+        assert md_path.exists()
+        text = md_path.read_text(encoding="utf-8")
+
+        assert f"# Mesh Export: {ns}" in text
+        assert "## Memories" in text
+        assert "PostgreSQL 16 runs on port 5432" in text
+        assert "## Work Items" in text
+        assert "Set up database cluster" in text
+        # Embeddings should not appear in Markdown export
+        assert "embedding" not in text.lower() or "no embeddings" in text.lower()
+
+    finally:
+        delete_namespace(ns)
+
+
+def test_export_cli_format_inference_and_flag(tmp_path, monkeypatch):
+    """Verify mesh export CLI infers format from extension and supports --format."""
+    from mesh.cli import export_cmd
+
+    ns = "test_cli_formats"
+    mesh = Mesh(namespace=ns, agent_id="tester")
+
+    try:
+        mesh.learn("Fact for CLI export test")
+
+        # 1. Infer .csv
+        csv_path = tmp_path / "cli_inferred.csv"
+        monkeypatch.setattr(
+            sys, "argv", ["mesh export", str(csv_path), "--namespace", ns]
+        )
+        export_cmd()
+        assert csv_path.exists()
+        assert "id,memory_type,confidence,content" in csv_path.read_text(encoding="utf-8")
+
+        # 2. Infer .md
+        md_path = tmp_path / "cli_inferred.md"
+        monkeypatch.setattr(
+            sys, "argv", ["mesh export", str(md_path), "--namespace", ns]
+        )
+        export_cmd()
+        assert md_path.exists()
+        assert f"# Mesh Export: {ns}" in md_path.read_text(encoding="utf-8")
+
+        # 3. Explicit --format csv with generic filename
+        gen_path = tmp_path / "custom_output.txt"
+        monkeypatch.setattr(
+            sys, "argv", ["mesh export", str(gen_path), "--format", "csv", "--namespace", ns]
+        )
+        export_cmd()
+        assert gen_path.exists()
+        assert "id,memory_type,confidence,content" in gen_path.read_text(encoding="utf-8")
+
+    finally:
+        delete_namespace(ns)
+
+

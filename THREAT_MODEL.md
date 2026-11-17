@@ -176,3 +176,7 @@ flowchart LR
 - Availability under a local denial-of-service attack.
 
 If any of these are requirements, add OS-level controls (full-disk encryption, separate accounts, endpoint protection, network egress rules) rather than relying on Mesh.
+
+## 6. Independent Reviews
+
+See [docs/REVIEWS.md](docs/REVIEWS.md) for recorded qualification, coding-agent reviews and the historical independent field test. Human code and security review of Mesh 0.9.0 is unverified from the published record.

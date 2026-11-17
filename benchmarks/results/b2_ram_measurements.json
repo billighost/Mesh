@@ -1,0 +1,64 @@
+{
+  "baselines": {
+    "bare_python_interpreter_mb": 15.2,
+    "python_plus_import_mesh_mb": 15.96
+  },
+  "class_a_sdk": {
+    "mesh_sdk": {
+      "parent_mb": 0.0,
+      "worker_mb": 157.64,
+      "total_peak_mb": 157.64
+    },
+    "mem0_sdk": {
+      "parent_mb": 0.0,
+      "worker_mb": 328.4,
+      "total_peak_mb": 328.4
+    }
+  },
+  "class_b_cli": {
+    "mesh_cli_cold": {
+      "parent_mb": 0.0,
+      "cli_proc_mb": 26.45,
+      "daemon_mb": 0.0,
+      "total_peak_mb": 26.45
+    },
+    "mesh_cli_daemon": {
+      "parent_mb": 0.0,
+      "cli_proc_mb": 26.45,
+      "daemon_mb": 145.0,
+      "total_peak_mb": 171.45
+    },
+    "basic_memory_cli": {
+      "parent_mb": 0.0,
+      "cli_proc_mb": 287.07,
+      "daemon_mb": 0.0,
+      "total_peak_mb": 287.07
+    },
+    "auxly_cli": {
+      "parent_mb": 0.0,
+      "cli_proc_mb": 1.64,
+      "daemon_mb": 0.0,
+      "total_peak_mb": 1.64
+    }
+  },
+  "class_c_mcp": {
+    "mesh_mcp": {
+      "parent_client_mb": 42.5,
+      "server_proc_mb": 30.15,
+      "daemon_mb": 0.0,
+      "total_peak_mb": 72.65
+    },
+    "basic_memory_mcp": {
+      "parent_client_mb": 42.5,
+      "server_proc_mb": 3.42,
+      "daemon_mb": 0.0,
+      "total_peak_mb": 45.92
+    },
+    "auxly_mcp": {
+      "parent_client_mb": 42.5,
+      "server_proc_mb": 11.96,
+      "daemon_mb": 0.0,
+      "total_peak_mb": 54.46
+    }
+  }
+}

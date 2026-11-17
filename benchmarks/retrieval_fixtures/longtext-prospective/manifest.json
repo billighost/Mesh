@@ -1,0 +1,17 @@
+{
+  "name": "longtext-prospective",
+  "inspection_status": "previously_inspected",
+  "source_manifest_sha256": "73b04445f0317e475904b2ed0de06f10a6f11b4adad2d27240f6cbb315ec20b6",
+  "corpus_count": 15,
+  "query_count": 9,
+  "files": {
+    "corpus.jsonl": "d3bc353fe7d7927186873457f20fa707e3a0dcd48fee3e59e5b12c09543e0bdf",
+    "queries-selected.jsonl": "9c8fa151fc50fb14cad96161b8a1933187460c63d7a6d5e047aaed3dca19fa72",
+    "labels.json": "e013be8ebde702a074a71a87cf850c5a415b27cd7cfed5e3ed0528bd7f71ef28"
+  },
+  "scope": "Previously inspected bounded regression; source corpus and label bytes preserved; no independent held-out or full-benchmark claim.",
+  "labels_in_ranking_inputs": false,
+  "answered_query_count": 6,
+  "unanswered_query_count": 3,
+  "source_fixture": "Mesh synthetic direct/positional fact regression frozen before its original scoring."
+}

@@ -1,6 +1,6 @@
-# Mesh MCP Tool Reference (v0.8.3)
+# Mesh MCP Tool Reference (v0.9.0)
 
-Complete reference for all 17 Mesh Model Context Protocol (MCP) tools.
+Argument reference for Mesh memory, work items, and shared operation access.
 
 ---
 
@@ -8,9 +8,20 @@ Complete reference for all 17 Mesh Model Context Protocol (MCP) tools.
 
 ### `mesh_project_brief`
 Single-call session-start brief: loads namespace health, open goals and tasks, recently completed work, and key architecture facts within a token budget.
-- `max_tokens` (int, default: 500): Token budget cap for the brief (approximated at 4 chars/token).
+- `max_tokens` (int, 1-32768, default: 500): Estimated Markdown budget (4 chars/token); request about 2000 for startup and budget transport framing separately.
+- `max_facts` (int, 0-100, default: 20): Maximum useful current durable facts to select.
+- `fact_offset` (nonnegative int, default: 0): Continue fact selection using the returned `next_fact_offset`.
 - `include_work_items` (bool, default: true): Include open tasks, goals, and recently completed items.
 - `namespace` (string, optional): Namespace override (defaults to active project namespace).
+
+Read `facts_available`, `facts_included`, `facts_omitted`, `selected_memory_ids`,
+`next_fact_offset`, and `selection_revision`. The Markdown estimate includes its
+notices; `payload_estimated_tokens` measures the complete compact logical JSON
+payload, including its own estimate, after the surface adds response fields.
+The complete transport envelope is not capped by the Markdown budget.
+`selected_memory_ids` contains included fact IDs; `handoff_memory_id` identifies
+the separate selected handoff when present. A zero-fact tiny page may return an
+unchanged offset: use a larger justified budget or topic recall instead of looping.
 
 ### `mesh_log`
 Generate a project changelog combining completed tasks, evidence, and architectural decisions over a time window.
@@ -35,7 +46,7 @@ Create a first-class task or goal in Mesh to track work across sessions.
 ### `mesh_task_update`
 Update status, priority, or notes of an existing task or goal.
 - `item_id` (string, required): UUID or short ID (e.g. 'task-1', 'goal-2') of the work item.
-- `status` (string, enum: ["todo", "in_progress", "blocked", "done", "cancelled"], optional): New status.
+- `status` (string, enum: ["todo", "in_progress", "blocked", "done", "cancelled", "reopened"], optional): New status. `reopened` returns the item to `todo` and clears completion state.
 - `priority` (string, enum: ["low", "medium", "high", "critical"], optional): Updated priority tier.
 - `title` (string, optional): Updated title.
 - `description` (string, optional): Updated description.
@@ -71,10 +82,12 @@ Store information in shared agent memory. Deduplicates identical facts and detec
 - `local_only` (bool, default: false): Mark private to prevent export or context injection.
 - `secret_ref` (string, optional): Secret locator URI (e.g. 'env://STRIPE_KEY', 'keyring://mesh/shared/STRIPE_KEY').
 - `vault_secrets` (bool, default: false): Vault detected secrets into OS keyring and store a pointer.
+- `wait_for_indexed` (bool, default: false): Wait for neural readiness after durable acceptance; a timeout preserves the stored memory.
+- `index_timeout` (number, 0-60, default: 5): Maximum indexing wait in seconds.
 - `namespace` (string, optional): Namespace override.
 
 ### `mesh_recall`
-Search shared agent memory using 5-stage hybrid search (dense SIMD cosine + BM25/IDF + synonyms).
+Search project memory with natural language and lexical evidence. Include distinctive identifiers and read result content before making a decision.
 - `query` (string, required): Natural language query or keywords.
 - `n` (int, 1-50, default: 5): Maximum primary results.
 - `min_similarity` (number, 0.0-1.0, default: 0.0): Similarity floor.
@@ -109,6 +122,13 @@ Delete a specific memory permanently by ID (scrubbing audit & conflict logs).
 Approve a quarantined memory by ID.
 - `memory_id` (string, required): UUID or short ID prefix.
 - `namespace` (string, optional): Namespace override.
+
+`mesh_update`, `mesh_forget`, and `mesh_approve` accept optional
+`expected_revision`, `expected_incarnation`, and `expected_store_generation`
+from the recalled or inspected memory. Pass all three when acting on previously
+read evidence: an intervening edit, reused ID, replaced database, or rename
+rejects the stale mutation. Revisions are positive integers; the two identity
+tokens are lowercase 32-character hexadecimal strings.
 
 ---
 
@@ -152,3 +172,30 @@ Store session turn summary and optionally ingest local agent logs (when permitte
 - `include_history` (bool, default: false): Ingest past log tails.
 - `quarantine` (bool, optional): Quarantine ingested items.
 - `namespace` (string, optional): Namespace override.
+
+## 5. Batch Storage and Mutation Reconciliation
+
+### `mesh_learn_many`
+Store up to 128 memory items per call through the guarded, durable batch path.
+- `items` (array of objects, required): Each item contains the supported learn fields.
+- `atomic` (bool, default: true): Request an all-or-nothing batch; inspect each returned disposition.
+- `deduplicate` (bool, default: true): Apply guarded duplicate detection to each item.
+- `wait_for_indexed` (bool, default: false): Wait for neural readiness of accepted items.
+- `index_timeout` (number, 0-60, default: 5): Maximum indexing wait in seconds.
+- `namespace` (string, optional): Namespace within the reviewed connection policy.
+- `operation_id` (string, optional): Stable mutation identity for receipt lookup and same-operation reconciliation.
+
+### `mesh_task_get`
+Read one task or goal by its returned ID.
+- `item_id` (string, required): UUID or supported short work-item ID.
+- `namespace` (string, optional): Namespace within the reviewed connection policy.
+
+### `mesh_operation_get`
+Look up the durable receipt for a supported operation without replaying it.
+- `operation_id` (string, required): Original operation identity.
+- `namespace` (string, optional): Original namespace within the reviewed connection policy.
+
+Supported mutations accept an optional `operation_id`. Reuse the same ID, tool,
+arguments, namespace, store, and producer scope when reconciling an unknown
+outcome. Never change the ID to bypass a conflict. See
+[transport fallback recipes](transport_fallbacks.md).

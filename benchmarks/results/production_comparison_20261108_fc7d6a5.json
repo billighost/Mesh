@@ -1,0 +1,154 @@
+{
+  "schema_version": 1,
+  "mesh_version": "0.9.0",
+  "profile": "compact-96",
+  "old_source_commit": "e353bc1861627ec7a86f4abb1a590ece4b5c87e8",
+  "new_source_commit": "fc7d6a582f0459e0a08e5e632a629be2d5ba380f",
+  "old_production_run_id": 42378934727,
+  "new_production_run_id": 42424338605,
+  "old_summary_sha256": "9396d1372091237d194f5186030b4a153bdfd81fbf2661df9ef60675081aae83",
+  "new_summary_sha256": "e2965c5cbd10675849bee0e3134024773f4a30336968ebedc81277a26886739f",
+  "old_dataset_manifest_sha256": "8308ab214a7e779f9d0ce884e7f40fe1e5ad91d32d4794646a6e5c7ac583d857",
+  "new_dataset_manifest_sha256": "a1eca81147a3ad7e33186799099f6afc3d02e1948b2ea8f504cd9cb6cf35c68f",
+  "dataset_manifest_payloads_exported": false,
+  "manifest_difference_reason": "identical_bound_preparer_writes_prepared_at_utc",
+  "pinned_scifact_inputs": {
+    "archive_sha256": "536e14446a0ba56ed1398ab1055f39fe852686ecad24a6306c80c490fa8e0165",
+    "corpus_count": 5183,
+    "query_count": 300,
+    "positive_judgments": 339,
+    "files": {
+      "corpus.jsonl": "dec31c8182f3d744c7d2c09423756fd1d17cbef75808db13ba01cc0aab4d1ac6",
+      "queries.jsonl": "8ff84a7c903f722981cd8d595c022660140c51867b27608a6d4910db86080313",
+      "qrels/test.tsv": "0864bb985e0ca2367ba217977e72004d549054b2b06666ed9d4825ac7c21284c",
+      "queries-selected.jsonl": "20ded7eef653593fde34060aee46700e3f4e9d043e84004e581488aae5a85b45",
+      "labels.json": "9306bf40a0ff5f3bec248a2aef0b0f0631e8ab89dcfc1da6b8fb90e3c7993857"
+    }
+  },
+  "identical_preparer_git_blob_lf_sha256": "7b6442c769d045da8885f32064ff8d1f440d951e0112dc42260209c4e1f85265",
+  "fixed_setting_matches": {
+    "query_count": true,
+    "model_revision": true,
+    "model_file_sha256": true,
+    "protocol_sha256": true,
+    "schema_version": true,
+    "runtime_passage_index": true,
+    "guarded_source_immutable": true,
+    "original_parent_identity_model_and_supporting_spans_verified": true,
+    "original_fresh_default_ranks_verified": true
+  },
+  "readiness_setting_matches": {
+    "eligible_original_parent_memories": true,
+    "representation_bound_indexed_memories": true,
+    "pending_embedding_jobs": true,
+    "primary_document_inference_attempts": true,
+    "batch_limit": true,
+    "maximum_batches": true,
+    "completed_batches": true,
+    "scheduled_jobs": true,
+    "passage_raw_batch_encoding_calls": true,
+    "passage_encoded_rows": true,
+    "target_representation": true,
+    "target_model": true
+  },
+  "readiness_counters": {
+    "eligible_original_parent_memories": 5183,
+    "representation_bound_indexed_memories": 5183,
+    "pending_embedding_jobs": 0,
+    "primary_document_inference_attempts": 0,
+    "batch_limit": 32,
+    "maximum_batches": 15549,
+    "completed_batches": 240,
+    "scheduled_jobs": 5183,
+    "passage_raw_batch_encoding_calls": 3681,
+    "passage_encoded_rows": 12166,
+    "target_representation": "paragraph-sentences-v1",
+    "target_model": "onnx-minilm-l6-v2"
+  },
+  "runtime_and_dependency_versions_identical": true,
+  "resource_limits_identical": true,
+  "public_passage_ranking_metrics_unchanged_since_e353bc1": true,
+  "query_cpu_seconds": {
+    "old": 2106.859375,
+    "new": 161.0,
+    "new_minus_old": -1945.859375,
+    "new_minus_old_percent": -92.35829396539576,
+    "old_over_new_observed_ratio": 13.086083074534162
+  },
+  "query_elapsed_seconds": {
+    "old": 2119.335079000001,
+    "new": 164.2625105000011,
+    "new_minus_old": -1955.0725684999998,
+    "new_minus_old_percent": -92.2493374394809,
+    "old_over_new_observed_ratio": 12.902122782300875
+  },
+  "sequential_query_calls_per_second": {
+    "old": 0.1415538311863142,
+    "new": 1.8263449102709164,
+    "new_minus_old": 1.6847910790846021,
+    "new_minus_old_percent": 1190.2122782300873,
+    "old_over_new_observed_ratio": 0.07750662560519107
+  },
+  "query_throughput_definition": "query_count_divided_by_summed_query_call_elapsed_seconds",
+  "query_sampled_process_rss_bytes": {
+    "old": 310804480,
+    "new": 506982400,
+    "new_minus_old": 196177920,
+    "new_minus_old_percent": 63.11939905113337,
+    "old_over_new_observed_ratio": 0.61304786911735
+  },
+  "backfill_cpu_seconds": {
+    "old": 346.890625,
+    "new": 829.8125,
+    "new_minus_old": 482.921875,
+    "new_minus_old_percent": 139.21444979955857,
+    "old_over_new_observed_ratio": 0.4180349476538375
+  },
+  "backfill_elapsed_seconds": {
+    "old": 204.1023763999999,
+    "new": 464.4056726000001,
+    "new_minus_old": 260.3032962000002,
+    "new_minus_old_percent": 127.53565185828984,
+    "old_over_new_observed_ratio": 0.43949156619324176
+  },
+  "new_cache_telemetry": {
+    "version": 1,
+    "query_mode_counts": {
+      "cached": 300,
+      "streaming": 0,
+      "unreported": 0,
+      "mixed": 0,
+      "empty": 0
+    },
+    "result_mode_counts": {
+      "cached": 3000,
+      "streaming": 0,
+      "unreported": 0
+    },
+    "cache_stats_max": {
+      "limit_bytes": 268435456,
+      "charged_bytes": 251401672,
+      "cached_generations": 1,
+      "live_generations_and_builds": 1,
+      "oversized_versions": 0
+    },
+    "cache_stats_last": {
+      "limit_bytes": 268435456,
+      "charged_bytes": 251401672,
+      "cached_generations": 1,
+      "live_generations_and_builds": 1,
+      "oversized_versions": 0
+    }
+  },
+  "old_cache_mode_observation_available": false,
+  "limitations": [
+    "one_pass_per_condition",
+    "different_sources_and_separate_hosted_workers",
+    "same_hardware_type_does_not_establish_identical_host_load",
+    "different_database_ids_snapshots_and_manifest_timestamps",
+    "new_numeric_cache_telemetry_absent_from_old_run",
+    "no_generalized_speedup_quiet_latency_slo_or_default_accuracy_claim",
+    "higher_query_rss_and_more_expensive_backfill",
+    "no_confirmed_storage_speedup"
+  ]
+}

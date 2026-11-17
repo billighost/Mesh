@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import sqlite3
+from mesh.sqlite_runtime import sqlite3
 import tempfile
 import time
 from pathlib import Path
@@ -129,17 +129,26 @@ def test_future_schema_version_fails_gracefully(temp_mesh_dir):
     with sqlite3.connect(str(db_path)) as conn:
         conn.execute("PRAGMA user_version = 99")
         conn.execute("CREATE TABLE future_table (id TEXT PRIMARY KEY, payload TEXT)")
+        conn.execute("INSERT INTO future_table VALUES ('future-item', 'future-format-canary')")
         conn.commit()
 
     with pytest.raises(RuntimeError) as exc_info:
         MeshStore(namespace=ns, create=False)
 
-    assert "newer than supported version" in str(exc_info.value).lower() or "99" in str(exc_info.value)
+    error = str(exc_info.value).lower()
+    assert "schema" in error and "newer than supported" in error
+    assert "upgrade mesh" in error
 
     # Ensure future database content was untouched
     with sqlite3.connect(str(db_path)) as conn:
         cur = conn.execute("PRAGMA user_version")
         assert cur.fetchone()[0] == 99
+        assert conn.execute("SELECT id, payload FROM future_table").fetchall() == [
+            ("future-item", "future-format-canary")
+        ]
+        assert conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall() == [
+            ("future_table",)
+        ]
 
 
 # ==============================================================================
@@ -194,7 +203,7 @@ def test_interrupted_write_rollback_safety(temp_mesh_dir):
                 conn.isolation_level = "DEFERRED"
                 with conn:
                     conn.execute(
-                        "INSERT INTO memories (id, namespace, content, created_at, accessed_at) VALUES (?, ?, ?, ?, ?)",
+                        "INSERT INTO memories (id, namespace, content, created_at, accessed_at, incarnation) VALUES (?, ?, ?, ?, ?, lower(hex(randomblob(16))))",
                         (
                             "temp-half-write",
                             mesh.store.namespace,
@@ -399,7 +408,9 @@ def test_ingestion_guard_fuzzing(text):
     assert isinstance(res.local_only, bool)
 
 
-@settings(max_examples=30, deadline=1000)
+# Disk synchronization has variable wall time; performance budgets have their
+# own smoke test. Keep the state-transition property independent of disk load.
+@settings(max_examples=30, deadline=None)
 @given(
     status=st.sampled_from(["todo", "in_progress", "blocked", "done", "cancelled", "invalid_status", ""]),
     priority=st.sampled_from(["low", "medium", "high", "critical", "none"]),

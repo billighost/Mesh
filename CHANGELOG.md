@@ -1,23 +1,78 @@
 # Changelog
 
-All notable changes to `mesh-context-layer` are documented in this file.
+All notable changes to Mesh Context Layer are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (pre-1.0: minor versions may include behavior changes).
 
-## [0.8.3] - 2026-10-25 (Beta)
+## [0.9.0] - 2026-11-17
 
-Performance acceleration and reliability release introducing native C acceleration core, high-speed C CLI client, background stage-2 ONNX re-embedding, filesystem path memoization, and namespace pooling fixes.
+Mesh 0.9.0 includes durable concurrent storage, retrieval, bounded resource use, and persistent context for agents sharing one machine. Python entry points are retained; native SQLite is supplied by the required APSW dependency. Schema 6 upgrades require a backup and must not be reopened by older packages. Performance and accuracy evidence remains tied to each tested source; see the [release notes](docs/releases/RELEASE_NOTES_v0.9.0.md).
+
+At `b55c980`, normal CI and both full qualification suites passed. The source-bound storage ledger completed 55 of 58 cells with three deferrals and zero failures; the separate storage diagnostic and same-selection test-speed observation completed. The fresh twenty-cell competitor comparison uses Mesh runtime/package content identical to that source. Ordinary retrieval and E5 jobs failed their overall gates, preserving scored quality rejection and resource-aborted unscored conditions. Optional passages/reranking remain default off, and E5 was not adopted. See [RESULTS.md](benchmarks/RESULTS.md) for exact source/platform scopes and historical failures.
 
 ### Added
-- **Native C Acceleration Core (`c_core/mesh_core.c` & `mesh/c_bridge.py`)**: High-performance C core with SIMD (AVX2/FMA) vector dot-product computation, fast ASCII security prescan filter, hash embedding generation, and vectorized TTL decay calculations. Includes pure-Python/NumPy automatic fallbacks when the native library is absent or disabled (`MESH_DISABLE_NATIVE=1`).
-- **High-Speed Native C CLI Client (`c_cli/mesh_fast.c` & `mesh/native_cli.py`)**: Ultra-low-latency C CLI wrapper interfacing with daemon/HTTP surfaces via zero-overhead socket transport.
+- **Patched SQLite runtime**: A lazy DB-API facade uses APSW's bundled SQLite for storage, audit, encryption helpers, backup, and maintenance. Runtime verification rejects vulnerable WAL versions and missing FTS5 or thread safety. Persistent transactions use `synchronous=FULL` by default.
+- **Durable indexing and mutation delivery**: Revision-bound embedding jobs and content-free mutation events commit with authoritative state. Durable operation receipts support reconciliation after a lost reply without replaying a write under a new ID.
+- **Opt-in source-bound passage retrieval**: `MESH_PASSAGE_INDEX=1` enables the schema-6 paragraph/sentence candidate, with derived vectors, original supporting offsets, exact parent identities, bounded durable indexing and cache/streaming parity. Default adoption awaits independent accuracy and resource qualification.
+- **Optional local reranking**: Explicitly configured, pinned CPU model files can rerank the first four authorized parent memories, including single-result searches. Original evidence, similarity thresholds and complete identities remain intact; unavailable or busy inference preserves base order. Default adoption awaits native quality and resource qualification.
+- **Guarded bulk ingestion and shared execution**: `learn_many` applies scalar validation, privacy, ownership, redaction, and encryption rules to bounded atomic batches. Optional group commits combine eligible server operations while retaining each operation's receipt and outcome. Async transports use bounded blocking-work admission.
+- **Reviewed connection profiles**: `mesh.client.MeshClient` and `mesh call` preserve namespace, store identity, agent attribution, and privacy policy across SDK and existing authenticated HTTP access. The packaged skill documents MCP, CLI, SDK, and HTTP fallback and requires topic recall before decisions.
+- **Expanded project briefs**: Select up to twenty current facts with IDs, bounded work and handoff context, omissions, and continuation metadata. Brief parameters and estimated Markdown budgets are consistent across supported surfaces.
+- **Isolated parallel testing and process benchmarks**: `scripts/run_tests.py` bounds workers, plugins, and math-library threads while retaining selected tests, CI property-test profiles, and coverage. Production benchmarks distinguish durable acceptance, verified indexing, real HTTP transport, receipts, and resource usage.
+- **Optional E5 shadow evaluation**: Benchmark-only paired stores can evaluate pinned role-prefixed E5 encoding with normal-cache and cache-cold query strata. The trial retains source and identity checks and fixed quality/resource gates; it does not change the production embedding model.
+- **Multi-Format Data Export (`mesh/io.py`, `mesh/cli.py`)**: Added full export support for JSON (complete round-trip), Markdown summaries, and spreadsheet CSV formats (`mesh export --format {json,markdown,csv}`). CSV export neutralizes formula injection attempts (CWE-1236) by escaping leading `=`, `+`, `-`, `@`, `	`, and `` characters.
+- **Embedding-Downgrade Protections & Re-Embedding CLI (`mesh reembed`, `mesh/memory.py`)**: Enforced dimension and model validation preventing high-dimensional ONNX vectors from being silently overwritten by lexical hash vectors. Added `mesh reembed` CLI command and API to explicitly drain and upgrade memory stores to target neural embedding models.
+- **Daemon Readiness Probe (`mesh/daemon.py`, `mesh/cli.py`)**: Added deterministic health and readiness endpoints (`/healthz`, `/readyz`) with keep-alive socket checks to confirm transformer model readiness before CLI query delegation.
+- **Access Controls & Privacy Defaults (`mesh/mcp_server.py`, `mesh/guard.py`)**: Server-side security enforcement for `local_only` flags and namespace isolation locks. Audit events remain strictly content-free (tool names, counts, and timings only, never payload text or secrets).
+- **Release documentation gate (`scripts/check_docs.py --release`)**: Rejects unresolved review placeholders in addition to ordinary documentation consistency checks. Review scope and status are recorded in `docs/REVIEWS.md`.
+
+### Changed
+- **Passage cache layout**: Validated long-parent passages share a metered lexical generation without redundant whole-body primary terms. Short, pending, malformed, and model-incompatible cases retain a complete primary fallback. Native CPU and accuracy qualification remains required.
+- **Retrieval diagnostics**: Offline scoring can publish content-free candidate ranks, finite reranker scores, and input geometry after complete fixed exports are verified. It distinguishes evidence outside the four-parent cap from inside-cap misses while preserving source hashes and ranking inputs.
+- **Installer Adaptations for Modern Coding Agents (`mesh/installer.py`)**: Aligned OpenAI Codex CLI adapter to TOML configuration (`~/.codex/config.toml`), Gemini CLI to `settings.json`, OpenCode to XDG `opencode.json`, and Windsurf to strictly user-scoped MCP configuration per upstream vendor specifications.
+- **Distribution Architecture**: Mesh's wheel remains `py3-none-any`; the required APSW dependency supplies a privately bundled native SQLite wheel for the target platform.
+- **Hybrid retrieval and caches**: Use verified neural query encoding when a model is ready, separate embedding caches by model space, combine dense and BM25 lexical candidates, and preserve exact lookup while indexing is pending. Bounded caches share repeated lexical data and use an explicit streaming path when their byte budget is exhausted.
+
+### Fixed
+- **Model idle lifecycle**: Active passage backfill and optional reranker inference retain their shared models until completion. The idle timer restarts after work and unloads the reranker even when query embeddings use the hash backend.
+- **Atomic work history and encrypted privacy**: Task state and lifecycle events commit together; application encryption covers task fields and event notes. Briefs and task mutations enforce server privacy and enabled ownership rules.
+- **Stale asynchronous results**: Content revisions, memory incarnations, and store generations prevent old embeddings, access updates, or prepared mutations from modifying an edited, deleted, reused, or replaced memory.
+- **Crash recovery and namespace lifecycle**: Namespace renames use synchronized staged publication and a validated recovery journal. Connection, reader, audit, and writer registries retain in-flight ownership and retire unused state within configured limits.
+- **Unknown write outcomes**: CLI, SDK, MCP, and HTTP preserve operation IDs and distinguish pre-admission rejection from uncertain execution or serialization failures. Fallback does not silently replay an uncertain mutation.
+- **Cold Standalone Namespace Stats & Digest (`mesh/namespaces.py`, `mesh/digest.py`)**: Fixed `TypeError: tuple indices must be integers or slices, not str` when executing `mesh status` or generating digests on a cold standalone execution with unpopulated vector cache by enforcing `sqlite3.Row` row factory and safe positional tuple fallback.
+- **CLI Subprocess Timeout & Daemon Delegation**: Resolved cold ONNX model loading latency during CLI execution by automatically routing queries to resident background daemon over local keep-alive HTTP sockets.
+- **Namespace Connection Pooling & Lock Recovery**: Fixed SQLite database connection pooling under multi-process contention with improved busy-timeout retry handling.
+
+### Security
+- **Strict Input Validation & Prompt Injection Defense**: Hardened `mesh/guard.py` delimiter sanitization preventing prompt injection probes within ingested conversational turns.
+- **Secret Redaction Integrity**: Expanded regression coverage for multiline bearer tokens, API keys and environment credentials. Durable audit events exclude content and secret values; detection remains best-effort and secret references remain the preferred input.
+
+### Removed
+- **Legacy Native C Core**: Removed `c_core/`, `c_cli/`, `mesh/c_bridge.py`, `mesh/native_cli.py`, and prebuilt DLL binaries.
+- **Deprecated Environment Variables**: Removed `MESH_DISABLE_NATIVE` and `MESH_C_CORE_PATH`.
+
+## [0.8.3] - 2026-10-25 (Beta)
+
+Performance acceleration and reliability release introducing pure-Python prescan filters, background stage-2 ONNX re-embedding, filesystem path memoization, and namespace pooling fixes.
+
+### Added
 - **Background Stage-2 ONNX Re-Embedding (`mesh/memory.py`)**: Asynchronous worker to re-embed memory rows from fast-path hash embeddings to high-precision ONNX neural representations in the background (`MESH_BG_ONNX=1`), keeping foreground operations fast.
 - **Filesystem Path Memoization & Trust Caching (`mesh/audit.py`, `mesh/crypto.py`)**: High-efficiency lstat memoization (`MESH_FS_MEMO_MS`) and path validation trust cache (`MESH_PATH_RECHECK_SECONDS`) to eliminate redundant disk I/O during security audit checks.
 - **Initialization Lock Retries (`mesh/store.py`)**: Resilient acquisition retry loop (`MESH_INIT_LOCK_RETRY_SECONDS`) for database schema initialization and migrations under multi-process contention.
-- **Multi-Surface Benchmarking Suite (`benchmark_all_surfaces.py`)**: End-to-end benchmark suite verifying throughput and latency across CLI, C CLI, SDK, MCP, and HTTP interfaces.
+- **Multi-Surface Benchmarking Suite (`benchmark_all_surfaces.py`)**: End-to-end benchmark suite verifying throughput and latency across CLI, SDK, MCP, and HTTP interfaces.
+- **CSV & Markdown Export with Formula Injection Protection (`mesh/io.py`, `mesh/cli.py`)**: Added one-way export support for Markdown summaries and spreadsheet CSV formats (`mesh export --format {json,markdown,csv}`). CSV export protects against spreadsheet formula injection (CWE-1236) by neutralizing cells beginning with `=`, `+`, `-`, `@`, `\t`, or `\r`. Omitted bulky embeddings from text/spreadsheet formats by default.
+
+### Removed
+- **Native C Core & Native CLI (`c_core/`, `c_cli/`, `mesh/c_bridge.py`, `mesh/native_cli.py`)**: Removed native C acceleration binaries and runtime C compilation in favor of audited pure-Python and NumPy BLAS vector math (which outperforms native AVX2 loops on real workloads). Standardized distribution as pure `py3-none-any.whl`.
+- **Environment Variables**: Removed `MESH_DISABLE_NATIVE` and `MESH_C_CORE_PATH`.
 
 ### Fixed
+- **Codex & Agent Installer Configuration Formats (`mesh/installer.py`)**: Fixed OpenAI Codex CLI adapter to write and update `config.toml` (`~/.codex/config.toml` or `.codex/config.toml`) using standard `[mcp_servers.<name>]` TOML tables parsed and verified via `tomllib`, resolving an issue where `.codex/mcp.json` was written. Updated Gemini CLI adapter to target `settings.json`, OpenCode adapter to target `~/.config/opencode/opencode.json` (XDG) and project `./opencode.json` with standard `"mcp"` server table, and Windsurf adapter to restrict project-scope MCP to `None` in alignment with official vendor documentation.
+- **OpenCode Global Configuration Path (`mesh/installer.py`)**: Verified and confirmed OpenCode user-scope configuration path resolves to `~/.config/opencode/opencode.json` (or `%USERPROFILE%\.config\opencode\opencode.json` on Windows) conforming to the official XDG configuration specification.
 - **Namespace Listing & Stats Query Optimization (`mesh/namespaces.py`)**: Resolved namespace query bottlenecks by connecting via `MeshStore` pooling and utilizing warm in-memory cache rows instead of redundant disk opens. Added CLI mesh cache eviction on namespace deletion.
+
+### Changed
+- **Windsurf Project-Scope Behavior Change (`mesh/installer.py`)**: Dropped project-scoped MCP configuration for Windsurf. Official Windsurf documentation (`https://docs.codeium.com/windsurf/mcp`) states verbatim: *"The configuration file for Model Context Protocol (MCP) servers in Windsurf (mcp_config.json) is located in your user home directory under the Codeium configuration folder... Windsurf only reads MCP server configuration from this global file; there is no workspace- or project-level mcp_config.json support in Windsurf."* Project scope continues to support rules (`.windsurfrules`) and skills (`.windsurf/skills`).
 
 ## [0.8.2] - 2026-10-22 (Beta)
 
@@ -303,7 +358,7 @@ This release fixes a set of privacy, concurrency, search-quality, and documentat
 
 ##  Historical Releases (0.1.0 – 0.6.2)
 
- 
+
 
 ### [0.6.2] - 2026-10-17
 
