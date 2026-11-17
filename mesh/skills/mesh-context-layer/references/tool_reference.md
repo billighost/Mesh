@@ -1,4 +1,4 @@
-# Mesh MCP Tool Reference (v0.9.0)
+# Mesh MCP Tool Reference (v0.9.1)
 
 Argument reference for Mesh memory, work items, and shared operation access.
 

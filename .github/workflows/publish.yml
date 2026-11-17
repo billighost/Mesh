@@ -13,9 +13,14 @@ on:
         options:
           - pypi
           - testpypi
+      release_tag:
+        description: 'Recover an existing published version tag using this workflow from main'
+        required: false
+        default: ''
+        type: string
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ inputs.release_tag || github.event.release.tag_name || github.ref_name }}-${{ inputs.target || 'pypi' }}
   cancel-in-progress: false
 
 permissions:
@@ -40,29 +45,195 @@ jobs:
     name: Build & Validate Release Packages
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    outputs:
+      source_commit: ${{ steps.qualify-source.outputs.source_sha }}
+      release_tag: ${{ steps.qualify-source.outputs.release_tag }}
     permissions:
       id-token: write
       attestations: write
       contents: read
       actions: read
     steps:
+      - name: Resolve and independently validate the existing publication source
+        id: select-source
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          cat > "$RUNNER_TEMP/validate_publication_source.py" <<'PY'
+          import hashlib, json, os, re, subprocess, sys, urllib.request
+          from pathlib import Path
+
+          SHA = re.compile(r'[0-9a-f]{40}\Z')
+          TAG = re.compile(r'v[0-9]+\.[0-9]+\.[0-9]+(?:[A-Za-z0-9.+-]+)?\Z')
+          root = Path(os.environ['RUNNER_TEMP'])
+          identity_path = root / 'release-source-identity.json'
+
+          def require(condition, code):
+              if not condition:
+                  raise RuntimeError(code)
+
+          def save(report):
+              identity_path.write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
+
+          def workflow_context():
+              return {key: os.environ.get(key, '') for key in (
+                  'GITHUB_REPOSITORY', 'GITHUB_EVENT_NAME', 'GITHUB_REF', 'GITHUB_SHA',
+                  'GITHUB_WORKFLOW_REF', 'GITHUB_WORKFLOW_SHA', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT')}
+
+          def validate_invocation(context, event):
+              repository = context['GITHUB_REPOSITORY']
+              require(repository.lower() == 'billighost/mesh', 'UnexpectedRepository')
+              require(SHA.fullmatch(context['GITHUB_SHA']) and SHA.fullmatch(context['GITHUB_WORKFLOW_SHA']), 'InvalidWorkflowIdentity')
+              require(context['GITHUB_SHA'] == context['GITHUB_WORKFLOW_SHA'], 'WorkflowInvocationSourceMismatch')
+              require(context['GITHUB_WORKFLOW_REF'] == repository + '/.github/workflows/publish.yml@' + context['GITHUB_REF'], 'UnexpectedWorkflowRef')
+              require(context['GITHUB_RUN_ID'].isdigit() and context['GITHUB_RUN_ATTEMPT'].isdigit(), 'InvalidWorkflowRunIdentity')
+              inputs = event.get('inputs') or {}
+              requested = inputs.get('release_tag', '')
+              require(isinstance(requested, str), 'InvalidRecoveryTagInput')
+              if context['GITHUB_EVENT_NAME'] == 'workflow_dispatch':
+                  require(inputs.get('target', 'pypi') in {'pypi', 'testpypi'}, 'InvalidPublicationTarget')
+                  if requested:
+                      require(context['GITHUB_REF'] == 'refs/heads/main', 'RecoveryRequiresMainInvocation')
+                      tag, mode = requested, 'manual_main_recovery'
+                  else:
+                      require(context['GITHUB_REF'].startswith('refs/tags/'), 'ManualPublicationRequiresTagOrRecoveryInput')
+                      tag, mode = context['GITHUB_REF'][10:], 'manual_tag'
+              elif context['GITHUB_EVENT_NAME'] == 'release':
+                  require(not requested and event.get('action') == 'published', 'PublishedReleaseEventRequired')
+                  tag, mode = event.get('release', {}).get('tag_name'), 'published_release'
+                  require(context['GITHUB_REF'] == 'refs/tags/' + str(tag), 'ReleaseEventTagMismatch')
+              else:
+                  raise RuntimeError('UnsupportedPublicationEvent')
+              require(isinstance(tag, str) and TAG.fullmatch(tag), 'InvalidVersionTag')
+              return tag, mode
+
+          def github_read(path, observations):
+              headers = {'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28',
+                         'User-Agent': 'Mesh-publication-source-identity'}
+              token = os.environ.get('GITHUB_TOKEN')
+              if token:
+                  headers['Authorization'] = 'Bearer ' + token
+              request = urllib.request.Request('https://api.github.com/repos/billighost/Mesh/' + path, headers=headers)
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  body = response.read(1048577)
+              require(len(body) <= 1048576, 'OversizedSourceIdentityResponse')
+              observations.append({'api_path': path, 'response_sha256': hashlib.sha256(body).hexdigest()})
+              return json.loads(body)
+
+          def existing_source(tag, observations):
+              ref = github_read('git/ref/tags/' + tag, observations)
+              require(ref.get('ref') == 'refs/tags/' + tag, 'TagRefMismatch')
+              target = ref.get('object', {})
+              require(target.get('type') == 'tag' and isinstance(target.get('sha'), str) and SHA.fullmatch(target['sha']), 'ExistingAnnotatedTagRequired')
+              tag_object = github_read('git/tags/' + target['sha'], observations)
+              require(tag_object.get('sha') == target['sha'] and tag_object.get('tag') == tag, 'AnnotatedTagIdentityMismatch')
+              commit = tag_object.get('object', {})
+              require(commit.get('type') == 'commit' and isinstance(commit.get('sha'), str) and SHA.fullmatch(commit['sha']), 'TagCommitRequired')
+              release = github_read('releases/tags/' + tag, observations)
+              require(release.get('tag_name') == tag and release.get('draft') is False and release.get('published_at'), 'ExistingPublishedReleaseRequired')
+              require(type(release.get('id')) is int and release['id'] > 0, 'InvalidExistingReleaseIdentity')
+              return {'tag': tag, 'tag_ref': 'refs/tags/' + tag, 'tag_object_sha': target['sha'],
+                      'commit': commit['sha'], 'release_id': release['id']}
+
+          def git(*arguments):
+              return subprocess.check_output(['git', *arguments], text=True).strip()
+
+          def outputs(source):
+              with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as stream:
+                  stream.write('source_sha=' + source['commit'] + '\nrelease_tag=' + source['tag'] + '\n')
+
+          def main(mode):
+              context = workflow_context()
+              event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text(encoding='utf-8'))
+              report = {'schema_version': 1, 'status': 'failed', 'stage': mode, 'workflow_context': context}
+              try:
+                  tag, invocation = validate_invocation(context, event)
+                  observations = []
+                  source = existing_source(tag, observations)
+                  report.update(invocation_mode=invocation, artifact_source=source, source_identity_observations=observations)
+                  if invocation != 'manual_main_recovery':
+                      require(context['GITHUB_SHA'] == source['commit'], 'TagEventSourceMismatch')
+                  if invocation == 'published_release':
+                      require(event['release'].get('id') == source['release_id'], 'PublishedReleaseIdentityMismatch')
+                  if mode == 'select':
+                      report.update(status='selected', stage='checkout_pending')
+                      save(report)
+                      outputs(source)
+                      return
+                  require(mode in {'qualify', 'build'}, 'InvalidValidationStage')
+                  selected = json.loads(identity_path.read_text(encoding='utf-8'))
+                  require(selected.get('status') == ('selected' if mode == 'qualify' else 'passed') and selected.get('workflow_context') == context and
+                          selected.get('artifact_source') == source, 'SelectedPublicationSourceChanged')
+                  require(git('rev-parse', 'HEAD') == source['commit'], 'CheckedOutSourceMismatch')
+                  require(git('rev-parse', source['tag_ref']) == source['tag_object_sha'] and
+                          git('rev-parse', source['tag_ref'] + '^{}') == source['commit'], 'LocalAnnotatedTagMismatch')
+                  require(not git('status', '--porcelain'), 'CleanPublicationSourceRequired')
+                  if mode == 'build':
+                      require(selected.get('qualification', {}).get('status') == 'passed' and
+                              selected['qualification'].get('commit') == source['commit'], 'QualifiedBuildSourceRequired')
+                      report.update(selected, status='failed', stage='build', build_source_identity_observations=observations)
+                      build_environment = os.environ.copy()
+                      build_environment.update(GITHUB_SHA=source['commit'], PYTHONPATH='.')
+                      report['build_source_context'] = {'GITHUB_SHA': source['commit'],
+                          'independently_validated_tag_projection': True, 'parent_workflow_environment_unchanged': True}
+                      result = subprocess.run([sys.executable, 'scripts/build_release.py'], env=build_environment, timeout=1200)
+                      require(result.returncode == 0, 'QualifiedSourceBuildFailed')
+                      provenance = json.loads(Path('dist/provenance.json').read_text(encoding='utf-8'))
+                      require(provenance.get('commit') == source['commit'] and provenance.get('version') == selected['version'], 'BuiltSourceProvenanceMismatch')
+                      report.update(status='passed', stage='built_source')
+                      save(report)
+                      return
+                  # The legacy checker accepts a tag-oriented source context.
+                  # Project only these independently validated identities into its
+                  # subprocess; retain the genuine workflow context above and do
+                  # not change the parent environment or OIDC/attestation context.
+                  checker_environment = os.environ.copy()
+                  checker_environment.update(GITHUB_REF=source['tag_ref'], GITHUB_SHA=source['commit'])
+                  report['checker_source_context'] = {'GITHUB_REF': source['tag_ref'], 'GITHUB_SHA': source['commit'],
+                      'independently_validated_tag_projection': True, 'parent_workflow_environment_unchanged': True}
+                  result = subprocess.run([sys.executable, 'scripts/release_check.py', '--checks-only', '--verify-publication'],
+                                          env=checker_environment, capture_output=True, text=True, timeout=300)
+                  require(result.returncode == 0, 'UnchangedPublicationCheckerRejectedSource')
+                  proofs = [json.loads(line) for line in result.stdout.splitlines() if line.startswith('{')]
+                  require(len(proofs) == 1 and proofs[0].get('status') == 'passed' and
+                          proofs[0].get('commit') == source['commit'] and proofs[0].get('tag') == tag, 'PublicationQualificationSourceMismatch')
+                  version_text = Path('mesh/version.py').read_text(encoding='utf-8')
+                  versions = re.findall(r'^VERSION = "([^"]+)"\s*$', version_text, re.M)
+                  require(len(versions) == 1 and tag == 'v' + versions[0], 'VersionTagMismatch')
+                  report.update(status='passed', stage='qualified_source', version=versions[0], qualification=proofs[0])
+                  save(report)
+                  outputs(source)
+                  print(json.dumps({'status': 'passed', 'artifact_source_commit': source['commit'], 'release_tag': tag,
+                                    'workflow_source_commit': context['GITHUB_WORKFLOW_SHA'], 'workflow_ref': context['GITHUB_WORKFLOW_REF']}))
+              except Exception as exc:
+                  report.update(status='failed', failure_type=type(exc).__name__)
+                  save(report)
+                  raise
+
+          if __name__ == '__main__':
+              main(sys.argv[1])
+          PY
+          python3 "$RUNNER_TEMP/validate_publication_source.py" select
+
       - name: Checkout Repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ steps.select-source.outputs.source_sha }}
           persist-credentials: false
           fetch-depth: 0
+          fetch-tags: true
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@0b93645e9fb737c6a60a8d661b315bf9b64c0204 # v5.3.0
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
         with:
           python-version: "3.12"
           cache: "pip"
 
       - name: Verify the release tag, current qualification and source-bound measurements
+        id: qualify-source
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: python scripts/release_check.py --checks-only --verify-publication
+        run: python "$RUNNER_TEMP/validate_publication_source.py" qualify
 
       - name: Install Build & QA Tools
         run: |
@@ -76,7 +247,18 @@ jobs:
           python scripts/check_docs.py --release
 
       - name: Build Distributions & Generate SBOM / Provenance
-        run: PYTHONPATH=. python scripts/build_release.py
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python "$RUNNER_TEMP/validate_publication_source.py" build
+
+      - name: Preserve workflow and artifact source identity, including failures
+        if: always()
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: release-source-identity
+          path: ${{ runner.temp }}/release-source-identity.json
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Generate Build Provenance Attestation
         uses: actions/attest-build-provenance@520d128f165991a6c774bcb264f323e3d70747f4 # v2.2.0
@@ -126,14 +308,14 @@ jobs:
 
       - name: Publish to TestPyPI
         if: ${{ github.event.inputs.target == 'testpypi' }}
-        uses: pypa/gh-action-pypi-publish@76f52e6636d8634d9b7f5027a88f9b49a894c68f # release/v1.12.4
+        uses: pypa/gh-action-pypi-publish@76f52bc884231f62b9a034ebfe128415bbaabdfc # v1.12.4
         with:
           repository-url: https://test.pypi.org/legacy/
           packages-dir: dist_packages/
 
       - name: Publish to PyPI
         if: ${{ github.event.inputs.target != 'testpypi' }}
-        uses: pypa/gh-action-pypi-publish@76f52e6636d8634d9b7f5027a88f9b49a894c68f # release/v1.12.4
+        uses: pypa/gh-action-pypi-publish@76f52bc884231f62b9a034ebfe128415bbaabdfc # v1.12.4
         with:
           packages-dir: dist_packages/
 
@@ -144,9 +326,11 @@ jobs:
     timeout-minutes: 15
     env:
       PUBLICATION_TARGET: ${{ github.event.inputs.target == 'testpypi' && 'testpypi' || 'pypi' }}
+      ARTIFACT_SOURCE_SHA: ${{ needs.build.outputs.source_commit }}
+      VALIDATED_RELEASE_TAG: ${{ needs.build.outputs.release_tag }}
     steps:
       - name: Set up Python 3.12
-        uses: actions/setup-python@0b93645e9fb737c6a60a8d661b315bf9b64c0204 # v5.3.0
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
         with:
           python-version: "3.12"
 
@@ -158,6 +342,12 @@ jobs:
         with:
           name: dist-packages
           path: dist
+
+      - name: Download the separately retained publication source identity
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: release-source-identity
+          path: identity
 
       - name: Verify public bytes and smoke-test the installed wheel
         run: |
@@ -195,8 +385,17 @@ jobs:
               version = metadata['Version']
               assert re.sub(r'[-_.]+', '-', metadata['Name']).lower() == 'mesh-context-layer'
               provenance = json.loads(Path('dist/provenance.json').read_text(encoding='utf-8'))
-              assert provenance['version'] == version and provenance['commit'] == os.environ['GITHUB_SHA']
-              report.update(version=version, source_commit=provenance['commit'], wheel=built.name, built_sha256=expected, stage='public_index')
+              identity = json.loads(Path('identity/release-source-identity.json').read_text(encoding='utf-8'))
+              assert re.fullmatch(r'[0-9a-f]{40}', os.environ['ARTIFACT_SOURCE_SHA'])
+              assert provenance['version'] == version and provenance['commit'] == os.environ['ARTIFACT_SOURCE_SHA']
+              assert identity['status'] == 'passed' and identity['stage'] == 'built_source' and identity['artifact_source']['commit'] == provenance['commit']
+              assert identity['artifact_source']['tag'] == os.environ['VALIDATED_RELEASE_TAG'] == 'v' + version
+              assert identity['qualification']['commit'] == provenance['commit'] and identity['qualification']['status'] == 'passed'
+              for key in ('GITHUB_REPOSITORY', 'GITHUB_EVENT_NAME', 'GITHUB_REF', 'GITHUB_SHA', 'GITHUB_WORKFLOW_REF', 'GITHUB_WORKFLOW_SHA', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT'):
+                  assert identity['workflow_context'][key] == os.environ[key]
+              report.update(version=version, source_commit=provenance['commit'], release_tag=os.environ['VALIDATED_RELEASE_TAG'],
+                            workflow_context=identity['workflow_context'], source_identity_sha256=hashlib.sha256(Path('identity/release-source-identity.json').read_bytes()).hexdigest(),
+                            wheel=built.name, built_sha256=expected, stage='public_index')
               save()
               target = os.environ['PUBLICATION_TARGET']
               assert target in {'pypi', 'testpypi'}
@@ -298,7 +497,7 @@ jobs:
   attach-github-release:
     name: Attach Artifacts to GitHub Release
     needs: [build, publish, verify-public-package]
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'release'
+    if: needs.build.outputs.release_tag != ''
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -313,6 +512,7 @@ jobs:
       - name: Attach Assets to Release
         uses: softprops/action-gh-release@c062e08bd532815e2082a85e87e3ef29c3e6d191 # v2.0.8
         with:
+          tag_name: ${{ needs.build.outputs.release_tag }}
           files: |
             dist/*.whl
             dist/*.tar.gz

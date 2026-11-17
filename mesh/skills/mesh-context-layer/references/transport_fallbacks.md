@@ -1,4 +1,4 @@
-# Mesh Transport Fallbacks (v0.9.0)
+# Mesh Transport Fallbacks (v0.9.1)
 
 Read this when native MCP tools are missing or their transport cannot connect.
 A tool rejection, empty recall, or an irrelevant result does not authorize
