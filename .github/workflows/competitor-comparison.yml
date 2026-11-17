@@ -68,7 +68,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip
       - name: Initialize failure-visible artifact and isolated setup homes
         run: |
           python benchmarks/competitor_comparison.py init --tool "$COMPARISON_TOOL" --dataset "$COMPARISON_DATASET" --output "$COMPARISON_OUTPUT"
@@ -127,11 +126,26 @@ jobs:
           wheels = list(Path('.work/competitor-wheels').glob('*.whl'))
           assert len(wheels) == 1 and digest(wheels[0]) == PINS[os.environ['COMPARISON_TOOL']]['sha256'], 'Competitor distribution digest mismatch'
           PY
-          python -m pip install --constraint .work/qualification/primary/constraints.txt .work/competitor-wheels/*.whl
-      - name: Install exact native BM25 runtime and provision pinned static assets
+          python -m venv --copies .work/competitor-env
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          from benchmarks.competitor_comparison import child_encoder_versions
+          summary = json.loads((Path(os.environ['COMPARISON_OUTPUT']) / 'summary.json').read_text(encoding='utf-8'))
+          versions = child_encoder_versions(os.environ['COMPARISON_TOOL'], summary['qualification'])
+          if os.environ['COMPARISON_TOOL'] == 'mem0':
+              versions['fastembed'] = '0.9.1'
+          Path('.work/competitor-runtime-constraints.txt').write_text(''.join(name + '==' + version + '\n' for name, version in sorted(versions.items())), encoding='utf-8')
+          PY
+          .work/competitor-env/bin/python -m pip install --constraint .work/competitor-runtime-constraints.txt .work/competitor-wheels/*.whl
+          if [ "$COMPARISON_TOOL" = "mem0" ]; then
+            .work/competitor-env/bin/python -m pip install --constraint .work/competitor-runtime-constraints.txt "fastembed==0.9.1" numpy onnxruntime tokenizers psutil
+          else
+            .work/competitor-env/bin/python -m pip install --constraint .work/competitor-runtime-constraints.txt psutil
+          fi
+      - name: Provision pinned static assets for the separate native BM25 environment
         if: matrix.tool == 'mem0'
         run: |
-          python -m pip install --constraint .work/qualification/primary/constraints.txt "fastembed==0.9.1"
           python benchmarks/competitor_comparison.py provision-bm25 --directory .work/production-models/bm25
       - name: Align every installed shared distribution and check resolver consistency
         run: |
@@ -146,11 +160,10 @@ jobs:
           PY
           python -m pip install --constraint .work/qualification/primary/constraints.txt --requirement .work/qualified-shared-versions.txt
           python -m pip check
-      - name: Disable Basic Memory optional vector runtime for explicit keyword profile
-        if: matrix.tool == 'basic-memory'
+      - name: Check and freeze the official competitor environment and explicit keyword profile
+        if: matrix.tool == 'mem0' || matrix.tool == 'basic-memory'
         run: |
-          python -m pip uninstall -y sqlite-vec
-          python -c "import importlib.util; assert importlib.util.find_spec('sqlite_vec') is None, 'Keyword profile still has vector runtime'"
+          python benchmarks/competitor_comparison.py freeze-child --tool "$COMPARISON_TOOL" --directory .work/competitor-env --wheel .work/competitor-wheels/*.whl --summary "$COMPARISON_OUTPUT/summary.json"
       - name: Fetch and verify pinned native Auxly executable
         if: matrix.tool == 'auxly'
         run: |
@@ -171,7 +184,7 @@ jobs:
         run: python benchmarks/prepare_retrieval_ci.py "$COMPARISON_DATASET" --repository . --output-root .work/comparison-inputs --model-directory .work/production-models/minilm
       - name: Run native comparison inside a disconnected network namespace
         run: |
-          python benchmarks/competitor_comparison.py run --tool "$COMPARISON_TOOL" --dataset "$COMPARISON_DATASET" --output "$COMPARISON_OUTPUT" --data ".work/comparison-inputs/data/$COMPARISON_DATASET" --models .work/production-models/minilm --bm25 .work/production-models/bm25 --auxly .work/competitor-bin/auxly --qualification-directory .work/qualification/primary --floor-qualification-directory .work/qualification/floor --qualification-commit "$COMPARISON_QUALIFICATION_COMMIT"
+          python benchmarks/competitor_comparison.py run --tool "$COMPARISON_TOOL" --dataset "$COMPARISON_DATASET" --output "$COMPARISON_OUTPUT" --data ".work/comparison-inputs/data/$COMPARISON_DATASET" --models .work/production-models/minilm --bm25 .work/production-models/bm25 --auxly .work/competitor-bin/auxly --qualification-directory .work/qualification/primary --floor-qualification-directory .work/qualification/floor --qualification-commit "$COMPARISON_QUALIFICATION_COMMIT" --competitor-environment .work/competitor-env
         env:
           COMPARISON_QUALIFICATION_COMMIT: ${{ inputs.qualification_commit || 'e4284c8fb5ba565043accccbdd6353839c3eb43a' }}
       - name: Retain actual installed dependency evidence for every cell

@@ -22,6 +22,16 @@ it does not repeat the historical 470-answerable-question evaluation.
 | Basic Memory 0.24.1 | Persistent MCP stdio `search_notes`, native local text search; optional `sqlite-vec` distribution absent, automatic update and reranker disabled |
 | Auxly 1.5.0 | Persistent MCP stdio `auxly_memory_search`, native exact substring search; service self-repair disabled |
 
+Mesh executes in the source-qualified host environment. Official Mem0 and Basic
+Memory distributions execute in separate virtual environments because Basic
+Memory requires MCP 2 while Mesh requires MCP 1, and Mem0 requires protobuf below
+7 while the qualified Mesh host has protobuf 7. Each competitor environment
+keeps its own supported dependencies and complete frozen installed manifest.
+The native Basic Memory client and server both execute inside its MCP 2
+environment; the supervising host communicates with the worker through files.
+Mem0's NumPy, ONNX Runtime, tokenizer and resource sampler versions must match
+the qualified Mesh host. Its native BM25 implementation is FastEmbed 0.9.1.
+
 These are explicitly configured local profiles. They compare the same retrieval
 problem across distinct implementations. Mesh's production encoder pools
 overlapping windows for long documents; the Mem0 adapter truncates. Basic Memory
@@ -70,21 +80,29 @@ summed RSS can count shared pages twice. Single-pass observations do not establi
 repeatability, general superiority or generated-answer accuracy.
 
 Dispatch requires a completed production run containing successful primary and
-minimum full-suite artifacts for byte-identical runtime sources and package
-metadata. Every installation uses the primary run's full frozen dependency
-constraints; every installed shared distribution must match its qualified
-version before measurement, including preinstalled shared tooling. Resolver
-consistency is checked before intentionally removing Basic Memory's optional
-vector package for the keyword profile. Missing native packages or Linux wheel
-incompatibility remain unscored. The artifacts retain both qualified runtime
-manifests, every installed version, shared version matches and unqualified
-competitor dependencies. Qualification used Python 3.14 on Windows; native
-comparison uses Python 3.12 on Linux, with different platform wheel bytes.
-Source equality and shared version equality do not establish identical
-platforms or full native environment qualification. The
-comparison's model-free contract tests run before native execution. Full native
-execution is Actions-only; do not run models, public corpora or competitors on
-the constrained development machine.
+minimum full-suite artifacts for byte-identical Mesh runtime sources and package
+metadata. The Mesh host installation uses the primary run's full frozen
+dependency constraints; every installed shared host distribution must match its
+qualified version, including preinstalled tooling. This check remains separate
+from the official competitors' environments. Each child environment records its
+Python, ABI, platform, full installed versions, official wheel digest and copied
+interpreter bytes before measurement. Mem0 also verifies the matching encoder
+versions. Dependency consistency must pass before Basic Memory's vector package
+is deliberately removed for keyword search; the subsequent check permits only
+that declared missing package. The worker inventory, interpreter and entrypoint
+bytes must remain unchanged through measurement. Missing native packages or
+Linux wheel incompatibility remain unscored.
+
+The artifacts retain both source-qualified Mesh runtime manifests, the complete
+host and competitor inventories, and the distinct dependency scopes.
+Qualification used Python 3.14 and 3.10 on Windows; native comparison uses Python
+3.12 on Linux, with different platform wheel bytes. Source and selected encoder
+version equality do not establish identical platforms or full qualification of
+the competitors' dependencies. The unchanged Mesh package is qualified by the
+production artifacts; the separate comparator overlay runs its model-free
+contract tests before native execution. Its source archive is not claimed to
+have passed the core archive gate. Full native execution is Actions-only; do not
+run models, public corpora or competitors on the constrained development machine.
 
 Pushes to `ci/mesh-comparison-*` use production qualification run `43906485048`;
 the source hash checks still reject a different runtime. Manual or reusable

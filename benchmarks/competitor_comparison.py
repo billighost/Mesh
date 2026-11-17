@@ -204,11 +204,12 @@ def isolated_environment(root: Path) -> dict[str, str]:
     return env
 
 
-def native_command(config: Path) -> list[str]:
+def native_command(config: Path, interpreter: Path | None = None) -> list[str]:
     """A disconnected namespace applies to every Python and Go descendant."""
     if sys.platform != "linux" or any(shutil.which(name) is None for name in ("sudo", "unshare", "setpriv")):
         raise ComparisonError("NetworkIsolationUnavailable")
-    return ["sudo", "-n", "--preserve-env", "unshare", "--net", "--pid", "--fork", "--kill-child=SIGKILL", "--mount-proc", "--", "setpriv", "--reuid", str(os.getuid()), "--regid", str(os.getgid()), "--init-groups", "--no-new-privs", sys.executable, str(Path(__file__)), "worker", "--config", str(config)]
+    python = sys.executable if interpreter is None else str(checked(interpreter, REPO / ".work", exists=True))
+    return ["sudo", "-n", "--preserve-env", "unshare", "--net", "--pid", "--fork", "--kill-child=SIGKILL", "--mount-proc", "--", "setpriv", "--reuid", str(os.getuid()), "--regid", str(os.getgid()), "--init-groups", "--no-new-privs", python, str(Path(__file__)), "worker", "--config", str(config)]
 
 
 def stop_observed_processes(psutil, owned: dict[tuple[int, float], int]) -> bool:
@@ -486,9 +487,10 @@ async def mcp_group(tool: str, root: Path, rows: list[dict], queries: list[dict]
     env = dict(os.environ)
     env["BASIC_MEMORY_CONFIG_DIR"] = str(root / "config")
     if tool == "basic-memory":
-        executable = shutil.which("basic-memory")
-        if not executable:
+        executable = Path(sys.executable).parent / "basic-memory"
+        if not executable.is_file():
             raise ComparisonError("MissingCompetitorExecutable")
+        executable = str(checked(executable, REPO / ".work", exists=True))
         for args in (["project", "add", "comparison", str(vault), "--local"],):
             result = subprocess.run([executable, *args], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=600)
             if result.returncode:
@@ -548,7 +550,11 @@ def worker(config: dict) -> int:
     if tool in ("mem0", "basic-memory") and importlib.metadata.version(PINS[tool]["distribution"]) != PINS[tool]["version"]:
         raise ComparisonError("CompetitorVersionMismatch")
     installed = {d.metadata["Name"]: d.version for d in importlib.metadata.distributions()}
-    if not dependency_report(config["qualification"], installed)["compatible"]:
+    if tool in ("mem0", "basic-memory"):
+        verify_child_inventory(config["child_environment"], installed, sys.version.split()[0])
+        if verify_child_files(config["child_environment"]) != checked(Path(sys.executable), REPO / ".work", exists=True):
+            raise ComparisonError("ChildInterpreterMismatch")
+    elif not dependency_report(config["qualification"], installed)["compatible"]:
         raise ComparisonError("SharedDependencyVersionMismatch")
     bm25_snapshot = install_bm25_cache(Path(config["bm25"]), root) if tool == "mem0" else None
     accounting = {"submitted": sum(map(len, groups.values())), "ingested": 0, "faithful": 0, "unfaithful": 0, "rejected": 0, "queried": 0, "ingest_seconds": 0.0}
@@ -603,6 +609,10 @@ def worker(config: dict) -> int:
     if bm25_snapshot is not None:
         verify_bm25(bm25_snapshot)
         verify_bm25(Path(config["bm25"]))
+    if tool in ("mem0", "basic-memory"):
+        final_packages = {d.metadata["Name"]: d.version for d in importlib.metadata.distributions()}
+        verify_child_inventory(config["child_environment"], final_packages, sys.version.split()[0])
+        verify_child_files(config["child_environment"])
     return 0
 
 
@@ -700,6 +710,114 @@ def dependency_report(evidence: dict, installed: dict[str, str]) -> dict:
     missing = sorted(set(required) - set(current))
     mismatch = sorted(name for name, pair in shared.items() if pair["qualified"] != pair["installed"])
     return {"compatible": not missing and not mismatch, "shared_packages": shared, "missing_native_packages": missing, "version_mismatches": mismatch, "unqualified_packages": {name: version for name, version in current.items() if name not in qualified}, "scope": "shared distribution versions match primary frozen constraints; Python, OS and platform wheel bytes differ and are separately reported"}
+
+
+def child_snapshot(interpreter: Path) -> dict:
+    """Inspect the separate official environment without loading a model."""
+    code = "import importlib.metadata,json,platform,sys; print(json.dumps({'packages':{d.metadata['Name']:d.version for d in importlib.metadata.distributions()},'python_version':sys.version.split()[0],'platform':sys.platform,'machine':platform.machine(),'abi':sys.implementation.cache_tag}))"
+    result = subprocess.run([str(interpreter), "-c", code], capture_output=True, timeout=30)
+    if result.returncode or len(result.stdout) > 1024 * 1024:
+        raise ComparisonError("ChildRuntimeInspectionFailed")
+    try:
+        snapshot = json.loads(result.stdout)
+        snapshot["packages"] = {normalized_distribution(name): version for name, version in snapshot["packages"].items()}
+    except (ValueError, KeyError, TypeError) as exc:
+        raise ComparisonError("InvalidChildRuntimeInventory") from exc
+    return snapshot
+
+
+def child_encoder_versions(tool: str, qualification: dict) -> dict[str, str]:
+    # The official MCP2 server cannot share Mesh's MCP1 environment.
+    names = ("numpy", "onnxruntime", "tokenizers", "psutil") if tool == "mem0" else ("psutil",)
+    qualified = {normalized_distribution(name): version for name, version in qualification["primary"]["runtime"]["packages"].items()}
+    if any(name not in qualified for name in names):
+        raise ComparisonError("MissingQualifiedEncoderVersion")
+    return {name: qualified[name] for name in names}
+
+
+def verify_child_inventory(report: dict, installed: dict[str, str], python_version: str) -> None:
+    current = {normalized_distribution(name): version for name, version in installed.items()}
+    if current != report.get("packages") or python_version != report.get("python_version"):
+        raise ComparisonError("ChildEnvironmentChanged")
+    tool = report.get("tool")
+    if tool not in ("mem0", "basic-memory") or current.get(normalized_distribution(PINS[tool]["distribution"])) != PINS[tool]["version"]:
+        raise ComparisonError("CompetitorVersionMismatch")
+    if any(current.get(name) != version for name, version in report.get("encoder_versions", {}).items()):
+        raise ComparisonError("ChildEncoderVersionMismatch")
+    if tool == "mem0" and current.get("fastembed") != FASTEMBED_VERSION:
+        raise ComparisonError("FastembedVersionMismatch")
+    if tool == "basic-memory" and "sqlite-vec" in current:
+        raise ComparisonError("KeywordProfileHasVectorRuntime")
+
+
+def verify_child_files(report: dict) -> Path:
+    if report.get("protocol") != "comparison-child-v1" or report.get("wheel_sha256") != PINS[report["tool"]]["sha256"]:
+        raise ComparisonError("InvalidChildEnvironmentPin")
+    for relative, pin in report["files"].items():
+        if digest(checked(REPO / relative, REPO / ".work", exists=True)) != pin:
+            raise ComparisonError("ChildEnvironmentFilesChanged")
+    interpreter = checked(REPO / report["interpreter"], REPO / ".work", exists=True)
+    if report["interpreter"] not in report["files"]:
+        raise ComparisonError("MissingChildInterpreterPin")
+    return interpreter
+
+
+def freeze_child(args) -> None:
+    directory = checked(args.directory, REPO / ".work", exists=True)
+    interpreter = checked(directory / "bin/python", directory, exists=True)
+    if digest(checked(args.wheel, REPO / ".work", exists=True)) != PINS[args.tool]["sha256"]:
+        raise ComparisonError("CompetitorDistributionDigestMismatch")
+    qualification = json.loads(checked(args.summary, REPO / ".work", exists=True).read_text(encoding="utf-8"))["qualification"]
+    check = subprocess.run([str(interpreter), "-m", "pip", "check"], capture_output=True, timeout=120)
+    if check.returncode:
+        raise ComparisonError("ChildDependencyConsistencyFailed")
+    profile_check = "passed"
+    if args.tool == "basic-memory":
+        # List the deliberately removed optional native distribution first.
+        listing = subprocess.run([str(interpreter), "-m", "pip", "show", "--files", "sqlite-vec"], capture_output=True, timeout=30)
+        if listing.returncode:
+            raise ComparisonError("MissingKeywordProfileVectorDistribution")
+        (directory / "removed-vector-files-private.txt").write_bytes(listing.stdout)
+        removed = subprocess.run([str(interpreter), "-m", "pip", "uninstall", "-y", "sqlite-vec"], capture_output=True, timeout=120)
+        if removed.returncode:
+            raise ComparisonError("KeywordProfileRemovalFailed")
+        check = subprocess.run([str(interpreter), "-m", "pip", "check"], capture_output=True, timeout=120)
+        expected = f"basic-memory {PINS[args.tool]['version']} requires sqlite-vec, which is not installed."
+        if check.returncode != 1 or check.stdout.decode("utf-8").strip() != expected:
+            raise ComparisonError("UnexpectedKeywordProfileDependencyFailure")
+        profile_check = "only_declared_sqlite_vec_absence"
+    snapshot = child_snapshot(interpreter)
+    files = {interpreter.relative_to(REPO).as_posix(): digest(interpreter)}
+    if args.tool == "basic-memory":
+        executable = checked(directory / "bin/basic-memory", directory, exists=True)
+        files[executable.relative_to(REPO).as_posix()] = digest(executable)
+        # Exercise the client import boundary of the actual MCP2 environment.
+        code = "from mcp import ClientSession,StdioServerParameters; from mcp.client.stdio import stdio_client"
+        imported = subprocess.run([str(interpreter), "-c", code], capture_output=True, timeout=30)
+        if imported.returncode:
+            raise ComparisonError("ChildMcpProtocolUnavailable")
+    report = snapshot | {"protocol": "comparison-child-v1", "tool": args.tool, "interpreter": interpreter.relative_to(REPO).as_posix(), "files": files, "wheel_sha256": PINS[args.tool]["sha256"], "encoder_versions": child_encoder_versions(args.tool, qualification), "dependency_consistency": {"before_profile": "passed", "after_profile": profile_check}, "scope": "official competitor in its separately frozen supported environment; Mesh host source and dependency qualification remains separate"}
+    verify_child_inventory(report, snapshot["packages"], snapshot["python_version"])
+    write_json(directory / "environment.json", report)
+    summary = json.loads(args.summary.read_text(encoding="utf-8"))
+    summary["child_environment"] = report
+    write_json(args.summary, summary)
+
+
+def verify_child_environment(directory: Path, qualification: dict, tool: str) -> dict:
+    directory = checked(directory, REPO / ".work", exists=True)
+    report = json.loads(checked(directory / "environment.json", directory, exists=True).read_text(encoding="utf-8"))
+    if report.get("tool") != tool or report.get("encoder_versions") != child_encoder_versions(tool, qualification):
+        raise ComparisonError("ChildEnvironmentSelectionMismatch")
+    expected = "only_declared_sqlite_vec_absence" if tool == "basic-memory" else "passed"
+    if report.get("dependency_consistency") != {"before_profile": "passed", "after_profile": expected}:
+        raise ComparisonError("ChildDependencyConsistencyFailed")
+    interpreter = verify_child_files(report)
+    snapshot = child_snapshot(interpreter)
+    verify_child_inventory(report, snapshot["packages"], snapshot["python_version"])
+    if any(snapshot.get(key) != report.get(key) for key in ("platform", "machine", "abi")):
+        raise ComparisonError("ChildRuntimeIdentityChanged")
+    return report
 
 
 def verify_qualification(primary: Path, floor: Path, commit: str) -> dict:
@@ -808,9 +926,14 @@ def run(args) -> int:
     write_json(out / "summary.json", summary)
     if not summary["dependencies"]["compatible"]:
         raise ComparisonError("SharedDependencyVersionMismatch")
+    interpreter = None
+    if args.tool in ("mem0", "basic-memory"):
+        summary["child_environment"] = verify_child_environment(args.competitor_environment, summary["qualification"], args.tool)
+        interpreter = verify_child_files(summary["child_environment"])
+        write_json(out / "summary.json", summary)
     if args.tool == "mem0":
         summary["bm25_assets"] = verify_bm25(checked(args.bm25, exists=True))
-        summary["fastembed_version"] = importlib.metadata.version("fastembed")
+        summary["fastembed_version"] = summary["child_environment"]["packages"]["fastembed"]
         if summary["fastembed_version"] != FASTEMBED_VERSION:
             raise ComparisonError("FastembedVersionMismatch")
     sources = {path.relative_to(REPO).as_posix(): digest(path) for path in sorted((REPO / "mesh").rglob("*.py"))}
@@ -827,15 +950,19 @@ def run(args) -> int:
     cleanup = {"settled": True}
     with owned_temporary_root(out, cleanup) as home:
         config = {"tool": args.tool, "data": str(checked(args.data, exists=True)), "models": str(checked(args.models, exists=True)), "output": str(out), "home": str(home), "qualification": summary["qualification"]}
+        if interpreter is not None:
+            config["child_environment"] = summary["child_environment"]
         if args.tool == "mem0":
             config["bm25"] = str(checked(args.bm25, exists=True))
         config_path = home / "config.json"
         write_json(config_path, config)
         env = isolated_environment(home)
+        if interpreter is not None:
+            env["PATH"] = str(interpreter.parent) + os.pathsep + env.get("PATH", "")
         if args.tool == "auxly":
             env["COMPARISON_AUXLY"] = str(checked(args.auxly, exists=True))
         with (out / "worker-private.log").open("wb") as log:
-            process = subprocess.Popen(native_command(config_path), cwd=home, env=env, stdout=log, stderr=log, start_new_session=True)
+            process = subprocess.Popen(native_command(config_path, interpreter), cwd=home, env=env, stdout=log, stderr=log, start_new_session=True)
             cleanup["settled"] = False
             observed_cpu = {}
             owned_processes = {}
@@ -908,6 +1035,8 @@ def run(args) -> int:
         final_packages = {d.metadata["Name"]: d.version for d in importlib.metadata.distributions()}
         if final_packages != installed:
             raise ComparisonError("DependenciesChangedDuringMeasurement")
+        if interpreter is not None and verify_child_environment(args.competitor_environment, summary["qualification"], args.tool) != summary["child_environment"]:
+            raise ComparisonError("ChildEnvironmentChangedDuringMeasurement")
         if args.tool == "mem0" and verify_bm25(args.bm25) != summary["bm25_assets"]:
             raise ComparisonError("Bm25AssetsChangedDuringMeasurement")
     summary["finished_at_utc"] = datetime.now(timezone.utc).isoformat()
@@ -932,10 +1061,16 @@ def main() -> int:
             item.add_argument("--qualification-directory", type=Path, required=True)
             item.add_argument("--floor-qualification-directory", type=Path, required=True)
             item.add_argument("--qualification-commit", default=QUALIFICATION_COMMIT, help="Exact Git commit that supplied source qualification; LF/CRLF checkout conversion is verified against its blobs")
+            item.add_argument("--competitor-environment", type=Path, help="Separately frozen official Mem0 or Basic Memory virtual environment")
     item = sub.add_parser("worker")
     item.add_argument("--config", type=Path, required=True)
     item = sub.add_parser("provision-bm25", help="Fetch and verify only pinned static BM25 configuration and stopwords")
     item.add_argument("--directory", type=Path, required=True)
+    item = sub.add_parser("freeze-child", help="Check and freeze an official competitor environment separately from the qualified Mesh host")
+    item.add_argument("--tool", choices=("mem0", "basic-memory"), required=True)
+    item.add_argument("--directory", type=Path, required=True)
+    item.add_argument("--wheel", type=Path, required=True)
+    item.add_argument("--summary", type=Path, required=True)
     args = parser.parse_args()
     if args.command == "init":
         out = checked(args.output, REPO / ".work")
@@ -947,6 +1082,9 @@ def main() -> int:
         return worker(config)
     if args.command == "provision-bm25":
         provision_bm25(args.directory)
+        return 0
+    if args.command == "freeze-child":
+        freeze_child(args)
         return 0
     try:
         return run(args)

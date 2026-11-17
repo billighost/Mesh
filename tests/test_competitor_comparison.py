@@ -347,3 +347,108 @@ def test_qualification_rejects_missing_profiler_and_mixed_checkout_line_endings(
     path.write_bytes(b"first = 1\r\nsecond = 2\n")
     with pytest.raises(comparison.ComparisonError, match="QualificationSourceMismatch"):
         comparison.source_equivalence("mesh/example.py", hashlib.sha256(blob).hexdigest(), "a" * 40, "b" * 40)
+
+
+def test_native_namespace_uses_explicit_copied_child_interpreter(tmp_path, monkeypatch):
+    monkeypatch.setattr(comparison, "REPO", tmp_path)
+    monkeypatch.setattr(comparison.sys, "platform", "linux")
+    monkeypatch.setattr(comparison.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(comparison.os, "getuid", lambda: 1000, raising=False)
+    monkeypatch.setattr(comparison.os, "getgid", lambda: 1000, raising=False)
+    child = tmp_path / ".work/native/bin/python"
+    child.parent.mkdir(parents=True)
+    child.write_bytes(b"copied interpreter fixture")
+    command = comparison.native_command(tmp_path / "config.json", child)
+    assert command[command.index("--no-new-privs") + 1] == str(child)
+    assert "--net" in command and "--kill-child=SIGKILL" in command
+    outside = tmp_path / "outside-python"
+    outside.write_bytes(b"outside fixture")
+    with pytest.raises(comparison.ComparisonError, match="PathOutsideOwnedRoot"):
+        comparison.native_command(tmp_path / "config.json", outside)
+
+
+def test_native_mcp2_inventory_does_not_relax_mesh_host_dependencies():
+    packages = {"basic-memory": "0.24.1", "mcp": "2.0.0", "psutil": "7.2.2"}
+    report = {"tool": "basic-memory", "packages": packages, "python_version": "3.12.0", "encoder_versions": {"psutil": "7.2.2"}}
+    comparison.verify_child_inventory(report, packages, "3.12.0")
+    evidence = {"primary": {"dependency_constraints": {"mcp": "1.30.0", "psutil": "7.2.2"}, "runtime": {"packages": {"mcp": "1.30.0", "psutil": "7.2.2"}}}}
+    assert comparison.dependency_report(evidence, packages)["compatible"] is False
+    with pytest.raises(comparison.ComparisonError, match="ChildEnvironmentChanged"):
+        comparison.verify_child_inventory(report, packages | {"mcp": "2.1.0"}, "3.12.0")
+    with pytest.raises(comparison.ComparisonError, match="ChildEnvironmentChanged"):
+        comparison.verify_child_inventory(report, packages, "3.13.0")
+
+
+def test_mem0_child_encoder_and_native_bm25_versions_are_required():
+    packages = {"mem0ai": "2.2.1", "fastembed": "0.9.1", "protobuf": "6.33.0", "numpy": "2.5.5"}
+    report = {"tool": "mem0", "packages": packages, "python_version": "3.12.0", "encoder_versions": {"numpy": "2.5.5"}}
+    comparison.verify_child_inventory(report, packages, "3.12.0")
+    bad = report | {"encoder_versions": {"numpy": "2.2.0"}}
+    with pytest.raises(comparison.ComparisonError, match="ChildEncoderVersionMismatch"):
+        comparison.verify_child_inventory(bad, packages, "3.12.0")
+    bad_packages = packages | {"fastembed": "0.8.0"}
+    with pytest.raises(comparison.ComparisonError, match="FastembedVersionMismatch"):
+        comparison.verify_child_inventory(report | {"packages": bad_packages}, bad_packages, "3.12.0")
+
+
+def child_fixture(tmp_path, monkeypatch, *, extra_profile_error=False):
+    monkeypatch.setattr(comparison, "REPO", tmp_path)
+    directory = tmp_path / ".work/native"
+    (directory / "bin").mkdir(parents=True)
+    (directory / "bin/python").write_bytes(b"copied fixture interpreter")
+    (directory / "bin/basic-memory").write_bytes(b"native fixture entrypoint")
+    wheel = tmp_path / ".work/basic-memory.whl"
+    wheel.write_bytes(b"immutable official fixture wheel")
+    monkeypatch.setitem(comparison.PINS, "basic-memory", comparison.PINS["basic-memory"] | {"sha256": comparison.digest(wheel)})
+    summary = tmp_path / ".work/summary.json"
+    evidence = {"primary": {"runtime": {"packages": {"psutil": "7.2.2"}}}}
+    comparison.write_json(summary, {"qualification": evidence})
+    packages = {"basic-memory": "0.24.1", "mcp": "2.0.0", "psutil": "7.2.2"}
+    snapshot = {"packages": packages, "python_version": "3.12.0", "platform": "linux", "machine": "x86_64", "abi": "cpython-312"}
+    monkeypatch.setattr(comparison, "child_snapshot", lambda interpreter: snapshot)
+    calls = []
+    check_count = 0
+    def command(args, **kwargs):
+        nonlocal check_count
+        calls.append(args)
+        if args[-1] == "check":
+            check_count += 1
+            if check_count == 1:
+                return SimpleNamespace(returncode=0, stdout=b"No broken requirements found.\n")
+            text = b"basic-memory 0.24.1 requires sqlite-vec, which is not installed.\n"
+            if extra_profile_error:
+                text += b"fixture 1.0 requires other-package, which is not installed.\n"
+            return SimpleNamespace(returncode=1, stdout=text)
+        return SimpleNamespace(returncode=0, stdout=b"listed package fixture\n")
+    monkeypatch.setattr(comparison.subprocess, "run", command)
+    return SimpleNamespace(tool="basic-memory", directory=directory, wheel=wheel, summary=summary), evidence, calls, snapshot
+
+
+def test_freeze_child_checks_native_dependencies_and_removes_vector_only_in_child(tmp_path, monkeypatch):
+    args, qualification, calls, snapshot = child_fixture(tmp_path, monkeypatch)
+    comparison.freeze_child(args)
+    report = comparison.verify_child_environment(args.directory, qualification, "basic-memory")
+    assert report["packages"] == snapshot["packages"]
+    assert report["dependency_consistency"] == {"before_profile": "passed", "after_profile": "only_declared_sqlite_vec_absence"}
+    assert json.loads(args.summary.read_text())["child_environment"] == report
+    assert all(command[0] == str(args.directory / "bin/python") for command in calls)
+    assert any(command[-3:] == ["uninstall", "-y", "sqlite-vec"] for command in calls)
+    assert (args.directory / "removed-vector-files-private.txt").is_file()
+    (args.directory / "bin/basic-memory").write_bytes(b"changed native entrypoint")
+    with pytest.raises(comparison.ComparisonError, match="ChildEnvironmentFilesChanged"):
+        comparison.verify_child_environment(args.directory, qualification, "basic-memory")
+
+
+def test_keyword_profile_cannot_hide_unrelated_dependency_failure(tmp_path, monkeypatch):
+    args, _, _, _ = child_fixture(tmp_path, monkeypatch, extra_profile_error=True)
+    with pytest.raises(comparison.ComparisonError, match="UnexpectedKeywordProfileDependencyFailure"):
+        comparison.freeze_child(args)
+    assert not (args.directory / "environment.json").exists()
+
+
+def test_child_inventory_cannot_change_the_qualified_resource_sampler(tmp_path, monkeypatch):
+    args, qualification, _, _ = child_fixture(tmp_path, monkeypatch)
+    comparison.freeze_child(args)
+    qualification["primary"]["runtime"]["packages"]["psutil"] = "7.0.0"
+    with pytest.raises(comparison.ComparisonError, match="ChildEnvironmentSelectionMismatch"):
+        comparison.verify_child_environment(args.directory, qualification, "basic-memory")
