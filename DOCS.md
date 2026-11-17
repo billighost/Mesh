@@ -7,7 +7,7 @@ Complete user guide for **Mesh** (`mesh-context-layer`) **0.9.0** (Beta): instal
 - Looking for one specific command? Jump to the [CLI reference](#6-cli-reference).
 - README overview and FAQ: [README.md](README.md).
 
-> Current API descriptions reflect the 0.9.0 source branch; check the installed version before using them with an older PyPI package. Historical field-test observations retain their tested versions and dates. Commands marked **verified** refer to the named isolated run; no cloud provider was called.
+> Current API descriptions reflect Mesh 0.9.0; check the installed version before using them with an older package. Historical field-test observations retain their tested versions and dates. Commands marked **verified** refer to the named isolated run; no cloud provider was called.
 
 ---
 
@@ -1193,20 +1193,17 @@ completed neural indexing, retrieval quality, latency, CPU and sampled RAM are
 separate observations. Failed, resource-rejected, deferred and unscored
 conditions remain visible.
 
-Normal CI and both full qualification suites passed for the November 16, 2026
-source `e4284c8`. The primary and floor suites each selected 1,915 cases with
-zero failures or errors. The storage ledger retains 53 completed cells, four deferrals and one
-optional diagnostic failure before workload startup; none of the primary cells
-failed. The same-selection test-speed observation completed. All five retrieval
-jobs failed overall, and all five separate E5 jobs stopped in their baseline
-before E5 executed. See [remote qualification](docs/CI_VALIDATION.md) and
-[RESULTS.md](benchmarks/RESULTS.md) for source-bound measurements and limitations.
+Normal CI and both full qualification suites passed at `b55c980` on November 17, 2026. Each XML retains 1,944 unique testcase records, with zero failures/errors; its separate suite-declared 2,149-test counter is preserved distinctly. The storage ledger completed 55 of 58 cells with three deferrals and zero failures, including the separate diagnostic. The same-selection one/two-worker test-speed observation completed. All five ordinary retrieval jobs failed overall. The separate E5 experiment completed all native baselines: two E5 shadows were scored and failed quality; three began indexing and exceeded their dynamic RSS ceilings before any shadow query, leaving quality unscored. See [remote qualification](docs/CI_VALIDATION.md) and [RESULTS.md](benchmarks/RESULTS.md) for exact source bindings, measurements and retained limitations.
 
 Passage retrieval and optional local reranking remain default off. Gains on
 small bounded fixtures do not establish general accuracy, and no profile is
 qualified across all evaluated datasets. Process-crash checks establish the
 observed recovery behavior; physical power-cut survival requires separate
 hardware/filesystem testing.
+
+### Current competitor comparison
+
+The [twenty-cell comparison](benchmarks/RESULTS.md#mesh-090-native-competitor-comparison-2026-11-17-2db6229) at `2db6229` measures Mesh 0.9.0, Mem0 2.2.1, Basic Memory 0.24.1 and Auxly 1.5.0 across the same original parents and fixed queries. It retains all 660 selected queries per tool, including nine unanswered queries, and keeps unfaithful parents in original relevance denominators. Its Mesh runtime and package metadata are source-identical to qualified `b55c980`; the native Linux Python 3.12.16 host consumed Windows qualification snapshots from `e4284c8`. Official competitor child environments are separately frozen. Mesh/Mem0 SDK, Basic Memory/Auxly MCP, windowed/truncated MiniLM and keyword/substring profiles retain their differences; Auxly has subset metrics rather than ranked metrics. No general superiority or cross-interface speed ratio is established.
 
 ### Historical comparisons
 
@@ -1230,8 +1227,8 @@ require verified local assets; the harnesses do not call a cloud LLM provider.
 The recorded checkpoints do not establish a full-population LongMemEval result,
 complete multi-source answers, performance at 100,000+ memories, long-duration
 soak behavior, generalized competitor superiority, or physical power-cut
-validation. A complete matched competitor comparison of the changed 0.9.0
-candidate remains separate work.
+validation. The current comparison is complete for its twenty configured
+cells; broader workloads and repeated independent evaluations remain separate work.
 
 ---
 
@@ -1434,7 +1431,7 @@ Deletion is irreversible; private memories are not in exports.
 
 ## 19. Provenance: PyPI vs source
 
-- This source branch is version `0.9.0`; that stamp alone does not establish a published release.
+- These docs describe version `0.9.0`; use `mesh version` to check the installed package.
 - The historical field-tested wheel is `mesh_context_layer-0.8.1b2-py3-none-any.whl`, 283,989 bytes, SHA-256 `e1a7a0af71abe3f51b02150d9a2d5fdc1d9d8a618937e9d41bf899c08ead06ff`.
 - The field report describes that wheel and source revision. To verify the historical artifact yourself:
 

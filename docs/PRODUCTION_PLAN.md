@@ -5,26 +5,12 @@ Inspected branch: feat/ci-evidence, HEAD 61ec16de97a5604a19a81c6396f8bfc46d982c4
 
 ## Implementation checkpoint
 
-Latest completed candidate checkpoint: `e4284c8` on
-`ci/mesh-production-run-c4-20261106`. [Normal CI](https://github.com/billighost/Mesh/actions/runs/43906485367)
-and both full primary/floor qualification suites passed. The
-[production run](https://github.com/billighost/Mesh/actions/runs/43906485048)
-completed on November 16 with source-bound storage and test-speed measurements.
-The storage ledger retains four deferrals and an optional diagnostic startup
-failure; its primary cells have no failures. All five retrieval jobs failed
-overall, and the separate [E5 run](https://github.com/billighost/Mesh/actions/runs/43909369990)
-stopped in all five native baselines before E5 executed. These results qualify
-the tested source and environments; subsequent changes remain pending fresh
-qualification. See [RESULTS.md](../benchmarks/RESULTS.md) for the measurements,
-provenance and retained failures. No optional default is qualified.
+Latest completed measured source: `b55c98013b95384a632878041cc499165bfe7610`. Normal push/PR CI and both full primary/floor qualification suites passed. The [production run](https://github.com/billighost/Mesh/actions/runs/44085115248) completed the source-bound storage and same-selection test-speed observations. The storage ledger retains 55 completed cells, three deferrals and zero failures, including the separately instrumented 10,000-fact neural grouped HTTP diagnostic. All five ordinary retrieval jobs failed overall; no optional profile is qualified across the datasets.
 
-The candidate includes patched APSW/WAL-FULL storage, schema-6 identity and
-receipts, atomic work history, bounded bulk/group execution, namespace recovery,
-cache/backfill changes and agent transport fallback. Release preparation must
-finish the diagnostic and E5 baseline harness repairs, qualify changed sources,
-publish source-bound results and complete the fresh matched competitor comparison. The earlier
-470-query competitor evidence measures Mesh 0.8.3. See
-[CI_VALIDATION.md](CI_VALIDATION.md) for the current qualification requirements.
+The separate [E5 run](https://github.com/billighost/Mesh/actions/runs/44086750785) completed all native baselines. Two shadows completed/scored and failed quality; three started indexing and exceeded dynamic RSS ceilings before any shadow query, leaving quality unscored. E5 was not adopted. The fresh [twenty-cell competitor run](https://github.com/billighost/Mesh/actions/runs/44088496624) at `2db6229` completed with separately reviewed artifacts and numerical recalculation. Its Mesh runtime/package Git content is identical to `b55c980`, while native cells actually consumed `e4284c8` Windows qualification snapshots and ran on Linux with separately frozen official child environments. The bounded six-query LongMemEval subset does not repeat the historical 470-query Mesh 0.8.3 evaluation.
+
+The implemented release includes patched APSW/WAL-FULL storage, schema-6 identities and receipts, atomic work history, bounded bulk/group execution, namespace recovery, cache/backfill changes and agent transport fallback. [RESULTS.md](../benchmarks/RESULTS.md) preserves all numerical boundaries, failed gates, deferrals and historical checkpoints. A later final release source must pass current normal CI and full correctness qualification; ancestral storage/test-speed reuse requires exact Git path sets, modes, blob IDs and ancestry. See [CI_VALIDATION.md](CI_VALIDATION.md).
+
 
 An explicit, default-off E5 shadow experiment is implemented for remote
 qualification. It compares fresh SDK calls on copies of one original-parent
@@ -33,7 +19,7 @@ checks, and preserves the existing five datasets, qualification and gates.
 Its bounded 256-token, prefixed window-mean profile is distinct from upstream
 512-token encoding. Model-swap costs are checked in both normal-cache and
 cache-cold strata. The model, tokenizer, profile and durable space are pinned;
-native quality, resource and packaging proof remains pending. This experiment
+native observations failed quality or resource gates. This experiment
 does not select a production embedding model. See [RETRIEVAL.md](../benchmarks/RETRIEVAL.md).
 
 At the earlier completed source `e353bc1`: normal CI, both full qualification

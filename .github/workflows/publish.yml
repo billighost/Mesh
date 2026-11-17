@@ -137,9 +137,167 @@ jobs:
         with:
           packages-dir: dist_packages/
 
+  verify-public-package:
+    name: Verify Public Wheel Identity & Isolated Install
+    needs: [build, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PUBLICATION_TARGET: ${{ github.event.inputs.target == 'testpypi' && 'testpypi' || 'pypi' }}
+    steps:
+      - name: Set up Python 3.12
+        uses: actions/setup-python@0b93645e9fb737c6a60a8d661b315bf9b64c0204 # v5.3.0
+        with:
+          python-version: "3.12"
+
+      - name: Initialize publication verification evidence
+        run: python -c "import json; from pathlib import Path; Path('public-package-verification.json').write_text(json.dumps({'status':'not_run','stage':'waiting_for_built_artifact'}) + '\n', encoding='utf-8')"
+
+      - name: Download the exact built distributions
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: dist-packages
+          path: dist
+
+      - name: Verify public bytes and smoke-test the installed wheel
+        run: |
+          python - <<'PY'
+          import hashlib, json, os, re, subprocess, sys, tempfile, time, urllib.error, urllib.parse, urllib.request, zipfile
+          from email.parser import Parser
+          from pathlib import Path
+          report_path = Path('public-package-verification.json').resolve()
+          report = {'status': 'failed', 'stage': 'built_metadata', 'repository': os.environ['PUBLICATION_TARGET']}
+          def save():
+              report_path.write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
+          def run(arguments, environment, directory, timeout=120):
+              result = subprocess.run(arguments, env=environment, cwd=directory, capture_output=True, text=True, timeout=timeout)
+              if result.returncode:
+                  raise RuntimeError('Isolated subprocess failed: ' + str(result.returncode))
+              return result.stdout
+          class ListedTemporaryDirectory(tempfile.TemporaryDirectory):
+              def cleanup(self):
+                  root = Path(self.name)
+                  if root.exists():
+                      entries = sorted(path.relative_to(root).as_posix() for path in root.rglob('*'))
+                      report['temporary_inventory_entries'] = len(entries)
+                      report['temporary_inventory_sha256'] = hashlib.sha256(json.dumps(entries).encode('utf-8')).hexdigest()
+                  super().cleanup()
+          try:
+              wheels = list(Path('dist').glob('*.whl'))
+              assert len(wheels) == 1, 'Expected one built wheel'
+              built = wheels[0]
+              built_bytes = built.read_bytes()
+              expected = hashlib.sha256(built_bytes).hexdigest()
+              with zipfile.ZipFile(built) as package:
+                  names = [name for name in package.namelist() if name.endswith('.dist-info/METADATA')]
+                  assert len(names) == 1
+                  metadata = Parser().parsestr(package.read(names[0]).decode('utf-8'))
+              version = metadata['Version']
+              assert re.sub(r'[-_.]+', '-', metadata['Name']).lower() == 'mesh-context-layer'
+              provenance = json.loads(Path('dist/provenance.json').read_text(encoding='utf-8'))
+              assert provenance['version'] == version and provenance['commit'] == os.environ['GITHUB_SHA']
+              report.update(version=version, source_commit=provenance['commit'], wheel=built.name, built_sha256=expected, stage='public_index')
+              save()
+              target = os.environ['PUBLICATION_TARGET']
+              assert target in {'pypi', 'testpypi'}
+              index_host = 'test.pypi.org' if target == 'testpypi' else 'pypi.org'
+              file_host = 'test-files.pythonhosted.org' if target == 'testpypi' else 'files.pythonhosted.org'
+              url = f'https://{index_host}/pypi/mesh-context-layer/{urllib.parse.quote(version, safe="")}/json'
+              entry = None
+              for attempt in range(8):
+                  try:
+                      with urllib.request.urlopen(url, timeout=20) as response:
+                          body = response.read(1048577)
+                      assert len(body) <= 1048576, 'Oversized public metadata'
+                      public = json.loads(body)
+                      assert public['info']['version'] == version
+                      matches = [item for item in public['urls'] if item['filename'] == built.name]
+                      assert len(matches) <= 1, 'Ambiguous public wheel'
+                      entry = matches[0] if matches else None
+                  except urllib.error.HTTPError as exc:
+                      if exc.code not in {404, 429, 500, 502, 503, 504}:
+                          raise
+                  except (urllib.error.URLError, TimeoutError):
+                      pass
+                  if entry is not None:
+                      break
+                  if attempt < 7:
+                      time.sleep(10)
+              assert entry is not None, 'Exact wheel unavailable from selected public index'
+              assert not entry.get('yanked') and entry['packagetype'] == 'bdist_wheel'
+              assert entry['digests']['sha256'] == expected, 'Public digest differs from built wheel'
+              parsed = urllib.parse.urlsplit(entry['url'])
+              assert parsed.scheme == 'https' and parsed.hostname == file_host and parsed.username is None
+              with urllib.request.urlopen(entry['url'], timeout=30) as response:
+                  final_url = urllib.parse.urlsplit(response.geturl())
+                  assert final_url.scheme == 'https' and final_url.hostname == file_host
+                  published_bytes = response.read(len(built_bytes) + 1)
+              assert len(published_bytes) == len(built_bytes)
+              assert hashlib.sha256(published_bytes).hexdigest() == expected, 'Downloaded wheel differs from built wheel'
+              report.update(public_sha256=expected, downloaded_sha256=expected, public_identity_verified=True, stage='isolated_install')
+              save()
+              with ListedTemporaryDirectory(prefix='mesh-public-package-') as temporary:
+                  root = Path(temporary).resolve()
+                  environment = {name: value for name, value in os.environ.items() if name in {'PATH', 'LANG', 'LC_ALL', 'SYSTEMROOT'}}
+                  bindings = {'HOME':'home', 'USERPROFILE':'home', 'MESH_HOME':'mesh', 'MESH_DIR':'mesh', 'APPDATA':'appdata', 'LOCALAPPDATA':'localappdata', 'XDG_CONFIG_HOME':'xdg/config', 'XDG_CACHE_HOME':'xdg/cache', 'XDG_DATA_HOME':'xdg/data', 'CODEX_HOME':'codex', 'CLAUDE_CONFIG_DIR':'claude', 'TMPDIR':'tmp', 'TMP':'tmp', 'TEMP':'tmp'}
+                  for name, leaf in bindings.items():
+                      path = root / leaf
+                      path.mkdir(parents=True, exist_ok=True)
+                      environment[name] = str(path)
+                  environment.update(MESH_NO_AUTO_DAEMON='1', MESH_NO_DAEMON_PROXY='1', MESH_NO_MODEL_DOWNLOAD='1', MESH_NO_UPDATE_CHECK='1', MESH_NO_IMPLICIT_CLOUD='1', MESH_NO_OUTBOX_WORKER='1', MESH_AUTO_APPROVE='0', MESH_ENABLE_AUTO_SYNC='0', MESH_ALLOW_CLOUD_CAPTURE='0', MESH_ALLOW_CLOUD_SYNC='0', MESH_FORCE_HASH_EMBED='1', MESH_BG_ONNX='0', MESH_GROUP_COMMIT='0', HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1', PYTHONNOUSERSITE='1', PIP_CONFIG_FILE=os.devnull, PIP_DISABLE_PIP_VERSION_CHECK='1', PIP_NO_CACHE_DIR='1')
+                  wheel = root / built.name
+                  wheel.write_bytes(published_bytes)
+                  run([sys.executable, '-m', 'venv', str(root / 'venv')], environment, root)
+                  python = str(root / 'venv/bin/python')
+                  # The verified local wheel comes from the selected index; dependencies use PyPI.
+                  run([python, '-m', 'pip', 'install', '--index-url', 'https://pypi.org/simple', str(wheel)], environment, root, timeout=300)
+                  report.update(stage='installed_smoke', dependency_index='https://pypi.org/simple')
+                  save()
+                  cli_version = run([str(root / 'venv/bin/mesh'), 'version'], environment, root).strip()
+                  assert cli_version == 'mesh ' + version
+                  smoke = """
+          import importlib.metadata, json, os, sys
+          from pathlib import Path
+          import mesh
+          assert Path(mesh.__file__).resolve().is_relative_to(Path(sys.prefix).resolve())
+          assert mesh.__version__ == importlib.metadata.version('mesh-context-layer') == sys.argv[1]
+          from mesh.client import ConnectionProfile, MeshClient
+          from mesh.audit import stop_audit_worker
+          from mesh.sqlite_runtime import sqlite3, is_patched_sqlite
+          assert is_patched_sqlite(sqlite3.sqlite_version)
+          try:
+              profile = ConnectionProfile(namespace='public-package-smoke', mesh_home=Path(os.environ['MESH_HOME']), agent_id='publication-test')
+              client = MeshClient(profile, transport='sdk')
+              first = client.call('mesh_learn', {'content':'The package fixture service listens on port 8042.', 'deduplicate':False}, operation_id='public-package-fact-8042')
+              replay = client.call('mesh_learn', {'content':'The package fixture service listens on port 8042.', 'deduplicate':False}, operation_id='public-package-fact-8042')
+              assert replay['memory_id'] == first['memory_id'] and replay['replayed'] is True
+              found = client.call('mesh_recall', {'query':'fixture service port', 'n':5})
+              assert first['memory_id'] in {item['id'] for item in found['results']}
+              print(json.dumps({'status':'passed', 'version':mesh.__version__, 'sqlite_version':sqlite3.sqlite_version, 'installed_import_verified':True, 'receipt_replay_verified':True, 'retrieval_verified':True}))
+          finally:
+              stop_audit_worker()
+          """
+                  report['smoke'] = json.loads(run([python, '-I', '-c', smoke, version], environment, root).splitlines()[-1])
+                  report['cli_version_verified'] = True
+              report.update(status='passed', stage='complete')
+          except Exception as exc:
+              report['failure_type'] = type(exc).__name__
+              raise
+          finally:
+              save()
+          PY
+
+      - name: Preserve public package verification, including failures
+        if: always()
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: public-package-verification
+          path: public-package-verification.json
+          if-no-files-found: error
+
   attach-github-release:
     name: Attach Artifacts to GitHub Release
-    needs: [build, publish]
+    needs: [build, publish, verify-public-package]
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'release'
     runs-on: ubuntu-latest
     timeout-minutes: 15

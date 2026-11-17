@@ -2,6 +2,19 @@
 
 ## Current completed checkpoint (reviewed November 17, 2026)
 
+At `b55c98013b95384a632878041cc499165bfe7610`, [push CI](https://github.com/billighost/Mesh/actions/runs/44085115201) and [PR CI](https://github.com/billighost/Mesh/actions/runs/44085124087) passed all 18 jobs each. The [production run](https://github.com/billighost/Mesh/actions/runs/44085115248) passed primary/floor correctness qualification, storage and test-speed jobs. Independently checked XMLs retain 1,944 unique testcase records each: 1,941 passed/three skipped primary and 1,940 passed/four skipped floor, zero failures/errors. Each XML separately declares a 2,149-test suite counter; that counter is not substituted for retained testcase records. Primary sdist collection reports 1,944 tests across 97 files. Coverage is 74.39%/74.34%; real process-crash recovery and primary package, installed-wheel, CLI, doctor and installer checks passed.
+
+The complete storage ledger records 55 completed and three deferred cells, with zero failed/unavailable: 46/48 primary, 3/4 scale, all five pilots and the separate 10,000-fact neural grouped HTTP diagnostic. Two sixteen-agent neural receipt-SDK cells are resource deferred and the ungrouped neural scale cell is budget deferred. The diagnostic retains stage observations separately from primary throughput. The one/two-worker test-speed observation retained identical full-suite selections. [RESULTS.md](../benchmarks/RESULTS.md) and its linked exports preserve resources, source/constraints seals, cleanup and single-pass limits.
+
+All five ordinary `compact-80` retrieval jobs failed overall; no optional profile qualifies across the datasets. The separate [E5 run](https://github.com/billighost/Mesh/actions/runs/44086750785) completed all five native baselines. Direct-fact and long-text E5 shadows completed/scored and failed quality. LongMemEval, NFCorpus and SciFact shadows began indexing and exceeded baseline-plus-128-MiB RSS ceilings before any shadow query; their quality is unscored and final paired resource observations remain null. E5 was not adopted and no experimental default or resource limit changed.
+
+The [twenty-cell competitor run](https://github.com/billighost/Mesh/actions/runs/44088496624) at comparator `2db6229494a223feaa618de0cbf901650ba0d037` completed all configured cells with separately verified artifacts and recomputed numerics. Its Mesh runtime plus `pyproject.toml` Git content is identical to `b55c980`; cells actually consumed the earlier `e4284c8` qualification snapshots and frozen constraints. Linux Python 3.12.16 observations and separate official child environments do not establish identical native platforms to Windows correctness qualification. The [immutable method](https://github.com/billighost/Mesh/blob/2db6229494a223feaa618de0cbf901650ba0d037/benchmarks/COMPARISON.md) remains outside core. These source-bound observations do not substitute for normal CI and primary/floor qualification of a later release commit; measurement reuse requires exact Git paths, modes, blobs and ancestry for the measured scope.
+
+At previous `1f370d58`, [normal CI](https://github.com/billighost/Mesh/actions/runs/44081865548) passed 18 jobs, while [production](https://github.com/billighost/Mesh/actions/runs/44081865559) passed floor and failed primary on the cold-start writer-admission deadline; dependent measurements were skipped. `b55c980` replaces that test's elapsed-time assumption with causal lock/queue ordering, without runtime changes. Earlier failed results remain historical evidence.
+
+## November 16 checkpoint (`e4284c8`)
+
+
 At `e4284c8`, [normal CI](https://github.com/billighost/Mesh/actions/runs/43906485367)
 passed all 18 jobs after attempt 2 completed the two macOS jobs that had not
 received runners on the first attempt. The

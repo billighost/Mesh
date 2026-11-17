@@ -4,11 +4,11 @@ All notable changes to Mesh Context Layer are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html) (pre-1.0: minor versions may include behavior changes).
 
-## [0.9.0] - Unreleased
+## [0.9.0] - 2026-11-17
 
-Candidate release for durable concurrent storage, retrieval, bounded resource use, and persistent context for agents sharing one machine. Python entry points are retained; native SQLite is supplied by the required APSW dependency. Schema 6 upgrades require a backup and must not be reopened by older packages. Performance and accuracy evidence remains tied to each tested source; see the [release notes](docs/releases/RELEASE_NOTES_v0.9.0.md).
+Mesh 0.9.0 includes durable concurrent storage, retrieval, bounded resource use, and persistent context for agents sharing one machine. Python entry points are retained; native SQLite is supplied by the required APSW dependency. Schema 6 upgrades require a backup and must not be reopened by older packages. Performance and accuracy evidence remains tied to each tested source; see the [release notes](docs/releases/RELEASE_NOTES_v0.9.0.md).
 
-At `e4284c8`, normal CI and both full qualification suites passed. The source-bound storage ledger and same-selection test-speed observation completed; the ledger preserves four deferrals and one optional diagnostic startup failure. Retrieval and E5 jobs failed overall, with E5 itself never executed. These checkpoint results do not qualify the default-off experimental features or a later release source; see [RESULTS.md](benchmarks/RESULTS.md).
+At `b55c980`, normal CI and both full qualification suites passed. The source-bound storage ledger completed 55 of 58 cells with three deferrals and zero failures; the separate storage diagnostic and same-selection test-speed observation completed. The fresh twenty-cell competitor comparison uses Mesh runtime/package content identical to that source. Ordinary retrieval and E5 jobs failed their overall gates, preserving scored quality rejection and resource-aborted unscored conditions. Optional passages/reranking remain default off, and E5 was not adopted. See [RESULTS.md](benchmarks/RESULTS.md) for exact source/platform scopes and historical failures.
 
 ### Added
 - **Patched SQLite runtime**: A lazy DB-API facade uses APSW's bundled SQLite for storage, audit, encryption helpers, backup, and maintenance. Runtime verification rejects vulnerable WAL versions and missing FTS5 or thread safety. Persistent transactions use `synchronous=FULL` by default.

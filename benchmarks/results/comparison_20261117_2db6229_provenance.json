@@ -1,0 +1,3957 @@
+{
+  "schema_version": 1,
+  "mesh_version": "0.9.0",
+  "publication_status": "measurement_export_does_not_assert_package_publication",
+  "comparison_source_commit": "2db6229494a223feaa618de0cbf901650ba0d037",
+  "comparison_run_id": 44088496624,
+  "run_url": "https://github.com/billighost/Mesh/actions/runs/44088496624",
+  "method_url": "https://github.com/billighost/Mesh/blob/2db6229494a223feaa618de0cbf901650ba0d037/benchmarks/COMPARISON.md",
+  "comparator_url": "https://github.com/billighost/Mesh/blob/2db6229494a223feaa618de0cbf901650ba0d037/benchmarks/competitor_comparison.py",
+  "workflow_url": "https://github.com/billighost/Mesh/blob/2db6229494a223feaa618de0cbf901650ba0d037/.github/workflows/competitor-comparison.yml",
+  "consumed_qualification_source_commit": "e4284c8fb5ba565043accccbdd6353839c3eb43a",
+  "consumed_qualification_run_id": 43906485048,
+  "current_core_source_commit": "b55c98013b95384a632878041cc499165bfe7610",
+  "core_source_equivalence": {
+    "commit": "b55c98013b95384a632878041cc499165bfe7610",
+    "comparison_source": "2db6229494a223feaa618de0cbf901650ba0d037",
+    "mesh_and_metadata_git_content_identical": true,
+    "scope": [
+      "mesh",
+      "pyproject.toml"
+    ]
+  },
+  "qualification_scope_note": "Cells actually consumed e4284c8 snapshots and constraints. Mesh runtime plus pyproject.toml Git content is independently identical to b55c980. Native Linux/child environments differ from Windows qualification; no identical native environment is asserted.",
+  "unique_git_sources_verified": 52,
+  "git_source_observations": 1040,
+  "source_files": {
+    "mesh/__init__.py": {
+      "git_blob_sha256": "3e65d768ab415aee60c5f4d9d65bc7f181b5d001d2de10d2cfbb10d3348a7dc3"
+    },
+    "mesh/__main__.py": {
+      "git_blob_sha256": "ece356769081c52f8ad6296264c770098e1824cf3d1d14da1b7084bdace682e3"
+    },
+    "mesh/_model_download.py": {
+      "git_blob_sha256": "9a84de2f0994a6cf3704efbc3ef4da71b0e7235a370c237fa94aaedbaa5429f6"
+    },
+    "mesh/audit.py": {
+      "git_blob_sha256": "32351e13348cb6e908a14523e3025397087962c37302bf91fd3148ef3de2a904"
+    },
+    "mesh/brief.py": {
+      "git_blob_sha256": "62ac621c8779325c9fe700e54bbdca6e3881286a7d4626b93b0edce506c78b4d"
+    },
+    "mesh/cli.py": {
+      "git_blob_sha256": "70d469a66aa1ec71c9db168847e2db2c7aa89476d57afa4a75d3f3f8dfc364ad"
+    },
+    "mesh/client.py": {
+      "git_blob_sha256": "0b4cb7d1d6f2f7cdc5dab8db433bcfaf6a8f8c426fb9528c94c1fe6504e168b6"
+    },
+    "mesh/context_builder.py": {
+      "git_blob_sha256": "25b30626b828b35d66471fd58c815e85fd8f7977b81d132eb64a4e8ec3f81d3c"
+    },
+    "mesh/crypto.py": {
+      "git_blob_sha256": "b116df6bbb579385a00678185e9396e606739f1f210f987a5b0f26ca310458a8"
+    },
+    "mesh/daemon.py": {
+      "git_blob_sha256": "32e3e16266f09ac6a0372775fd92eb65250cef9670ea78898d076e89c02286ca"
+    },
+    "mesh/dashboard.py": {
+      "git_blob_sha256": "dad616cd18526368beff89fc710e21a40c4c2813c0c296bb0cd85871cd4e8f7d"
+    },
+    "mesh/digest.py": {
+      "git_blob_sha256": "5ea6dbe35d9ed39c7cc5ddd5239e01a22390e17145005d5c2b92be9892ac0b8b"
+    },
+    "mesh/envutil.py": {
+      "git_blob_sha256": "1cb2f16870e192b17cf198872ca8ad08fb16718937bb26cb39a9baada03e0186"
+    },
+    "mesh/execution.py": {
+      "git_blob_sha256": "7775a8846f83e7ed5619fce7ba88bb07ca39545e35da370b3a97334517852756"
+    },
+    "mesh/group_commit.py": {
+      "git_blob_sha256": "3a63d8e7f67e695e4148b58d520c31bd1599a99006d0b5af036149c9c0a8eef0"
+    },
+    "mesh/guards.py": {
+      "git_blob_sha256": "0cf636d49be2e40f6f0db777c81803b29d1a89b978dd082784f841faf131d9a2"
+    },
+    "mesh/hooks.py": {
+      "git_blob_sha256": "4ac1a56080f2c806d391586457e6dd1c963fbbda26abcab1b537d5f892580d50"
+    },
+    "mesh/http_server.py": {
+      "git_blob_sha256": "12c5d7fc2e81037a00599bac9f3f6b91fb4ccf1fa9c99adeddb479d73deb716f"
+    },
+    "mesh/installer.py": {
+      "git_blob_sha256": "dade6e02d0f994ba912e5d84a1729a6f341d0f8218de9c66a8d8efea990d9d7d"
+    },
+    "mesh/io.py": {
+      "git_blob_sha256": "5dc94ff19a83ff577722437588d05fdf823c4fc616da6825009af67ab35cfdc3"
+    },
+    "mesh/local_rerank.py": {
+      "git_blob_sha256": "26152d7a2d0717f20627f56ce723cdbeeb53e1d40ec2ccd89c982e6bc0fc4c70"
+    },
+    "mesh/mcp_server.py": {
+      "git_blob_sha256": "049bccba8d61f528603fb26e3e6d1d8d4773646408cce3f032a2d9a1738b49e7"
+    },
+    "mesh/memory.py": {
+      "git_blob_sha256": "7c43d1fbcd4985f2b2dcdf746b1597ad8722af515c0efedb2fe7e62d62ae05ee"
+    },
+    "mesh/mutation_delivery.py": {
+      "git_blob_sha256": "9bc76ef64570d2c318a8ef114bb70dc324d2381eddd9d1d78bf978161d0c0417"
+    },
+    "mesh/namespace_maintenance.py": {
+      "git_blob_sha256": "88dedb331728f9934d4d222151e12c5b48bb177c2621fc79b8765584493fcfee"
+    },
+    "mesh/namespace_resolution.py": {
+      "git_blob_sha256": "7f11849ce85faa38fef7dfeb3cd2e0e3442b0eedd17f971346af026e4ece2cdf"
+    },
+    "mesh/namespaces.py": {
+      "git_blob_sha256": "5b01da16ec1b0c557a1fd1f6122388b67443e84bef7c313aea5caaea82d90d9f"
+    },
+    "mesh/operation_contract.py": {
+      "git_blob_sha256": "82a2331dbe97c560dd7db393c4a421d638fa7097cfdfb721f0a7d2cd08b68b26"
+    },
+    "mesh/operations.py": {
+      "git_blob_sha256": "1e341bfc5df2413337b4ec4fa9dcec33e9c175a88d3994a4995f2c3993207d72"
+    },
+    "mesh/output.py": {
+      "git_blob_sha256": "bcca2023f41264496e3a5fe7da184dd8aef21a628f508b4523d42f575f2ab1bd"
+    },
+    "mesh/passage_search.py": {
+      "git_blob_sha256": "68b8e6bebdeb31df3b4bcac10efd0663d6c684daea0833f2d7a2365f0657b321"
+    },
+    "mesh/passages.py": {
+      "git_blob_sha256": "395e1467f96c1914ff679ae8d537c62c579a49a096e1b1f3222c2862cfb00ef9"
+    },
+    "mesh/passive.py": {
+      "git_blob_sha256": "621828b086129d6ca14c3a89c4024f757b7ee0978004f08f23d33cce47c22346"
+    },
+    "mesh/secrets.py": {
+      "git_blob_sha256": "3b533234e392d73e964602b1bfb030566c2f8ce8b69fb02300230a7b384e5cde"
+    },
+    "mesh/skill_installer.py": {
+      "git_blob_sha256": "6add818e77e0319b9d04a672d21b8ddb50e94edf9586163f760c126e94f0c447"
+    },
+    "mesh/skills/__init__.py": {
+      "git_blob_sha256": "b87ceb0b1f06ef4096542c3c896d50a9ad9a6d6079c241ae7777ecd41ebd32f5"
+    },
+    "mesh/sqlite_runtime.py": {
+      "git_blob_sha256": "a688d8b8ea2396083406d4d2bb81163d3b4de3b37f584f6fc580b00aa6515192"
+    },
+    "mesh/store.py": {
+      "git_blob_sha256": "18a1f0633e547716726b91969ded193348b0ef1ac737c91fd3a2e883bc42c5f1"
+    },
+    "mesh/ui.py": {
+      "git_blob_sha256": "fc314fc745fdb13242c499252ca66e26979b272d28d785939dd237dc70f7d5ef"
+    },
+    "mesh/version.py": {
+      "git_blob_sha256": "0614a29b8661d92544b964558ace37ffbb545c4b95667b7e3d0527e739a336ad"
+    },
+    "benchmarks/competitor_comparison.py": {
+      "git_blob_sha256": "b19b0a7a25d36f4c41afd5028c999fa465ba182cb9151ec438aad6b2adb97297"
+    },
+    "pyproject.toml": {
+      "git_blob_sha256": "6b71b555ad9538d78b1b0087d1e39a8735224b0778a0ac73867adbd187b288a0"
+    },
+    "benchmarks/production_bench.py": {
+      "git_blob_sha256": "85f3543f00d63bd2046ec201b92156d27e2a4a18616ece214ebb7d413317098e"
+    },
+    "benchmarks/production_transport.py": {
+      "git_blob_sha256": "d1587b08ae08c7a582615aa6bc007af7df12c66761c1dc8ffe6bd315e77b572d"
+    },
+    "benchmarks/embedding_shadow.py": {
+      "git_blob_sha256": "8ad14d83c386aa7ad173567b55a8fa80cbd8cb2af66478741c7858d6f3ec5a93"
+    },
+    "benchmarks/retrieval_ci.py": {
+      "git_blob_sha256": "33c8dd25cd8b9c9a9119a66d0473e4445a31385b59b9d9c7b2d8d099be8fe203"
+    },
+    "benchmarks/storage_profile.py": {
+      "git_blob_sha256": "95359a8f9ccff812431b169ab7c333892f1ed05074098704ace766eb00906120"
+    },
+    "scripts/run_tests.py": {
+      "git_blob_sha256": "7b92589743b945056167f23fb69f79c74c70b9f2e65f2e136689b410a4cf5120"
+    },
+    "benchmarks/production_test_speed.py": {
+      "git_blob_sha256": "5d40a28a8cdeb1f5cbf8bfdd521b75a72925f1f209f2d1e4166add14309ef5e1"
+    },
+    "benchmarks/prepare_retrieval_ci.py": {
+      "git_blob_sha256": "7b6442c769d045da8885f32064ff8d1f440d951e0112dc42260209c4e1f85265"
+    },
+    "benchmarks/provision_production_model.py": {
+      "git_blob_sha256": "215f9feb17b4dbaf3806a5ef9955882e54de178d8375da1fc48ae512bcba0d64"
+    },
+    ".github/workflows/competitor-comparison.yml": {
+      "git_blob_sha256": "82fc975d154076f52682e41166468537e89a0885c929adedd5f7fba14ec621d0"
+    }
+  },
+  "input_equivalence": [
+    {
+      "dataset": "prospective",
+      "complete_tools": [
+        "auxly",
+        "basic-memory",
+        "mem0",
+        "mesh"
+      ],
+      "actual_input_file_hashes_equal": true,
+      "raw_manifest_digests": [
+        "e88ff9a1897cfb28b463d18a97866882958491f712bc9a96f6fd9a842ab1b637",
+        "e88ff9a1897cfb28b463d18a97866882958491f712bc9a96f6fd9a842ab1b637",
+        "e88ff9a1897cfb28b463d18a97866882958491f712bc9a96f6fd9a842ab1b637",
+        "e88ff9a1897cfb28b463d18a97866882958491f712bc9a96f6fd9a842ab1b637"
+      ],
+      "preparation_timestamp_excluded": true,
+      "labels_sha256": "d44f85fc122227e0575229515e06c30bcec0c9b36f49660586f124b030bb7d0e",
+      "model_files": {
+        "model.onnx": "6fd5d72fe4589f189f8ebc006442dbb529bb7ce38f8082112682524616046452",
+        "tokenizer.json": "be50c3628f2bf5bb5e3a7f17b1f74611b2561a3a27eeab05e5aa30f411572037"
+      }
+    },
+    {
+      "dataset": "longtext-prospective",
+      "complete_tools": [
+        "auxly",
+        "basic-memory",
+        "mem0",
+        "mesh"
+      ],
+      "actual_input_file_hashes_equal": true,
+      "raw_manifest_digests": [
+        "fc8ceaaf3d470653f628590e659f525487aaf6a2c2d62f7ce378d6b40e2bbc1e",
+        "fc8ceaaf3d470653f628590e659f525487aaf6a2c2d62f7ce378d6b40e2bbc1e",
+        "fc8ceaaf3d470653f628590e659f525487aaf6a2c2d62f7ce378d6b40e2bbc1e",
+        "fc8ceaaf3d470653f628590e659f525487aaf6a2c2d62f7ce378d6b40e2bbc1e"
+      ],
+      "preparation_timestamp_excluded": true,
+      "labels_sha256": "e013be8ebde702a074a71a87cf850c5a415b27cd7cfed5e3ed0528bd7f71ef28",
+      "model_files": {
+        "model.onnx": "6fd5d72fe4589f189f8ebc006442dbb529bb7ce38f8082112682524616046452",
+        "tokenizer.json": "be50c3628f2bf5bb5e3a7f17b1f74611b2561a3a27eeab05e5aa30f411572037"
+      }
+    },
+    {
+      "dataset": "longmemeval",
+      "complete_tools": [
+        "auxly",
+        "basic-memory",
+        "mem0",
+        "mesh"
+      ],
+      "actual_input_file_hashes_equal": true,
+      "raw_manifest_digests": [
+        "eed4fe7b96a90c9a1cf3fea57fecc808f61dc52422acfd8543d829e26d373ffd",
+        "eed4fe7b96a90c9a1cf3fea57fecc808f61dc52422acfd8543d829e26d373ffd",
+        "eed4fe7b96a90c9a1cf3fea57fecc808f61dc52422acfd8543d829e26d373ffd",
+        "eed4fe7b96a90c9a1cf3fea57fecc808f61dc52422acfd8543d829e26d373ffd"
+      ],
+      "preparation_timestamp_excluded": true,
+      "labels_sha256": "6a98f0d5a0d80adb6770bf2622f987197915f21d3e649acfa0068e2ebd7f1b06",
+      "model_files": {
+        "model.onnx": "6fd5d72fe4589f189f8ebc006442dbb529bb7ce38f8082112682524616046452",
+        "tokenizer.json": "be50c3628f2bf5bb5e3a7f17b1f74611b2561a3a27eeab05e5aa30f411572037"
+      }
+    },
+    {
+      "dataset": "nfcorpus",
+      "complete_tools": [
+        "auxly",
+        "basic-memory",
+        "mem0",
+        "mesh"
+      ],
+      "actual_input_file_hashes_equal": true,
+      "raw_manifest_digests": [
+        "746618d743eca0843e41b880791bc0b57f79615959dc29f1cd39de71f758a3ce",
+        "7bfa3ba2770618e0452c97a7cc6fc9d29be066391bd30474b989c8622246b6ec",
+        "b9dd65952ac4bdae7a100649851807fd5cef4ced77debde27ab46ab2ec82b34d",
+        "27da8cefbb7287b51589d3e24e033b2a6328ddcc2e99b8f654f02bab0190af20"
+      ],
+      "preparation_timestamp_excluded": true,
+      "labels_sha256": "2e779079b4053d605230d98964ebee355b3fe387c9611d98c51f2b271a325600",
+      "model_files": {
+        "model.onnx": "6fd5d72fe4589f189f8ebc006442dbb529bb7ce38f8082112682524616046452",
+        "tokenizer.json": "be50c3628f2bf5bb5e3a7f17b1f74611b2561a3a27eeab05e5aa30f411572037"
+      }
+    },
+    {
+      "dataset": "scifact",
+      "complete_tools": [
+        "auxly",
+        "basic-memory",
+        "mem0",
+        "mesh"
+      ],
+      "actual_input_file_hashes_equal": true,
+      "raw_manifest_digests": [
+        "0beaf3a04442dd29d95e1f7e546a6de8e02b9358459cbe850d9433e693b39ea1",
+        "1eb475df1260799fbac03f16229212f658b36ff02604af2fedc1b241d9fc70fd",
+        "a3281e2930283e3a50a7fea5fcd0bb7f4b0905c1261d61538bcf556a3ba8ef7c",
+        "13aec0ba178294fae0c60d9fcb9da804449ac7fc4487087af86f9286870ec9bd"
+      ],
+      "preparation_timestamp_excluded": true,
+      "labels_sha256": "9306bf40a0ff5f3bec248a2aef0b0f0631e8ab89dcfc1da6b8fb90e3c7993857",
+      "model_files": {
+        "model.onnx": "6fd5d72fe4589f189f8ebc006442dbb529bb7ce38f8082112682524616046452",
+        "tokenizer.json": "be50c3628f2bf5bb5e3a7f17b1f74611b2561a3a27eeab05e5aa30f411572037"
+      }
+    }
+  ],
+  "artifacts": [
+    {
+      "tool": "mesh",
+      "dataset": "prospective",
+      "artifact_name": "competitor-mesh-prospective",
+      "artifact_id": 14331355058,
+      "api_url": "https://api.github.com/repos/billighost/Mesh/actions/artifacts/14331355058",
+      "api_zip_sha256": "54a29d84285f54056a481a4bafa091654bd72df6c01416bd381ebc6f9b30c158",
+      "archive_members": [
+        {
+          "name": "progress.json",
+          "bytes": 151,
+          "sha256": "f07f8361ce46755319459a66abb009ed68b76a55dac044242ffa1869fb41e2ec"
+        },
+        {
+          "name": "summary.json",
+          "bytes": 39550,
+          "sha256": "232e28257368af6ffd92dd9cfec3c05d93926a945f0a7d05b722f2e6c929d50e"
+        },
+        {
+          "name": "ranked.jsonl",
+          "bytes": 17114,
+          "sha256": "fa3702b4dd1bbd533e53ee89ddbc3f1932dd219b5d1dfce8beaf2fce9e6919ec"
+        }
+      ],
+      "archive_digest_and_member_bytes_verified": true,
+      "summary_metadata_manifest": "8ef0f00f1a245383fa050539194e5bc76b98c667bba46ab71f8f9e6b3ccdc932",
+      "official_child_environment_manifest": null
+    },
+    {
+      "tool": "mesh",
+      "dataset": "longtext-prospective",
+      "artifact_name": "competitor-mesh-longtext-prospective",
+      "artifact_id": 14330272937,
+      "api_url": "https://api.github.com/repos/billighost/Mesh/actions/artifacts/14330272937",
+      "api_zip_sha256": "605c7588f597ff614a7018d539d6e2a1be5f8f4b6e234edd3cea41f82b9d96ff",
+      "archive_members": [
+        {
+          "name": "summary.json",
+          "bytes": 39538,
+          "sha256": "407e7ac0be83aa47d9ec7e0322b6374c5081aa18be2b07787d66ffb47b0bb8aa"
+        },
+        {
+          "name": "progress.json",
+          "bytes": 150,
+          "sha256": "581e837dced4e63839cd2e7cdf0b9faa34d11594b846e4f8e1b95bb885dc6cb5"
+        },
+        {
+          "name": "ranked.jsonl",
+          "bytes": 7339,
+          "sha256": "254ebfa6b742dbf6afc4755c988f9ea3da303fb56242d5784c8d3c840820e6e8"
+        }
+      ],
+      "archive_digest_and_member_bytes_verified": true,
+      "summary_metadata_manifest": "c34061e603203eff79285908b76ed971ea17bfe14ea4306343a6982f389e492d",
+      "official_child_environment_manifest": null
+    },
+    {
+      "tool": "mesh",
+      "dataset": "longmemeval",
+      "artifact_name": "competitor-mesh-longmemeval",
+      "artifact_id": 14331260387,
+      "api_url": "https://api.github.com/repos/billighost/Mesh/actions/artifacts/14331260387",
+      "api_zip_sha256": "a3f3acd5e6a1faabe0279365b18f2dc80fe991e35ac96a6fd9a8bf3b1aba6c21",
+      "archive_members": [
+        {
+          "name": "summary.json",
+          "bytes": 41008,
+          "sha256": "c775ed5f21c753652ee802081881e1614f0d69f0642e8989f8064d462b9ea0ba"
+        },
+        {
+          "name": "progress.json",
+          "bytes": 153,
+          "sha256": "9f18f84a4c7bbce6af723dc69d77ba1e90a3d14be3ad3525cffda5756625ad38"
+        },
+        {
+          "name": "ranked.jsonl",
+          "bytes": 4418,
+          "sha256": "c71f928c21659f6418a12584ad2b9b9bfd63f1796f99d3e64701a3fc8a75ffc2"
+        }
+      ],
+      "archive_digest_and_member_bytes_verified": true,
+      "summary_metadata_manifest": "ac356aae0e3ce478fcb2dd3ff9e791b7035874ffc59214c679674305446fb9c7",
+      "official_child_environment_manifest": null
+    },
+    {
+      "tool": "mesh",
+      "dataset": "nfcorpus",
+      "artifact_name": "competitor-mesh-nfcorpus",
+      "artifact_id": 14331706536,
+      "api_url": "https://api.github.com/repos/billighost/Mesh/actions/artifacts/14331706536",
+      "api_zip_sha256": "fe6358fab792099b5670a2be90a580a9b37ff035ab70a5b09ab8cb861d48ddb8",
+      "archive_members": [
+        {
+          "name": "summary.json",
+          "bytes": 39902,
+          "sha256": "dde991c9aa99a17a89ffdf208f46d213a0d54a7bf066e415d69d96455d8cd0c0"
+        },
+        {
+          "name": "progress.json",
+          "bytes": 153,
+          "sha256": "383c6a16708364037f6ad87c9ebb9ecd47a28bbb9a1c496710db375868167774"
+        },
+        {
+          "name": "ranked.jsonl",
+          "bytes": 260128,
+          "sha256": "9ec04199947b66f8c3cdba13f643b4ceb454f45a5b4fcc91a6ae60189d58dd5d"
+        }
+      ],
+      "archive_digest_and_member_bytes_verified": true,
+      "summary_metadata_manifest": "4f3533fc609f54a8134aa99685da62a678ad6b64ca1650b3064c08db8e4dc15f",
+      "official_child_environment_manifest": null
+    },
+    {
+      "tool": "mesh",
+      "dataset": "scifact",
+      "artifact_name": "competitor-mesh-scifact",
+      "artifact_id": 14331476773,
+      "api_url": "https://api.github.com/repos/billighost/Mesh/actions/artifacts/14331476773",
+      "api_zip_sha256": "05205fc6d416c6663b13235968c85227e2f9d7a98da38218eac10cb6ac57f588",
+      "archive_members": [
+        {
+          "name": "summary.json",
+          "bytes": 39847,
+          "sha256": "03b926853999d908411c8e612b2b3359bd969ae4565d505b4dd84ceee58246f0"
+        },
+        {
+          "name": "ranked.jsonl",
+          "bytes": 244370,
+          "sha256": "e8b1ed43090fd71c6f70e42066ab4fc98a049161dcfa44615adf29274c8dddc9"
+        },
+        {
+          "name": "progress.json",
+          "bytes": 157,
+          "sha256": "94ae25fcfbd2721424bfd215e078c35b0fadbc459ff3c09a4af628de236354be"
+        }
+      ],
+      "archive_digest_and_member_bytes_verified": true,
+      "summary_metadata_manifest": "6dea20f93d7507c7b8e5721a3bf5139c1907556b11a3989199f491b934257da2",
+      "official_child_environment_manifest": null
+    },
+    {
+      "tool": "mem0",
+      "dataset": "prospective",
+      "artifact_name": "competitor-mem0-prospective",
+      "artifact_id": 14330371803,
+      "api_url": "https://api.github.com/repos/billighost/Mesh/actions/artifacts/14330371803",
+      "api_zip_sha256": "edb2e8d1d4b5f5d4cfba481afbfe2ab461e71877a305a5fb5444e69d7377c27e",
+      "archive_members": [
+        {
+          "name": "summary.json",
+          "bytes": 44000,
+          "sha256": "115f26983597d152495f415c94e56e93f7786c21e7af6f78aa0332a049e568ef"
+        },
+        {
+          "name": "progress.json",
+          "bytes": 300,
+          "sha256": "c9a3a50474430338f2d5508e928fd1c20623a647fd5d198711ebc71cff35e27c"
+        },
+        {
+          "name": "ranked.jsonl",
+          "bytes": 17933,
+          "sha256": "3ec98d08b9b37e0769e4380038d9289ae2cc4dd591f74c1a222d98f832296573"
+        }
+      ],
+      "archive_digest_and_member_bytes_verified": true,
+      "summary_metadata_manifest": "6c686fce1b2153c8bc9ae7eaf08f9c75a85d8d975c2a540e93b8ff653c743f5d",
+      "official_child_environment_manifest": "107f5273869d10d495540c53887bc47bd54f509cd9d755f59f87b74d447c428d"
+    },
+    {
+      "tool": "mem0",
+      "dataset": "longtext-prospective",
+      "artifact_name": "competitor-mem0-longtext-prospective",
+      "artifact_id": 14330726996,
+      "api_url": "https://api.github.com/repos/billighost/Mesh/actions/artifacts/14330726996",
+      "api_zip_sha256": "0a2c9d302e200e5ae36fdb310b5a3e365b4c02e3c5df91edc31dcc93576bd404",
+      "archive_members": [
+        {
+          "name": "summary.json",
+          "bytes": 44073,
+          "sha256": "2f296ea292873519413803a35640246f9b363d430b71ef26f3b44566e110438f"
+        },
+        {
+          "name": "ranked.jsonl",
+          "bytes": 7336,
+          "sha256": "48b09a3b248153a21726f113c55f5b47347de62c8b7c5fa66b1b7e33de74230e"
+        },
+        {
+          "name": "progress.json",
+          "bytes": 299,
+          "sha256": "c95ecf64d11b87140b2606e70ecfb713e47f9cbc4920dabd7059eb05b33eed36"
+        }
+      ],
+      "archive_digest_and_member_bytes_verified": true,
+      "summary_metadata_manifest": "c6ac95eaac6bba1cbd0539d76e808d6bec5796623f46e30a4d4d149b6f5888bd",
+      "official_child_environment_manifest": "107f5273869d10d495540c53887bc47bd54f509cd9d755f59f87b74d447c428d"
+    },
+    {
+      "tool": "mem0",
+      "dataset": "longmemeval",
+      "artifact_name": "competitor-mem0-longmemeval",
+      "artifact_id": 14330432196,
+      "api_url": "https://api.github.com/repos/billighost/Mesh/actions/artifacts/14330432196",
+      "api_zip_sha256": "17e777172cf0d5c53900aecf1320e511909d4b18c451d324ceeccc819acf596f",
+      "archive_members": [
+        {
+          "name": "progress.json",
+          "bytes": 973,
+          "sha256": "ffbc1a27fb6e97c199678181717cb82fb1d6e372e1b484fedc79d6de478755a2"
+        },
+        {
+          "name": "summary.json",
+          "bytes": 46220,
+          "sha256": "3f45205e766dd4a81d5e85fe981990703206e2322ab71fe3290610c1cd9d8816"
+        },
+        {
+          "name": "ranked.jsonl",
+          "bytes": 3327,
+          "sha256": "aa13bd7987f996ec2d6afded86546d50041148dbbfdca236f4c2460c47bf7b2f"
+        }
+      ],
+      "archive_digest_and_member_bytes_verified": true,
+      "summary_metadata_manifest": "08a24f983342f31df5ee539de15205662de900e888cfc4cfc1c31090580b7d63",
+      "official_child_environment_manifest": "107f5273869d10d495540c53887bc47bd54f509cd9d755f59f87b74d447c428d"
+    },
+    {
+      "tool": "mem0",
+      "dataset": "nfcorpus",
+      "artifact_name": "competitor-mem0-nfcorpus",
+      "artifact_id": 14329594863,
+      "api_url": "https://api.github.com/repos/billighost/Mesh/actions/artifacts/14329594863",
+      "api_zip_sha256": "d8fde9edbe0836b5cd775ab4602deb188fb89e1f9ad176ef80a43f27b950b171",
+      "archive_members": [
+        {
+          "name": "summary.json",
+          "bytes": 44379,
+          "sha256": "86a4e75092b28050fd91f00fcba8499da6df09f495bd022ba65a5a6f7f409044"
+        },
+        {
+          "name": "progress.json",
+          "bytes": 307,
+          "sha256": "8b77e59d498a977c864cea6224df66cf3ec90392e7b23c2f4142e3c22581a4aa"
+        },
+        {
+          "name": "ranked.jsonl",
+          "bytes": 263239,
+          "sha256": "8c57588d786d2139275a2ec84e683bcc4f25e38e263f23f0ccf13ca70d8ecccb"
+        }
+      ],
+      "archive_digest_and_member_bytes_verified": true,
+      "summary_metadata_manifest": "27933c2bb635ba0aeef359b40ed9ac0ad970580762f4336fce8baa50c05d369d",
+      "official_child_environment_manifest": "107f5273869d10d495540c53887bc47bd54f509cd9d755f59f87b74d447c428d"
+    },
+    {
+      "tool": "mem0",
+      "dataset": "scifact",
+      "artifact_name": "competitor-mem0-scifact",
+      "artifact_id": 14330338441,
+      "api_url": "https://api.github.com/repos/billighost/Mesh/actions/artifacts/14330338441",
+      "api_zip_sha256": "cb39b1b82cc6338776af941f57a71f244f3daa8dbe3ad7c6bfd96de5dcd01d4b",
+      "archive_members": [
+        {
+          "name": "progress.json",
+          "bytes": 312,
+          "sha256": "b0cf2a99dc9ff7c3fc34ee94b0f546215b8848e77a113dcf33605f4037ef9b00"
+        },
+        {
+          "name": "summary.json",
+          "bytes": 44343,
+          "sha256": "7c6f4c005bac8c26a40a416f508957425fd9e6f7a778fa660891a6fb3edf885f"
+        },
+        {
+          "name": "ranked.jsonl",
+          "bytes": 244705,
+          "sha256": "e0d99f2aef8ab29bfc764ffe89d9550ec60fd37e63e1bccb9fe87be67c4c2da5"
+        }
+      ],
+      "archive_digest_and_member_bytes_verified": true,
+      "summary_metadata_manifest": "733b99b1158aa3f5bffb05f579cf2b329c55bc82034e022324dc714baa82f06b",
+      "official_child_environment_manifest": "2695cdb9088c1e9d95a1a1c5502a1d93815aec9a2fc3cd349cdeafa115b054d2"
+    },
+    {
+      "tool": "basic-memory",
+      "dataset": "prospective",
+      "artifact_name": "competitor-basic-memory-prospective",
+      "artifact_id": 14330577476,
+      "api_url": "https://api.github.com/repos/billighost/Mesh/actions/artifacts/14330577476",
+      "api_zip_sha256": "38a20986eaec4959226fef0c5df09f61a1cfb54614f3da052ba5dbf693f4d55a",
+      "archive_members": [
+        {
+          "name": "summary.json",
+          "bytes": 45802,
+          "sha256": "f5c688c6c93526e7dec9534e76861345f32a7b82af1e3d08c862cf3b3a324dd2"
+        },
+        {
+          "name": "progress.json",
+          "bytes": 150,
+          "sha256": "344695cc44eb9674170ee0d4648484523b755438714b2a536089143b44e2301b"
+        },
+        {
+          "name": "ranked.jsonl",
+          "bytes": 16652,
+          "sha256": "df8180c8b5956ed90fec26192f1439df649d16171bdcc1a156c9a2f6855f880d"
+        }
+      ],
+      "archive_digest_and_member_bytes_verified": true,
+      "summary_metadata_manifest": "9a7dd801c4ba84eb96ba71e25c7f72513a14a999169d73def0c88961ed067810",
+      "official_child_environment_manifest": "807a1350ede0cc7a11d270aafa19ddab9521a37fccbefb2c05406dd45952d2fa"
+    },
+    {
+      "tool": "basic-memory",
+      "dataset": "longtext-prospective",
+      "artifact_name": "competitor-basic-memory-longtext-prospective",
+      "artifact_id": 14331070832,
+      "api_url": "https://api.github.com/repos/billighost/Mesh/actions/artifacts/14331070832",
+      "api_zip_sha256": "fb669b977c21174a3bb1e5d3990c70a286be6d27ec4e4ffac5d4b601876c6efe",
+      "archive_members": [
+        {
+          "name": "summary.json",
+          "bytes": 45798,
+          "sha256": "7aafc2aa7b59cbb6d85329f64944885def23c75f1fc14b5736b5eb0e762b07cb"
+        },
+        {
+          "name": "progress.json",
+          "bytes": 150,
+          "sha256": "b86a72e2d08ebc2f5a83c306bb7863c18e502a969f7099f2d10e753d153f71e7"
+        },
+        {
+          "name": "ranked.jsonl",
+          "bytes": 5504,
+          "sha256": "1527d30ffcf72a401aa747ffdce9e8444cfc91c8779f2046fef73574f037e451"
+        }
+      ],
+      "archive_digest_and_member_bytes_verified": true,
+      "summary_metadata_manifest": "31424f976610a3e939c1a8bb943ed8467333b08a658ba9c74cc88b6006853d55",
+      "official_child_environment_manifest": "807a1350ede0cc7a11d270aafa19ddab9521a37fccbefb2c05406dd45952d2fa"
+    },
+    {
+      "tool": "basic-memory",
+      "dataset": "longmemeval",
+      "artifact_name": "competitor-basic-memory-longmemeval",
+      "artifact_id": 14329558853,
+      "api_url": "https://api.github.com/repos/billighost/Mesh/actions/artifacts/14329558853",
+      "api_zip_sha256": "6f385748d99fca48c082e6253cbdc90f2d985f54eb79f41a8ad02c23555222ba",
+      "archive_members": [
+        {
+          "name": "summary.json",
+          "bytes": 47395,
+          "sha256": "fed8aa43495a4ed8b6f5572d920507fb0b540d3d548902dc4153fe737a00faa4"
+        },
+        {
+          "name": "progress.json",
+          "bytes": 152,
+          "sha256": "707a5776ad1145218ef1be82079596ac3ccb9638d0f912cb0f2b0e753b851c2e"
+        },
+        {
+          "name": "ranked.jsonl",
+          "bytes": 3741,
+          "sha256": "81cb0ee0ce31921e9a5441c4298257aa241a7041185dd53e331e920202ce4667"
+        }
+      ],
+      "archive_digest_and_member_bytes_verified": true,
+      "summary_metadata_manifest": "c450eba710c674bde9d96e886fff6d2851cd1e1619c510290c579eda469f31a0",
+      "official_child_environment_manifest": "807a1350ede0cc7a11d270aafa19ddab9521a37fccbefb2c05406dd45952d2fa"
+    },
+    {
+      "tool": "basic-memory",
+      "dataset": "nfcorpus",
+      "artifact_name": "competitor-basic-memory-nfcorpus",
+      "artifact_id": 14331985162,
+      "api_url": "https://api.github.com/repos/billighost/Mesh/actions/artifacts/14331985162",
+      "api_zip_sha256": "dc56817e70b341c677a439d2a29c8a02801493d826596bd6b1777487f569d31b",
+      "archive_members": [
+        {
+          "name": "summary.json",
+          "bytes": 46177,
+          "sha256": "0dc98b605d6d92b92b7843b2a457df14db8b5b797c73b06c84210fa745be543d"
+        },
+        {
+          "name": "progress.json",
+          "bytes": 158,
+          "sha256": "cc6e353caf89594efdd0481a8e7d90567a1037afe555a4a40736d62ff1617946"
+        },
+        {
+          "name": "ranked.jsonl",
+          "bytes": 185687,
+          "sha256": "76ef51376a135cfbea10bd7f0e07a7c6c283d14b19d8281fe608f53f50100267"
+        }
+      ],
+      "archive_digest_and_member_bytes_verified": true,
+      "summary_metadata_manifest": "87569810bc0e03791d26571db71c6610681e5bd2c6c8ed3535f3a8678f66c67f",
+      "official_child_environment_manifest": "807a1350ede0cc7a11d270aafa19ddab9521a37fccbefb2c05406dd45952d2fa"
+    },
+    {
+      "tool": "basic-memory",
+      "dataset": "scifact",
+      "artifact_name": "competitor-basic-memory-scifact",
+      "artifact_id": 14330908077,
+      "api_url": "https://api.github.com/repos/billighost/Mesh/actions/artifacts/14330908077",
+      "api_zip_sha256": "a637c412d5d31f114f354ef585c1bff9912812c8436f4302f420432eb9dbae88",
+      "archive_members": [
+        {
+          "name": "summary.json",
+          "bytes": 46121,
+          "sha256": "7ee22366079a8b8904267d019f011c150935c8a22096d40a8190d42df3e6fad1"
+        },
+        {
+          "name": "progress.json",
+          "bytes": 153,
+          "sha256": "3348b56c61f8fff2e69310b608c34a1a7fc8cf40733dd81bc5b9a4216a4e8dc7"
+        },
+        {
+          "name": "ranked.jsonl",
+          "bytes": 193869,
+          "sha256": "ad443590ecde6f8850f3a28bb4164deeea157a19d3abfd405d2a944758a35956"
+        }
+      ],
+      "archive_digest_and_member_bytes_verified": true,
+      "summary_metadata_manifest": "827447ac6cd5e75f7db9e2a5bf6122d3c09ea0fc08530ce9ff2c68cb29d312ad",
+      "official_child_environment_manifest": "03d6de922c67c143245914855229c6751d4989da4c64aed0af7b584735910e0b"
+    },
+    {
+      "tool": "auxly",
+      "dataset": "prospective",
+      "artifact_name": "competitor-auxly-prospective",
+      "artifact_id": 14329878755,
+      "api_url": "https://api.github.com/repos/billighost/Mesh/actions/artifacts/14329878755",
+      "api_zip_sha256": "abfa1e5dc94963844de450fa880e4c4af16e6d703706cc263652dff5d38e86f6",
+      "archive_members": [
+        {
+          "name": "summary.json",
+          "bytes": 39593,
+          "sha256": "d776067d9c3e85acbb259a59348500c956c934767199761caf79f475ba48d901"
+        },
+        {
+          "name": "progress.json",
+          "bytes": 153,
+          "sha256": "159a1eb53cb6597d4b6bfd5fc9a9ad5d5023c793a10aa200fa401a272a58ab0e"
+        },
+        {
+          "name": "ranked.jsonl",
+          "bytes": 3092,
+          "sha256": "13936b6c21b1b8881261d26d350f89cb88660e0cbf1b7147ac672f4e40fbfaa2"
+        }
+      ],
+      "archive_digest_and_member_bytes_verified": true,
+      "summary_metadata_manifest": "4ea69257b75fa2c650af905afb5e49c1b91daf61e2d77a69e34974a32c3fcc2d",
+      "official_child_environment_manifest": null
+    },
+    {
+      "tool": "auxly",
+      "dataset": "longtext-prospective",
+      "artifact_name": "competitor-auxly-longtext-prospective",
+      "artifact_id": 14329829645,
+      "api_url": "https://api.github.com/repos/billighost/Mesh/actions/artifacts/14329829645",
+      "api_zip_sha256": "aaa1ebd43926c3b906fb654cebb84662c832e0dbf8c167847cc620eddb204b09",
+      "archive_members": [
+        {
+          "name": "summary.json",
+          "bytes": 39613,
+          "sha256": "3b6403f64f73f081b6265c8f80a09dd2360a40f2fea66099c25ca3feb2662cb1"
+        },
+        {
+          "name": "progress.json",
+          "bytes": 152,
+          "sha256": "06f9a1d912fd4836f7dd717c47a1461c4da250c2fd7f3535194c91f84496ddfd"
+        },
+        {
+          "name": "ranked.jsonl",
+          "bytes": 1242,
+          "sha256": "af35503145778561888aeaea70997944217169d1a49ca3ee0ce6ce6e02362321"
+        }
+      ],
+      "archive_digest_and_member_bytes_verified": true,
+      "summary_metadata_manifest": "49156ec2b191f1a400b01eda9759dc6e996ba8370093d74eeaac19c7546f8fdf",
+      "official_child_environment_manifest": null
+    },
+    {
+      "tool": "auxly",
+      "dataset": "longmemeval",
+      "artifact_name": "competitor-auxly-longmemeval",
+      "artifact_id": 14330312959,
+      "api_url": "https://api.github.com/repos/billighost/Mesh/actions/artifacts/14330312959",
+      "api_zip_sha256": "ee7346b7267efcad1caceeb28c823f3e2155072b3433f3d0be4d2664781805f5",
+      "archive_members": [
+        {
+          "name": "summary.json",
+          "bytes": 40607,
+          "sha256": "58bde7ef74300814d82e28851f2e65938c2b82c46e4700cde665036d8dc4c8e1"
+        },
+        {
+          "name": "ranked.jsonl",
+          "bytes": 827,
+          "sha256": "87e898834a62c1e8fbfb096566db9bdcf5814c336f60cb00fc2e1ce1bf283240"
+        },
+        {
+          "name": "progress.json",
+          "bytes": 154,
+          "sha256": "3ce61dd8d6a409bb91ad304b170c2925e0e17c36339a657337cc39870c14b65b"
+        }
+      ],
+      "archive_digest_and_member_bytes_verified": true,
+      "summary_metadata_manifest": "50a4de3ae78eb4e3f3e25365e7041f672940bf6b2de269f6fbf032d57ee646b8",
+      "official_child_environment_manifest": null
+    },
+    {
+      "tool": "auxly",
+      "dataset": "nfcorpus",
+      "artifact_name": "competitor-auxly-nfcorpus",
+      "artifact_id": 14330792327,
+      "api_url": "https://api.github.com/repos/billighost/Mesh/actions/artifacts/14330792327",
+      "api_zip_sha256": "f0adad0793502f57f962992982ae73fe667afa97b1e187d0b662048d16f17b43",
+      "archive_members": [
+        {
+          "name": "progress.json",
+          "bytes": 159,
+          "sha256": "727c180125e31fd51e4a670fa42ba08e8f253f3ec372d1311734c8ff3298c9c8"
+        },
+        {
+          "name": "ranked.jsonl",
+          "bytes": 92428,
+          "sha256": "38347735266d50892370fd115b684c43ac8379dadffb7aed30423f56f37b64be"
+        },
+        {
+          "name": "summary.json",
+          "bytes": 39871,
+          "sha256": "75382966a043e4a499ef0479fb5177203878b8238e26abaf21aba1ab32c7038b"
+        }
+      ],
+      "archive_digest_and_member_bytes_verified": true,
+      "summary_metadata_manifest": "98eb49d983286abbc738c53474e24bd380df44f213d98f566d525e8cf99a3fd1",
+      "official_child_environment_manifest": null
+    },
+    {
+      "tool": "auxly",
+      "dataset": "scifact",
+      "artifact_name": "competitor-auxly-scifact",
+      "artifact_id": 14330916937,
+      "api_url": "https://api.github.com/repos/billighost/Mesh/actions/artifacts/14330916937",
+      "api_zip_sha256": "c9e67893e990af375ed9174bace7b0192d2f3b3eefa6ab340764cee021f5755f",
+      "archive_members": [
+        {
+          "name": "progress.json",
+          "bytes": 159,
+          "sha256": "39a6b56e940481ecf0edb39438bfdf26dd1a1c679629331a25a0bf64d57e6783"
+        },
+        {
+          "name": "summary.json",
+          "bytes": 39821,
+          "sha256": "8c4c8441f9a685ea3c3f581abf6be0e0df10dc3345ec47c6c3ec2306455de667"
+        },
+        {
+          "name": "ranked.jsonl",
+          "bytes": 41334,
+          "sha256": "407965e47a87b2a3fa0d037104ccfbd78ea68b871bb289aadbf6ffa568028af7"
+        }
+      ],
+      "archive_digest_and_member_bytes_verified": true,
+      "summary_metadata_manifest": "edd5ef644635a0ee574f7f304513a871bb10fcdca00c53a5d65ba62079ccee85",
+      "official_child_environment_manifest": null
+    }
+  ],
+  "metadata_manifests_by_sha256": {
+    "bc1da02e1090f2e0141191dd0fdfc6cac25c260edf59c397738c8cbc262810d1": {
+      "interface": "SDK",
+      "ranking": "production default hybrid",
+      "embedding": "pinned MiniLM; production encoder"
+    },
+    "558167dc79357685ed59f870d54c3c4384132c9557b9661edd7b5704b03fc3c2": {
+      "generated_answer_accuracy": false,
+      "general_superiority": false,
+      "full_LongMemEval": false
+    },
+    "8999e614746426b0da8505390dcf8cc658c12cbfee5719dfcb53ca9876739614": {
+      "primary": {
+        "sha256": "dc80cb8ca3062cb6be1a2898d25c6c964a7b92bf609565bdf159c2baec7e876a",
+        "tests": 1915,
+        "skipped": 3,
+        "failures": 0,
+        "errors": 0,
+        "real_recovery_case_passed": true,
+        "source_manifest_sha256": "b3c5222aa9ad62f71bab37c94c064e0d8b0d99ec612f2daa88a85113c8e4d56e",
+        "runtime": {
+          "python_version": "3.14.0",
+          "packages": {
+            "apsw": "3.54.1.0",
+            "numpy": "2.5.5",
+            "onnxruntime": "1.32.0",
+            "mcp": "1.30.0",
+            "psutil": "7.2.2",
+            "uvicorn": "0.54.0",
+            "starlette": "1.10.0",
+            "tokenizers": "0.23.3"
+          },
+          "system": "Windows",
+          "release": "2025Server",
+          "machine": "AMD64",
+          "logical_cpus": 4,
+          "mesh_version": "0.9.0"
+        },
+        "dependency_constraints": {
+          "annotated-doc": "0.0.6",
+          "annotated-types": "0.8.0",
+          "anyio": "4.16.0",
+          "apsw": "3.54.1.0",
+          "attrs": "26.1.0",
+          "bandit": "1.9.4",
+          "build": "1.6.1",
+          "certifi": "2026.10.23",
+          "cffi": "2.1.1",
+          "charset-normalizer": "3.5.2",
+          "click": "8.5.1",
+          "colorama": "0.4.6",
+          "coverage": "7.17.3",
+          "cryptography": "50.0.2",
+          "docutils": "0.23",
+          "execnet": "2.1.2",
+          "fastapi": "0.163.1",
+          "filelock": "4.2.10",
+          "flatbuffers": "25.12.19",
+          "fsspec": "2026.9.0",
+          "h11": "0.16.0",
+          "hf-xet": "1.8.0",
+          "httpcore2": "2.16.2",
+          "httpcore": "1.0.9",
+          "httpx-sse": "0.4.3",
+          "httpx2": "2.16.2",
+          "httpx": "0.28.1",
+          "huggingface-hub": "2.4.0",
+          "hypothesis": "6.170.15",
+          "id": "1.6.1",
+          "idna": "3.20",
+          "iniconfig": "2.3.1",
+          "jaraco-classes": "3.4.0",
+          "jaraco-context": "6.1.2",
+          "jaraco-functools": "4.6.0",
+          "jsonschema-specifications": "2025.9.1",
+          "jsonschema": "4.26.0",
+          "keyring": "25.7.0",
+          "markdown-it-py": "4.3.0",
+          "mcp": "1.30.0",
+          "mdurl": "0.1.2",
+          "more-itertools": "11.2.1",
+          "nh3": "0.3.7",
+          "numpy": "2.5.5",
+          "onnxruntime": "1.32.0",
+          "opentelemetry-api": "1.45.2",
+          "packaging": "26.3",
+          "pip": "26.3",
+          "pluggy": "1.7.0",
+          "protobuf": "7.36.2",
+          "psutil": "7.2.2",
+          "pycparser": "3.12",
+          "pydantic-settings": "2.16.3",
+          "pydantic": "2.14.3",
+          "pydantic-core": "2.50.4",
+          "pygments": "2.21.0",
+          "pyjwt": "2.15.1",
+          "pyproject-hooks": "1.3.3",
+          "pytest-asyncio": "1.5.0",
+          "pytest-cov": "7.1.0",
+          "pytest-xdist": "3.8.0",
+          "pytest": "9.2.0",
+          "python-dotenv": "1.2.4",
+          "python-multipart": "0.0.34",
+          "pywin32-ctypes": "0.2.3",
+          "pywin32": "312",
+          "pyyaml": "6.0.3",
+          "readme-renderer": "46.0",
+          "referencing": "0.37.0",
+          "requests-toolbelt": "1.0.0",
+          "requests": "2.34.2",
+          "rfc3986": "2.0.0",
+          "rich": "15.0.0",
+          "rpds-py": "2026.9.1",
+          "ruff": "0.17.5",
+          "sortedcontainers": "2.4.0",
+          "sse-starlette": "3.7.0",
+          "starlette": "1.10.0",
+          "stevedore": "5.10.0",
+          "tokenizers": "0.23.3",
+          "tqdm": "4.70.1",
+          "truststore": "0.10.5",
+          "twine": "7.0.0",
+          "typing-inspection": "0.4.5",
+          "typing-extensions": "4.16.0",
+          "urllib3": "2.8.0",
+          "uvicorn": "0.54.0"
+        },
+        "constraints_sha256": "370ff61ec6b1b8c3b00fc8fe2d3d60e84dc6a65317c329f4f6cc6c7ba138f3f1"
+      },
+      "floor": {
+        "sha256": "959294d9b3d943059fea5310099cda04c1cb7d9b7318dbc029c67d95f7c9c548",
+        "tests": 1915,
+        "skipped": 4,
+        "failures": 0,
+        "errors": 0,
+        "real_recovery_case_passed": true,
+        "source_manifest_sha256": "af5d69de77259f82cc8a1acf228f0ee3ecf6e7b2da4fa5c21c4d23f7f5fd3236",
+        "runtime": {
+          "python_version": "3.10.11",
+          "packages": {
+            "apsw": "3.51.3.0",
+            "numpy": "2.2.6",
+            "onnxruntime": "1.23.2",
+            "mcp": "1.30.0",
+            "psutil": "7.2.2",
+            "uvicorn": "0.54.0",
+            "starlette": "1.7.0",
+            "tokenizers": "0.23.3"
+          },
+          "system": "Windows",
+          "release": "10",
+          "machine": "AMD64",
+          "logical_cpus": 4,
+          "mesh_version": "0.9.0"
+        },
+        "dependency_constraints": {
+          "annotated-doc": "0.0.6",
+          "annotated-types": "0.8.0",
+          "anyio": "4.16.0",
+          "apsw": "3.51.3.0",
+          "attrs": "26.1.0",
+          "backports-asyncio-runner": "1.2.0",
+          "backports-tarfile": "1.2.0",
+          "bandit": "1.9.4",
+          "build": "1.6.1",
+          "certifi": "2026.10.23",
+          "cffi": "2.1.1",
+          "charset-normalizer": "3.5.2",
+          "click": "8.5.1",
+          "colorama": "0.4.6",
+          "coloredlogs": "15.0.1",
+          "coverage": "7.16.2",
+          "cryptography": "50.0.2",
+          "docutils": "0.23",
+          "exceptiongroup": "1.3.1",
+          "execnet": "2.1.2",
+          "fastapi": "0.162.5",
+          "filelock": "4.1.0",
+          "flatbuffers": "25.12.19",
+          "fsspec": "2026.9.0",
+          "h11": "0.16.0",
+          "hf-xet": "1.8.0",
+          "httpcore2": "2.14.0",
+          "httpcore": "1.0.9",
+          "httpx-sse": "0.4.3",
+          "httpx2": "2.14.0",
+          "httpx": "0.28.1",
+          "huggingface-hub": "2.4.0",
+          "humanfriendly": "10.0",
+          "hypothesis": "6.168.5",
+          "id": "1.6.1",
+          "idna": "3.20",
+          "importlib-metadata": "9.0.1",
+          "iniconfig": "2.3.1",
+          "jaraco-classes": "3.4.0",
+          "jaraco-context": "6.1.2",
+          "jaraco-functools": "4.6.0",
+          "jsonschema-specifications": "2025.9.1",
+          "jsonschema": "4.26.0",
+          "keyring": "25.7.0",
+          "markdown-it-py": "4.3.0",
+          "mcp": "1.30.0",
+          "mdurl": "0.1.2",
+          "more-itertools": "11.1.0",
+          "mpmath": "1.3.0",
+          "nh3": "0.3.7",
+          "numpy": "2.2.6",
+          "onnxruntime": "1.23.2",
+          "opentelemetry-api": "1.45.2",
+          "packaging": "26.3",
+          "pip": "26.3",
+          "pluggy": "1.7.0",
+          "protobuf": "7.36.2",
+          "psutil": "7.2.2",
+          "pycparser": "3.11",
+          "pydantic-settings": "2.15.0",
+          "pydantic": "2.14.3",
+          "pydantic-core": "2.50.4",
+          "pygments": "2.21.0",
+          "pyjwt": "2.15.1",
+          "pyproject-hooks": "1.3.3",
+          "pyreadline3": "3.5.6",
+          "pytest-asyncio": "1.5.0",
+          "pytest-cov": "7.1.0",
+          "pytest-xdist": "3.8.0",
+          "pytest": "9.2.0",
+          "python-dotenv": "1.2.4",
+          "python-multipart": "0.0.32",
+          "pywin32-ctypes": "0.2.3",
+          "pywin32": "312",
+          "pyyaml": "6.0.3",
+          "readme-renderer": "46.0",
+          "referencing": "0.37.0",
+          "requests-toolbelt": "1.0.0",
+          "requests": "2.34.2",
+          "rfc3986": "2.0.0",
+          "rich": "15.0.0",
+          "rpds-py": "0.30.0",
+          "ruff": "0.17.5",
+          "setuptools": "65.5.0",
+          "sortedcontainers": "2.4.0",
+          "sse-starlette": "3.5.1",
+          "starlette": "1.7.0",
+          "stevedore": "5.8.0",
+          "sympy": "1.14.0",
+          "tokenizers": "0.23.3",
+          "tomli": "2.5.0",
+          "tqdm": "4.70.1",
+          "truststore": "0.10.5",
+          "twine": "7.0.0",
+          "typing-inspection": "0.4.5",
+          "typing-extensions": "4.16.0",
+          "urllib3": "2.8.0",
+          "uvicorn": "0.54.0",
+          "zipp": "4.1.2"
+        },
+        "constraints_sha256": "346e59e408a2ea32e4d72c4570fe8a487d527306cb48582460d9a192fb43c040"
+      },
+      "coverage": 0.7438,
+      "coverage_sha256": "8435029ee83caee4e2c8f821507b203dd49aeb04fe6ebe2f160c59b256ff5265",
+      "package_report_sha256": "51c0fb5a0b858f39dcc4b7c83e6d8b16cf15c66d14f59835383030dbd89b48e6",
+      "same_source": true,
+      "same_native_dependencies": false,
+      "qualification_source_commit": "e4284c8fb5ba565043accccbdd6353839c3eb43a",
+      "comparison_source_commit": "2db6229494a223feaa618de0cbf901650ba0d037",
+      "source_equivalence": "identical pinned/current Git blobs; artifact and current hashes match exact LF/CRLF checkout variants",
+      "current_source_files": {
+        "mesh/__init__.py": "3e65d768ab415aee60c5f4d9d65bc7f181b5d001d2de10d2cfbb10d3348a7dc3",
+        "mesh/__main__.py": "ece356769081c52f8ad6296264c770098e1824cf3d1d14da1b7084bdace682e3",
+        "mesh/_model_download.py": "9a84de2f0994a6cf3704efbc3ef4da71b0e7235a370c237fa94aaedbaa5429f6",
+        "mesh/audit.py": "32351e13348cb6e908a14523e3025397087962c37302bf91fd3148ef3de2a904",
+        "mesh/brief.py": "62ac621c8779325c9fe700e54bbdca6e3881286a7d4626b93b0edce506c78b4d",
+        "mesh/cli.py": "70d469a66aa1ec71c9db168847e2db2c7aa89476d57afa4a75d3f3f8dfc364ad",
+        "mesh/client.py": "0b4cb7d1d6f2f7cdc5dab8db433bcfaf6a8f8c426fb9528c94c1fe6504e168b6",
+        "mesh/context_builder.py": "25b30626b828b35d66471fd58c815e85fd8f7977b81d132eb64a4e8ec3f81d3c",
+        "mesh/crypto.py": "b116df6bbb579385a00678185e9396e606739f1f210f987a5b0f26ca310458a8",
+        "mesh/daemon.py": "32e3e16266f09ac6a0372775fd92eb65250cef9670ea78898d076e89c02286ca",
+        "mesh/dashboard.py": "dad616cd18526368beff89fc710e21a40c4c2813c0c296bb0cd85871cd4e8f7d",
+        "mesh/digest.py": "5ea6dbe35d9ed39c7cc5ddd5239e01a22390e17145005d5c2b92be9892ac0b8b",
+        "mesh/envutil.py": "1cb2f16870e192b17cf198872ca8ad08fb16718937bb26cb39a9baada03e0186",
+        "mesh/execution.py": "7775a8846f83e7ed5619fce7ba88bb07ca39545e35da370b3a97334517852756",
+        "mesh/group_commit.py": "3a63d8e7f67e695e4148b58d520c31bd1599a99006d0b5af036149c9c0a8eef0",
+        "mesh/guards.py": "0cf636d49be2e40f6f0db777c81803b29d1a89b978dd082784f841faf131d9a2",
+        "mesh/hooks.py": "4ac1a56080f2c806d391586457e6dd1c963fbbda26abcab1b537d5f892580d50",
+        "mesh/http_server.py": "12c5d7fc2e81037a00599bac9f3f6b91fb4ccf1fa9c99adeddb479d73deb716f",
+        "mesh/installer.py": "dade6e02d0f994ba912e5d84a1729a6f341d0f8218de9c66a8d8efea990d9d7d",
+        "mesh/io.py": "5dc94ff19a83ff577722437588d05fdf823c4fc616da6825009af67ab35cfdc3",
+        "mesh/local_rerank.py": "26152d7a2d0717f20627f56ce723cdbeeb53e1d40ec2ccd89c982e6bc0fc4c70",
+        "mesh/mcp_server.py": "049bccba8d61f528603fb26e3e6d1d8d4773646408cce3f032a2d9a1738b49e7",
+        "mesh/memory.py": "7c43d1fbcd4985f2b2dcdf746b1597ad8722af515c0efedb2fe7e62d62ae05ee",
+        "mesh/mutation_delivery.py": "9bc76ef64570d2c318a8ef114bb70dc324d2381eddd9d1d78bf978161d0c0417",
+        "mesh/namespace_maintenance.py": "88dedb331728f9934d4d222151e12c5b48bb177c2621fc79b8765584493fcfee",
+        "mesh/namespace_resolution.py": "7f11849ce85faa38fef7dfeb3cd2e0e3442b0eedd17f971346af026e4ece2cdf",
+        "mesh/namespaces.py": "5b01da16ec1b0c557a1fd1f6122388b67443e84bef7c313aea5caaea82d90d9f",
+        "mesh/operation_contract.py": "82a2331dbe97c560dd7db393c4a421d638fa7097cfdfb721f0a7d2cd08b68b26",
+        "mesh/operations.py": "1e341bfc5df2413337b4ec4fa9dcec33e9c175a88d3994a4995f2c3993207d72",
+        "mesh/output.py": "bcca2023f41264496e3a5fe7da184dd8aef21a628f508b4523d42f575f2ab1bd",
+        "mesh/passage_search.py": "68b8e6bebdeb31df3b4bcac10efd0663d6c684daea0833f2d7a2365f0657b321",
+        "mesh/passages.py": "395e1467f96c1914ff679ae8d537c62c579a49a096e1b1f3222c2862cfb00ef9",
+        "mesh/passive.py": "621828b086129d6ca14c3a89c4024f757b7ee0978004f08f23d33cce47c22346",
+        "mesh/secrets.py": "3b533234e392d73e964602b1bfb030566c2f8ce8b69fb02300230a7b384e5cde",
+        "mesh/skill_installer.py": "6add818e77e0319b9d04a672d21b8ddb50e94edf9586163f760c126e94f0c447",
+        "mesh/skills/__init__.py": "b87ceb0b1f06ef4096542c3c896d50a9ad9a6d6079c241ae7777ecd41ebd32f5",
+        "mesh/sqlite_runtime.py": "a688d8b8ea2396083406d4d2bb81163d3b4de3b37f584f6fc580b00aa6515192",
+        "mesh/store.py": "18a1f0633e547716726b91969ded193348b0ef1ac737c91fd3a2e883bc42c5f1",
+        "mesh/ui.py": "fc314fc745fdb13242c499252ca66e26979b272d28d785939dd237dc70f7d5ef",
+        "mesh/version.py": "0614a29b8661d92544b964558ace37ffbb545c4b95667b7e3d0527e739a336ad",
+        "pyproject.toml": "6b71b555ad9538d78b1b0087d1e39a8735224b0778a0ac73867adbd187b288a0",
+        "benchmarks/production_bench.py": "85f3543f00d63bd2046ec201b92156d27e2a4a18616ece214ebb7d413317098e",
+        "benchmarks/production_transport.py": "d1587b08ae08c7a582615aa6bc007af7df12c66761c1dc8ffe6bd315e77b572d",
+        "benchmarks/embedding_shadow.py": "8ad14d83c386aa7ad173567b55a8fa80cbd8cb2af66478741c7858d6f3ec5a93",
+        "benchmarks/retrieval_ci.py": "33c8dd25cd8b9c9a9119a66d0473e4445a31385b59b9d9c7b2d8d099be8fe203",
+        "benchmarks/storage_profile.py": "95359a8f9ccff812431b169ab7c333892f1ed05074098704ace766eb00906120",
+        "scripts/run_tests.py": "7b92589743b945056167f23fb69f79c74c70b9f2e65f2e136689b410a4cf5120",
+        "benchmarks/production_test_speed.py": "5d40a28a8cdeb1f5cbf8bfdd521b75a72925f1f209f2d1e4166add14309ef5e1"
+      },
+      "artifact_files": {
+        "primary/source-runtime.json": "b3c5222aa9ad62f71bab37c94c064e0d8b0d99ec612f2daa88a85113c8e4d56e",
+        "primary/constraints.txt": "370ff61ec6b1b8c3b00fc8fe2d3d60e84dc6a65317c329f4f6cc6c7ba138f3f1",
+        "primary/full.xml": "dc80cb8ca3062cb6be1a2898d25c6c964a7b92bf609565bdf159c2baec7e876a",
+        "primary/coverage.xml": "8435029ee83caee4e2c8f821507b203dd49aeb04fe6ebe2f160c59b256ff5265",
+        "primary/package-final-validation.json": "51c0fb5a0b858f39dcc4b7c83e6d8b16cf15c66d14f59835383030dbd89b48e6",
+        "floor/source-runtime.json": "af5d69de77259f82cc8a1acf228f0ee3ecf6e7b2da4fa5c21c4d23f7f5fd3236",
+        "floor/constraints.txt": "346e59e408a2ea32e4d72c4570fe8a487d527306cb48582460d9a192fb43c040",
+        "floor/full.xml": "959294d9b3d943059fea5310099cda04c1cb7d9b7318dbc029c67d95f7c9c548"
+      }
+    },
+    "ad358540eaeda0f3d28d36b8e80f27271e5c3b4ba7fcf9d806d957ce734b7096": {
+      "annotated-doc": "0.0.6",
+      "attrs": "26.1.0",
+      "PyYAML": "6.0.3",
+      "jaraco.functools": "4.6.0",
+      "certifi": "2026.10.23",
+      "sse-starlette": "3.7.0",
+      "jaraco.classes": "3.4.0",
+      "Pygments": "2.21.0",
+      "pytest-asyncio": "1.5.0",
+      "httpcore2": "2.16.2",
+      "onnxruntime": "1.32.0",
+      "more-itertools": "11.2.1",
+      "python-dotenv": "1.2.4",
+      "httpx-sse": "0.4.3",
+      "jaraco.context": "6.1.2",
+      "tqdm": "4.70.1",
+      "httpx": "0.28.1",
+      "flatbuffers": "25.12.19",
+      "keyring": "25.7.0",
+      "typing_extensions": "4.16.0",
+      "hf-xet": "1.8.0",
+      "h11": "0.16.0",
+      "uvicorn": "0.54.0",
+      "referencing": "0.37.0",
+      "opentelemetry-api": "1.45.2",
+      "pycparser": "3.12",
+      "pluggy": "1.7.0",
+      "PyJWT": "2.15.1",
+      "truststore": "0.10.5",
+      "coverage": "7.17.3",
+      "hypothesis": "6.170.15",
+      "protobuf": "7.36.2",
+      "psutil": "7.2.2",
+      "filelock": "4.2.10",
+      "starlette": "1.10.0",
+      "cryptography": "50.0.2",
+      "jsonschema": "4.26.0",
+      "pytest": "9.2.0",
+      "pytest-xdist": "3.8.0",
+      "python-multipart": "0.0.34",
+      "httpcore": "1.0.9",
+      "huggingface_hub": "2.4.0",
+      "iniconfig": "2.3.1",
+      "pydantic-settings": "2.16.3",
+      "pytest-cov": "7.1.0",
+      "click": "8.5.1",
+      "jsonschema-specifications": "2025.9.1",
+      "typing-inspection": "0.4.5",
+      "jeepney": "0.9.0",
+      "tokenizers": "0.23.3",
+      "anyio": "4.16.0",
+      "mesh-context-layer": "0.9.0",
+      "pip": "26.3",
+      "fastapi": "0.163.1",
+      "httpx2": "2.16.2",
+      "numpy": "2.5.5",
+      "apsw": "3.54.1.0",
+      "execnet": "2.1.2",
+      "SecretStorage": "3.5.0",
+      "sortedcontainers": "2.4.0",
+      "cffi": "2.1.1",
+      "fsspec": "2026.9.0",
+      "idna": "3.20",
+      "annotated-types": "0.8.0",
+      "packaging": "26.3",
+      "pydantic_core": "2.50.4",
+      "rpds-py": "2026.9.1",
+      "pydantic": "2.14.3",
+      "mcp": "1.30.0"
+    },
+    "d0a7a7ea11f22d8e20334cf1ecc8e10a2ce0c5b0655750c0d0e8bad975d980d4": {
+      "compatible": true,
+      "shared_packages": {
+        "annotated-doc": {
+          "qualified": "0.0.6",
+          "installed": "0.0.6"
+        },
+        "annotated-types": {
+          "qualified": "0.8.0",
+          "installed": "0.8.0"
+        },
+        "anyio": {
+          "qualified": "4.16.0",
+          "installed": "4.16.0"
+        },
+        "apsw": {
+          "qualified": "3.54.1.0",
+          "installed": "3.54.1.0"
+        },
+        "attrs": {
+          "qualified": "26.1.0",
+          "installed": "26.1.0"
+        },
+        "certifi": {
+          "qualified": "2026.10.23",
+          "installed": "2026.10.23"
+        },
+        "cffi": {
+          "qualified": "2.1.1",
+          "installed": "2.1.1"
+        },
+        "click": {
+          "qualified": "8.5.1",
+          "installed": "8.5.1"
+        },
+        "coverage": {
+          "qualified": "7.17.3",
+          "installed": "7.17.3"
+        },
+        "cryptography": {
+          "qualified": "50.0.2",
+          "installed": "50.0.2"
+        },
+        "execnet": {
+          "qualified": "2.1.2",
+          "installed": "2.1.2"
+        },
+        "fastapi": {
+          "qualified": "0.163.1",
+          "installed": "0.163.1"
+        },
+        "filelock": {
+          "qualified": "4.2.10",
+          "installed": "4.2.10"
+        },
+        "flatbuffers": {
+          "qualified": "25.12.19",
+          "installed": "25.12.19"
+        },
+        "fsspec": {
+          "qualified": "2026.9.0",
+          "installed": "2026.9.0"
+        },
+        "h11": {
+          "qualified": "0.16.0",
+          "installed": "0.16.0"
+        },
+        "hf-xet": {
+          "qualified": "1.8.0",
+          "installed": "1.8.0"
+        },
+        "httpcore": {
+          "qualified": "1.0.9",
+          "installed": "1.0.9"
+        },
+        "httpcore2": {
+          "qualified": "2.16.2",
+          "installed": "2.16.2"
+        },
+        "httpx": {
+          "qualified": "0.28.1",
+          "installed": "0.28.1"
+        },
+        "httpx-sse": {
+          "qualified": "0.4.3",
+          "installed": "0.4.3"
+        },
+        "httpx2": {
+          "qualified": "2.16.2",
+          "installed": "2.16.2"
+        },
+        "huggingface-hub": {
+          "qualified": "2.4.0",
+          "installed": "2.4.0"
+        },
+        "hypothesis": {
+          "qualified": "6.170.15",
+          "installed": "6.170.15"
+        },
+        "idna": {
+          "qualified": "3.20",
+          "installed": "3.20"
+        },
+        "iniconfig": {
+          "qualified": "2.3.1",
+          "installed": "2.3.1"
+        },
+        "jaraco-classes": {
+          "qualified": "3.4.0",
+          "installed": "3.4.0"
+        },
+        "jaraco-context": {
+          "qualified": "6.1.2",
+          "installed": "6.1.2"
+        },
+        "jaraco-functools": {
+          "qualified": "4.6.0",
+          "installed": "4.6.0"
+        },
+        "jsonschema": {
+          "qualified": "4.26.0",
+          "installed": "4.26.0"
+        },
+        "jsonschema-specifications": {
+          "qualified": "2025.9.1",
+          "installed": "2025.9.1"
+        },
+        "keyring": {
+          "qualified": "25.7.0",
+          "installed": "25.7.0"
+        },
+        "mcp": {
+          "qualified": "1.30.0",
+          "installed": "1.30.0"
+        },
+        "more-itertools": {
+          "qualified": "11.2.1",
+          "installed": "11.2.1"
+        },
+        "numpy": {
+          "qualified": "2.5.5",
+          "installed": "2.5.5"
+        },
+        "onnxruntime": {
+          "qualified": "1.32.0",
+          "installed": "1.32.0"
+        },
+        "opentelemetry-api": {
+          "qualified": "1.45.2",
+          "installed": "1.45.2"
+        },
+        "packaging": {
+          "qualified": "26.3",
+          "installed": "26.3"
+        },
+        "pip": {
+          "qualified": "26.3",
+          "installed": "26.3"
+        },
+        "pluggy": {
+          "qualified": "1.7.0",
+          "installed": "1.7.0"
+        },
+        "protobuf": {
+          "qualified": "7.36.2",
+          "installed": "7.36.2"
+        },
+        "psutil": {
+          "qualified": "7.2.2",
+          "installed": "7.2.2"
+        },
+        "pycparser": {
+          "qualified": "3.12",
+          "installed": "3.12"
+        },
+        "pydantic": {
+          "qualified": "2.14.3",
+          "installed": "2.14.3"
+        },
+        "pydantic-core": {
+          "qualified": "2.50.4",
+          "installed": "2.50.4"
+        },
+        "pydantic-settings": {
+          "qualified": "2.16.3",
+          "installed": "2.16.3"
+        },
+        "pygments": {
+          "qualified": "2.21.0",
+          "installed": "2.21.0"
+        },
+        "pyjwt": {
+          "qualified": "2.15.1",
+          "installed": "2.15.1"
+        },
+        "pytest": {
+          "qualified": "9.2.0",
+          "installed": "9.2.0"
+        },
+        "pytest-asyncio": {
+          "qualified": "1.5.0",
+          "installed": "1.5.0"
+        },
+        "pytest-cov": {
+          "qualified": "7.1.0",
+          "installed": "7.1.0"
+        },
+        "pytest-xdist": {
+          "qualified": "3.8.0",
+          "installed": "3.8.0"
+        },
+        "python-dotenv": {
+          "qualified": "1.2.4",
+          "installed": "1.2.4"
+        },
+        "python-multipart": {
+          "qualified": "0.0.34",
+          "installed": "0.0.34"
+        },
+        "pyyaml": {
+          "qualified": "6.0.3",
+          "installed": "6.0.3"
+        },
+        "referencing": {
+          "qualified": "0.37.0",
+          "installed": "0.37.0"
+        },
+        "rpds-py": {
+          "qualified": "2026.9.1",
+          "installed": "2026.9.1"
+        },
+        "sortedcontainers": {
+          "qualified": "2.4.0",
+          "installed": "2.4.0"
+        },
+        "sse-starlette": {
+          "qualified": "3.7.0",
+          "installed": "3.7.0"
+        },
+        "starlette": {
+          "qualified": "1.10.0",
+          "installed": "1.10.0"
+        },
+        "tokenizers": {
+          "qualified": "0.23.3",
+          "installed": "0.23.3"
+        },
+        "tqdm": {
+          "qualified": "4.70.1",
+          "installed": "4.70.1"
+        },
+        "truststore": {
+          "qualified": "0.10.5",
+          "installed": "0.10.5"
+        },
+        "typing-extensions": {
+          "qualified": "4.16.0",
+          "installed": "4.16.0"
+        },
+        "typing-inspection": {
+          "qualified": "0.4.5",
+          "installed": "0.4.5"
+        },
+        "uvicorn": {
+          "qualified": "0.54.0",
+          "installed": "0.54.0"
+        }
+      },
+      "missing_native_packages": [],
+      "version_mismatches": [],
+      "unqualified_packages": {
+        "jeepney": "0.9.0",
+        "mesh-context-layer": "0.9.0",
+        "secretstorage": "3.5.0"
+      },
+      "scope": "shared distribution versions match primary frozen constraints; Python, OS and platform wheel bytes differ and are separately reported"
+    },
+    "7ab7cb862d7bdb791651e455d0072840e8bf143f72f26df66f5a12f3f6e464dd": {
+      "mesh/__init__.py": "3e65d768ab415aee60c5f4d9d65bc7f181b5d001d2de10d2cfbb10d3348a7dc3",
+      "mesh/__main__.py": "ece356769081c52f8ad6296264c770098e1824cf3d1d14da1b7084bdace682e3",
+      "mesh/_model_download.py": "9a84de2f0994a6cf3704efbc3ef4da71b0e7235a370c237fa94aaedbaa5429f6",
+      "mesh/audit.py": "32351e13348cb6e908a14523e3025397087962c37302bf91fd3148ef3de2a904",
+      "mesh/brief.py": "62ac621c8779325c9fe700e54bbdca6e3881286a7d4626b93b0edce506c78b4d",
+      "mesh/cli.py": "70d469a66aa1ec71c9db168847e2db2c7aa89476d57afa4a75d3f3f8dfc364ad",
+      "mesh/client.py": "0b4cb7d1d6f2f7cdc5dab8db433bcfaf6a8f8c426fb9528c94c1fe6504e168b6",
+      "mesh/context_builder.py": "25b30626b828b35d66471fd58c815e85fd8f7977b81d132eb64a4e8ec3f81d3c",
+      "mesh/crypto.py": "b116df6bbb579385a00678185e9396e606739f1f210f987a5b0f26ca310458a8",
+      "mesh/daemon.py": "32e3e16266f09ac6a0372775fd92eb65250cef9670ea78898d076e89c02286ca",
+      "mesh/dashboard.py": "dad616cd18526368beff89fc710e21a40c4c2813c0c296bb0cd85871cd4e8f7d",
+      "mesh/digest.py": "5ea6dbe35d9ed39c7cc5ddd5239e01a22390e17145005d5c2b92be9892ac0b8b",
+      "mesh/envutil.py": "1cb2f16870e192b17cf198872ca8ad08fb16718937bb26cb39a9baada03e0186",
+      "mesh/execution.py": "7775a8846f83e7ed5619fce7ba88bb07ca39545e35da370b3a97334517852756",
+      "mesh/group_commit.py": "3a63d8e7f67e695e4148b58d520c31bd1599a99006d0b5af036149c9c0a8eef0",
+      "mesh/guards.py": "0cf636d49be2e40f6f0db777c81803b29d1a89b978dd082784f841faf131d9a2",
+      "mesh/hooks.py": "4ac1a56080f2c806d391586457e6dd1c963fbbda26abcab1b537d5f892580d50",
+      "mesh/http_server.py": "12c5d7fc2e81037a00599bac9f3f6b91fb4ccf1fa9c99adeddb479d73deb716f",
+      "mesh/installer.py": "dade6e02d0f994ba912e5d84a1729a6f341d0f8218de9c66a8d8efea990d9d7d",
+      "mesh/io.py": "5dc94ff19a83ff577722437588d05fdf823c4fc616da6825009af67ab35cfdc3",
+      "mesh/local_rerank.py": "26152d7a2d0717f20627f56ce723cdbeeb53e1d40ec2ccd89c982e6bc0fc4c70",
+      "mesh/mcp_server.py": "049bccba8d61f528603fb26e3e6d1d8d4773646408cce3f032a2d9a1738b49e7",
+      "mesh/memory.py": "7c43d1fbcd4985f2b2dcdf746b1597ad8722af515c0efedb2fe7e62d62ae05ee",
+      "mesh/mutation_delivery.py": "9bc76ef64570d2c318a8ef114bb70dc324d2381eddd9d1d78bf978161d0c0417",
+      "mesh/namespace_maintenance.py": "88dedb331728f9934d4d222151e12c5b48bb177c2621fc79b8765584493fcfee",
+      "mesh/namespace_resolution.py": "7f11849ce85faa38fef7dfeb3cd2e0e3442b0eedd17f971346af026e4ece2cdf",
+      "mesh/namespaces.py": "5b01da16ec1b0c557a1fd1f6122388b67443e84bef7c313aea5caaea82d90d9f",
+      "mesh/operation_contract.py": "82a2331dbe97c560dd7db393c4a421d638fa7097cfdfb721f0a7d2cd08b68b26",
+      "mesh/operations.py": "1e341bfc5df2413337b4ec4fa9dcec33e9c175a88d3994a4995f2c3993207d72",
+      "mesh/output.py": "bcca2023f41264496e3a5fe7da184dd8aef21a628f508b4523d42f575f2ab1bd",
+      "mesh/passage_search.py": "68b8e6bebdeb31df3b4bcac10efd0663d6c684daea0833f2d7a2365f0657b321",
+      "mesh/passages.py": "395e1467f96c1914ff679ae8d537c62c579a49a096e1b1f3222c2862cfb00ef9",
+      "mesh/passive.py": "621828b086129d6ca14c3a89c4024f757b7ee0978004f08f23d33cce47c22346",
+      "mesh/secrets.py": "3b533234e392d73e964602b1bfb030566c2f8ce8b69fb02300230a7b384e5cde",
+      "mesh/skill_installer.py": "6add818e77e0319b9d04a672d21b8ddb50e94edf9586163f760c126e94f0c447",
+      "mesh/skills/__init__.py": "b87ceb0b1f06ef4096542c3c896d50a9ad9a6d6079c241ae7777ecd41ebd32f5",
+      "mesh/sqlite_runtime.py": "a688d8b8ea2396083406d4d2bb81163d3b4de3b37f584f6fc580b00aa6515192",
+      "mesh/store.py": "18a1f0633e547716726b91969ded193348b0ef1ac737c91fd3a2e883bc42c5f1",
+      "mesh/ui.py": "fc314fc745fdb13242c499252ca66e26979b272d28d785939dd237dc70f7d5ef",
+      "mesh/version.py": "0614a29b8661d92544b964558ace37ffbb545c4b95667b7e3d0527e739a336ad",
+      "benchmarks/competitor_comparison.py": "b19b0a7a25d36f4c41afd5028c999fa465ba182cb9151ec438aad6b2adb97297",
+      "pyproject.toml": "6b71b555ad9538d78b1b0087d1e39a8735224b0778a0ac73867adbd187b288a0",
+      "benchmarks/production_bench.py": "85f3543f00d63bd2046ec201b92156d27e2a4a18616ece214ebb7d413317098e",
+      "benchmarks/production_transport.py": "d1587b08ae08c7a582615aa6bc007af7df12c66761c1dc8ffe6bd315e77b572d",
+      "benchmarks/embedding_shadow.py": "8ad14d83c386aa7ad173567b55a8fa80cbd8cb2af66478741c7858d6f3ec5a93",
+      "benchmarks/retrieval_ci.py": "33c8dd25cd8b9c9a9119a66d0473e4445a31385b59b9d9c7b2d8d099be8fe203",
+      "benchmarks/storage_profile.py": "95359a8f9ccff812431b169ab7c333892f1ed05074098704ace766eb00906120",
+      "scripts/run_tests.py": "7b92589743b945056167f23fb69f79c74c70b9f2e65f2e136689b410a4cf5120",
+      "benchmarks/production_test_speed.py": "5d40a28a8cdeb1f5cbf8bfdd521b75a72925f1f209f2d1e4166add14309ef5e1",
+      "benchmarks/prepare_retrieval_ci.py": "7b6442c769d045da8885f32064ff8d1f440d951e0112dc42260209c4e1f85265",
+      "benchmarks/provision_production_model.py": "215f9feb17b4dbaf3806a5ef9955882e54de178d8375da1fc48ae512bcba0d64",
+      ".github/workflows/competitor-comparison.yml": "82fc975d154076f52682e41166468537e89a0885c929adedd5f7fba14ec621d0"
+    },
+    "8c0cb249d422ae903355fc340f3abdc90f815b491397460d70d174cd02e38b66": {
+      "model.onnx": "6fd5d72fe4589f189f8ebc006442dbb529bb7ce38f8082112682524616046452",
+      "tokenizer.json": "be50c3628f2bf5bb5e3a7f17b1f74611b2561a3a27eeab05e5aa30f411572037"
+    },
+    "8485e8351d56af82cdc3b53767a5dc2d6c4d5b5712d91a530f766910522803e2": {
+      "python": "3.12.16",
+      "platform": "linux",
+      "logical_cpus": 4,
+      "available_ram_bytes": 15685341184
+    },
+    "75caf683df2e61d37aabea861be05c906d4851d0224ca09e8b23bdc4ec9e6293": {
+      "wall_seconds": 2700,
+      "tree_rss_bytes": 4294967296,
+      "sample_seconds": 0.05
+    },
+    "e88ff9a1897cfb28b463d18a97866882958491f712bc9a96f6fd9a842ab1b637": {
+      "name": "prospective",
+      "inspection_status": "previously_inspected",
+      "source_manifest_sha256": "9bc94f70d441c43aec0618e277b1d5475594138e9dbf18ba6c34f83c9f1bf2a9",
+      "corpus_count": 50,
+      "query_count": 22,
+      "files": {
+        "corpus.jsonl": "7d9e2526708d0c419497f705187af0ba1921b11c048badd7dd9743092e6516d0",
+        "queries-selected.jsonl": "1429350b1e9fc2d2e18396bde383c5430ddeb02889d410a8f917c1ac79816a8f",
+        "labels.json": "d44f85fc122227e0575229515e06c30bcec0c9b36f49660586f124b030bb7d0e"
+      },
+      "scope": "Previously inspected bounded regression; source corpus and label bytes preserved; no independent held-out or full-benchmark claim.",
+      "labels_in_ranking_inputs": false,
+      "answered_query_count": 16,
+      "unanswered_query_count": 6,
+      "source_fixture": "Mesh synthetic direct/positional fact regression frozen before its original scoring."
+    },
+    "182afa765b185f6894955a68951f9c8ea75a7db5c14d9ae87c043f94fc43db2c": {
+      "settled": true,
+      "inventory_sha256": "6c610c8607812833f6005f66fda5f142d1052de33d1f3637e26cd5095c5cc877",
+      "status": "removed_after_owned_process_settlement"
+    },
+    "8ef0f00f1a245383fa050539194e5bc76b98c667bba46ab71f8f9e6b3ccdc932": {
+      "protocol": "comparison-v1",
+      "status": "complete",
+      "tool": "mesh",
+      "dataset": "prospective",
+      "tool_pin": null,
+      "labels_in_ranking_inputs": false,
+      "started_at_utc": "2026-11-17T13:01:12.124255+00:00",
+      "source_commit": "2db6229494a223feaa618de0cbf901650ba0d037",
+      "dataset_manifest_sha256": "e88ff9a1897cfb28b463d18a97866882958491f712bc9a96f6fd9a842ab1b637",
+      "dataset_scope": "Previously inspected bounded regression; source corpus and label bytes preserved; no independent held-out or full-benchmark claim.",
+      "corpus_count": 50,
+      "query_count": 22,
+      "model_revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+      "network_isolation": "disconnected Linux network namespace inherited by all children",
+      "input_body_normalization": "strip surrounding whitespace for every tool; title newline body for public BEIR parents",
+      "failure_code": null,
+      "ranked_export_sha256": "fa3702b4dd1bbd533e53ee89ddbc3f1932dd219b5d1dfce8beaf2fce9e6919ec",
+      "labels_sha256": "d44f85fc122227e0575229515e06c30bcec0c9b36f49660586f124b030bb7d0e",
+      "finished_at_utc": "2026-11-17T13:01:13.660720+00:00",
+      "structured_field_manifests": {
+        "profile": "bc1da02e1090f2e0141191dd0fdfc6cac25c260edf59c397738c8cbc262810d1",
+        "claims": "558167dc79357685ed59f870d54c3c4384132c9557b9661edd7b5704b03fc3c2",
+        "qualification": "8999e614746426b0da8505390dcf8cc658c12cbfee5719dfcb53ca9876739614",
+        "packages": "ad358540eaeda0f3d28d36b8e80f27271e5c3b4ba7fcf9d806d957ce734b7096",
+        "dependencies": "d0a7a7ea11f22d8e20334cf1ecc8e10a2ce0c5b0655750c0d0e8bad975d980d4",
+        "source_files": "7ab7cb862d7bdb791651e455d0072840e8bf143f72f26df66f5a12f3f6e464dd",
+        "model_files": "8c0cb249d422ae903355fc340f3abdc90f815b491397460d70d174cd02e38b66",
+        "system": "8485e8351d56af82cdc3b53767a5dc2d6c4d5b5712d91a530f766910522803e2",
+        "limits": "75caf683df2e61d37aabea861be05c906d4851d0224ca09e8b23bdc4ec9e6293",
+        "dataset_manifest": "e88ff9a1897cfb28b463d18a97866882958491f712bc9a96f6fd9a842ab1b637",
+        "cleanup": "182afa765b185f6894955a68951f9c8ea75a7db5c14d9ae87c043f94fc43db2c",
+        "setup_packages": "ad358540eaeda0f3d28d36b8e80f27271e5c3b4ba7fcf9d806d957ce734b7096",
+        "setup_dependencies": "d0a7a7ea11f22d8e20334cf1ecc8e10a2ce0c5b0655750c0d0e8bad975d980d4"
+      }
+    },
+    "30ed7dcd959f3703b7f03925d66125be365e8b05add111e5b85be46549a28cb4": {
+      "python": "3.12.16",
+      "platform": "linux",
+      "logical_cpus": 4,
+      "available_ram_bytes": 15716089856
+    },
+    "fc8ceaaf3d470653f628590e659f525487aaf6a2c2d62f7ce378d6b40e2bbc1e": {
+      "name": "longtext-prospective",
+      "inspection_status": "previously_inspected",
+      "source_manifest_sha256": "73b04445f0317e475904b2ed0de06f10a6f11b4adad2d27240f6cbb315ec20b6",
+      "corpus_count": 15,
+      "query_count": 9,
+      "files": {
+        "corpus.jsonl": "d3bc353fe7d7927186873457f20fa707e3a0dcd48fee3e59e5b12c09543e0bdf",
+        "queries-selected.jsonl": "9c8fa151fc50fb14cad96161b8a1933187460c63d7a6d5e047aaed3dca19fa72",
+        "labels.json": "e013be8ebde702a074a71a87cf850c5a415b27cd7cfed5e3ed0528bd7f71ef28"
+      },
+      "scope": "Previously inspected bounded regression; source corpus and label bytes preserved; no independent held-out or full-benchmark claim.",
+      "labels_in_ranking_inputs": false,
+      "answered_query_count": 6,
+      "unanswered_query_count": 3,
+      "source_fixture": "Mesh synthetic direct/positional fact regression frozen before its original scoring."
+    },
+    "c34061e603203eff79285908b76ed971ea17bfe14ea4306343a6982f389e492d": {
+      "protocol": "comparison-v1",
+      "status": "complete",
+      "tool": "mesh",
+      "dataset": "longtext-prospective",
+      "tool_pin": null,
+      "labels_in_ranking_inputs": false,
+      "started_at_utc": "2026-11-17T13:01:14.095501+00:00",
+      "source_commit": "2db6229494a223feaa618de0cbf901650ba0d037",
+      "dataset_manifest_sha256": "fc8ceaaf3d470653f628590e659f525487aaf6a2c2d62f7ce378d6b40e2bbc1e",
+      "dataset_scope": "Previously inspected bounded regression; source corpus and label bytes preserved; no independent held-out or full-benchmark claim.",
+      "corpus_count": 15,
+      "query_count": 9,
+      "model_revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+      "network_isolation": "disconnected Linux network namespace inherited by all children",
+      "input_body_normalization": "strip surrounding whitespace for every tool; title newline body for public BEIR parents",
+      "failure_code": null,
+      "ranked_export_sha256": "254ebfa6b742dbf6afc4755c988f9ea3da303fb56242d5784c8d3c840820e6e8",
+      "labels_sha256": "e013be8ebde702a074a71a87cf850c5a415b27cd7cfed5e3ed0528bd7f71ef28",
+      "finished_at_utc": "2026-11-17T13:01:17.569880+00:00",
+      "structured_field_manifests": {
+        "profile": "bc1da02e1090f2e0141191dd0fdfc6cac25c260edf59c397738c8cbc262810d1",
+        "claims": "558167dc79357685ed59f870d54c3c4384132c9557b9661edd7b5704b03fc3c2",
+        "qualification": "8999e614746426b0da8505390dcf8cc658c12cbfee5719dfcb53ca9876739614",
+        "packages": "ad358540eaeda0f3d28d36b8e80f27271e5c3b4ba7fcf9d806d957ce734b7096",
+        "dependencies": "d0a7a7ea11f22d8e20334cf1ecc8e10a2ce0c5b0655750c0d0e8bad975d980d4",
+        "source_files": "7ab7cb862d7bdb791651e455d0072840e8bf143f72f26df66f5a12f3f6e464dd",
+        "model_files": "8c0cb249d422ae903355fc340f3abdc90f815b491397460d70d174cd02e38b66",
+        "system": "30ed7dcd959f3703b7f03925d66125be365e8b05add111e5b85be46549a28cb4",
+        "limits": "75caf683df2e61d37aabea861be05c906d4851d0224ca09e8b23bdc4ec9e6293",
+        "dataset_manifest": "fc8ceaaf3d470653f628590e659f525487aaf6a2c2d62f7ce378d6b40e2bbc1e",
+        "cleanup": "182afa765b185f6894955a68951f9c8ea75a7db5c14d9ae87c043f94fc43db2c",
+        "setup_packages": "ad358540eaeda0f3d28d36b8e80f27271e5c3b4ba7fcf9d806d957ce734b7096",
+        "setup_dependencies": "d0a7a7ea11f22d8e20334cf1ecc8e10a2ce0c5b0655750c0d0e8bad975d980d4"
+      }
+    },
+    "0a5a6524cf07845fde1816b4280df853e03863cad8f8b45e7a41452970d22b29": {
+      "python": "3.12.16",
+      "platform": "linux",
+      "logical_cpus": 4,
+      "available_ram_bytes": 15686094848
+    },
+    "eed4fe7b96a90c9a1cf3fea57fecc808f61dc52422acfd8543d829e26d373ffd": {
+      "name": "longmemeval",
+      "inspection_status": "previously_inspected",
+      "source_manifest_sha256": "6e73794b4f78f7c1bffd3433afe802cdefba5719348f2bf5f0e32b4e71a29366",
+      "corpus_count": 191,
+      "query_count": 6,
+      "files": {
+        "corpus-000.jsonl": "763211a6fd123a46aab658938b4b2a69cbf56883802a80376fbc37f2f5ba9206",
+        "corpus-001.jsonl": "af62517b007664ab07bfdf1f525463bbeb17ca0df7809e82b27be136ead3c72d",
+        "corpus-002.jsonl": "7635c89e5cf18080ef817e923b48816d117d0f241d98072e85e64ebdb665af76",
+        "corpus-003.jsonl": "337ffdfc357a0b4cbf64bbd9408a2e77e0bd464a432c79df8dcfab3cad3cd8c2",
+        "corpus-004.jsonl": "571d9514b18d0ba632efd5a80926da346c6e0e10bd0865cc6f8c99d0d043aa49",
+        "corpus-005.jsonl": "b10bd8bddf9cf9404116391b3021f5601f4e6392a43f1381e61f8861e2dcb388",
+        "labels.json": "6a98f0d5a0d80adb6770bf2622f987197915f21d3e649acfa0068e2ebd7f1b06",
+        "queries-selected.jsonl": "a7f082f2e4f83cc1aa071729c0eae8708a8d7af08604e9b5fc69d3cf86253efe"
+      },
+      "scope": "Previously inspected bounded regression; source corpus and label bytes preserved; no independent held-out or full-benchmark claim.",
+      "labels_in_ranking_inputs": false,
+      "source_url": "https://github.com/xiaowu0162/LongMemEval",
+      "source_dataset_manifest_sha256": "c9052c8f8572b0028a439553c93672200db01ad34398244e9da09780e7cf1432",
+      "source_queries_sha256": "7f310f09a3cb5b2064c1fa7f84f1cdc787f047c76c003e4906a53cb04453fd51",
+      "question_selection": "First6 source questions in fixed original order; no new model scores used for fixture selection.",
+      "distractor_selection": "Previously frozen union of evenly spaced positions, literal-query overlap and exact annotated evidence turns; original order preserved.",
+      "annotation_method": "Exact source question, session, turn ordinal, role and body hash; exact-turn gold is scored separately from session hits."
+    },
+    "599a158028bbd0dd1efe5ccf84c15bc2e30a0daf8dbd492f709d0c242a585846": {
+      "settled": true,
+      "inventory_sha256": "ce44e2fc2825bc2ee7960ce5529da0d73d44dcc8928ce497b32be4b4e79af037",
+      "status": "removed_after_owned_process_settlement"
+    },
+    "ac356aae0e3ce478fcb2dd3ff9e791b7035874ffc59214c679674305446fb9c7": {
+      "protocol": "comparison-v1",
+      "status": "complete",
+      "tool": "mesh",
+      "dataset": "longmemeval",
+      "tool_pin": null,
+      "labels_in_ranking_inputs": false,
+      "started_at_utc": "2026-11-17T13:01:18.979218+00:00",
+      "source_commit": "2db6229494a223feaa618de0cbf901650ba0d037",
+      "dataset_manifest_sha256": "eed4fe7b96a90c9a1cf3fea57fecc808f61dc52422acfd8543d829e26d373ffd",
+      "dataset_scope": "Previously inspected bounded regression; source corpus and label bytes preserved; no independent held-out or full-benchmark claim.",
+      "corpus_count": 191,
+      "query_count": 6,
+      "model_revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+      "network_isolation": "disconnected Linux network namespace inherited by all children",
+      "input_body_normalization": "strip surrounding whitespace for every tool; title newline body for public BEIR parents",
+      "failure_code": null,
+      "ranked_export_sha256": "c71f928c21659f6418a12584ad2b9b9bfd63f1796f99d3e64701a3fc8a75ffc2",
+      "labels_sha256": "6a98f0d5a0d80adb6770bf2622f987197915f21d3e649acfa0068e2ebd7f1b06",
+      "finished_at_utc": "2026-11-17T13:01:32.457366+00:00",
+      "structured_field_manifests": {
+        "profile": "bc1da02e1090f2e0141191dd0fdfc6cac25c260edf59c397738c8cbc262810d1",
+        "claims": "558167dc79357685ed59f870d54c3c4384132c9557b9661edd7b5704b03fc3c2",
+        "qualification": "8999e614746426b0da8505390dcf8cc658c12cbfee5719dfcb53ca9876739614",
+        "packages": "ad358540eaeda0f3d28d36b8e80f27271e5c3b4ba7fcf9d806d957ce734b7096",
+        "dependencies": "d0a7a7ea11f22d8e20334cf1ecc8e10a2ce0c5b0655750c0d0e8bad975d980d4",
+        "source_files": "7ab7cb862d7bdb791651e455d0072840e8bf143f72f26df66f5a12f3f6e464dd",
+        "model_files": "8c0cb249d422ae903355fc340f3abdc90f815b491397460d70d174cd02e38b66",
+        "system": "0a5a6524cf07845fde1816b4280df853e03863cad8f8b45e7a41452970d22b29",
+        "limits": "75caf683df2e61d37aabea861be05c906d4851d0224ca09e8b23bdc4ec9e6293",
+        "dataset_manifest": "eed4fe7b96a90c9a1cf3fea57fecc808f61dc52422acfd8543d829e26d373ffd",
+        "cleanup": "599a158028bbd0dd1efe5ccf84c15bc2e30a0daf8dbd492f709d0c242a585846",
+        "setup_packages": "ad358540eaeda0f3d28d36b8e80f27271e5c3b4ba7fcf9d806d957ce734b7096",
+        "setup_dependencies": "d0a7a7ea11f22d8e20334cf1ecc8e10a2ce0c5b0655750c0d0e8bad975d980d4"
+      }
+    },
+    "b865dbc44fb06b1406841d546ec7b657eec102c4b640a398d42c072bdea0d844": {
+      "python": "3.12.16",
+      "platform": "linux",
+      "logical_cpus": 4,
+      "available_ram_bytes": 15757062144
+    },
+    "b9dd65952ac4bdae7a100649851807fd5cef4ced77debde27ab46ab2ec82b34d": {
+      "name": "nfcorpus",
+      "source_url": "https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/nfcorpus.zip",
+      "prepared_at_utc": "2026-11-17T13:03:32.266531+00:00",
+      "archive_sha256": "efe5be03f8c5b86a5870102d0599d227c8c6e2484328e68c6522560385671b0b",
+      "corpus_count": 3633,
+      "query_count": 323,
+      "positive_judgments": 12334,
+      "files": {
+        "corpus.jsonl": {
+          "sha256": "10cc83ef1826b1425e6a87090b5140b39b27755d5a27e48215a88611c899991f",
+          "bytes": 6219364
+        },
+        "queries.jsonl": {
+          "sha256": "d024e6621b84925d485ae473d316a0c3af31c62c8068a59fb29d22f7613aef2a",
+          "bytes": 441466
+        },
+        "qrels/test.tsv": {
+          "sha256": "f8fba6ef3d4dd9c3a242a8ba4ae38276fc3622fce7dcbae764766d564542fd2a",
+          "bytes": 279572
+        },
+        "queries-selected.jsonl": {
+          "sha256": "20c4349031851471dd1353e480e6f1d2f4444a1191010a60a2a0ae584c147779",
+          "bytes": 17922
+        },
+        "labels.json": {
+          "sha256": "2e779079b4053d605230d98964ebee355b3fe387c9611d98c51f2b271a325600",
+          "bytes": 272957
+        }
+      },
+      "hard_negatives": "Every published document remains available; no label-selected candidate subsets."
+    },
+    "4f3533fc609f54a8134aa99685da62a678ad6b64ca1650b3064c08db8e4dc15f": {
+      "protocol": "comparison-v1",
+      "status": "complete",
+      "tool": "mesh",
+      "dataset": "nfcorpus",
+      "tool_pin": null,
+      "labels_in_ranking_inputs": false,
+      "started_at_utc": "2026-11-17T13:03:33.218108+00:00",
+      "source_commit": "2db6229494a223feaa618de0cbf901650ba0d037",
+      "dataset_manifest_sha256": "b9dd65952ac4bdae7a100649851807fd5cef4ced77debde27ab46ab2ec82b34d",
+      "dataset_scope": "full published BEIR test query selection",
+      "corpus_count": 3633,
+      "query_count": 323,
+      "model_revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+      "network_isolation": "disconnected Linux network namespace inherited by all children",
+      "input_body_normalization": "strip surrounding whitespace for every tool; title newline body for public BEIR parents",
+      "failure_code": null,
+      "ranked_export_sha256": "9ec04199947b66f8c3cdba13f643b4ceb454f45a5b4fcc91a6ae60189d58dd5d",
+      "labels_sha256": "2e779079b4053d605230d98964ebee355b3fe387c9611d98c51f2b271a325600",
+      "finished_at_utc": "2026-11-17T13:12:12.217870+00:00",
+      "structured_field_manifests": {
+        "profile": "bc1da02e1090f2e0141191dd0fdfc6cac25c260edf59c397738c8cbc262810d1",
+        "claims": "558167dc79357685ed59f870d54c3c4384132c9557b9661edd7b5704b03fc3c2",
+        "qualification": "8999e614746426b0da8505390dcf8cc658c12cbfee5719dfcb53ca9876739614",
+        "packages": "ad358540eaeda0f3d28d36b8e80f27271e5c3b4ba7fcf9d806d957ce734b7096",
+        "dependencies": "d0a7a7ea11f22d8e20334cf1ecc8e10a2ce0c5b0655750c0d0e8bad975d980d4",
+        "source_files": "7ab7cb862d7bdb791651e455d0072840e8bf143f72f26df66f5a12f3f6e464dd",
+        "model_files": "8c0cb249d422ae903355fc340f3abdc90f815b491397460d70d174cd02e38b66",
+        "system": "b865dbc44fb06b1406841d546ec7b657eec102c4b640a398d42c072bdea0d844",
+        "limits": "75caf683df2e61d37aabea861be05c906d4851d0224ca09e8b23bdc4ec9e6293",
+        "dataset_manifest": "b9dd65952ac4bdae7a100649851807fd5cef4ced77debde27ab46ab2ec82b34d",
+        "cleanup": "182afa765b185f6894955a68951f9c8ea75a7db5c14d9ae87c043f94fc43db2c",
+        "setup_packages": "ad358540eaeda0f3d28d36b8e80f27271e5c3b4ba7fcf9d806d957ce734b7096",
+        "setup_dependencies": "d0a7a7ea11f22d8e20334cf1ecc8e10a2ce0c5b0655750c0d0e8bad975d980d4"
+      }
+    },
+    "cdfad7432eb52060998ec0bc58c1e78ef47dc66cb6f30e8605e35dc66b5798c4": {
+      "python": "3.12.16",
+      "platform": "linux",
+      "logical_cpus": 4,
+      "available_ram_bytes": 15735177216
+    },
+    "13aec0ba178294fae0c60d9fcb9da804449ac7fc4487087af86f9286870ec9bd": {
+      "name": "scifact",
+      "source_url": "https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/scifact.zip",
+      "prepared_at_utc": "2026-11-17T13:02:37.823194+00:00",
+      "archive_sha256": "536e14446a0ba56ed1398ab1055f39fe852686ecad24a6306c80c490fa8e0165",
+      "corpus_count": 5183,
+      "query_count": 300,
+      "positive_judgments": 339,
+      "files": {
+        "corpus.jsonl": {
+          "sha256": "dec31c8182f3d744c7d2c09423756fd1d17cbef75808db13ba01cc0aab4d1ac6",
+          "bytes": 8106566
+        },
+        "queries.jsonl": {
+          "sha256": "8ff84a7c903f722981cd8d595c022660140c51867b27608a6d4910db86080313",
+          "bytes": 209731
+        },
+        "qrels/test.tsv": {
+          "sha256": "0864bb985e0ca2367ba217977e72004d549054b2b06666ed9d4825ac7c21284c",
+          "bytes": 5389
+        },
+        "queries-selected.jsonl": {
+          "sha256": "20ded7eef653593fde34060aee46700e3f4e9d043e84004e581488aae5a85b45",
+          "bytes": 35277
+        },
+        "labels.json": {
+          "sha256": "9306bf40a0ff5f3bec248a2aef0b0f0631e8ab89dcfc1da6b8fb90e3c7993857",
+          "bytes": 16156
+        }
+      },
+      "hard_negatives": "Every published document remains available; no label-selected candidate subsets."
+    },
+    "6dea20f93d7507c7b8e5721a3bf5139c1907556b11a3989199f491b934257da2": {
+      "protocol": "comparison-v1",
+      "status": "complete",
+      "tool": "mesh",
+      "dataset": "scifact",
+      "tool_pin": null,
+      "labels_in_ranking_inputs": false,
+      "started_at_utc": "2026-11-17T13:02:38.641945+00:00",
+      "source_commit": "2db6229494a223feaa618de0cbf901650ba0d037",
+      "dataset_manifest_sha256": "13aec0ba178294fae0c60d9fcb9da804449ac7fc4487087af86f9286870ec9bd",
+      "dataset_scope": "full published BEIR test query selection",
+      "corpus_count": 5183,
+      "query_count": 300,
+      "model_revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+      "network_isolation": "disconnected Linux network namespace inherited by all children",
+      "input_body_normalization": "strip surrounding whitespace for every tool; title newline body for public BEIR parents",
+      "failure_code": null,
+      "ranked_export_sha256": "e8b1ed43090fd71c6f70e42066ab4fc98a049161dcfa44615adf29274c8dddc9",
+      "labels_sha256": "9306bf40a0ff5f3bec248a2aef0b0f0631e8ab89dcfc1da6b8fb90e3c7993857",
+      "finished_at_utc": "2026-11-17T13:13:50.603243+00:00",
+      "structured_field_manifests": {
+        "profile": "bc1da02e1090f2e0141191dd0fdfc6cac25c260edf59c397738c8cbc262810d1",
+        "claims": "558167dc79357685ed59f870d54c3c4384132c9557b9661edd7b5704b03fc3c2",
+        "qualification": "8999e614746426b0da8505390dcf8cc658c12cbfee5719dfcb53ca9876739614",
+        "packages": "ad358540eaeda0f3d28d36b8e80f27271e5c3b4ba7fcf9d806d957ce734b7096",
+        "dependencies": "d0a7a7ea11f22d8e20334cf1ecc8e10a2ce0c5b0655750c0d0e8bad975d980d4",
+        "source_files": "7ab7cb862d7bdb791651e455d0072840e8bf143f72f26df66f5a12f3f6e464dd",
+        "model_files": "8c0cb249d422ae903355fc340f3abdc90f815b491397460d70d174cd02e38b66",
+        "system": "cdfad7432eb52060998ec0bc58c1e78ef47dc66cb6f30e8605e35dc66b5798c4",
+        "limits": "75caf683df2e61d37aabea861be05c906d4851d0224ca09e8b23bdc4ec9e6293",
+        "dataset_manifest": "13aec0ba178294fae0c60d9fcb9da804449ac7fc4487087af86f9286870ec9bd",
+        "cleanup": "182afa765b185f6894955a68951f9c8ea75a7db5c14d9ae87c043f94fc43db2c",
+        "setup_packages": "ad358540eaeda0f3d28d36b8e80f27271e5c3b4ba7fcf9d806d957ce734b7096",
+        "setup_dependencies": "d0a7a7ea11f22d8e20334cf1ecc8e10a2ce0c5b0655750c0d0e8bad975d980d4"
+      }
+    },
+    "3ba4facbcf0fa0dfc61f06381481812e984215d5d8756f34314f50f482c8db1a": {
+      "distribution": "mem0ai",
+      "version": "2.2.1",
+      "sha256": "fe91bb91ac8926231993a4aa58df00a60c6c74c709e6a338fe399500776eef4d"
+    },
+    "806f1adc9d2f395784f985508a003a8e85f271590c0b7fbe8841ec0f95df96e8": {
+      "interface": "SDK",
+      "ranking": "native local Qdrant hybrid; infer=False; no reranker",
+      "embedding": "pinned MiniLM; 256-token truncated ONNX adapter"
+    },
+    "e124c5f226fe5deda3c630b89b8738714d2f956b95d0d245213852627f0a4299": {
+      "psutil": "7.2.2",
+      "PyJWT": "2.15.1",
+      "packaging": "26.3",
+      "typing_extensions": "4.16.0",
+      "sse-starlette": "3.7.0",
+      "pytest-xdist": "3.8.0",
+      "apsw": "3.54.1.0",
+      "mesh-context-layer": "0.9.0",
+      "typing-inspection": "0.4.5",
+      "httpx-sse": "0.4.3",
+      "hf-xet": "1.8.0",
+      "PyYAML": "6.0.3",
+      "httpcore": "1.0.9",
+      "coverage": "7.17.3",
+      "jeepney": "0.9.0",
+      "cryptography": "50.0.2",
+      "referencing": "0.37.0",
+      "tokenizers": "0.23.3",
+      "pluggy": "1.7.0",
+      "annotated-types": "0.8.0",
+      "pydantic": "2.14.3",
+      "python-multipart": "0.0.34",
+      "truststore": "0.10.5",
+      "execnet": "2.1.2",
+      "anyio": "4.16.0",
+      "filelock": "4.2.10",
+      "tqdm": "4.70.1",
+      "Pygments": "2.21.0",
+      "numpy": "2.5.5",
+      "h11": "0.16.0",
+      "httpx": "0.28.1",
+      "fsspec": "2026.9.0",
+      "protobuf": "7.36.2",
+      "mcp": "1.30.0",
+      "pycparser": "3.12",
+      "jaraco.classes": "3.4.0",
+      "certifi": "2026.10.23",
+      "iniconfig": "2.3.1",
+      "idna": "3.20",
+      "pytest-cov": "7.1.0",
+      "httpcore2": "2.16.2",
+      "fastapi": "0.163.1",
+      "jsonschema-specifications": "2025.9.1",
+      "onnxruntime": "1.32.0",
+      "cffi": "2.1.1",
+      "click": "8.5.1",
+      "flatbuffers": "25.12.19",
+      "SecretStorage": "3.5.0",
+      "pytest": "9.2.0",
+      "sortedcontainers": "2.4.0",
+      "starlette": "1.10.0",
+      "pip": "26.3",
+      "jaraco.context": "6.1.2",
+      "jsonschema": "4.26.0",
+      "pydantic-settings": "2.16.3",
+      "pytest-asyncio": "1.5.0",
+      "annotated-doc": "0.0.6",
+      "uvicorn": "0.54.0",
+      "hypothesis": "6.170.15",
+      "opentelemetry-api": "1.45.2",
+      "attrs": "26.1.0",
+      "huggingface_hub": "2.4.0",
+      "httpx2": "2.16.2",
+      "more-itertools": "11.2.1",
+      "python-dotenv": "1.2.4",
+      "jaraco.functools": "4.6.0",
+      "pydantic_core": "2.50.4",
+      "rpds-py": "2026.9.1",
+      "keyring": "25.7.0"
+    },
+    "a5fc2f3e74e0a49a08278af3281eb40e5f4dd7b8123815e4250de5c0ca798861": {
+      "compatible": true,
+      "shared_packages": {
+        "annotated-doc": {
+          "qualified": "0.0.6",
+          "installed": "0.0.6"
+        },
+        "annotated-types": {
+          "qualified": "0.8.0",
+          "installed": "0.8.0"
+        },
+        "anyio": {
+          "qualified": "4.16.0",
+          "installed": "4.16.0"
+        },
+        "apsw": {
+          "qualified": "3.54.1.0",
+          "installed": "3.54.1.0"
+        },
+        "attrs": {
+          "qualified": "26.1.0",
+          "installed": "26.1.0"
+        },
+        "certifi": {
+          "qualified": "2026.10.23",
+          "installed": "2026.10.23"
+        },
+        "cffi": {
+          "qualified": "2.1.1",
+          "installed": "2.1.1"
+        },
+        "click": {
+          "qualified": "8.5.1",
+          "installed": "8.5.1"
+        },
+        "coverage": {
+          "qualified": "7.17.3",
+          "installed": "7.17.3"
+        },
+        "cryptography": {
+          "qualified": "50.0.2",
+          "installed": "50.0.2"
+        },
+        "execnet": {
+          "qualified": "2.1.2",
+          "installed": "2.1.2"
+        },
+        "fastapi": {
+          "qualified": "0.163.1",
+          "installed": "0.163.1"
+        },
+        "filelock": {
+          "qualified": "4.2.10",
+          "installed": "4.2.10"
+        },
+        "flatbuffers": {
+          "qualified": "25.12.19",
+          "installed": "25.12.19"
+        },
+        "fsspec": {
+          "qualified": "2026.9.0",
+          "installed": "2026.9.0"
+        },
+        "h11": {
+          "qualified": "0.16.0",
+          "installed": "0.16.0"
+        },
+        "hf-xet": {
+          "qualified": "1.8.0",
+          "installed": "1.8.0"
+        },
+        "httpcore": {
+          "qualified": "1.0.9",
+          "installed": "1.0.9"
+        },
+        "httpcore2": {
+          "qualified": "2.16.2",
+          "installed": "2.16.2"
+        },
+        "httpx": {
+          "qualified": "0.28.1",
+          "installed": "0.28.1"
+        },
+        "httpx-sse": {
+          "qualified": "0.4.3",
+          "installed": "0.4.3"
+        },
+        "httpx2": {
+          "qualified": "2.16.2",
+          "installed": "2.16.2"
+        },
+        "huggingface-hub": {
+          "qualified": "2.4.0",
+          "installed": "2.4.0"
+        },
+        "hypothesis": {
+          "qualified": "6.170.15",
+          "installed": "6.170.15"
+        },
+        "idna": {
+          "qualified": "3.20",
+          "installed": "3.20"
+        },
+        "iniconfig": {
+          "qualified": "2.3.1",
+          "installed": "2.3.1"
+        },
+        "jaraco-classes": {
+          "qualified": "3.4.0",
+          "installed": "3.4.0"
+        },
+        "jaraco-context": {
+          "qualified": "6.1.2",
+          "installed": "6.1.2"
+        },
+        "jaraco-functools": {
+          "qualified": "4.6.0",
+          "installed": "4.6.0"
+        },
+        "jsonschema": {
+          "qualified": "4.26.0",
+          "installed": "4.26.0"
+        },
+        "jsonschema-specifications": {
+          "qualified": "2025.9.1",
+          "installed": "2025.9.1"
+        },
+        "keyring": {
+          "qualified": "25.7.0",
+          "installed": "25.7.0"
+        },
+        "mcp": {
+          "qualified": "1.30.0",
+          "installed": "1.30.0"
+        },
+        "more-itertools": {
+          "qualified": "11.2.1",
+          "installed": "11.2.1"
+        },
+        "numpy": {
+          "qualified": "2.5.5",
+          "installed": "2.5.5"
+        },
+        "onnxruntime": {
+          "qualified": "1.32.0",
+          "installed": "1.32.0"
+        },
+        "opentelemetry-api": {
+          "qualified": "1.45.2",
+          "installed": "1.45.2"
+        },
+        "packaging": {
+          "qualified": "26.3",
+          "installed": "26.3"
+        },
+        "pip": {
+          "qualified": "26.3",
+          "installed": "26.3"
+        },
+        "pluggy": {
+          "qualified": "1.7.0",
+          "installed": "1.7.0"
+        },
+        "protobuf": {
+          "qualified": "7.36.2",
+          "installed": "7.36.2"
+        },
+        "psutil": {
+          "qualified": "7.2.2",
+          "installed": "7.2.2"
+        },
+        "pycparser": {
+          "qualified": "3.12",
+          "installed": "3.12"
+        },
+        "pydantic": {
+          "qualified": "2.14.3",
+          "installed": "2.14.3"
+        },
+        "pydantic-core": {
+          "qualified": "2.50.4",
+          "installed": "2.50.4"
+        },
+        "pydantic-settings": {
+          "qualified": "2.16.3",
+          "installed": "2.16.3"
+        },
+        "pygments": {
+          "qualified": "2.21.0",
+          "installed": "2.21.0"
+        },
+        "pyjwt": {
+          "qualified": "2.15.1",
+          "installed": "2.15.1"
+        },
+        "pytest": {
+          "qualified": "9.2.0",
+          "installed": "9.2.0"
+        },
+        "pytest-asyncio": {
+          "qualified": "1.5.0",
+          "installed": "1.5.0"
+        },
+        "pytest-cov": {
+          "qualified": "7.1.0",
+          "installed": "7.1.0"
+        },
+        "pytest-xdist": {
+          "qualified": "3.8.0",
+          "installed": "3.8.0"
+        },
+        "python-dotenv": {
+          "qualified": "1.2.4",
+          "installed": "1.2.4"
+        },
+        "python-multipart": {
+          "qualified": "0.0.34",
+          "installed": "0.0.34"
+        },
+        "pyyaml": {
+          "qualified": "6.0.3",
+          "installed": "6.0.3"
+        },
+        "referencing": {
+          "qualified": "0.37.0",
+          "installed": "0.37.0"
+        },
+        "rpds-py": {
+          "qualified": "2026.9.1",
+          "installed": "2026.9.1"
+        },
+        "sortedcontainers": {
+          "qualified": "2.4.0",
+          "installed": "2.4.0"
+        },
+        "sse-starlette": {
+          "qualified": "3.7.0",
+          "installed": "3.7.0"
+        },
+        "starlette": {
+          "qualified": "1.10.0",
+          "installed": "1.10.0"
+        },
+        "tokenizers": {
+          "qualified": "0.23.3",
+          "installed": "0.23.3"
+        },
+        "tqdm": {
+          "qualified": "4.70.1",
+          "installed": "4.70.1"
+        },
+        "truststore": {
+          "qualified": "0.10.5",
+          "installed": "0.10.5"
+        },
+        "typing-extensions": {
+          "qualified": "4.16.0",
+          "installed": "4.16.0"
+        },
+        "typing-inspection": {
+          "qualified": "0.4.5",
+          "installed": "0.4.5"
+        },
+        "uvicorn": {
+          "qualified": "0.54.0",
+          "installed": "0.54.0"
+        }
+      },
+      "missing_native_packages": [],
+      "version_mismatches": [],
+      "unqualified_packages": {
+        "mesh-context-layer": "0.9.0",
+        "jeepney": "0.9.0",
+        "secretstorage": "3.5.0"
+      },
+      "scope": "shared distribution versions match primary frozen constraints; Python, OS and platform wheel bytes differ and are separately reported"
+    },
+    "107f5273869d10d495540c53887bc47bd54f509cd9d755f59f87b74d447c428d": {
+      "packages": {
+        "psutil": "7.2.2",
+        "packaging": "26.3",
+        "typing-extensions": "4.16.0",
+        "portalocker": "4.4.2",
+        "posthog": "7.91.2",
+        "mmh3": "5.3.1",
+        "typing-inspection": "0.4.5",
+        "distro": "1.9.0",
+        "mem0ai": "2.2.1",
+        "sqlalchemy": "2.1.9",
+        "hf-xet": "1.8.0",
+        "pyyaml": "6.0.3",
+        "requests": "2.34.2",
+        "hyperframe": "6.1.0",
+        "httpcore": "1.0.9",
+        "grpcio": "1.85.1",
+        "h2": "4.4.1",
+        "sniffio": "1.3.1",
+        "tokenizers": "0.23.3",
+        "annotated-types": "0.8.0",
+        "pydantic": "2.14.3",
+        "backoff": "2.2.1",
+        "pillow": "13.0.0",
+        "truststore": "0.10.5",
+        "anyio": "4.16.0",
+        "filelock": "4.2.11",
+        "tqdm": "4.70.1",
+        "loguru": "0.7.3",
+        "numpy": "2.5.5",
+        "h11": "0.16.0",
+        "httpx": "0.28.1",
+        "fsspec": "2026.9.0",
+        "hpack": "4.2.0",
+        "pytz": "2026.6",
+        "qdrant-client": "1.20.0",
+        "protobuf": "6.33.6",
+        "charset-normalizer": "3.5.2",
+        "certifi": "2026.10.23",
+        "fastembed": "0.9.1",
+        "idna": "3.20",
+        "httpcore2": "2.16.2",
+        "onnxruntime": "1.32.0",
+        "click": "8.5.1",
+        "flatbuffers": "25.12.19",
+        "jiter": "0.19.0",
+        "urllib3": "2.8.0",
+        "py-rust-stemmers": "0.1.8",
+        "pip": "25.0.1",
+        "huggingface-hub": "1.33.0",
+        "openai": "3.52.0",
+        "httpx2": "2.16.2",
+        "pydantic-core": "2.50.4"
+      },
+      "python_version": "3.12.16",
+      "platform": "linux",
+      "machine": "x86_64",
+      "abi": "cpython-312",
+      "protocol": "comparison-child-v1",
+      "tool": "mem0",
+      "interpreter": ".work/competitor-env/bin/python",
+      "files": {
+        ".work/competitor-env/bin/python": "a9daa2903823e8bc0ce562bcf07be5a9ae27cf5d9d6dccf492438f0a310c0982"
+      },
+      "wheel_sha256": "fe91bb91ac8926231993a4aa58df00a60c6c74c709e6a338fe399500776eef4d",
+      "encoder_versions": {
+        "numpy": "2.5.5",
+        "onnxruntime": "1.32.0",
+        "tokenizers": "0.23.3",
+        "psutil": "7.2.2"
+      },
+      "dependency_consistency": {
+        "before_profile": "passed",
+        "after_profile": "passed"
+      },
+      "scope": "official competitor in its separately frozen supported environment; Mesh host source and dependency qualification remains separate"
+    },
+    "da4cb478eda1aedc8993bf51003efe190fec95f9a00fb41029d4c4f6df16ea9d": {
+      "repo": "Qdrant/bm25",
+      "revision": "22b8d2af71a76161e18dd432d2cee0eefa66e412",
+      "bytes": 25242,
+      "files": {
+        "config.json": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "arabic.txt": "0df01c0a184d8c15077c6f0ee70e25e0c0308d827b92b14a19f5f819a0c465d0",
+        "danish.txt": "1bedc9cf5a8830dacf8c4ee0d8b301f0801861756ad0d504431d01047f961b0c",
+        "dutch.txt": "e5a2a7c390fe3ad0c0a132586ed11492b635d66a1f426cd89677f80b07bc76a6",
+        "english.txt": "019f104ba2ed07436d05f9cdd3383034ad66014edc27fc651f837e1a038b6451",
+        "finnish.txt": "952af766edc9b8e7ddc877fc464cbd94b91754b5621fdfdd7020568fd4813fcd",
+        "french.txt": "58ac7f7c074b70dc0fc86f6fcf40b2c227e9f95627e90e57971d5cce1e30e2e9",
+        "german.txt": "f0c25acd7ec02a31f6679d9664ec5222ca846fdbc58db96160f4e7c0ddb0f7ea",
+        "greek.txt": "7a97c6dc81144f7e8fcfe976025954ca3731f78a75d1fd86aa87f261fd195dae",
+        "hungarian.txt": "64a68b5ebaa616b25bd976ac915c326f2ea8cce8b59a0ac8c5728b980ae4fb0c",
+        "italian.txt": "293d7841f198e4012f49e8e5653c3bfd073a58cea1259fa2c0fcec894167b628",
+        "norwegian.txt": "f7e5b42208ccf1b1f282f9e0f8570e464272762bda5718b6b26750f510a688dc",
+        "portuguese.txt": "6e7b98378c6b728266a83ebf035d927abf16b9e0d815d6204d81d90d896bcc9b",
+        "romanian.txt": "0ab53d21cbde00c6bf367706a0243c646140ba564cce7e83ac33d80f8923e957",
+        "russian.txt": "1743191192b4a4f77fcc216499455dc00c1b8626fdd407076a8deefff80e3d59",
+        "spanish.txt": "6125eadf28ba664a60bf4296147bcbd40b80be93670056fdb229960ac15e2310",
+        "swedish.txt": "2a9d9d756bc4257d49329994f805c712cd5ab6746162e2082752238766c1c0c8",
+        "turkish.txt": "f2c7f0c2bd3dba42da700776266831853a3b5f1207fada5c15207334109abb57"
+      }
+    },
+    "a42a0008bf2d8d8d9c2bed98385655058ecac8f83e6456a4c4da4665daa52867": {
+      "python": "3.12.16",
+      "platform": "linux",
+      "logical_cpus": 4,
+      "available_ram_bytes": 15371513856
+    },
+    "2154010aa375ca2ff41811fca0a3987a6569287ea213699b9d6e930f9893a2bb": {
+      "settled": true,
+      "inventory_sha256": "94774223c7a49aadf0f211ff9d51bae99331953394f2acd9b3cb5fd6e6ed1163",
+      "status": "removed_after_owned_process_settlement"
+    },
+    "6c686fce1b2153c8bc9ae7eaf08f9c75a85d8d975c2a540e93b8ff653c743f5d": {
+      "protocol": "comparison-v1",
+      "status": "complete",
+      "tool": "mem0",
+      "dataset": "prospective",
+      "labels_in_ranking_inputs": false,
+      "fastembed_version": "0.9.1",
+      "started_at_utc": "2026-11-17T13:01:45.450535+00:00",
+      "source_commit": "2db6229494a223feaa618de0cbf901650ba0d037",
+      "dataset_manifest_sha256": "e88ff9a1897cfb28b463d18a97866882958491f712bc9a96f6fd9a842ab1b637",
+      "dataset_scope": "Previously inspected bounded regression; source corpus and label bytes preserved; no independent held-out or full-benchmark claim.",
+      "corpus_count": 50,
+      "query_count": 22,
+      "model_revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+      "network_isolation": "disconnected Linux network namespace inherited by all children",
+      "input_body_normalization": "strip surrounding whitespace for every tool; title newline body for public BEIR parents",
+      "failure_code": null,
+      "ranked_export_sha256": "3ec98d08b9b37e0769e4380038d9289ae2cc4dd591f74c1a222d98f832296573",
+      "labels_sha256": "d44f85fc122227e0575229515e06c30bcec0c9b36f49660586f124b030bb7d0e",
+      "finished_at_utc": "2026-11-17T13:01:47.805125+00:00",
+      "structured_field_manifests": {
+        "tool_pin": "3ba4facbcf0fa0dfc61f06381481812e984215d5d8756f34314f50f482c8db1a",
+        "profile": "806f1adc9d2f395784f985508a003a8e85f271590c0b7fbe8841ec0f95df96e8",
+        "claims": "558167dc79357685ed59f870d54c3c4384132c9557b9661edd7b5704b03fc3c2",
+        "qualification": "8999e614746426b0da8505390dcf8cc658c12cbfee5719dfcb53ca9876739614",
+        "packages": "e124c5f226fe5deda3c630b89b8738714d2f956b95d0d245213852627f0a4299",
+        "dependencies": "a5fc2f3e74e0a49a08278af3281eb40e5f4dd7b8123815e4250de5c0ca798861",
+        "child_environment": "107f5273869d10d495540c53887bc47bd54f509cd9d755f59f87b74d447c428d",
+        "bm25_assets": "da4cb478eda1aedc8993bf51003efe190fec95f9a00fb41029d4c4f6df16ea9d",
+        "source_files": "7ab7cb862d7bdb791651e455d0072840e8bf143f72f26df66f5a12f3f6e464dd",
+        "model_files": "8c0cb249d422ae903355fc340f3abdc90f815b491397460d70d174cd02e38b66",
+        "system": "a42a0008bf2d8d8d9c2bed98385655058ecac8f83e6456a4c4da4665daa52867",
+        "limits": "75caf683df2e61d37aabea861be05c906d4851d0224ca09e8b23bdc4ec9e6293",
+        "dataset_manifest": "e88ff9a1897cfb28b463d18a97866882958491f712bc9a96f6fd9a842ab1b637",
+        "cleanup": "2154010aa375ca2ff41811fca0a3987a6569287ea213699b9d6e930f9893a2bb",
+        "setup_packages": "e124c5f226fe5deda3c630b89b8738714d2f956b95d0d245213852627f0a4299",
+        "setup_dependencies": "a5fc2f3e74e0a49a08278af3281eb40e5f4dd7b8123815e4250de5c0ca798861"
+      }
+    },
+    "74844e81ad5c19872a3bfd7f777f06ffcd19234378bfd31607acb8093c5cd577": {
+      "python": "3.12.16",
+      "platform": "linux",
+      "logical_cpus": 4,
+      "available_ram_bytes": 15377907712
+    },
+    "c6ac95eaac6bba1cbd0539d76e808d6bec5796623f46e30a4d4d149b6f5888bd": {
+      "protocol": "comparison-v1",
+      "status": "complete",
+      "tool": "mem0",
+      "dataset": "longtext-prospective",
+      "labels_in_ranking_inputs": false,
+      "fastembed_version": "0.9.1",
+      "started_at_utc": "2026-11-17T13:01:43.241842+00:00",
+      "source_commit": "2db6229494a223feaa618de0cbf901650ba0d037",
+      "dataset_manifest_sha256": "fc8ceaaf3d470653f628590e659f525487aaf6a2c2d62f7ce378d6b40e2bbc1e",
+      "dataset_scope": "Previously inspected bounded regression; source corpus and label bytes preserved; no independent held-out or full-benchmark claim.",
+      "corpus_count": 15,
+      "query_count": 9,
+      "model_revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+      "network_isolation": "disconnected Linux network namespace inherited by all children",
+      "input_body_normalization": "strip surrounding whitespace for every tool; title newline body for public BEIR parents",
+      "failure_code": null,
+      "ranked_export_sha256": "48b09a3b248153a21726f113c55f5b47347de62c8b7c5fa66b1b7e33de74230e",
+      "labels_sha256": "e013be8ebde702a074a71a87cf850c5a415b27cd7cfed5e3ed0528bd7f71ef28",
+      "finished_at_utc": "2026-11-17T13:01:45.675053+00:00",
+      "structured_field_manifests": {
+        "tool_pin": "3ba4facbcf0fa0dfc61f06381481812e984215d5d8756f34314f50f482c8db1a",
+        "profile": "806f1adc9d2f395784f985508a003a8e85f271590c0b7fbe8841ec0f95df96e8",
+        "claims": "558167dc79357685ed59f870d54c3c4384132c9557b9661edd7b5704b03fc3c2",
+        "qualification": "8999e614746426b0da8505390dcf8cc658c12cbfee5719dfcb53ca9876739614",
+        "packages": "e124c5f226fe5deda3c630b89b8738714d2f956b95d0d245213852627f0a4299",
+        "dependencies": "a5fc2f3e74e0a49a08278af3281eb40e5f4dd7b8123815e4250de5c0ca798861",
+        "child_environment": "107f5273869d10d495540c53887bc47bd54f509cd9d755f59f87b74d447c428d",
+        "bm25_assets": "da4cb478eda1aedc8993bf51003efe190fec95f9a00fb41029d4c4f6df16ea9d",
+        "source_files": "7ab7cb862d7bdb791651e455d0072840e8bf143f72f26df66f5a12f3f6e464dd",
+        "model_files": "8c0cb249d422ae903355fc340f3abdc90f815b491397460d70d174cd02e38b66",
+        "system": "74844e81ad5c19872a3bfd7f777f06ffcd19234378bfd31607acb8093c5cd577",
+        "limits": "75caf683df2e61d37aabea861be05c906d4851d0224ca09e8b23bdc4ec9e6293",
+        "dataset_manifest": "fc8ceaaf3d470653f628590e659f525487aaf6a2c2d62f7ce378d6b40e2bbc1e",
+        "cleanup": "2154010aa375ca2ff41811fca0a3987a6569287ea213699b9d6e930f9893a2bb",
+        "setup_packages": "e124c5f226fe5deda3c630b89b8738714d2f956b95d0d245213852627f0a4299",
+        "setup_dependencies": "a5fc2f3e74e0a49a08278af3281eb40e5f4dd7b8123815e4250de5c0ca798861"
+      }
+    },
+    "c26cc56f6c7647b5368ab0e575d0f07ccd2a7175fb4886d8231585177be13beb": {
+      "python": "3.12.16",
+      "platform": "linux",
+      "logical_cpus": 4,
+      "available_ram_bytes": 15346241536
+    },
+    "2af06e048dcae2990f04cc505121663b092e32094ab7feebf84d1685bd35a826": {
+      "settled": true,
+      "inventory_sha256": "01740c5899a7c4454ff0eedbb2fc9116a7973a0a363c2dc233820b3377b442d2",
+      "status": "removed_after_owned_process_settlement"
+    },
+    "08a24f983342f31df5ee539de15205662de900e888cfc4cfc1c31090580b7d63": {
+      "protocol": "comparison-v1",
+      "status": "complete",
+      "tool": "mem0",
+      "dataset": "longmemeval",
+      "labels_in_ranking_inputs": false,
+      "fastembed_version": "0.9.1",
+      "started_at_utc": "2026-11-17T13:01:43.559658+00:00",
+      "source_commit": "2db6229494a223feaa618de0cbf901650ba0d037",
+      "dataset_manifest_sha256": "eed4fe7b96a90c9a1cf3fea57fecc808f61dc52422acfd8543d829e26d373ffd",
+      "dataset_scope": "Previously inspected bounded regression; source corpus and label bytes preserved; no independent held-out or full-benchmark claim.",
+      "corpus_count": 191,
+      "query_count": 6,
+      "model_revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+      "network_isolation": "disconnected Linux network namespace inherited by all children",
+      "input_body_normalization": "strip surrounding whitespace for every tool; title newline body for public BEIR parents",
+      "failure_code": null,
+      "ranked_export_sha256": "aa13bd7987f996ec2d6afded86546d50041148dbbfdca236f4c2460c47bf7b2f",
+      "labels_sha256": "6a98f0d5a0d80adb6770bf2622f987197915f21d3e649acfa0068e2ebd7f1b06",
+      "finished_at_utc": "2026-11-17T13:01:52.746345+00:00",
+      "structured_field_manifests": {
+        "tool_pin": "3ba4facbcf0fa0dfc61f06381481812e984215d5d8756f34314f50f482c8db1a",
+        "profile": "806f1adc9d2f395784f985508a003a8e85f271590c0b7fbe8841ec0f95df96e8",
+        "claims": "558167dc79357685ed59f870d54c3c4384132c9557b9661edd7b5704b03fc3c2",
+        "qualification": "8999e614746426b0da8505390dcf8cc658c12cbfee5719dfcb53ca9876739614",
+        "packages": "e124c5f226fe5deda3c630b89b8738714d2f956b95d0d245213852627f0a4299",
+        "dependencies": "a5fc2f3e74e0a49a08278af3281eb40e5f4dd7b8123815e4250de5c0ca798861",
+        "child_environment": "107f5273869d10d495540c53887bc47bd54f509cd9d755f59f87b74d447c428d",
+        "bm25_assets": "da4cb478eda1aedc8993bf51003efe190fec95f9a00fb41029d4c4f6df16ea9d",
+        "source_files": "7ab7cb862d7bdb791651e455d0072840e8bf143f72f26df66f5a12f3f6e464dd",
+        "model_files": "8c0cb249d422ae903355fc340f3abdc90f815b491397460d70d174cd02e38b66",
+        "system": "c26cc56f6c7647b5368ab0e575d0f07ccd2a7175fb4886d8231585177be13beb",
+        "limits": "75caf683df2e61d37aabea861be05c906d4851d0224ca09e8b23bdc4ec9e6293",
+        "dataset_manifest": "eed4fe7b96a90c9a1cf3fea57fecc808f61dc52422acfd8543d829e26d373ffd",
+        "cleanup": "2af06e048dcae2990f04cc505121663b092e32094ab7feebf84d1685bd35a826",
+        "setup_packages": "e124c5f226fe5deda3c630b89b8738714d2f956b95d0d245213852627f0a4299",
+        "setup_dependencies": "a5fc2f3e74e0a49a08278af3281eb40e5f4dd7b8123815e4250de5c0ca798861"
+      }
+    },
+    "8969ce8e3c6c340994cc62375be51689451b957887341e4c8e10b2f37484aab8": {
+      "python": "3.12.16",
+      "platform": "linux",
+      "logical_cpus": 4,
+      "available_ram_bytes": 15410913280
+    },
+    "746618d743eca0843e41b880791bc0b57f79615959dc29f1cd39de71f758a3ce": {
+      "name": "nfcorpus",
+      "source_url": "https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/nfcorpus.zip",
+      "prepared_at_utc": "2026-11-17T13:02:31.527702+00:00",
+      "archive_sha256": "efe5be03f8c5b86a5870102d0599d227c8c6e2484328e68c6522560385671b0b",
+      "corpus_count": 3633,
+      "query_count": 323,
+      "positive_judgments": 12334,
+      "files": {
+        "corpus.jsonl": {
+          "sha256": "10cc83ef1826b1425e6a87090b5140b39b27755d5a27e48215a88611c899991f",
+          "bytes": 6219364
+        },
+        "queries.jsonl": {
+          "sha256": "d024e6621b84925d485ae473d316a0c3af31c62c8068a59fb29d22f7613aef2a",
+          "bytes": 441466
+        },
+        "qrels/test.tsv": {
+          "sha256": "f8fba6ef3d4dd9c3a242a8ba4ae38276fc3622fce7dcbae764766d564542fd2a",
+          "bytes": 279572
+        },
+        "queries-selected.jsonl": {
+          "sha256": "20c4349031851471dd1353e480e6f1d2f4444a1191010a60a2a0ae584c147779",
+          "bytes": 17922
+        },
+        "labels.json": {
+          "sha256": "2e779079b4053d605230d98964ebee355b3fe387c9611d98c51f2b271a325600",
+          "bytes": 272957
+        }
+      },
+      "hard_negatives": "Every published document remains available; no label-selected candidate subsets."
+    },
+    "27933c2bb635ba0aeef359b40ed9ac0ad970580762f4336fce8baa50c05d369d": {
+      "protocol": "comparison-v1",
+      "status": "complete",
+      "tool": "mem0",
+      "dataset": "nfcorpus",
+      "labels_in_ranking_inputs": false,
+      "fastembed_version": "0.9.1",
+      "started_at_utc": "2026-11-17T13:02:32.271359+00:00",
+      "source_commit": "2db6229494a223feaa618de0cbf901650ba0d037",
+      "dataset_manifest_sha256": "746618d743eca0843e41b880791bc0b57f79615959dc29f1cd39de71f758a3ce",
+      "dataset_scope": "full published BEIR test query selection",
+      "corpus_count": 3633,
+      "query_count": 323,
+      "model_revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+      "network_isolation": "disconnected Linux network namespace inherited by all children",
+      "input_body_normalization": "strip surrounding whitespace for every tool; title newline body for public BEIR parents",
+      "failure_code": null,
+      "ranked_export_sha256": "8c57588d786d2139275a2ec84e683bcc4f25e38e263f23f0ccf13ca70d8ecccb",
+      "labels_sha256": "2e779079b4053d605230d98964ebee355b3fe387c9611d98c51f2b271a325600",
+      "finished_at_utc": "2026-11-17T13:05:31.646134+00:00",
+      "structured_field_manifests": {
+        "tool_pin": "3ba4facbcf0fa0dfc61f06381481812e984215d5d8756f34314f50f482c8db1a",
+        "profile": "806f1adc9d2f395784f985508a003a8e85f271590c0b7fbe8841ec0f95df96e8",
+        "claims": "558167dc79357685ed59f870d54c3c4384132c9557b9661edd7b5704b03fc3c2",
+        "qualification": "8999e614746426b0da8505390dcf8cc658c12cbfee5719dfcb53ca9876739614",
+        "packages": "e124c5f226fe5deda3c630b89b8738714d2f956b95d0d245213852627f0a4299",
+        "dependencies": "a5fc2f3e74e0a49a08278af3281eb40e5f4dd7b8123815e4250de5c0ca798861",
+        "child_environment": "107f5273869d10d495540c53887bc47bd54f509cd9d755f59f87b74d447c428d",
+        "bm25_assets": "da4cb478eda1aedc8993bf51003efe190fec95f9a00fb41029d4c4f6df16ea9d",
+        "source_files": "7ab7cb862d7bdb791651e455d0072840e8bf143f72f26df66f5a12f3f6e464dd",
+        "model_files": "8c0cb249d422ae903355fc340f3abdc90f815b491397460d70d174cd02e38b66",
+        "system": "8969ce8e3c6c340994cc62375be51689451b957887341e4c8e10b2f37484aab8",
+        "limits": "75caf683df2e61d37aabea861be05c906d4851d0224ca09e8b23bdc4ec9e6293",
+        "dataset_manifest": "746618d743eca0843e41b880791bc0b57f79615959dc29f1cd39de71f758a3ce",
+        "cleanup": "2154010aa375ca2ff41811fca0a3987a6569287ea213699b9d6e930f9893a2bb",
+        "setup_packages": "e124c5f226fe5deda3c630b89b8738714d2f956b95d0d245213852627f0a4299",
+        "setup_dependencies": "a5fc2f3e74e0a49a08278af3281eb40e5f4dd7b8123815e4250de5c0ca798861"
+      }
+    },
+    "2695cdb9088c1e9d95a1a1c5502a1d93815aec9a2fc3cd349cdeafa115b054d2": {
+      "packages": {
+        "posthog": "7.91.2",
+        "portalocker": "4.4.2",
+        "pyyaml": "6.0.3",
+        "hyperframe": "6.1.0",
+        "certifi": "2026.10.23",
+        "requests": "2.34.2",
+        "hpack": "4.2.0",
+        "httpcore2": "2.16.2",
+        "onnxruntime": "1.32.0",
+        "pillow": "13.0.0",
+        "charset-normalizer": "3.5.2",
+        "filelock": "4.2.11",
+        "tqdm": "4.70.1",
+        "qdrant-client": "1.20.0",
+        "httpx": "0.28.1",
+        "flatbuffers": "25.12.19",
+        "mmh3": "5.3.1",
+        "protobuf": "6.33.6",
+        "typing-extensions": "4.16.0",
+        "hf-xet": "1.8.0",
+        "h2": "4.4.1",
+        "h11": "0.16.0",
+        "py-rust-stemmers": "0.1.8",
+        "loguru": "0.7.3",
+        "distro": "1.9.0",
+        "truststore": "0.10.5",
+        "pip": "25.0.1",
+        "pytz": "2026.6",
+        "psutil": "7.2.2",
+        "fastembed": "0.9.1",
+        "huggingface-hub": "1.33.0",
+        "httpcore": "1.0.9",
+        "sqlalchemy": "2.1.9",
+        "urllib3": "2.8.0",
+        "click": "8.5.1",
+        "sniffio": "1.3.1",
+        "typing-inspection": "0.4.5",
+        "tokenizers": "0.23.3",
+        "anyio": "4.16.0",
+        "httpx2": "2.16.2",
+        "numpy": "2.5.5",
+        "backoff": "2.2.1",
+        "jiter": "0.19.0",
+        "fsspec": "2026.9.0",
+        "openai": "3.52.0",
+        "idna": "3.20",
+        "annotated-types": "0.8.0",
+        "packaging": "26.3",
+        "pydantic-core": "2.50.4",
+        "mem0ai": "2.2.1",
+        "pydantic": "2.14.3",
+        "grpcio": "1.85.1"
+      },
+      "python_version": "3.12.16",
+      "platform": "linux",
+      "machine": "x86_64",
+      "abi": "cpython-312",
+      "protocol": "comparison-child-v1",
+      "tool": "mem0",
+      "interpreter": ".work/competitor-env/bin/python",
+      "files": {
+        ".work/competitor-env/bin/python": "a9daa2903823e8bc0ce562bcf07be5a9ae27cf5d9d6dccf492438f0a310c0982"
+      },
+      "wheel_sha256": "fe91bb91ac8926231993a4aa58df00a60c6c74c709e6a338fe399500776eef4d",
+      "encoder_versions": {
+        "numpy": "2.5.5",
+        "onnxruntime": "1.32.0",
+        "tokenizers": "0.23.3",
+        "psutil": "7.2.2"
+      },
+      "dependency_consistency": {
+        "before_profile": "passed",
+        "after_profile": "passed"
+      },
+      "scope": "official competitor in its separately frozen supported environment; Mesh host source and dependency qualification remains separate"
+    },
+    "0dc1c6dc30c480ec7b20076f11b9fe8820698769f3f83108ea60ddccf54d48a2": {
+      "python": "3.12.16",
+      "platform": "linux",
+      "logical_cpus": 4,
+      "available_ram_bytes": 15715868672
+    },
+    "0beaf3a04442dd29d95e1f7e546a6de8e02b9358459cbe850d9433e693b39ea1": {
+      "name": "scifact",
+      "source_url": "https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/scifact.zip",
+      "prepared_at_utc": "2026-11-17T13:03:27.646711+00:00",
+      "archive_sha256": "536e14446a0ba56ed1398ab1055f39fe852686ecad24a6306c80c490fa8e0165",
+      "corpus_count": 5183,
+      "query_count": 300,
+      "positive_judgments": 339,
+      "files": {
+        "corpus.jsonl": {
+          "sha256": "dec31c8182f3d744c7d2c09423756fd1d17cbef75808db13ba01cc0aab4d1ac6",
+          "bytes": 8106566
+        },
+        "queries.jsonl": {
+          "sha256": "8ff84a7c903f722981cd8d595c022660140c51867b27608a6d4910db86080313",
+          "bytes": 209731
+        },
+        "qrels/test.tsv": {
+          "sha256": "0864bb985e0ca2367ba217977e72004d549054b2b06666ed9d4825ac7c21284c",
+          "bytes": 5389
+        },
+        "queries-selected.jsonl": {
+          "sha256": "20ded7eef653593fde34060aee46700e3f4e9d043e84004e581488aae5a85b45",
+          "bytes": 35277
+        },
+        "labels.json": {
+          "sha256": "9306bf40a0ff5f3bec248a2aef0b0f0631e8ab89dcfc1da6b8fb90e3c7993857",
+          "bytes": 16156
+        }
+      },
+      "hard_negatives": "Every published document remains available; no label-selected candidate subsets."
+    },
+    "733b99b1158aa3f5bffb05f579cf2b329c55bc82034e022324dc714baa82f06b": {
+      "protocol": "comparison-v1",
+      "status": "complete",
+      "tool": "mem0",
+      "dataset": "scifact",
+      "labels_in_ranking_inputs": false,
+      "fastembed_version": "0.9.1",
+      "started_at_utc": "2026-11-17T13:03:28.368207+00:00",
+      "source_commit": "2db6229494a223feaa618de0cbf901650ba0d037",
+      "dataset_manifest_sha256": "0beaf3a04442dd29d95e1f7e546a6de8e02b9358459cbe850d9433e693b39ea1",
+      "dataset_scope": "full published BEIR test query selection",
+      "corpus_count": 5183,
+      "query_count": 300,
+      "model_revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+      "network_isolation": "disconnected Linux network namespace inherited by all children",
+      "input_body_normalization": "strip surrounding whitespace for every tool; title newline body for public BEIR parents",
+      "failure_code": null,
+      "ranked_export_sha256": "e0d99f2aef8ab29bfc764ffe89d9550ec60fd37e63e1bccb9fe87be67c4c2da5",
+      "labels_sha256": "9306bf40a0ff5f3bec248a2aef0b0f0631e8ab89dcfc1da6b8fb90e3c7993857",
+      "finished_at_utc": "2026-11-17T13:06:50.289569+00:00",
+      "structured_field_manifests": {
+        "tool_pin": "3ba4facbcf0fa0dfc61f06381481812e984215d5d8756f34314f50f482c8db1a",
+        "profile": "806f1adc9d2f395784f985508a003a8e85f271590c0b7fbe8841ec0f95df96e8",
+        "claims": "558167dc79357685ed59f870d54c3c4384132c9557b9661edd7b5704b03fc3c2",
+        "qualification": "8999e614746426b0da8505390dcf8cc658c12cbfee5719dfcb53ca9876739614",
+        "packages": "ad358540eaeda0f3d28d36b8e80f27271e5c3b4ba7fcf9d806d957ce734b7096",
+        "dependencies": "d0a7a7ea11f22d8e20334cf1ecc8e10a2ce0c5b0655750c0d0e8bad975d980d4",
+        "child_environment": "2695cdb9088c1e9d95a1a1c5502a1d93815aec9a2fc3cd349cdeafa115b054d2",
+        "bm25_assets": "da4cb478eda1aedc8993bf51003efe190fec95f9a00fb41029d4c4f6df16ea9d",
+        "source_files": "7ab7cb862d7bdb791651e455d0072840e8bf143f72f26df66f5a12f3f6e464dd",
+        "model_files": "8c0cb249d422ae903355fc340f3abdc90f815b491397460d70d174cd02e38b66",
+        "system": "0dc1c6dc30c480ec7b20076f11b9fe8820698769f3f83108ea60ddccf54d48a2",
+        "limits": "75caf683df2e61d37aabea861be05c906d4851d0224ca09e8b23bdc4ec9e6293",
+        "dataset_manifest": "0beaf3a04442dd29d95e1f7e546a6de8e02b9358459cbe850d9433e693b39ea1",
+        "cleanup": "2154010aa375ca2ff41811fca0a3987a6569287ea213699b9d6e930f9893a2bb",
+        "setup_packages": "ad358540eaeda0f3d28d36b8e80f27271e5c3b4ba7fcf9d806d957ce734b7096",
+        "setup_dependencies": "d0a7a7ea11f22d8e20334cf1ecc8e10a2ce0c5b0655750c0d0e8bad975d980d4"
+      }
+    },
+    "d88d86517f5452171689b03c311d2476c42cf1bba22e2048aa5aa2c4dfe5a93e": {
+      "distribution": "basic-memory",
+      "version": "0.24.1",
+      "sha256": "b528fff0a92bc91683e791553f9b10f57f7e3185a1aa15d494f5b8294eaad89e"
+    },
+    "61bb086dbeaca1fef234451be41a248fbc1c706687b7fa7fe53576b708de4eed": {
+      "interface": "MCP stdio",
+      "ranking": "local keyword search",
+      "embedding": "none; keyword-only configuration"
+    },
+    "807a1350ede0cc7a11d270aafa19ddab9521a37fccbefb2c05406dd45952d2fa": {
+      "packages": {
+        "annotated-doc": "0.0.6",
+        "googleapis-common-protos": "1.76.0",
+        "mcp-types": "2.3.0",
+        "pydantic-extra-types": "2.11.1",
+        "typer": "0.29.1",
+        "attrs": "26.1.0",
+        "propcache": "0.5.4",
+        "platformdirs": "4.14.5",
+        "pyyaml": "6.0.3",
+        "jaraco-functools": "4.6.0",
+        "websockets": "17.4",
+        "certifi": "2026.10.23",
+        "authlib": "1.9.8",
+        "sse-starlette": "3.7.0",
+        "rignore": "0.8.1",
+        "jaraco-classes": "3.4.0",
+        "pygments": "2.21.0",
+        "requests": "2.34.2",
+        "pybars3": "0.9.7",
+        "pytest-asyncio": "1.5.0",
+        "fastuuid": "0.14.0",
+        "pytest-aio": "2.1.7",
+        "greenlet": "3.5.6",
+        "uvloop": "0.23.0",
+        "httpcore2": "2.16.2",
+        "caio": "0.12.10",
+        "opentelemetry-proto": "1.45.2",
+        "python-dateutil": "4.0.0",
+        "beartype": "0.23.1",
+        "mdformat": "1.0.0",
+        "aiosignal": "1.4.0",
+        "onnxruntime": "1.32.0",
+        "pillow": "13.0.0",
+        "charset-normalizer": "3.5.2",
+        "more-itertools": "11.2.1",
+        "python-dotenv": "1.2.4",
+        "rich-rst": "2.2.0",
+        "jaraco-context": "6.1.2",
+        "filelock": "4.2.11",
+        "fastapi-redis-sdk": "0.8.1",
+        "tqdm": "4.70.1",
+        "asyncpg": "0.32.0",
+        "importlib-metadata": "8.9.0",
+        "executing": "2.3.0",
+        "openapi-pydantic": "0.6.0",
+        "opentelemetry-exporter-otlp-proto-http": "1.45.2",
+        "httpx": "0.28.1",
+        "flatbuffers": "25.12.19",
+        "keyring": "25.7.0",
+        "cachetools": "8.0.0",
+        "watchfiles": "1.3.0",
+        "mmh3": "5.3.1",
+        "typing-extensions": "4.16.0",
+        "hf-xet": "1.8.0",
+        "alembic": "1.20.1",
+        "tzlocal": "5.4.5",
+        "cyclopts": "5.5.2",
+        "aiosqlite": "0.22.1",
+        "h11": "0.16.0",
+        "mdit-py-plugins": "0.7.0",
+        "uvicorn": "0.54.0",
+        "dateparser": "1.5.1",
+        "referencing": "0.37.0",
+        "agent-detector": "2.0.0",
+        "aiofiles": "25.1.0",
+        "pyright": "1.1.414",
+        "email-validator": "2.4.0",
+        "opentelemetry-api": "1.45.2",
+        "py-rust-stemmers": "0.1.8",
+        "yarl": "1.25.1",
+        "mdformat-gfm": "1.0.0",
+        "opentelemetry-instrumentation": "0.66b2",
+        "pycparser": "3.12",
+        "loguru": "0.7.3",
+        "fastar": "0.12.0",
+        "pluggy": "1.7.0",
+        "distro": "1.9.0",
+        "aiohappyeyeballs": "2.7.1",
+        "pyjwt": "2.15.1",
+        "opentelemetry-semantic-conventions": "0.66b2",
+        "truststore": "0.10.5",
+        "unidecode": "1.4.0",
+        "zipp": "4.1.2",
+        "pathable": "0.6.0",
+        "logfire": "5.6.0",
+        "pip": "25.0.1",
+        "openai": "2.54.0",
+        "pymeta3": "0.5.1",
+        "protobuf": "7.36.2",
+        "jsonref": "1.1.0",
+        "basic-memory": "0.24.1",
+        "pytz": "2026.6",
+        "aiohttp": "3.14.5",
+        "psutil": "7.2.2",
+        "fastembed": "0.9.1",
+        "starlette": "1.10.0",
+        "cryptography": "50.0.2",
+        "fastapi-cloud-cli": "0.28.0",
+        "opentelemetry-sdk": "1.45.2",
+        "jsonschema": "4.26.0",
+        "opentelemetry-exporter-otlp-proto-common": "1.45.2",
+        "huggingface-hub": "1.33.0",
+        "pytest": "9.2.0",
+        "dnspython": "2.9.2",
+        "jinja2": "3.1.6",
+        "python-multipart": "0.0.34",
+        "docstring-parser": "0.18.0",
+        "httpcore": "1.0.9",
+        "py-key-value-aio": "0.4.6",
+        "psycopg": "3.3.1",
+        "sqlalchemy": "2.1.9",
+        "regex": "2026.11.15",
+        "frozenlist": "1.8.0",
+        "mdurl": "0.1.2",
+        "litellm": "1.91.5",
+        "griffelib": "2.4.1",
+        "urllib3": "2.8.0",
+        "sentry-sdk": "2.75.0",
+        "mcp": "2.3.0",
+        "iniconfig": "2.3.1",
+        "rich": "15.0.0",
+        "pydantic-settings": "2.16.3",
+        "opentelemetry-exporter-otlp-common": "0.66b2",
+        "joserfc": "1.8.0",
+        "click": "8.5.1",
+        "markupsafe": "3.0.4",
+        "pyperclip": "1.11.0",
+        "nodeenv": "1.12.0",
+        "redis": "8.1.0",
+        "httptools": "0.9.0",
+        "jsonschema-specifications": "2025.9.1",
+        "tiktoken": "0.14.0",
+        "tzdata": "2026.6",
+        "fastmcp-slim": "4.1.3",
+        "sniffio": "1.3.1",
+        "rich-toolkit": "0.20.6",
+        "typing-inspection": "0.4.5",
+        "wcwidth": "0.9.4",
+        "jeepney": "0.9.0",
+        "wrapt": "2.5.2",
+        "detect-installer": "0.2.1",
+        "fastmcp": "4.1.3",
+        "mako": "1.4.3",
+        "tokenizers": "0.23.3",
+        "anyio": "4.16.0",
+        "multidict": "7.2.1",
+        "ruamel-yaml": "0.19.1",
+        "logfire-sdk": "5.6.0",
+        "httpx2": "2.16.2",
+        "opentelemetry-exporter-http-transport": "0.66b2",
+        "numpy": "2.5.5",
+        "fastapi-cli": "0.0.34",
+        "python-frontmatter": "1.3.0",
+        "secretstorage": "3.5.0",
+        "jiter": "0.19.0",
+        "cffi": "2.1.1",
+        "fsspec": "2026.9.0",
+        "aiofile": "3.12.3",
+        "idna": "3.20",
+        "annotated-types": "0.8.0",
+        "packaging": "26.3",
+        "exceptiongroup": "1.3.1",
+        "pydantic-core": "2.50.4",
+        "shellingham": "1.5.4",
+        "rpds-py": "2026.9.1",
+        "pydantic": "2.14.3",
+        "jsonschema-path": "0.5.0",
+        "mdformat-frontmatter": "2.2.0",
+        "fastapi": "0.139.0",
+        "markdown-it-py": "4.3.0",
+        "uncalled-for": "0.6.1"
+      },
+      "python_version": "3.12.16",
+      "platform": "linux",
+      "machine": "x86_64",
+      "abi": "cpython-312",
+      "protocol": "comparison-child-v1",
+      "tool": "basic-memory",
+      "interpreter": ".work/competitor-env/bin/python",
+      "files": {
+        ".work/competitor-env/bin/python": "a9daa2903823e8bc0ce562bcf07be5a9ae27cf5d9d6dccf492438f0a310c0982",
+        ".work/competitor-env/bin/basic-memory": "ab40e2bff22b8c3660cfb83e93acdcc7ca1969941a333adfb8dcee4f5b8af67b"
+      },
+      "wheel_sha256": "b528fff0a92bc91683e791553f9b10f57f7e3185a1aa15d494f5b8294eaad89e",
+      "encoder_versions": {
+        "psutil": "7.2.2"
+      },
+      "dependency_consistency": {
+        "before_profile": "passed",
+        "after_profile": "only_declared_sqlite_vec_absence"
+      },
+      "scope": "official competitor in its separately frozen supported environment; Mesh host source and dependency qualification remains separate"
+    },
+    "69fb3cbfaaaeb0f54d2015a81d789ab3e92c26db977419617b522fc70112f5c2": {
+      "python": "3.12.16",
+      "platform": "linux",
+      "logical_cpus": 4,
+      "available_ram_bytes": 15654895616
+    },
+    "93155179ff9f45c5a0c3ff74f45c46b050c0d73196f8200c1f04c9923fb54635": {
+      "settled": true,
+      "inventory_sha256": "bf374edec5ab4812bf17c073490607bb5db5f310a15bdf3e42d2111a39495999",
+      "status": "removed_after_owned_process_settlement"
+    },
+    "9a7dd801c4ba84eb96ba71e25c7f72513a14a999169d73def0c88961ed067810": {
+      "protocol": "comparison-v1",
+      "status": "complete",
+      "tool": "basic-memory",
+      "dataset": "prospective",
+      "labels_in_ranking_inputs": false,
+      "started_at_utc": "2026-11-17T13:02:25.872190+00:00",
+      "source_commit": "2db6229494a223feaa618de0cbf901650ba0d037",
+      "dataset_manifest_sha256": "e88ff9a1897cfb28b463d18a97866882958491f712bc9a96f6fd9a842ab1b637",
+      "dataset_scope": "Previously inspected bounded regression; source corpus and label bytes preserved; no independent held-out or full-benchmark claim.",
+      "corpus_count": 50,
+      "query_count": 22,
+      "model_revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+      "network_isolation": "disconnected Linux network namespace inherited by all children",
+      "input_body_normalization": "strip surrounding whitespace for every tool; title newline body for public BEIR parents",
+      "failure_code": null,
+      "ranked_export_sha256": "df8180c8b5956ed90fec26192f1439df649d16171bdcc1a156c9a2f6855f880d",
+      "labels_sha256": "d44f85fc122227e0575229515e06c30bcec0c9b36f49660586f124b030bb7d0e",
+      "finished_at_utc": "2026-11-17T13:02:42.256090+00:00",
+      "structured_field_manifests": {
+        "tool_pin": "d88d86517f5452171689b03c311d2476c42cf1bba22e2048aa5aa2c4dfe5a93e",
+        "profile": "61bb086dbeaca1fef234451be41a248fbc1c706687b7fa7fe53576b708de4eed",
+        "claims": "558167dc79357685ed59f870d54c3c4384132c9557b9661edd7b5704b03fc3c2",
+        "qualification": "8999e614746426b0da8505390dcf8cc658c12cbfee5719dfcb53ca9876739614",
+        "packages": "ad358540eaeda0f3d28d36b8e80f27271e5c3b4ba7fcf9d806d957ce734b7096",
+        "dependencies": "d0a7a7ea11f22d8e20334cf1ecc8e10a2ce0c5b0655750c0d0e8bad975d980d4",
+        "child_environment": "807a1350ede0cc7a11d270aafa19ddab9521a37fccbefb2c05406dd45952d2fa",
+        "source_files": "7ab7cb862d7bdb791651e455d0072840e8bf143f72f26df66f5a12f3f6e464dd",
+        "model_files": "8c0cb249d422ae903355fc340f3abdc90f815b491397460d70d174cd02e38b66",
+        "system": "69fb3cbfaaaeb0f54d2015a81d789ab3e92c26db977419617b522fc70112f5c2",
+        "limits": "75caf683df2e61d37aabea861be05c906d4851d0224ca09e8b23bdc4ec9e6293",
+        "dataset_manifest": "e88ff9a1897cfb28b463d18a97866882958491f712bc9a96f6fd9a842ab1b637",
+        "cleanup": "93155179ff9f45c5a0c3ff74f45c46b050c0d73196f8200c1f04c9923fb54635",
+        "setup_packages": "ad358540eaeda0f3d28d36b8e80f27271e5c3b4ba7fcf9d806d957ce734b7096",
+        "setup_dependencies": "d0a7a7ea11f22d8e20334cf1ecc8e10a2ce0c5b0655750c0d0e8bad975d980d4"
+      }
+    },
+    "b27f11f71958bf63d1a97965f831911ee213765e4e95191a7590cc6e3a693191": {
+      "python": "3.12.16",
+      "platform": "linux",
+      "logical_cpus": 4,
+      "available_ram_bytes": 15638016000
+    },
+    "2cb2f26f6ba0c6a2e124456dbbdd41765e197eb37ecd3a7e1f1cf640d81fd4a5": {
+      "settled": true,
+      "inventory_sha256": "46b838bd3094d504b6ddbaa56ef771bc803e763b73f9e66407bef6a13a089195",
+      "status": "removed_after_owned_process_settlement"
+    },
+    "31424f976610a3e939c1a8bb943ed8467333b08a658ba9c74cc88b6006853d55": {
+      "protocol": "comparison-v1",
+      "status": "complete",
+      "tool": "basic-memory",
+      "dataset": "longtext-prospective",
+      "labels_in_ranking_inputs": false,
+      "started_at_utc": "2026-11-17T13:02:47.100201+00:00",
+      "source_commit": "2db6229494a223feaa618de0cbf901650ba0d037",
+      "dataset_manifest_sha256": "fc8ceaaf3d470653f628590e659f525487aaf6a2c2d62f7ce378d6b40e2bbc1e",
+      "dataset_scope": "Previously inspected bounded regression; source corpus and label bytes preserved; no independent held-out or full-benchmark claim.",
+      "corpus_count": 15,
+      "query_count": 9,
+      "model_revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+      "network_isolation": "disconnected Linux network namespace inherited by all children",
+      "input_body_normalization": "strip surrounding whitespace for every tool; title newline body for public BEIR parents",
+      "failure_code": null,
+      "ranked_export_sha256": "1527d30ffcf72a401aa747ffdce9e8444cfc91c8779f2046fef73574f037e451",
+      "labels_sha256": "e013be8ebde702a074a71a87cf850c5a415b27cd7cfed5e3ed0528bd7f71ef28",
+      "finished_at_utc": "2026-11-17T13:03:08.348142+00:00",
+      "structured_field_manifests": {
+        "tool_pin": "d88d86517f5452171689b03c311d2476c42cf1bba22e2048aa5aa2c4dfe5a93e",
+        "profile": "61bb086dbeaca1fef234451be41a248fbc1c706687b7fa7fe53576b708de4eed",
+        "claims": "558167dc79357685ed59f870d54c3c4384132c9557b9661edd7b5704b03fc3c2",
+        "qualification": "8999e614746426b0da8505390dcf8cc658c12cbfee5719dfcb53ca9876739614",
+        "packages": "ad358540eaeda0f3d28d36b8e80f27271e5c3b4ba7fcf9d806d957ce734b7096",
+        "dependencies": "d0a7a7ea11f22d8e20334cf1ecc8e10a2ce0c5b0655750c0d0e8bad975d980d4",
+        "child_environment": "807a1350ede0cc7a11d270aafa19ddab9521a37fccbefb2c05406dd45952d2fa",
+        "source_files": "7ab7cb862d7bdb791651e455d0072840e8bf143f72f26df66f5a12f3f6e464dd",
+        "model_files": "8c0cb249d422ae903355fc340f3abdc90f815b491397460d70d174cd02e38b66",
+        "system": "b27f11f71958bf63d1a97965f831911ee213765e4e95191a7590cc6e3a693191",
+        "limits": "75caf683df2e61d37aabea861be05c906d4851d0224ca09e8b23bdc4ec9e6293",
+        "dataset_manifest": "fc8ceaaf3d470653f628590e659f525487aaf6a2c2d62f7ce378d6b40e2bbc1e",
+        "cleanup": "2cb2f26f6ba0c6a2e124456dbbdd41765e197eb37ecd3a7e1f1cf640d81fd4a5",
+        "setup_packages": "ad358540eaeda0f3d28d36b8e80f27271e5c3b4ba7fcf9d806d957ce734b7096",
+        "setup_dependencies": "d0a7a7ea11f22d8e20334cf1ecc8e10a2ce0c5b0655750c0d0e8bad975d980d4"
+      }
+    },
+    "aca78d4206c2ece94ac18131886bcf1bc6da76137cd963999ab448ace5828d50": {
+      "python": "3.12.16",
+      "platform": "linux",
+      "logical_cpus": 4,
+      "available_ram_bytes": 15672061952
+    },
+    "d1992127819f4221b5c4227f91f32e14330bf329360cc61ed7b2a7496eff9fba": {
+      "settled": true,
+      "inventory_sha256": "e020b7736ac5e6fa6ad059ff34b1b2e522ffd63362b41a1ea5228a92b42fda7e",
+      "status": "removed_after_owned_process_settlement"
+    },
+    "c450eba710c674bde9d96e886fff6d2851cd1e1619c510290c579eda469f31a0": {
+      "protocol": "comparison-v1",
+      "status": "complete",
+      "tool": "basic-memory",
+      "dataset": "longmemeval",
+      "labels_in_ranking_inputs": false,
+      "started_at_utc": "2026-11-17T13:03:02.338330+00:00",
+      "source_commit": "2db6229494a223feaa618de0cbf901650ba0d037",
+      "dataset_manifest_sha256": "eed4fe7b96a90c9a1cf3fea57fecc808f61dc52422acfd8543d829e26d373ffd",
+      "dataset_scope": "Previously inspected bounded regression; source corpus and label bytes preserved; no independent held-out or full-benchmark claim.",
+      "corpus_count": 191,
+      "query_count": 6,
+      "model_revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+      "network_isolation": "disconnected Linux network namespace inherited by all children",
+      "input_body_normalization": "strip surrounding whitespace for every tool; title newline body for public BEIR parents",
+      "failure_code": null,
+      "ranked_export_sha256": "81cb0ee0ce31921e9a5441c4298257aa241a7041185dd53e331e920202ce4667",
+      "labels_sha256": "6a98f0d5a0d80adb6770bf2622f987197915f21d3e649acfa0068e2ebd7f1b06",
+      "finished_at_utc": "2026-11-17T13:04:56.050193+00:00",
+      "structured_field_manifests": {
+        "tool_pin": "d88d86517f5452171689b03c311d2476c42cf1bba22e2048aa5aa2c4dfe5a93e",
+        "profile": "61bb086dbeaca1fef234451be41a248fbc1c706687b7fa7fe53576b708de4eed",
+        "claims": "558167dc79357685ed59f870d54c3c4384132c9557b9661edd7b5704b03fc3c2",
+        "qualification": "8999e614746426b0da8505390dcf8cc658c12cbfee5719dfcb53ca9876739614",
+        "packages": "ad358540eaeda0f3d28d36b8e80f27271e5c3b4ba7fcf9d806d957ce734b7096",
+        "dependencies": "d0a7a7ea11f22d8e20334cf1ecc8e10a2ce0c5b0655750c0d0e8bad975d980d4",
+        "child_environment": "807a1350ede0cc7a11d270aafa19ddab9521a37fccbefb2c05406dd45952d2fa",
+        "source_files": "7ab7cb862d7bdb791651e455d0072840e8bf143f72f26df66f5a12f3f6e464dd",
+        "model_files": "8c0cb249d422ae903355fc340f3abdc90f815b491397460d70d174cd02e38b66",
+        "system": "aca78d4206c2ece94ac18131886bcf1bc6da76137cd963999ab448ace5828d50",
+        "limits": "75caf683df2e61d37aabea861be05c906d4851d0224ca09e8b23bdc4ec9e6293",
+        "dataset_manifest": "eed4fe7b96a90c9a1cf3fea57fecc808f61dc52422acfd8543d829e26d373ffd",
+        "cleanup": "d1992127819f4221b5c4227f91f32e14330bf329360cc61ed7b2a7496eff9fba",
+        "setup_packages": "ad358540eaeda0f3d28d36b8e80f27271e5c3b4ba7fcf9d806d957ce734b7096",
+        "setup_dependencies": "d0a7a7ea11f22d8e20334cf1ecc8e10a2ce0c5b0655750c0d0e8bad975d980d4"
+      }
+    },
+    "849914c3929e830b41e1b4cac7c12de712db389f289b904b5c3cf9aab80588ca": {
+      "python": "3.12.16",
+      "platform": "linux",
+      "logical_cpus": 4,
+      "available_ram_bytes": 15694835712
+    },
+    "27da8cefbb7287b51589d3e24e033b2a6328ddcc2e99b8f654f02bab0190af20": {
+      "name": "nfcorpus",
+      "source_url": "https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/nfcorpus.zip",
+      "prepared_at_utc": "2026-11-17T13:03:29.635204+00:00",
+      "archive_sha256": "efe5be03f8c5b86a5870102d0599d227c8c6e2484328e68c6522560385671b0b",
+      "corpus_count": 3633,
+      "query_count": 323,
+      "positive_judgments": 12334,
+      "files": {
+        "corpus.jsonl": {
+          "sha256": "10cc83ef1826b1425e6a87090b5140b39b27755d5a27e48215a88611c899991f",
+          "bytes": 6219364
+        },
+        "queries.jsonl": {
+          "sha256": "d024e6621b84925d485ae473d316a0c3af31c62c8068a59fb29d22f7613aef2a",
+          "bytes": 441466
+        },
+        "qrels/test.tsv": {
+          "sha256": "f8fba6ef3d4dd9c3a242a8ba4ae38276fc3622fce7dcbae764766d564542fd2a",
+          "bytes": 279572
+        },
+        "queries-selected.jsonl": {
+          "sha256": "20c4349031851471dd1353e480e6f1d2f4444a1191010a60a2a0ae584c147779",
+          "bytes": 17922
+        },
+        "labels.json": {
+          "sha256": "2e779079b4053d605230d98964ebee355b3fe387c9611d98c51f2b271a325600",
+          "bytes": 272957
+        }
+      },
+      "hard_negatives": "Every published document remains available; no label-selected candidate subsets."
+    },
+    "a9493e5ce43e0f070b96c8c99b22f17136530e01c117d0223dc2fdc1dccc5072": {
+      "settled": true,
+      "inventory_sha256": "09d4b7dd7495f4f874226265c612bb5964278d76b0aece45131b2e0d12e49058",
+      "status": "removed_after_owned_process_settlement"
+    },
+    "87569810bc0e03791d26571db71c6610681e5bd2c6c8ed3535f3a8678f66c67f": {
+      "protocol": "comparison-v1",
+      "status": "complete",
+      "tool": "basic-memory",
+      "dataset": "nfcorpus",
+      "labels_in_ranking_inputs": false,
+      "started_at_utc": "2026-11-17T13:03:30.805746+00:00",
+      "source_commit": "2db6229494a223feaa618de0cbf901650ba0d037",
+      "dataset_manifest_sha256": "27da8cefbb7287b51589d3e24e033b2a6328ddcc2e99b8f654f02bab0190af20",
+      "dataset_scope": "full published BEIR test query selection",
+      "corpus_count": 3633,
+      "query_count": 323,
+      "model_revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+      "network_isolation": "disconnected Linux network namespace inherited by all children",
+      "input_body_normalization": "strip surrounding whitespace for every tool; title newline body for public BEIR parents",
+      "failure_code": null,
+      "ranked_export_sha256": "76ef51376a135cfbea10bd7f0e07a7c6c283d14b19d8281fe608f53f50100267",
+      "labels_sha256": "2e779079b4053d605230d98964ebee355b3fe387c9611d98c51f2b271a325600",
+      "finished_at_utc": "2026-11-17T13:11:00.617403+00:00",
+      "structured_field_manifests": {
+        "tool_pin": "d88d86517f5452171689b03c311d2476c42cf1bba22e2048aa5aa2c4dfe5a93e",
+        "profile": "61bb086dbeaca1fef234451be41a248fbc1c706687b7fa7fe53576b708de4eed",
+        "claims": "558167dc79357685ed59f870d54c3c4384132c9557b9661edd7b5704b03fc3c2",
+        "qualification": "8999e614746426b0da8505390dcf8cc658c12cbfee5719dfcb53ca9876739614",
+        "packages": "ad358540eaeda0f3d28d36b8e80f27271e5c3b4ba7fcf9d806d957ce734b7096",
+        "dependencies": "d0a7a7ea11f22d8e20334cf1ecc8e10a2ce0c5b0655750c0d0e8bad975d980d4",
+        "child_environment": "807a1350ede0cc7a11d270aafa19ddab9521a37fccbefb2c05406dd45952d2fa",
+        "source_files": "7ab7cb862d7bdb791651e455d0072840e8bf143f72f26df66f5a12f3f6e464dd",
+        "model_files": "8c0cb249d422ae903355fc340f3abdc90f815b491397460d70d174cd02e38b66",
+        "system": "849914c3929e830b41e1b4cac7c12de712db389f289b904b5c3cf9aab80588ca",
+        "limits": "75caf683df2e61d37aabea861be05c906d4851d0224ca09e8b23bdc4ec9e6293",
+        "dataset_manifest": "27da8cefbb7287b51589d3e24e033b2a6328ddcc2e99b8f654f02bab0190af20",
+        "cleanup": "a9493e5ce43e0f070b96c8c99b22f17136530e01c117d0223dc2fdc1dccc5072",
+        "setup_packages": "ad358540eaeda0f3d28d36b8e80f27271e5c3b4ba7fcf9d806d957ce734b7096",
+        "setup_dependencies": "d0a7a7ea11f22d8e20334cf1ecc8e10a2ce0c5b0655750c0d0e8bad975d980d4"
+      }
+    },
+    "03d6de922c67c143245914855229c6751d4989da4c64aed0af7b584735910e0b": {
+      "packages": {
+        "websockets": "17.4",
+        "psutil": "7.2.2",
+        "mdformat-frontmatter": "2.2.0",
+        "platformdirs": "4.14.5",
+        "pyjwt": "2.15.1",
+        "packaging": "26.3",
+        "basic-memory": "0.24.1",
+        "typing-extensions": "4.16.0",
+        "sse-starlette": "3.7.0",
+        "python-dateutil": "4.0.0",
+        "wrapt": "2.5.2",
+        "fastapi": "0.139.0",
+        "pyright": "1.1.414",
+        "python-frontmatter": "1.3.0",
+        "py-key-value-aio": "0.4.6",
+        "mmh3": "5.3.1",
+        "typing-inspection": "0.4.5",
+        "distro": "1.9.0",
+        "zipp": "4.1.2",
+        "fastapi-redis-sdk": "0.8.1",
+        "tzlocal": "5.4.5",
+        "sqlalchemy": "2.1.9",
+        "alembic": "1.20.1",
+        "hf-xet": "1.8.0",
+        "pyyaml": "6.0.3",
+        "mdit-py-plugins": "0.7.0",
+        "requests": "2.34.2",
+        "ruamel-yaml": "0.19.1",
+        "openai": "2.54.0",
+        "regex": "2026.11.15",
+        "httpcore": "1.0.9",
+        "jeepney": "0.9.0",
+        "fastar": "0.12.0",
+        "authlib": "1.9.8",
+        "exceptiongroup": "1.3.1",
+        "cryptography": "50.0.2",
+        "multidict": "7.2.1",
+        "watchfiles": "1.3.0",
+        "sniffio": "1.3.1",
+        "referencing": "0.37.0",
+        "opentelemetry-semantic-conventions": "0.66b2",
+        "tokenizers": "0.23.3",
+        "aiohttp": "3.14.5",
+        "pluggy": "1.7.0",
+        "executing": "2.3.0",
+        "annotated-types": "0.8.0",
+        "pydantic": "2.14.3",
+        "pathable": "0.6.0",
+        "mdurl": "0.1.2",
+        "uncalled-for": "0.6.1",
+        "python-multipart": "0.0.34",
+        "mcp-types": "2.3.0",
+        "redis": "8.1.0",
+        "rich-toolkit": "0.20.6",
+        "frozenlist": "1.8.0",
+        "pillow": "13.0.0",
+        "truststore": "0.10.5",
+        "importlib-metadata": "8.9.0",
+        "yarl": "1.25.1",
+        "anyio": "4.16.0",
+        "pybars3": "0.9.7",
+        "sentry-sdk": "2.75.0",
+        "opentelemetry-exporter-otlp-proto-http": "1.45.2",
+        "googleapis-common-protos": "1.76.0",
+        "pytest-aio": "2.1.7",
+        "filelock": "4.2.11",
+        "dnspython": "2.9.2",
+        "tqdm": "4.70.1",
+        "logfire": "5.6.0",
+        "pydantic-extra-types": "2.11.1",
+        "asyncpg": "0.32.0",
+        "pygments": "2.21.0",
+        "loguru": "0.7.3",
+        "tzdata": "2026.6",
+        "rich-rst": "2.2.0",
+        "mcp": "2.3.0",
+        "numpy": "2.5.5",
+        "litellm": "1.91.5",
+        "jinja2": "3.1.6",
+        "h11": "0.16.0",
+        "httpx": "0.28.1",
+        "fsspec": "2026.9.0",
+        "opentelemetry-exporter-otlp-common": "0.66b2",
+        "opentelemetry-proto": "1.45.2",
+        "nodeenv": "1.12.0",
+        "protobuf": "7.36.2",
+        "pycparser": "3.12",
+        "pytz": "2026.6",
+        "caio": "0.12.10",
+        "cyclopts": "5.5.2",
+        "propcache": "0.5.4",
+        "charset-normalizer": "3.5.2",
+        "logfire-sdk": "5.6.0",
+        "cachetools": "8.0.0",
+        "jaraco-classes": "3.4.0",
+        "certifi": "2026.10.23",
+        "iniconfig": "2.3.1",
+        "fastembed": "0.9.1",
+        "aiosqlite": "0.22.1",
+        "openapi-pydantic": "0.6.0",
+        "idna": "3.20",
+        "detect-installer": "0.2.1",
+        "rich": "15.0.0",
+        "griffelib": "2.4.1",
+        "uvloop": "0.23.0",
+        "httpcore2": "2.16.2",
+        "opentelemetry-instrumentation": "0.66b2",
+        "aiofile": "3.12.3",
+        "mdformat-gfm": "1.0.0",
+        "pyperclip": "1.11.0",
+        "jsonschema-specifications": "2025.9.1",
+        "opentelemetry-exporter-otlp-proto-common": "1.45.2",
+        "mako": "1.4.3",
+        "onnxruntime": "1.32.0",
+        "cffi": "2.1.1",
+        "dateparser": "1.5.1",
+        "email-validator": "2.4.0",
+        "click": "8.5.1",
+        "flatbuffers": "25.12.19",
+        "aiohappyeyeballs": "2.7.1",
+        "secretstorage": "3.5.0",
+        "greenlet": "3.5.6",
+        "pytest": "9.2.0",
+        "tiktoken": "0.14.0",
+        "wcwidth": "0.9.4",
+        "joserfc": "1.8.0",
+        "agent-detector": "2.0.0",
+        "rignore": "0.8.1",
+        "starlette": "1.10.0",
+        "jiter": "0.19.0",
+        "jaraco-context": "6.1.2",
+        "jsonref": "1.1.0",
+        "pymeta3": "0.5.1",
+        "urllib3": "2.8.0",
+        "opentelemetry-sdk": "1.45.2",
+        "beartype": "0.23.1",
+        "jsonschema": "4.26.0",
+        "markdown-it-py": "4.3.0",
+        "py-rust-stemmers": "0.1.8",
+        "pydantic-settings": "2.16.3",
+        "pytest-asyncio": "1.5.0",
+        "typer": "0.29.1",
+        "annotated-doc": "0.0.6",
+        "pip": "25.0.1",
+        "uvicorn": "0.54.0",
+        "huggingface-hub": "1.33.0",
+        "fastmcp-slim": "4.1.3",
+        "fastapi-cloud-cli": "0.28.0",
+        "opentelemetry-api": "1.45.2",
+        "fastapi-cli": "0.0.34",
+        "attrs": "26.1.0",
+        "mdformat": "1.0.0",
+        "unidecode": "1.4.0",
+        "jsonschema-path": "0.5.0",
+        "markupsafe": "3.0.4",
+        "httpx2": "2.16.2",
+        "shellingham": "1.5.4",
+        "opentelemetry-exporter-http-transport": "0.66b2",
+        "more-itertools": "11.2.1",
+        "psycopg": "3.3.1",
+        "aiofiles": "25.1.0",
+        "python-dotenv": "1.2.4",
+        "jaraco-functools": "4.6.0",
+        "aiosignal": "1.4.0",
+        "pydantic-core": "2.50.4",
+        "httptools": "0.9.0",
+        "rpds-py": "2026.9.1",
+        "docstring-parser": "0.18.0",
+        "fastuuid": "0.14.0",
+        "keyring": "25.7.0",
+        "fastmcp": "4.1.3"
+      },
+      "python_version": "3.12.16",
+      "platform": "linux",
+      "machine": "x86_64",
+      "abi": "cpython-312",
+      "protocol": "comparison-child-v1",
+      "tool": "basic-memory",
+      "interpreter": ".work/competitor-env/bin/python",
+      "files": {
+        ".work/competitor-env/bin/python": "a9daa2903823e8bc0ce562bcf07be5a9ae27cf5d9d6dccf492438f0a310c0982",
+        ".work/competitor-env/bin/basic-memory": "ab40e2bff22b8c3660cfb83e93acdcc7ca1969941a333adfb8dcee4f5b8af67b"
+      },
+      "wheel_sha256": "b528fff0a92bc91683e791553f9b10f57f7e3185a1aa15d494f5b8294eaad89e",
+      "encoder_versions": {
+        "psutil": "7.2.2"
+      },
+      "dependency_consistency": {
+        "before_profile": "passed",
+        "after_profile": "only_declared_sqlite_vec_absence"
+      },
+      "scope": "official competitor in its separately frozen supported environment; Mesh host source and dependency qualification remains separate"
+    },
+    "3efcabc776af44dd9c6bf20271e6842eecdbe83081d229eb9b2d136965046acc": {
+      "python": "3.12.16",
+      "platform": "linux",
+      "logical_cpus": 4,
+      "available_ram_bytes": 15366803456
+    },
+    "1eb475df1260799fbac03f16229212f658b36ff02604af2fedc1b241d9fc70fd": {
+      "name": "scifact",
+      "source_url": "https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/scifact.zip",
+      "prepared_at_utc": "2026-11-17T13:03:40.094917+00:00",
+      "archive_sha256": "536e14446a0ba56ed1398ab1055f39fe852686ecad24a6306c80c490fa8e0165",
+      "corpus_count": 5183,
+      "query_count": 300,
+      "positive_judgments": 339,
+      "files": {
+        "corpus.jsonl": {
+          "sha256": "dec31c8182f3d744c7d2c09423756fd1d17cbef75808db13ba01cc0aab4d1ac6",
+          "bytes": 8106566
+        },
+        "queries.jsonl": {
+          "sha256": "8ff84a7c903f722981cd8d595c022660140c51867b27608a6d4910db86080313",
+          "bytes": 209731
+        },
+        "qrels/test.tsv": {
+          "sha256": "0864bb985e0ca2367ba217977e72004d549054b2b06666ed9d4825ac7c21284c",
+          "bytes": 5389
+        },
+        "queries-selected.jsonl": {
+          "sha256": "20ded7eef653593fde34060aee46700e3f4e9d043e84004e581488aae5a85b45",
+          "bytes": 35277
+        },
+        "labels.json": {
+          "sha256": "9306bf40a0ff5f3bec248a2aef0b0f0631e8ab89dcfc1da6b8fb90e3c7993857",
+          "bytes": 16156
+        }
+      },
+      "hard_negatives": "Every published document remains available; no label-selected candidate subsets."
+    },
+    "86e721e60c34684bdd0401c7668cf243cd61897ef8cfe5cb17411a1def46340c": {
+      "settled": true,
+      "inventory_sha256": "6e94b129070f73aff999486cf56219f3512df70f2ac3dcd44e4e7501d268c4bc",
+      "status": "removed_after_owned_process_settlement"
+    },
+    "827447ac6cd5e75f7db9e2a5bf6122d3c09ea0fc08530ce9ff2c68cb29d312ad": {
+      "protocol": "comparison-v1",
+      "status": "complete",
+      "tool": "basic-memory",
+      "dataset": "scifact",
+      "labels_in_ranking_inputs": false,
+      "started_at_utc": "2026-11-17T13:03:40.882921+00:00",
+      "source_commit": "2db6229494a223feaa618de0cbf901650ba0d037",
+      "dataset_manifest_sha256": "1eb475df1260799fbac03f16229212f658b36ff02604af2fedc1b241d9fc70fd",
+      "dataset_scope": "full published BEIR test query selection",
+      "corpus_count": 5183,
+      "query_count": 300,
+      "model_revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+      "network_isolation": "disconnected Linux network namespace inherited by all children",
+      "input_body_normalization": "strip surrounding whitespace for every tool; title newline body for public BEIR parents",
+      "failure_code": null,
+      "ranked_export_sha256": "ad443590ecde6f8850f3a28bb4164deeea157a19d3abfd405d2a944758a35956",
+      "labels_sha256": "9306bf40a0ff5f3bec248a2aef0b0f0631e8ab89dcfc1da6b8fb90e3c7993857",
+      "finished_at_utc": "2026-11-17T13:11:02.637542+00:00",
+      "structured_field_manifests": {
+        "tool_pin": "d88d86517f5452171689b03c311d2476c42cf1bba22e2048aa5aa2c4dfe5a93e",
+        "profile": "61bb086dbeaca1fef234451be41a248fbc1c706687b7fa7fe53576b708de4eed",
+        "claims": "558167dc79357685ed59f870d54c3c4384132c9557b9661edd7b5704b03fc3c2",
+        "qualification": "8999e614746426b0da8505390dcf8cc658c12cbfee5719dfcb53ca9876739614",
+        "packages": "e124c5f226fe5deda3c630b89b8738714d2f956b95d0d245213852627f0a4299",
+        "dependencies": "a5fc2f3e74e0a49a08278af3281eb40e5f4dd7b8123815e4250de5c0ca798861",
+        "child_environment": "03d6de922c67c143245914855229c6751d4989da4c64aed0af7b584735910e0b",
+        "source_files": "7ab7cb862d7bdb791651e455d0072840e8bf143f72f26df66f5a12f3f6e464dd",
+        "model_files": "8c0cb249d422ae903355fc340f3abdc90f815b491397460d70d174cd02e38b66",
+        "system": "3efcabc776af44dd9c6bf20271e6842eecdbe83081d229eb9b2d136965046acc",
+        "limits": "75caf683df2e61d37aabea861be05c906d4851d0224ca09e8b23bdc4ec9e6293",
+        "dataset_manifest": "1eb475df1260799fbac03f16229212f658b36ff02604af2fedc1b241d9fc70fd",
+        "cleanup": "86e721e60c34684bdd0401c7668cf243cd61897ef8cfe5cb17411a1def46340c",
+        "setup_packages": "e124c5f226fe5deda3c630b89b8738714d2f956b95d0d245213852627f0a4299",
+        "setup_dependencies": "a5fc2f3e74e0a49a08278af3281eb40e5f4dd7b8123815e4250de5c0ca798861"
+      }
+    },
+    "3296f8b7bfff3594b19296f3649fe0be3c37975f1c329b31fe95f00cbf7d4abc": {
+      "version": "1.5.0",
+      "sha256": "ec452fc983e862f78f4cf23d41d3e25396ebff974508aceb45e8224720759b04"
+    },
+    "a376f0599a304eb1ed9d568971a75b62984e1a39a28cd3e9a4475f2796ca0d55": {
+      "interface": "MCP stdio",
+      "ranking": "native substring search; unordered results",
+      "embedding": "none; keyword-only configuration"
+    },
+    "6ec429655366f75eb2088e75d4c532e473416572dad9273078f24e8ae24f9664": {
+      "python": "3.12.16",
+      "platform": "linux",
+      "logical_cpus": 4,
+      "available_ram_bytes": 15677632512
+    },
+    "ddb4b87f35909c53aa2cdb8a7e030404e378c80c87d57e88d24dc7ab971e84fb": {
+      "settled": true,
+      "inventory_sha256": "2e3465a9029039dc3dfa996cff1ad6fd2c056d3242749a0fea7e665ad324c995",
+      "status": "removed_after_owned_process_settlement"
+    },
+    "4ea69257b75fa2c650af905afb5e49c1b91daf61e2d77a69e34974a32c3fcc2d": {
+      "protocol": "comparison-v1",
+      "status": "complete",
+      "tool": "auxly",
+      "dataset": "prospective",
+      "labels_in_ranking_inputs": false,
+      "started_at_utc": "2026-11-17T13:02:39.408198+00:00",
+      "source_commit": "2db6229494a223feaa618de0cbf901650ba0d037",
+      "dataset_manifest_sha256": "e88ff9a1897cfb28b463d18a97866882958491f712bc9a96f6fd9a842ab1b637",
+      "dataset_scope": "Previously inspected bounded regression; source corpus and label bytes preserved; no independent held-out or full-benchmark claim.",
+      "corpus_count": 50,
+      "query_count": 22,
+      "model_revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+      "network_isolation": "disconnected Linux network namespace inherited by all children",
+      "input_body_normalization": "strip surrounding whitespace for every tool; title newline body for public BEIR parents",
+      "failure_code": null,
+      "ranked_export_sha256": "13936b6c21b1b8881261d26d350f89cb88660e0cbf1b7147ac672f4e40fbfaa2",
+      "labels_sha256": "d44f85fc122227e0575229515e06c30bcec0c9b36f49660586f124b030bb7d0e",
+      "finished_at_utc": "2026-11-17T13:02:40.606656+00:00",
+      "structured_field_manifests": {
+        "tool_pin": "3296f8b7bfff3594b19296f3649fe0be3c37975f1c329b31fe95f00cbf7d4abc",
+        "profile": "a376f0599a304eb1ed9d568971a75b62984e1a39a28cd3e9a4475f2796ca0d55",
+        "claims": "558167dc79357685ed59f870d54c3c4384132c9557b9661edd7b5704b03fc3c2",
+        "qualification": "8999e614746426b0da8505390dcf8cc658c12cbfee5719dfcb53ca9876739614",
+        "packages": "ad358540eaeda0f3d28d36b8e80f27271e5c3b4ba7fcf9d806d957ce734b7096",
+        "dependencies": "d0a7a7ea11f22d8e20334cf1ecc8e10a2ce0c5b0655750c0d0e8bad975d980d4",
+        "source_files": "7ab7cb862d7bdb791651e455d0072840e8bf143f72f26df66f5a12f3f6e464dd",
+        "model_files": "8c0cb249d422ae903355fc340f3abdc90f815b491397460d70d174cd02e38b66",
+        "system": "6ec429655366f75eb2088e75d4c532e473416572dad9273078f24e8ae24f9664",
+        "limits": "75caf683df2e61d37aabea861be05c906d4851d0224ca09e8b23bdc4ec9e6293",
+        "dataset_manifest": "e88ff9a1897cfb28b463d18a97866882958491f712bc9a96f6fd9a842ab1b637",
+        "cleanup": "ddb4b87f35909c53aa2cdb8a7e030404e378c80c87d57e88d24dc7ab971e84fb",
+        "setup_packages": "ad358540eaeda0f3d28d36b8e80f27271e5c3b4ba7fcf9d806d957ce734b7096",
+        "setup_dependencies": "d0a7a7ea11f22d8e20334cf1ecc8e10a2ce0c5b0655750c0d0e8bad975d980d4"
+      }
+    },
+    "ab445f5e460cb2e504b8322e1cba21ee2d869d5d600efa400620d393c29251dd": {
+      "python": "3.12.16",
+      "platform": "linux",
+      "logical_cpus": 4,
+      "available_ram_bytes": 15361646592
+    },
+    "76c7a04776d8a471d7477f130fa33e63a964648e2d6a0c04686deffc7c49c6d0": {
+      "settled": true,
+      "inventory_sha256": "2ec17c269aa260a25ea8c2a7316b9b5256a8b53b14e84e1bdb141b437d12e35c",
+      "status": "removed_after_owned_process_settlement"
+    },
+    "49156ec2b191f1a400b01eda9759dc6e996ba8370093d74eeaac19c7546f8fdf": {
+      "protocol": "comparison-v1",
+      "status": "complete",
+      "tool": "auxly",
+      "dataset": "longtext-prospective",
+      "labels_in_ranking_inputs": false,
+      "started_at_utc": "2026-11-17T13:03:24.010471+00:00",
+      "source_commit": "2db6229494a223feaa618de0cbf901650ba0d037",
+      "dataset_manifest_sha256": "fc8ceaaf3d470653f628590e659f525487aaf6a2c2d62f7ce378d6b40e2bbc1e",
+      "dataset_scope": "Previously inspected bounded regression; source corpus and label bytes preserved; no independent held-out or full-benchmark claim.",
+      "corpus_count": 15,
+      "query_count": 9,
+      "model_revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+      "network_isolation": "disconnected Linux network namespace inherited by all children",
+      "input_body_normalization": "strip surrounding whitespace for every tool; title newline body for public BEIR parents",
+      "failure_code": null,
+      "ranked_export_sha256": "af35503145778561888aeaea70997944217169d1a49ca3ee0ce6ce6e02362321",
+      "labels_sha256": "e013be8ebde702a074a71a87cf850c5a415b27cd7cfed5e3ed0528bd7f71ef28",
+      "finished_at_utc": "2026-11-17T13:03:24.782445+00:00",
+      "structured_field_manifests": {
+        "tool_pin": "3296f8b7bfff3594b19296f3649fe0be3c37975f1c329b31fe95f00cbf7d4abc",
+        "profile": "a376f0599a304eb1ed9d568971a75b62984e1a39a28cd3e9a4475f2796ca0d55",
+        "claims": "558167dc79357685ed59f870d54c3c4384132c9557b9661edd7b5704b03fc3c2",
+        "qualification": "8999e614746426b0da8505390dcf8cc658c12cbfee5719dfcb53ca9876739614",
+        "packages": "e124c5f226fe5deda3c630b89b8738714d2f956b95d0d245213852627f0a4299",
+        "dependencies": "a5fc2f3e74e0a49a08278af3281eb40e5f4dd7b8123815e4250de5c0ca798861",
+        "source_files": "7ab7cb862d7bdb791651e455d0072840e8bf143f72f26df66f5a12f3f6e464dd",
+        "model_files": "8c0cb249d422ae903355fc340f3abdc90f815b491397460d70d174cd02e38b66",
+        "system": "ab445f5e460cb2e504b8322e1cba21ee2d869d5d600efa400620d393c29251dd",
+        "limits": "75caf683df2e61d37aabea861be05c906d4851d0224ca09e8b23bdc4ec9e6293",
+        "dataset_manifest": "fc8ceaaf3d470653f628590e659f525487aaf6a2c2d62f7ce378d6b40e2bbc1e",
+        "cleanup": "76c7a04776d8a471d7477f130fa33e63a964648e2d6a0c04686deffc7c49c6d0",
+        "setup_packages": "e124c5f226fe5deda3c630b89b8738714d2f956b95d0d245213852627f0a4299",
+        "setup_dependencies": "a5fc2f3e74e0a49a08278af3281eb40e5f4dd7b8123815e4250de5c0ca798861"
+      }
+    },
+    "518064c71a53ab2a723b27c3955766c2be7cdf334379d6b2a9d38879165a111f": {
+      "python": "3.12.16",
+      "platform": "linux",
+      "logical_cpus": 4,
+      "available_ram_bytes": 15358189568
+    },
+    "432da681fff82c782a3531a7c5693bf44614f1b99b9568346d4c9de8bc1fc55d": {
+      "settled": true,
+      "inventory_sha256": "18cef8511dcd07e076080e0f1ab781f42a160684290a1f23c8300664c6fb18af",
+      "status": "removed_after_owned_process_settlement"
+    },
+    "50a4de3ae78eb4e3f3e25365e7041f672940bf6b2de269f6fbf032d57ee646b8": {
+      "protocol": "comparison-v1",
+      "status": "complete",
+      "tool": "auxly",
+      "dataset": "longmemeval",
+      "labels_in_ranking_inputs": false,
+      "started_at_utc": "2026-11-17T13:03:22.918416+00:00",
+      "source_commit": "2db6229494a223feaa618de0cbf901650ba0d037",
+      "dataset_manifest_sha256": "eed4fe7b96a90c9a1cf3fea57fecc808f61dc52422acfd8543d829e26d373ffd",
+      "dataset_scope": "Previously inspected bounded regression; source corpus and label bytes preserved; no independent held-out or full-benchmark claim.",
+      "corpus_count": 191,
+      "query_count": 6,
+      "model_revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+      "network_isolation": "disconnected Linux network namespace inherited by all children",
+      "input_body_normalization": "strip surrounding whitespace for every tool; title newline body for public BEIR parents",
+      "failure_code": null,
+      "ranked_export_sha256": "87e898834a62c1e8fbfb096566db9bdcf5814c336f60cb00fc2e1ce1bf283240",
+      "labels_sha256": "6a98f0d5a0d80adb6770bf2622f987197915f21d3e649acfa0068e2ebd7f1b06",
+      "finished_at_utc": "2026-11-17T13:03:23.910552+00:00",
+      "structured_field_manifests": {
+        "tool_pin": "3296f8b7bfff3594b19296f3649fe0be3c37975f1c329b31fe95f00cbf7d4abc",
+        "profile": "a376f0599a304eb1ed9d568971a75b62984e1a39a28cd3e9a4475f2796ca0d55",
+        "claims": "558167dc79357685ed59f870d54c3c4384132c9557b9661edd7b5704b03fc3c2",
+        "qualification": "8999e614746426b0da8505390dcf8cc658c12cbfee5719dfcb53ca9876739614",
+        "packages": "e124c5f226fe5deda3c630b89b8738714d2f956b95d0d245213852627f0a4299",
+        "dependencies": "a5fc2f3e74e0a49a08278af3281eb40e5f4dd7b8123815e4250de5c0ca798861",
+        "source_files": "7ab7cb862d7bdb791651e455d0072840e8bf143f72f26df66f5a12f3f6e464dd",
+        "model_files": "8c0cb249d422ae903355fc340f3abdc90f815b491397460d70d174cd02e38b66",
+        "system": "518064c71a53ab2a723b27c3955766c2be7cdf334379d6b2a9d38879165a111f",
+        "limits": "75caf683df2e61d37aabea861be05c906d4851d0224ca09e8b23bdc4ec9e6293",
+        "dataset_manifest": "eed4fe7b96a90c9a1cf3fea57fecc808f61dc52422acfd8543d829e26d373ffd",
+        "cleanup": "432da681fff82c782a3531a7c5693bf44614f1b99b9568346d4c9de8bc1fc55d",
+        "setup_packages": "e124c5f226fe5deda3c630b89b8738714d2f956b95d0d245213852627f0a4299",
+        "setup_dependencies": "a5fc2f3e74e0a49a08278af3281eb40e5f4dd7b8123815e4250de5c0ca798861"
+      }
+    },
+    "1c2b79481dba6b302309d5c4731730da29b7c88eab678634a1c3eed78c43ea55": {
+      "python": "3.12.16",
+      "platform": "linux",
+      "logical_cpus": 4,
+      "available_ram_bytes": 15368577024
+    },
+    "7bfa3ba2770618e0452c97a7cc6fc9d29be066391bd30474b989c8622246b6ec": {
+      "name": "nfcorpus",
+      "source_url": "https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/nfcorpus.zip",
+      "prepared_at_utc": "2026-11-17T13:03:58.619336+00:00",
+      "archive_sha256": "efe5be03f8c5b86a5870102d0599d227c8c6e2484328e68c6522560385671b0b",
+      "corpus_count": 3633,
+      "query_count": 323,
+      "positive_judgments": 12334,
+      "files": {
+        "corpus.jsonl": {
+          "sha256": "10cc83ef1826b1425e6a87090b5140b39b27755d5a27e48215a88611c899991f",
+          "bytes": 6219364
+        },
+        "queries.jsonl": {
+          "sha256": "d024e6621b84925d485ae473d316a0c3af31c62c8068a59fb29d22f7613aef2a",
+          "bytes": 441466
+        },
+        "qrels/test.tsv": {
+          "sha256": "f8fba6ef3d4dd9c3a242a8ba4ae38276fc3622fce7dcbae764766d564542fd2a",
+          "bytes": 279572
+        },
+        "queries-selected.jsonl": {
+          "sha256": "20c4349031851471dd1353e480e6f1d2f4444a1191010a60a2a0ae584c147779",
+          "bytes": 17922
+        },
+        "labels.json": {
+          "sha256": "2e779079b4053d605230d98964ebee355b3fe387c9611d98c51f2b271a325600",
+          "bytes": 272957
+        }
+      },
+      "hard_negatives": "Every published document remains available; no label-selected candidate subsets."
+    },
+    "e50256c0852035d5eba35917824a20f93b92cf31ec0e3e74a2f58a419e124df3": {
+      "settled": true,
+      "inventory_sha256": "2b571b786c15e6719ef8b7663c9f642b8460b35e6c6db77657494ffd41fb4322",
+      "status": "removed_after_owned_process_settlement"
+    },
+    "98eb49d983286abbc738c53474e24bd380df44f213d98f566d525e8cf99a3fd1": {
+      "protocol": "comparison-v1",
+      "status": "complete",
+      "tool": "auxly",
+      "dataset": "nfcorpus",
+      "labels_in_ranking_inputs": false,
+      "started_at_utc": "2026-11-17T13:03:59.279287+00:00",
+      "source_commit": "2db6229494a223feaa618de0cbf901650ba0d037",
+      "dataset_manifest_sha256": "7bfa3ba2770618e0452c97a7cc6fc9d29be066391bd30474b989c8622246b6ec",
+      "dataset_scope": "full published BEIR test query selection",
+      "corpus_count": 3633,
+      "query_count": 323,
+      "model_revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+      "network_isolation": "disconnected Linux network namespace inherited by all children",
+      "input_body_normalization": "strip surrounding whitespace for every tool; title newline body for public BEIR parents",
+      "failure_code": null,
+      "ranked_export_sha256": "38347735266d50892370fd115b684c43ac8379dadffb7aed30423f56f37b64be",
+      "labels_sha256": "2e779079b4053d605230d98964ebee355b3fe387c9611d98c51f2b271a325600",
+      "finished_at_utc": "2026-11-17T13:04:22.379611+00:00",
+      "structured_field_manifests": {
+        "tool_pin": "3296f8b7bfff3594b19296f3649fe0be3c37975f1c329b31fe95f00cbf7d4abc",
+        "profile": "a376f0599a304eb1ed9d568971a75b62984e1a39a28cd3e9a4475f2796ca0d55",
+        "claims": "558167dc79357685ed59f870d54c3c4384132c9557b9661edd7b5704b03fc3c2",
+        "qualification": "8999e614746426b0da8505390dcf8cc658c12cbfee5719dfcb53ca9876739614",
+        "packages": "e124c5f226fe5deda3c630b89b8738714d2f956b95d0d245213852627f0a4299",
+        "dependencies": "a5fc2f3e74e0a49a08278af3281eb40e5f4dd7b8123815e4250de5c0ca798861",
+        "source_files": "7ab7cb862d7bdb791651e455d0072840e8bf143f72f26df66f5a12f3f6e464dd",
+        "model_files": "8c0cb249d422ae903355fc340f3abdc90f815b491397460d70d174cd02e38b66",
+        "system": "1c2b79481dba6b302309d5c4731730da29b7c88eab678634a1c3eed78c43ea55",
+        "limits": "75caf683df2e61d37aabea861be05c906d4851d0224ca09e8b23bdc4ec9e6293",
+        "dataset_manifest": "7bfa3ba2770618e0452c97a7cc6fc9d29be066391bd30474b989c8622246b6ec",
+        "cleanup": "e50256c0852035d5eba35917824a20f93b92cf31ec0e3e74a2f58a419e124df3",
+        "setup_packages": "e124c5f226fe5deda3c630b89b8738714d2f956b95d0d245213852627f0a4299",
+        "setup_dependencies": "a5fc2f3e74e0a49a08278af3281eb40e5f4dd7b8123815e4250de5c0ca798861"
+      }
+    },
+    "38f6647af962a25f0d6222e96e3717291548bc94f21599f3baf2ea46f3afbd6b": {
+      "python": "3.12.16",
+      "platform": "linux",
+      "logical_cpus": 4,
+      "available_ram_bytes": 15670538240
+    },
+    "a3281e2930283e3a50a7fea5fcd0bb7f4b0905c1261d61538bcf556a3ba8ef7c": {
+      "name": "scifact",
+      "source_url": "https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/scifact.zip",
+      "prepared_at_utc": "2026-11-17T13:04:01.238589+00:00",
+      "archive_sha256": "536e14446a0ba56ed1398ab1055f39fe852686ecad24a6306c80c490fa8e0165",
+      "corpus_count": 5183,
+      "query_count": 300,
+      "positive_judgments": 339,
+      "files": {
+        "corpus.jsonl": {
+          "sha256": "dec31c8182f3d744c7d2c09423756fd1d17cbef75808db13ba01cc0aab4d1ac6",
+          "bytes": 8106566
+        },
+        "queries.jsonl": {
+          "sha256": "8ff84a7c903f722981cd8d595c022660140c51867b27608a6d4910db86080313",
+          "bytes": 209731
+        },
+        "qrels/test.tsv": {
+          "sha256": "0864bb985e0ca2367ba217977e72004d549054b2b06666ed9d4825ac7c21284c",
+          "bytes": 5389
+        },
+        "queries-selected.jsonl": {
+          "sha256": "20ded7eef653593fde34060aee46700e3f4e9d043e84004e581488aae5a85b45",
+          "bytes": 35277
+        },
+        "labels.json": {
+          "sha256": "9306bf40a0ff5f3bec248a2aef0b0f0631e8ab89dcfc1da6b8fb90e3c7993857",
+          "bytes": 16156
+        }
+      },
+      "hard_negatives": "Every published document remains available; no label-selected candidate subsets."
+    },
+    "5cfef0b792da1d01fa85654979c9d7259e300dfee1d6f6e67b3622dcb55d9ed7": {
+      "settled": true,
+      "inventory_sha256": "afd9c69eea6d4a648e7829afe21dd5410d6fda7c439f2a6d26f56360b902ddd5",
+      "status": "removed_after_owned_process_settlement"
+    },
+    "edd5ef644635a0ee574f7f304513a871bb10fcdca00c53a5d65ba62079ccee85": {
+      "protocol": "comparison-v1",
+      "status": "complete",
+      "tool": "auxly",
+      "dataset": "scifact",
+      "labels_in_ranking_inputs": false,
+      "started_at_utc": "2026-11-17T13:04:01.994344+00:00",
+      "source_commit": "2db6229494a223feaa618de0cbf901650ba0d037",
+      "dataset_manifest_sha256": "a3281e2930283e3a50a7fea5fcd0bb7f4b0905c1261d61538bcf556a3ba8ef7c",
+      "dataset_scope": "full published BEIR test query selection",
+      "corpus_count": 5183,
+      "query_count": 300,
+      "model_revision": "1110a243fdf4706b3f48f1d95db1a4f5529b4d41",
+      "network_isolation": "disconnected Linux network namespace inherited by all children",
+      "input_body_normalization": "strip surrounding whitespace for every tool; title newline body for public BEIR parents",
+      "failure_code": null,
+      "ranked_export_sha256": "407965e47a87b2a3fa0d037104ccfbd78ea68b871bb289aadbf6ffa568028af7",
+      "labels_sha256": "9306bf40a0ff5f3bec248a2aef0b0f0631e8ab89dcfc1da6b8fb90e3c7993857",
+      "finished_at_utc": "2026-11-17T13:04:40.846453+00:00",
+      "structured_field_manifests": {
+        "tool_pin": "3296f8b7bfff3594b19296f3649fe0be3c37975f1c329b31fe95f00cbf7d4abc",
+        "profile": "a376f0599a304eb1ed9d568971a75b62984e1a39a28cd3e9a4475f2796ca0d55",
+        "claims": "558167dc79357685ed59f870d54c3c4384132c9557b9661edd7b5704b03fc3c2",
+        "qualification": "8999e614746426b0da8505390dcf8cc658c12cbfee5719dfcb53ca9876739614",
+        "packages": "ad358540eaeda0f3d28d36b8e80f27271e5c3b4ba7fcf9d806d957ce734b7096",
+        "dependencies": "d0a7a7ea11f22d8e20334cf1ecc8e10a2ce0c5b0655750c0d0e8bad975d980d4",
+        "source_files": "7ab7cb862d7bdb791651e455d0072840e8bf143f72f26df66f5a12f3f6e464dd",
+        "model_files": "8c0cb249d422ae903355fc340f3abdc90f815b491397460d70d174cd02e38b66",
+        "system": "38f6647af962a25f0d6222e96e3717291548bc94f21599f3baf2ea46f3afbd6b",
+        "limits": "75caf683df2e61d37aabea861be05c906d4851d0224ca09e8b23bdc4ec9e6293",
+        "dataset_manifest": "a3281e2930283e3a50a7fea5fcd0bb7f4b0905c1261d61538bcf556a3ba8ef7c",
+        "cleanup": "5cfef0b792da1d01fa85654979c9d7259e300dfee1d6f6e67b3622dcb55d9ed7",
+        "setup_packages": "ad358540eaeda0f3d28d36b8e80f27271e5c3b4ba7fcf9d806d957ce734b7096",
+        "setup_dependencies": "d0a7a7ea11f22d8e20334cf1ecc8e10a2ce0c5b0655750c0d0e8bad975d980d4"
+      }
+    }
+  },
+  "metadata_manifest_encoding": "SHA256 of UTF-8 json.dumps(indent=2, ensure_ascii=False, allow_nan=False) plus LF; structured_field_manifests resolve retained summary fields through this table.",
+  "independent_reviews": {
+    "artifact_integrity": {
+      "status": "all20_artifacts_verified",
+      "reviewed_at_utc": "2026-11-17T13:17:22.067135+00:00",
+      "sha256": "52fa7c7098f0f11ad005322889607b197dab9c8b43298d2b5f3d753e23dfc343"
+    },
+    "numerical": {
+      "status": "approved_all20_native_artifact_and_numerical_evidence",
+      "reviewed_at_utc": "2026-11-17T13:18:57.925450+00:00",
+      "sha256": "3dcb3367f68e3564dfa752d507a4f7ac421f1b02339007430d4f3cb57e38b307",
+      "method": "Separate stdlib arithmetic reconstructs graded qrels from cached exact pinned archives or reads immutable bundled Git labels, verifies every exact query reference, and recomputes Hit/Recall/nDCG/MRR/session and linear-percentile latency without importing competitor, Mesh or scorer modules."
+    },
+    "owner_numerical_report_sha256": "fa4467b772ece32f9e7687b38f82b424a4aa94cf8521ed24b20cebbf8e27cfb5",
+    "owner_verification_report_sha256": "1e4004663b75f77a9381e9ced4d1200ee8a8804951b83515aac6cc39d3ca8e75"
+  },
+  "numerical_export": {
+    "path": "benchmarks/results/comparison_retrieval_20261117_2db6229.json",
+    "sha256": "7088e12144bc2b64547b7f5a0082424c94e865792af63db94fb0ad7645b7d881",
+    "bytes": 50762
+  },
+  "invalid_historical_mesh_harness_observations": {
+    "status": "invalid_harness_configuration",
+    "cause": "The comparator supplied index_timeout=120, outside Mesh's accepted 0..60 range; its blanket ValueError handler incorrectly counted configuration failure as content rejection.",
+    "core_runtime_defect": false,
+    "affected_runs": [
+      {
+        "run_id": 44079651534,
+        "source": "639df5ef2bed83f75ea9e5a4150645408fe1505c"
+      },
+      {
+        "run_id": 44082801025,
+        "source": "74fb945eb5601d73744c408e504ed94f99047cbb"
+      },
+      {
+        "run_id": 44086055561,
+        "source": "a825f05948224ece1d3d1890d43a618dd9a202cd"
+      }
+    ],
+    "disposition": "Their Mesh quality and latency are invalid and excluded from these numerical exports. Original artifacts remain unchanged.",
+    "repaired_behavior": "Supported timeout=60 is validated before ingestion; only actual content/guard rejections count as rejected parents, and other errors fail unscored.",
+    "diagnosis_sha256": "009c67cea09d0f4cecb97c04c2793f202c0fb8d9efa39ab4daf71d8131fd3573",
+    "confirmed_sources": {
+      "639df5ef2bed83f75ea9e5a4150645408fe1505c:benchmarks/competitor_comparison.py": "fb40eca36a237018156633ce99e0bde6df39efdc422dd9f33dab31721e13b1d2",
+      "639df5ef2bed83f75ea9e5a4150645408fe1505c:mesh/memory.py": "7c43d1fbcd4985f2b2dcdf746b1597ad8722af515c0efedb2fe7e62d62ae05ee",
+      "74fb945eb5601d73744c408e504ed94f99047cbb:benchmarks/competitor_comparison.py": "bd0de82d20d5a9ee0bab0826984728fc5b1f0ba75725f35c77873f09392bbf8a",
+      "74fb945eb5601d73744c408e504ed94f99047cbb:mesh/memory.py": "7c43d1fbcd4985f2b2dcdf746b1597ad8722af515c0efedb2fe7e62d62ae05ee",
+      "a825f05948224ece1d3d1890d43a618dd9a202cd:benchmarks/competitor_comparison.py": "0e49c9d912dce283dc696696d60f89189b84106c6c948e22abd1de7fe658d847",
+      "a825f05948224ece1d3d1890d43a618dd9a202cd:mesh/memory.py": "7c43d1fbcd4985f2b2dcdf746b1597ad8722af515c0efedb2fe7e62d62ae05ee"
+    },
+    "affected_available_mesh_cells": [
+      {
+        "run_id": 44079651534,
+        "source": "639df5ef2bed83f75ea9e5a4150645408fe1505c",
+        "dataset": "nfcorpus",
+        "raw_status": "complete",
+        "raw_summary_sha256": "44284c5952b707b311a02c05ea1655fc4cb9c0174b3b465b6b5812874daf929d",
+        "disposition": "invalid_harness_configuration_do_not_publish_quality_or_latency"
+      },
+      {
+        "run_id": 44079651534,
+        "source": "639df5ef2bed83f75ea9e5a4150645408fe1505c",
+        "dataset": "prospective",
+        "raw_status": "complete",
+        "raw_summary_sha256": "5e19cbb9931abdb676fb2bea378be57ad4ec19f63f051652afef5be7d6a865ae",
+        "disposition": "invalid_harness_configuration_do_not_publish_quality_or_latency"
+      },
+      {
+        "run_id": 44079651534,
+        "source": "639df5ef2bed83f75ea9e5a4150645408fe1505c",
+        "dataset": "longtext-prospective",
+        "raw_status": "complete",
+        "raw_summary_sha256": "b79a483146e720fae6290fc79634d42a9fa46e0981da01ecc3346a1264cc7e0d",
+        "disposition": "invalid_harness_configuration_do_not_publish_quality_or_latency"
+      },
+      {
+        "run_id": 44079651534,
+        "source": "639df5ef2bed83f75ea9e5a4150645408fe1505c",
+        "dataset": "longmemeval",
+        "raw_status": "complete",
+        "raw_summary_sha256": "25f76cb49f2b10f65803333c15199101da18b122d5df4893b98d26a005bb7fdf",
+        "disposition": "invalid_harness_configuration_do_not_publish_quality_or_latency"
+      },
+      {
+        "run_id": 44079651534,
+        "source": "639df5ef2bed83f75ea9e5a4150645408fe1505c",
+        "dataset": "scifact",
+        "raw_status": "complete",
+        "raw_summary_sha256": "97c34512cc54d309ee197d4673aa2097c39b81ceef079b8fe41b23feddf01143",
+        "disposition": "invalid_harness_configuration_do_not_publish_quality_or_latency"
+      },
+      {
+        "run_id": 44082801025,
+        "source": "74fb945eb5601d73744c408e504ed94f99047cbb",
+        "dataset": "prospective",
+        "raw_status": "complete",
+        "raw_summary_sha256": "96ddc8a8f12170802654012bf1d5d300b648bda03c7ac77d80d1ceecaa0a9a06",
+        "disposition": "invalid_harness_configuration_do_not_publish_quality_or_latency"
+      },
+      {
+        "run_id": 44082801025,
+        "source": "74fb945eb5601d73744c408e504ed94f99047cbb",
+        "dataset": "longmemeval",
+        "raw_status": "complete",
+        "raw_summary_sha256": "501dfac30cd8c847230c48a4f732470ae41f8846684a9e59d8e7128c58a92a0b",
+        "disposition": "invalid_harness_configuration_do_not_publish_quality_or_latency"
+      },
+      {
+        "run_id": 44082801025,
+        "source": "74fb945eb5601d73744c408e504ed94f99047cbb",
+        "dataset": "longtext-prospective",
+        "raw_status": "complete",
+        "raw_summary_sha256": "0eb505b1a2a4123495c6b1875937106919f82f6d36bb337d8b45036b605cb19a",
+        "disposition": "invalid_harness_configuration_do_not_publish_quality_or_latency"
+      },
+      {
+        "run_id": 44082801025,
+        "source": "74fb945eb5601d73744c408e504ed94f99047cbb",
+        "dataset": "scifact",
+        "raw_status": "complete",
+        "raw_summary_sha256": "edd90d880250ed80e7b5421e0a93753d526e497ba121a3fb0861095198d87630",
+        "disposition": "invalid_harness_configuration_do_not_publish_quality_or_latency"
+      },
+      {
+        "run_id": 44082801025,
+        "source": "74fb945eb5601d73744c408e504ed94f99047cbb",
+        "dataset": "nfcorpus",
+        "raw_status": "complete",
+        "raw_summary_sha256": "394db30c737db9739d794ed12560037461486674a7cbbeee4e1341a14d5be5ff",
+        "disposition": "invalid_harness_configuration_do_not_publish_quality_or_latency"
+      },
+      {
+        "run_id": 44086055561,
+        "source": "a825f05948224ece1d3d1890d43a618dd9a202cd",
+        "dataset": "longmemeval",
+        "raw_status": "complete",
+        "raw_summary_sha256": "b6ac086ed7248e5efce8acd73bda6fd78637f8da8c2cabc64dd5a2fb342a7737",
+        "disposition": "invalid_harness_configuration_do_not_publish_quality_or_latency"
+      },
+      {
+        "run_id": 44086055561,
+        "source": "a825f05948224ece1d3d1890d43a618dd9a202cd",
+        "dataset": "longtext-prospective",
+        "raw_status": "complete",
+        "raw_summary_sha256": "b00408b3364b9d98b35a2eed21765146a532b6e4bd091d31dd78f3e1004ee462",
+        "disposition": "invalid_harness_configuration_do_not_publish_quality_or_latency"
+      },
+      {
+        "run_id": 44086055561,
+        "source": "a825f05948224ece1d3d1890d43a618dd9a202cd",
+        "dataset": "prospective",
+        "raw_status": "complete",
+        "raw_summary_sha256": "50e531b2b009b603f88823d3ae0cd998709f87367b843f17ce9b9cc2a5f64b3f",
+        "disposition": "invalid_harness_configuration_do_not_publish_quality_or_latency"
+      }
+    ]
+  },
+  "limitations": [
+    "Single serial query pass per independent hosted cell; no repeatability, general superiority or generated-answer accuracy claim.",
+    "Previously inspected direct-fact, long-text and six-query LongMemEval fixtures are bounded regressions, not independent held-out or full-population evaluations.",
+    "All submitted parents remain in original relevance denominators; unfaithful returned slots retain rank and receive no relevance credit.",
+    "Auxly's first ten distinct native matches form an unordered returned subset; ranked Hit/MRR/nDCG are unavailable.",
+    "SDK and MCP latencies are separate interface strata; ingestion contracts and dependency environments also differ.",
+    "Linux Python 3.12.16 native observations consume Windows Python 3.14/3.10 qualification snapshots; shared version equality is not identical platform or wheel-byte qualification.",
+    "Sampled tree RSS can double-count shared pages and miss peaks; sampled CPU can miss exited children.",
+    "Mesh uses overlapping window pooling; Mem0 truncates identical MiniLM assets at 256 tokens. Basic Memory and Auxly have no embeddings in these profiles."
+  ]
+}

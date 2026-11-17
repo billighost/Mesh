@@ -1,7 +1,7 @@
 # Mesh v0.9.0
 
-**Release candidate; publication pending.** See the [full changelog](../../CHANGELOG.md)
-and [source-bound qualification record](../CI_VALIDATION.md).
+See the [full changelog](../../CHANGELOG.md) and
+[source-bound qualification record](../CI_VALIDATION.md).
 
 Mesh 0.9.0 improves the durability and coordination of agents sharing local
 memory. It keeps the Python package and supported SDK, CLI, MCP and HTTP entry
@@ -39,22 +39,8 @@ MCP clients/daemons, and preview integration updates with `mesh install AGENT
 
 ## Evidence and experimental features
 
-[RESULTS.md](../../benchmarks/RESULTS.md) records each measured source and preserves
-failed, deferred and unscored conditions. Normal CI and both full qualification
-suites passed at `e4284c8`, with 1,915 selected cases in each full suite. Its
-storage ledger retains 53 completed cells, four deferrals and one optional
-diagnostic startup failure; primary cells have zero failures. The same-selection
-test-speed observation completed. Later release changes need their own qualification.
-Process-crash checks support observed recovery and do not establish physical
-power-cut survival.
+[RESULTS.md](../../benchmarks/RESULTS.md) records the tested sources and preserves failed, deferred and unscored conditions. At `b55c980`, normal push/PR CI and both full qualification suites passed. Each XML retains 1,944 unique testcase records; its separately declared 2,149-test counter is preserved distinctly. The storage ledger completed 55 of 58 cells with three deferrals and zero failures, including the separate storage diagnostic. The same-selection one/two-worker test-speed observation completed. Process-crash checks support observed recovery and do not establish physical power-cut survival. Later source changes require their own correctness qualification and exact source proofs for any measurement reuse.
 
-`MESH_PASSAGE_INDEX=1` and `MESH_RERANK_ENABLED=1` explicitly enable separate
-experimental features. The default remains off. Small direct-fact and positional
-long-text reranker gains do not establish population accuracy; conversational
-quality and public-corpus resource qualification remain incomplete. All five
-separate E5 jobs stopped in the native baseline after its selected queries;
-E5 itself did not run. The shadow remains a benchmark-only model trial.
+The fresh twenty-cell comparison at `2db6229` evaluates Mesh 0.9.0, Mem0 2.2.1, Basic Memory 0.24.1 and Auxly 1.5.0 on five shared datasets. It retains 9,072 original parents and 660 selected queries per tool, with original relevance denominators and source-equivalent Mesh runtime/package content. Native Linux Python 3.12.16 observations consume earlier `e4284c8` Windows qualification snapshots and retain separate official child environments. SDK/MCP interfaces, windowed/truncated MiniLM and keyword/substring profiles differ; Auxly has unordered subset metrics. These single-pass observations establish no universal superiority or cross-interface speed ratio. The six-query inspected LongMemEval subset does not repeat the historical 470-query Mesh 0.8.3 comparison.
 
-The historical 470-query comparison uses Mesh 0.8.3, Mem0 2.2.1, Basic Memory
-0.24.1 and Auxly 1.5.0. It does not measure this release candidate. No generalized
-storage speedup or competitor superiority follows from the current checkpoints.
+`MESH_PASSAGE_INDEX=1` and `MESH_RERANK_ENABLED=1` explicitly enable separate experimental features; both remain default off and unqualified across the tested datasets. Small direct-fact and positional-long-text reranker gains do not establish population accuracy. In the separate E5 trial at `b55c980`, all five native baselines completed. Two E5 shadows completed/scored and failed quality; three began indexing and exceeded baseline-plus-128-MiB RSS ceilings before any shadow query, leaving quality unscored and final paired resource observations null. E5 was not adopted, the production embedding model is unchanged, and no resource gate was relaxed.

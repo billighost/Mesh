@@ -1,0 +1,1420 @@
+{
+  "schema_version": 1,
+  "mesh_version": "0.9.0",
+  "publication_status": "measurement_export_does_not_assert_package_publication",
+  "comparison_source_commit": "2db6229494a223feaa618de0cbf901650ba0d037",
+  "comparison_run_id": 44088496624,
+  "consumed_qualification_source_commit": "e4284c8fb5ba565043accccbdd6353839c3eb43a",
+  "current_core_source_commit": "b55c98013b95384a632878041cc499165bfe7610",
+  "completed_cells": 20,
+  "unscored_cells": 0,
+  "dataset_totals_per_tool": {
+    "original_parents": 9072,
+    "selected_queries": 660,
+    "answerable_queries": 651
+  },
+  "total_query_observations": 2640,
+  "datasets": [
+    {
+      "id": "prospective",
+      "label": "Direct facts",
+      "parents_per_tool": 50,
+      "queries_per_tool": 22,
+      "answerable_queries_per_tool": 16
+    },
+    {
+      "id": "longtext-prospective",
+      "label": "Positional long text",
+      "parents_per_tool": 15,
+      "queries_per_tool": 9,
+      "answerable_queries_per_tool": 6
+    },
+    {
+      "id": "longmemeval",
+      "label": "Inspected LongMemEval subset",
+      "parents_per_tool": 191,
+      "queries_per_tool": 6,
+      "answerable_queries_per_tool": 6
+    },
+    {
+      "id": "nfcorpus",
+      "label": "NFCorpus",
+      "parents_per_tool": 3633,
+      "queries_per_tool": 323,
+      "answerable_queries_per_tool": 323
+    },
+    {
+      "id": "scifact",
+      "label": "SciFact",
+      "parents_per_tool": 5183,
+      "queries_per_tool": 300,
+      "answerable_queries_per_tool": 300
+    }
+  ],
+  "denominator_policy": "All original positive relevance judgments are retained, including unfaithful or rejected parents; no conditioning on ingest survival.",
+  "grading": "Hit is any positive gold at the cutoff; document recall averages per-query gold coverage; nDCG uses (2^grade-1)/log2(rank+1) against original graded qrels; MRR is first positive rank reciprocal. Exact turns and session hits are separate.",
+  "cells": [
+    {
+      "tool": "mesh",
+      "dataset": "prospective",
+      "dataset_label": "Direct facts",
+      "status": "complete",
+      "interface": "SDK",
+      "metric_scope": "ranked_original_parent_retrieval",
+      "artifact_id": 14331355058,
+      "summary_sha256": "232e28257368af6ffd92dd9cfec3c05d93926a945f0a7d05b722f2e6c929d50e",
+      "ranked_export_sha256": "fa3702b4dd1bbd533e53ee89ddbc3f1932dd219b5d1dfce8beaf2fce9e6919ec",
+      "labels_sha256": "d44f85fc122227e0575229515e06c30bcec0c9b36f49660586f124b030bb7d0e",
+      "accounting": {
+        "submitted": 50,
+        "ingested": 50,
+        "faithful": 50,
+        "unfaithful": 0,
+        "rejected": 0,
+        "queried": 22,
+        "ingest_seconds": 0.8348144369999986
+      },
+      "quality": {
+        "answered_queries": 16,
+        "all_queries": 22,
+        "hit_at_1": 0.8125,
+        "document_recall_at_1": 0.8125,
+        "ndcg_at_1": 0.8125,
+        "hit_at_5": 1.0,
+        "document_recall_at_5": 1.0,
+        "ndcg_at_5": 0.9226162191964322,
+        "hit_at_10": 1.0,
+        "document_recall_at_10": 1.0,
+        "ndcg_at_10": 0.9226162191964322,
+        "mrr_at_10": 0.8958333333333334
+      },
+      "latency": {
+        "calls": 22,
+        "cold_first_ms": 5.860318999999947,
+        "mean_ms": 5.8892476363645585,
+        "p50_ms": 5.84793550000029,
+        "p95_ms": 7.078975250003339,
+        "p99_ms": 7.10143651000088,
+        "scope": "single sequential pass, all calls including first; SDK and MCP are separate interface strata"
+      },
+      "resources": {
+        "sampled_tree_peak_rss_bytes": 242434048,
+        "sampled_tree_cpu_seconds": 1.26,
+        "elapsed_seconds": 1.495047206999999,
+        "scope": "sampled worker plus child processes; peaks can be missed and shared pages counted twice"
+      },
+      "native_accounting": {
+        "submitted": 50,
+        "ingested": 50,
+        "faithful": 50,
+        "unfaithful": 0,
+        "rejected": 0,
+        "queried": 22,
+        "ingest_seconds": 0.8348144369999986
+      },
+      "quality_and_latency_independently_recomputed": true
+    },
+    {
+      "tool": "mesh",
+      "dataset": "longtext-prospective",
+      "dataset_label": "Positional long text",
+      "status": "complete",
+      "interface": "SDK",
+      "metric_scope": "ranked_original_parent_retrieval",
+      "artifact_id": 14330272937,
+      "summary_sha256": "407e7ac0be83aa47d9ec7e0322b6374c5081aa18be2b07787d66ffb47b0bb8aa",
+      "ranked_export_sha256": "254ebfa6b742dbf6afc4755c988f9ea3da303fb56242d5784c8d3c840820e6e8",
+      "labels_sha256": "e013be8ebde702a074a71a87cf850c5a415b27cd7cfed5e3ed0528bd7f71ef28",
+      "accounting": {
+        "submitted": 15,
+        "ingested": 15,
+        "faithful": 15,
+        "unfaithful": 0,
+        "rejected": 0,
+        "queried": 9,
+        "ingest_seconds": 2.7769963309999994
+      },
+      "quality": {
+        "answered_queries": 6,
+        "all_queries": 9,
+        "hit_at_1": 0.0,
+        "document_recall_at_1": 0.0,
+        "ndcg_at_1": 0.0,
+        "hit_at_5": 0.0,
+        "document_recall_at_5": 0.0,
+        "ndcg_at_5": 0.0,
+        "hit_at_10": 1.0,
+        "document_recall_at_10": 1.0,
+        "ndcg_at_10": 0.293053216099919,
+        "mrr_at_10": 0.1037037037037037
+      },
+      "latency": {
+        "calls": 9,
+        "cold_first_ms": 10.035250000001383,
+        "mean_ms": 9.59566255555523,
+        "p50_ms": 9.865343000001303,
+        "p95_ms": 11.09454059999706,
+        "p99_ms": 11.102280119996237,
+        "scope": "single sequential pass, all calls including first; SDK and MCP are separate interface strata"
+      },
+      "resources": {
+        "sampled_tree_peak_rss_bytes": 249708544,
+        "sampled_tree_cpu_seconds": 4.63,
+        "elapsed_seconds": 3.423193734999998,
+        "scope": "sampled worker plus child processes; peaks can be missed and shared pages counted twice"
+      },
+      "native_accounting": {
+        "submitted": 15,
+        "ingested": 15,
+        "faithful": 15,
+        "unfaithful": 0,
+        "rejected": 0,
+        "queried": 9,
+        "ingest_seconds": 2.7769963309999994
+      },
+      "quality_and_latency_independently_recomputed": true
+    },
+    {
+      "tool": "mesh",
+      "dataset": "longmemeval",
+      "dataset_label": "Inspected LongMemEval subset",
+      "status": "complete",
+      "interface": "SDK",
+      "metric_scope": "ranked_original_parent_retrieval",
+      "artifact_id": 14331260387,
+      "summary_sha256": "c775ed5f21c753652ee802081881e1614f0d69f0642e8989f8064d462b9ea0ba",
+      "ranked_export_sha256": "c71f928c21659f6418a12584ad2b9b9bfd63f1796f99d3e64701a3fc8a75ffc2",
+      "labels_sha256": "6a98f0d5a0d80adb6770bf2622f987197915f21d3e649acfa0068e2ebd7f1b06",
+      "accounting": {
+        "submitted": 191,
+        "ingested": 191,
+        "faithful": 189,
+        "unfaithful": 2,
+        "rejected": 0,
+        "queried": 6,
+        "ingest_seconds": 11.923943638999987
+      },
+      "quality": {
+        "answered_queries": 6,
+        "all_queries": 6,
+        "hit_at_1": 0.5,
+        "document_recall_at_1": 0.4166666666666667,
+        "ndcg_at_1": 0.5,
+        "hit_at_5": 1.0,
+        "document_recall_at_5": 1.0,
+        "ndcg_at_5": 0.7414098531465654,
+        "hit_at_10": 1.0,
+        "document_recall_at_10": 1.0,
+        "ndcg_at_10": 0.7414098531465654,
+        "mrr_at_10": 0.6583333333333333,
+        "session_hits": {
+          "answered_queries": 6,
+          "all_queries": 6,
+          "hit_at_1": 1.0,
+          "document_recall_at_1": 0.08333333333333333,
+          "ndcg_at_1": 1.0,
+          "hit_at_5": 1.0,
+          "document_recall_at_5": 0.2777777777777778,
+          "ndcg_at_5": 0.7586243475510318,
+          "hit_at_10": 1.0,
+          "document_recall_at_10": 0.2777777777777778,
+          "ndcg_at_10": 0.49229529294138535,
+          "mrr_at_10": 1.0
+        }
+      },
+      "latency": {
+        "calls": 6,
+        "cold_first_ms": 10.69039399999383,
+        "mean_ms": 12.776850333333792,
+        "p50_ms": 13.360013500005152,
+        "p95_ms": 14.233695249995293,
+        "p99_ms": 14.236830249995336,
+        "scope": "single sequential pass, all calls including first; SDK and MCP are separate interface strata"
+      },
+      "resources": {
+        "sampled_tree_peak_rss_bytes": 267001856,
+        "sampled_tree_cpu_seconds": 20.990000000000002,
+        "elapsed_seconds": 13.412734134000004,
+        "scope": "sampled worker plus child processes; peaks can be missed and shared pages counted twice"
+      },
+      "native_accounting": {
+        "submitted": 191,
+        "ingested": 191,
+        "faithful": 189,
+        "unfaithful": 2,
+        "rejected": 0,
+        "queried": 6,
+        "ingest_seconds": 11.923943638999987
+      },
+      "quality_and_latency_independently_recomputed": true
+    },
+    {
+      "tool": "mesh",
+      "dataset": "nfcorpus",
+      "dataset_label": "NFCorpus",
+      "status": "complete",
+      "interface": "SDK",
+      "metric_scope": "ranked_original_parent_retrieval",
+      "artifact_id": 14331706536,
+      "summary_sha256": "dde991c9aa99a17a89ffdf208f46d213a0d54a7bf066e415d69d96455d8cd0c0",
+      "ranked_export_sha256": "9ec04199947b66f8c3cdba13f643b4ceb454f45a5b4fcc91a6ae60189d58dd5d",
+      "labels_sha256": "2e779079b4053d605230d98964ebee355b3fe387c9611d98c51f2b271a325600",
+      "accounting": {
+        "submitted": 3633,
+        "ingested": 3633,
+        "faithful": 3632,
+        "unfaithful": 1,
+        "rejected": 0,
+        "queried": 323,
+        "ingest_seconds": 503.156989136
+      },
+      "quality": {
+        "answered_queries": 323,
+        "all_queries": 323,
+        "hit_at_1": 0.49226006191950467,
+        "document_recall_at_1": 0.06008809210381537,
+        "ndcg_at_1": 0.47162022703818374,
+        "hit_at_5": 0.6687306501547987,
+        "document_recall_at_5": 0.13804805649026325,
+        "ndcg_at_5": 0.38957577847458724,
+        "hit_at_10": 0.7430340557275542,
+        "document_recall_at_10": 0.17257072936040518,
+        "ndcg_at_10": 0.35648369350976444,
+        "mrr_at_10": 0.5717197405277901
+      },
+      "latency": {
+        "calls": 323,
+        "cold_first_ms": 81.97539000002507,
+        "mean_ms": 44.033583801857645,
+        "p50_ms": 43.04767999997239,
+        "p95_ms": 75.28298420000964,
+        "p99_ms": 87.20725993998484,
+        "scope": "single sequential pass, all calls including first; SDK and MCP are separate interface strata"
+      },
+      "resources": {
+        "sampled_tree_peak_rss_bytes": 446107648,
+        "sampled_tree_cpu_seconds": 747.45,
+        "elapsed_seconds": 518.8594312519999,
+        "scope": "sampled worker plus child processes; peaks can be missed and shared pages counted twice"
+      },
+      "native_accounting": {
+        "submitted": 3633,
+        "ingested": 3633,
+        "faithful": 3632,
+        "unfaithful": 1,
+        "rejected": 0,
+        "queried": 323,
+        "ingest_seconds": 503.156989136
+      },
+      "quality_and_latency_independently_recomputed": true
+    },
+    {
+      "tool": "mesh",
+      "dataset": "scifact",
+      "dataset_label": "SciFact",
+      "status": "complete",
+      "interface": "SDK",
+      "metric_scope": "ranked_original_parent_retrieval",
+      "artifact_id": 14331476773,
+      "summary_sha256": "03b926853999d908411c8e612b2b3359bd969ae4565d505b4dd84ceee58246f0",
+      "ranked_export_sha256": "e8b1ed43090fd71c6f70e42066ab4fc98a049161dcfa44615adf29274c8dddc9",
+      "labels_sha256": "9306bf40a0ff5f3bec248a2aef0b0f0631e8ab89dcfc1da6b8fb90e3c7993857",
+      "accounting": {
+        "submitted": 5183,
+        "ingested": 5183,
+        "faithful": 5176,
+        "unfaithful": 7,
+        "rejected": 0,
+        "queried": 300,
+        "ingest_seconds": 640.2971679120001
+      },
+      "quality": {
+        "answered_queries": 300,
+        "all_queries": 300,
+        "hit_at_1": 0.56,
+        "document_recall_at_1": 0.5383333333333333,
+        "ndcg_at_1": 0.56,
+        "hit_at_5": 0.7833333333333333,
+        "document_recall_at_5": 0.767,
+        "ndcg_at_5": 0.6724084954259942,
+        "hit_at_10": 0.8466666666666667,
+        "document_recall_at_10": 0.8327222222222223,
+        "ndcg_at_10": 0.6957109908425068,
+        "mrr_at_10": 0.657718253968254
+      },
+      "latency": {
+        "calls": 300,
+        "cold_first_ms": 80.01386199998706,
+        "mean_ms": 94.80017791333164,
+        "p50_ms": 88.4227785000462,
+        "p95_ms": 158.4105790000308,
+        "p99_ms": 182.28983393004444,
+        "scope": "single sequential pass, all calls including first; SDK and MCP are separate interface strata"
+      },
+      "resources": {
+        "sampled_tree_peak_rss_bytes": 516038656,
+        "sampled_tree_cpu_seconds": 906.95,
+        "elapsed_seconds": 671.845653648,
+        "scope": "sampled worker plus child processes; peaks can be missed and shared pages counted twice"
+      },
+      "native_accounting": {
+        "submitted": 5183,
+        "ingested": 5183,
+        "faithful": 5176,
+        "unfaithful": 7,
+        "rejected": 0,
+        "queried": 300,
+        "ingest_seconds": 640.2971679120001
+      },
+      "quality_and_latency_independently_recomputed": true
+    },
+    {
+      "tool": "mem0",
+      "dataset": "prospective",
+      "dataset_label": "Direct facts",
+      "status": "complete",
+      "interface": "SDK",
+      "metric_scope": "ranked_original_parent_retrieval",
+      "artifact_id": 14330371803,
+      "summary_sha256": "115f26983597d152495f415c94e56e93f7786c21e7af6f78aa0332a049e568ef",
+      "ranked_export_sha256": "3ec98d08b9b37e0769e4380038d9289ae2cc4dd591f74c1a222d98f832296573",
+      "labels_sha256": "d44f85fc122227e0575229515e06c30bcec0c9b36f49660586f124b030bb7d0e",
+      "accounting": {
+        "submitted": 50,
+        "ingested": 50,
+        "faithful": 50,
+        "unfaithful": 0,
+        "rejected": 0,
+        "queried": 22,
+        "ingest_seconds": 0.2368325260000006,
+        "native_bm25": {
+          "complete": {
+            "encoded": 72,
+            "sparse_written": 50,
+            "sparse_queried": 22,
+            "fallback": false
+          }
+        }
+      },
+      "quality": {
+        "answered_queries": 16,
+        "all_queries": 22,
+        "hit_at_1": 0.75,
+        "document_recall_at_1": 0.75,
+        "ndcg_at_1": 0.75,
+        "hit_at_5": 1.0,
+        "document_recall_at_5": 1.0,
+        "ndcg_at_5": 0.8995493287946483,
+        "hit_at_10": 1.0,
+        "document_recall_at_10": 1.0,
+        "ndcg_at_10": 0.8995493287946483,
+        "mrr_at_10": 0.8645833333333334
+      },
+      "latency": {
+        "calls": 22,
+        "cold_first_ms": 6.817068000003701,
+        "mean_ms": 5.479546090909211,
+        "p50_ms": 5.445381999997778,
+        "p95_ms": 6.227177699994968,
+        "p99_ms": 6.6982012800018245,
+        "scope": "single sequential pass, all calls including first; SDK and MCP are separate interface strata"
+      },
+      "resources": {
+        "sampled_tree_peak_rss_bytes": 309407744,
+        "sampled_tree_cpu_seconds": 1.69,
+        "elapsed_seconds": 2.241113334000005,
+        "scope": "sampled worker plus child processes; peaks can be missed and shared pages counted twice"
+      },
+      "native_accounting": {
+        "submitted": 50,
+        "ingested": 50,
+        "faithful": 50,
+        "unfaithful": 0,
+        "rejected": 0,
+        "queried": 22,
+        "ingest_seconds": 0.2368325260000006,
+        "native_bm25": {
+          "complete": {
+            "encoded": 72,
+            "sparse_written": 50,
+            "sparse_queried": 22,
+            "fallback": false
+          }
+        }
+      },
+      "quality_and_latency_independently_recomputed": true
+    },
+    {
+      "tool": "mem0",
+      "dataset": "longtext-prospective",
+      "dataset_label": "Positional long text",
+      "status": "complete",
+      "interface": "SDK",
+      "metric_scope": "ranked_original_parent_retrieval",
+      "artifact_id": 14330726996,
+      "summary_sha256": "2f296ea292873519413803a35640246f9b363d430b71ef26f3b44566e110438f",
+      "ranked_export_sha256": "48b09a3b248153a21726f113c55f5b47347de62c8b7c5fa66b1b7e33de74230e",
+      "labels_sha256": "e013be8ebde702a074a71a87cf850c5a415b27cd7cfed5e3ed0528bd7f71ef28",
+      "accounting": {
+        "submitted": 15,
+        "ingested": 15,
+        "faithful": 15,
+        "unfaithful": 0,
+        "rejected": 0,
+        "queried": 9,
+        "ingest_seconds": 0.34787842599996566,
+        "native_bm25": {
+          "complete": {
+            "encoded": 24,
+            "sparse_written": 15,
+            "sparse_queried": 9,
+            "fallback": false
+          }
+        }
+      },
+      "quality": {
+        "answered_queries": 6,
+        "all_queries": 9,
+        "hit_at_1": 0.0,
+        "document_recall_at_1": 0.0,
+        "ndcg_at_1": 0.0,
+        "hit_at_5": 0.16666666666666666,
+        "document_recall_at_5": 0.16666666666666666,
+        "ndcg_at_5": 0.0644754678724236,
+        "hit_at_10": 0.3333333333333333,
+        "document_recall_at_10": 0.3333333333333333,
+        "ndcg_at_10": 0.11705294733671173,
+        "mrr_at_10": 0.05416666666666667
+      },
+      "latency": {
+        "calls": 9,
+        "cold_first_ms": 7.639366999910635,
+        "mean_ms": 5.583416000023236,
+        "p50_ms": 5.427459000088675,
+        "p95_ms": 7.16008219997093,
+        "p99_ms": 7.543510039922694,
+        "scope": "single sequential pass, all calls including first; SDK and MCP are separate interface strata"
+      },
+      "resources": {
+        "sampled_tree_peak_rss_bytes": 324268032,
+        "sampled_tree_cpu_seconds": 1.83,
+        "elapsed_seconds": 2.3180199959999754,
+        "scope": "sampled worker plus child processes; peaks can be missed and shared pages counted twice"
+      },
+      "native_accounting": {
+        "submitted": 15,
+        "ingested": 15,
+        "faithful": 15,
+        "unfaithful": 0,
+        "rejected": 0,
+        "queried": 9,
+        "ingest_seconds": 0.34787842599996566,
+        "native_bm25": {
+          "complete": {
+            "encoded": 24,
+            "sparse_written": 15,
+            "sparse_queried": 9,
+            "fallback": false
+          }
+        }
+      },
+      "quality_and_latency_independently_recomputed": true
+    },
+    {
+      "tool": "mem0",
+      "dataset": "longmemeval",
+      "dataset_label": "Inspected LongMemEval subset",
+      "status": "complete",
+      "interface": "SDK",
+      "metric_scope": "ranked_original_parent_retrieval",
+      "artifact_id": 14330432196,
+      "summary_sha256": "3f45205e766dd4a81d5e85fe981990703206e2322ab71fe3290610c1cd9d8816",
+      "ranked_export_sha256": "aa13bd7987f996ec2d6afded86546d50041148dbbfdca236f4c2460c47bf7b2f",
+      "labels_sha256": "6a98f0d5a0d80adb6770bf2622f987197915f21d3e649acfa0068e2ebd7f1b06",
+      "accounting": {
+        "submitted": 191,
+        "ingested": 191,
+        "faithful": 191,
+        "unfaithful": 0,
+        "rejected": 0,
+        "queried": 6,
+        "ingest_seconds": 5.570389416000239,
+        "native_bm25": {
+          "corpus-000.jsonl": {
+            "encoded": 32,
+            "sparse_written": 31,
+            "sparse_queried": 1,
+            "fallback": false
+          },
+          "corpus-001.jsonl": {
+            "encoded": 32,
+            "sparse_written": 31,
+            "sparse_queried": 1,
+            "fallback": false
+          },
+          "corpus-002.jsonl": {
+            "encoded": 33,
+            "sparse_written": 32,
+            "sparse_queried": 1,
+            "fallback": false
+          },
+          "corpus-003.jsonl": {
+            "encoded": 34,
+            "sparse_written": 33,
+            "sparse_queried": 1,
+            "fallback": false
+          },
+          "corpus-004.jsonl": {
+            "encoded": 33,
+            "sparse_written": 32,
+            "sparse_queried": 1,
+            "fallback": false
+          },
+          "corpus-005.jsonl": {
+            "encoded": 33,
+            "sparse_written": 32,
+            "sparse_queried": 1,
+            "fallback": false
+          }
+        }
+      },
+      "quality": {
+        "answered_queries": 6,
+        "all_queries": 6,
+        "hit_at_1": 0.6666666666666666,
+        "document_recall_at_1": 0.5833333333333334,
+        "ndcg_at_1": 0.6666666666666666,
+        "hit_at_5": 1.0,
+        "document_recall_at_5": 0.9166666666666666,
+        "ndcg_at_5": 0.7688578654609097,
+        "hit_at_10": 1.0,
+        "document_recall_at_10": 0.9166666666666666,
+        "ndcg_at_10": 0.7688578654609097,
+        "mrr_at_10": 0.7777777777777778,
+        "session_hits": {
+          "answered_queries": 6,
+          "all_queries": 6,
+          "hit_at_1": 1.0,
+          "document_recall_at_1": 0.08333333333333333,
+          "ndcg_at_1": 1.0,
+          "hit_at_5": 1.0,
+          "document_recall_at_5": 0.25,
+          "ndcg_at_5": 0.7010924571765536,
+          "hit_at_10": 1.0,
+          "document_recall_at_10": 0.2638888888888889,
+          "ndcg_at_10": 0.46802741085196864,
+          "mrr_at_10": 1.0
+        }
+      },
+      "latency": {
+        "calls": 6,
+        "cold_first_ms": 7.311361999995825,
+        "mean_ms": 7.252976999988429,
+        "p50_ms": 7.3236155000131475,
+        "p95_ms": 7.688852499939003,
+        "p99_ms": 7.73053289993868,
+        "scope": "single sequential pass, all calls including first; SDK and MCP are separate interface strata"
+      },
+      "resources": {
+        "sampled_tree_peak_rss_bytes": 937750528,
+        "sampled_tree_cpu_seconds": 8.26,
+        "elapsed_seconds": 9.067484774999912,
+        "scope": "sampled worker plus child processes; peaks can be missed and shared pages counted twice"
+      },
+      "native_accounting": {
+        "submitted": 191,
+        "ingested": 191,
+        "faithful": 191,
+        "unfaithful": 0,
+        "rejected": 0,
+        "queried": 6,
+        "ingest_seconds": 5.570389416000239,
+        "native_bm25": {
+          "corpus-000.jsonl": {
+            "encoded": 32,
+            "sparse_written": 31,
+            "sparse_queried": 1,
+            "fallback": false
+          },
+          "corpus-001.jsonl": {
+            "encoded": 32,
+            "sparse_written": 31,
+            "sparse_queried": 1,
+            "fallback": false
+          },
+          "corpus-002.jsonl": {
+            "encoded": 33,
+            "sparse_written": 32,
+            "sparse_queried": 1,
+            "fallback": false
+          },
+          "corpus-003.jsonl": {
+            "encoded": 34,
+            "sparse_written": 33,
+            "sparse_queried": 1,
+            "fallback": false
+          },
+          "corpus-004.jsonl": {
+            "encoded": 33,
+            "sparse_written": 32,
+            "sparse_queried": 1,
+            "fallback": false
+          },
+          "corpus-005.jsonl": {
+            "encoded": 33,
+            "sparse_written": 32,
+            "sparse_queried": 1,
+            "fallback": false
+          }
+        }
+      },
+      "quality_and_latency_independently_recomputed": true
+    },
+    {
+      "tool": "mem0",
+      "dataset": "nfcorpus",
+      "dataset_label": "NFCorpus",
+      "status": "complete",
+      "interface": "SDK",
+      "metric_scope": "ranked_original_parent_retrieval",
+      "artifact_id": 14329594863,
+      "summary_sha256": "86a4e75092b28050fd91f00fcba8499da6df09f495bd022ba65a5a6f7f409044",
+      "ranked_export_sha256": "8c57588d786d2139275a2ec84e683bcc4f25e38e263f23f0ccf13ca70d8ecccb",
+      "labels_sha256": "2e779079b4053d605230d98964ebee355b3fe387c9611d98c51f2b271a325600",
+      "accounting": {
+        "submitted": 3633,
+        "ingested": 3633,
+        "faithful": 3633,
+        "unfaithful": 0,
+        "rejected": 0,
+        "queried": 323,
+        "ingest_seconds": 144.460248509,
+        "native_bm25": {
+          "complete": {
+            "encoded": 3956,
+            "sparse_written": 3633,
+            "sparse_queried": 323,
+            "fallback": false
+          }
+        }
+      },
+      "quality": {
+        "answered_queries": 323,
+        "all_queries": 323,
+        "hit_at_1": 0.4520123839009288,
+        "document_recall_at_1": 0.0499104855447548,
+        "ndcg_at_1": 0.42105263157894735,
+        "hit_at_5": 0.6687306501547987,
+        "document_recall_at_5": 0.13004752660224128,
+        "ndcg_at_5": 0.3771747331203882,
+        "hit_at_10": 0.7058823529411765,
+        "document_recall_at_10": 0.16180264821310872,
+        "ndcg_at_10": 0.34122792218574755,
+        "mrr_at_10": 0.5399110521401542
+      },
+      "latency": {
+        "calls": 323,
+        "cold_first_ms": 168.66226100000858,
+        "mean_ms": 100.45481551083644,
+        "p50_ms": 100.91746099999455,
+        "p95_ms": 111.74718760003657,
+        "p99_ms": 136.30852020001197,
+        "scope": "single sequential pass, all calls including first; SDK and MCP are separate interface strata"
+      },
+      "resources": {
+        "sampled_tree_peak_rss_bytes": 413429760,
+        "sampled_tree_cpu_seconds": 174.95000000000002,
+        "elapsed_seconds": 179.20843117199996,
+        "scope": "sampled worker plus child processes; peaks can be missed and shared pages counted twice"
+      },
+      "native_accounting": {
+        "submitted": 3633,
+        "ingested": 3633,
+        "faithful": 3633,
+        "unfaithful": 0,
+        "rejected": 0,
+        "queried": 323,
+        "ingest_seconds": 144.460248509,
+        "native_bm25": {
+          "complete": {
+            "encoded": 3956,
+            "sparse_written": 3633,
+            "sparse_queried": 323,
+            "fallback": false
+          }
+        }
+      },
+      "quality_and_latency_independently_recomputed": true
+    },
+    {
+      "tool": "mem0",
+      "dataset": "scifact",
+      "dataset_label": "SciFact",
+      "status": "complete",
+      "interface": "SDK",
+      "metric_scope": "ranked_original_parent_retrieval",
+      "artifact_id": 14330338441,
+      "summary_sha256": "7c6f4c005bac8c26a40a416f508957425fd9e6f7a778fa660891a6fb3edf885f",
+      "ranked_export_sha256": "e0d99f2aef8ab29bfc764ffe89d9550ec60fd37e63e1bccb9fe87be67c4c2da5",
+      "labels_sha256": "9306bf40a0ff5f3bec248a2aef0b0f0631e8ab89dcfc1da6b8fb90e3c7993857",
+      "accounting": {
+        "submitted": 5183,
+        "ingested": 5183,
+        "faithful": 5183,
+        "unfaithful": 0,
+        "rejected": 0,
+        "queried": 300,
+        "ingest_seconds": 156.51793479800003,
+        "native_bm25": {
+          "complete": {
+            "encoded": 5483,
+            "sparse_written": 5183,
+            "sparse_queried": 300,
+            "fallback": false
+          }
+        }
+      },
+      "quality": {
+        "answered_queries": 300,
+        "all_queries": 300,
+        "hit_at_1": 0.5266666666666666,
+        "document_recall_at_1": 0.5056666666666666,
+        "ndcg_at_1": 0.5266666666666666,
+        "hit_at_5": 0.7566666666666667,
+        "document_recall_at_5": 0.7419444444444445,
+        "ndcg_at_5": 0.6445711326210231,
+        "hit_at_10": 0.83,
+        "document_recall_at_10": 0.8218888888888889,
+        "ndcg_at_10": 0.6718338061388577,
+        "mrr_at_10": 0.6275925925925926
+      },
+      "latency": {
+        "calls": 300,
+        "cold_first_ms": 144.30295500000057,
+        "mean_ms": 144.67810392333396,
+        "p50_ms": 142.9983630000038,
+        "p95_ms": 153.4624912000055,
+        "p99_ms": 205.54579301998146,
+        "scope": "single sequential pass, all calls including first; SDK and MCP are separate interface strata"
+      },
+      "resources": {
+        "sampled_tree_peak_rss_bytes": 447180800,
+        "sampled_tree_cpu_seconds": 192.04,
+        "elapsed_seconds": 201.76225669000002,
+        "scope": "sampled worker plus child processes; peaks can be missed and shared pages counted twice"
+      },
+      "native_accounting": {
+        "submitted": 5183,
+        "ingested": 5183,
+        "faithful": 5183,
+        "unfaithful": 0,
+        "rejected": 0,
+        "queried": 300,
+        "ingest_seconds": 156.51793479800003,
+        "native_bm25": {
+          "complete": {
+            "encoded": 5483,
+            "sparse_written": 5183,
+            "sparse_queried": 300,
+            "fallback": false
+          }
+        }
+      },
+      "quality_and_latency_independently_recomputed": true
+    },
+    {
+      "tool": "basic-memory",
+      "dataset": "prospective",
+      "dataset_label": "Direct facts",
+      "status": "complete",
+      "interface": "MCP stdio",
+      "metric_scope": "ranked_original_parent_retrieval",
+      "artifact_id": 14330577476,
+      "summary_sha256": "f5c688c6c93526e7dec9534e76861345f32a7b82af1e3d08c862cf3b3a324dd2",
+      "ranked_export_sha256": "df8180c8b5956ed90fec26192f1439df649d16171bdcc1a156c9a2f6855f880d",
+      "labels_sha256": "d44f85fc122227e0575229515e06c30bcec0c9b36f49660586f124b030bb7d0e",
+      "accounting": {
+        "submitted": 50,
+        "ingested": 50,
+        "faithful": 50,
+        "unfaithful": 0,
+        "rejected": 0,
+        "queried": 22,
+        "ingest_seconds": 8.434128660999988
+      },
+      "quality": {
+        "answered_queries": 16,
+        "all_queries": 22,
+        "hit_at_1": 0.75,
+        "document_recall_at_1": 0.75,
+        "ndcg_at_1": 0.75,
+        "hit_at_5": 1.0,
+        "document_recall_at_5": 1.0,
+        "ndcg_at_5": 0.9077324383928644,
+        "hit_at_10": 1.0,
+        "document_recall_at_10": 1.0,
+        "ndcg_at_10": 0.9077324383928644,
+        "mrr_at_10": 0.875
+      },
+      "latency": {
+        "calls": 22,
+        "cold_first_ms": 1180.9796100000085,
+        "mean_ms": 69.99347536364036,
+        "p50_ms": 16.802059999974972,
+        "p95_ms": 23.010371249986857,
+        "p99_ms": 937.8545504100027,
+        "scope": "single sequential pass, all calls including first; SDK and MCP are separate interface strata"
+      },
+      "resources": {
+        "sampled_tree_peak_rss_bytes": 381583360,
+        "sampled_tree_cpu_seconds": 15.900000000000002,
+        "elapsed_seconds": 16.23469382899998,
+        "scope": "sampled worker plus child processes; peaks can be missed and shared pages counted twice"
+      },
+      "native_accounting": {
+        "submitted": 50,
+        "ingested": 50,
+        "faithful": 50,
+        "unfaithful": 0,
+        "rejected": 0,
+        "queried": 22,
+        "ingest_seconds": 8.434128660999988
+      },
+      "quality_and_latency_independently_recomputed": true
+    },
+    {
+      "tool": "basic-memory",
+      "dataset": "longtext-prospective",
+      "dataset_label": "Positional long text",
+      "status": "complete",
+      "interface": "MCP stdio",
+      "metric_scope": "ranked_original_parent_retrieval",
+      "artifact_id": 14331070832,
+      "summary_sha256": "7aafc2aa7b59cbb6d85329f64944885def23c75f1fc14b5736b5eb0e762b07cb",
+      "ranked_export_sha256": "1527d30ffcf72a401aa747ffdce9e8444cfc91c8779f2046fef73574f037e451",
+      "labels_sha256": "e013be8ebde702a074a71a87cf850c5a415b27cd7cfed5e3ed0528bd7f71ef28",
+      "accounting": {
+        "submitted": 15,
+        "ingested": 15,
+        "faithful": 15,
+        "unfaithful": 0,
+        "rejected": 0,
+        "queried": 9,
+        "ingest_seconds": 10.593030800000008
+      },
+      "quality": {
+        "answered_queries": 6,
+        "all_queries": 9,
+        "hit_at_1": 0.5,
+        "document_recall_at_1": 0.5,
+        "ndcg_at_1": 0.5,
+        "hit_at_5": 0.5,
+        "document_recall_at_5": 0.5,
+        "ndcg_at_5": 0.5,
+        "hit_at_10": 1.0,
+        "document_recall_at_10": 1.0,
+        "ndcg_at_10": 0.6781035935540111,
+        "mrr_at_10": 0.5833333333333334
+      },
+      "latency": {
+        "calls": 9,
+        "cold_first_ms": 1523.0726080000068,
+        "mean_ms": 197.60123666666766,
+        "p50_ms": 33.341994000011255,
+        "p95_ms": 927.7750220000081,
+        "p99_ms": 1404.013090800007,
+        "scope": "single sequential pass, all calls including first; SDK and MCP are separate interface strata"
+      },
+      "resources": {
+        "sampled_tree_peak_rss_bytes": 382951424,
+        "sampled_tree_cpu_seconds": 20.75,
+        "elapsed_seconds": 20.982199014000003,
+        "scope": "sampled worker plus child processes; peaks can be missed and shared pages counted twice"
+      },
+      "native_accounting": {
+        "submitted": 15,
+        "ingested": 15,
+        "faithful": 15,
+        "unfaithful": 0,
+        "rejected": 0,
+        "queried": 9,
+        "ingest_seconds": 10.593030800000008
+      },
+      "quality_and_latency_independently_recomputed": true
+    },
+    {
+      "tool": "basic-memory",
+      "dataset": "longmemeval",
+      "dataset_label": "Inspected LongMemEval subset",
+      "status": "complete",
+      "interface": "MCP stdio",
+      "metric_scope": "ranked_original_parent_retrieval",
+      "artifact_id": 14329558853,
+      "summary_sha256": "fed8aa43495a4ed8b6f5572d920507fb0b540d3d548902dc4153fe737a00faa4",
+      "ranked_export_sha256": "81cb0ee0ce31921e9a5441c4298257aa241a7041185dd53e331e920202ce4667",
+      "labels_sha256": "6a98f0d5a0d80adb6770bf2622f987197915f21d3e649acfa0068e2ebd7f1b06",
+      "accounting": {
+        "submitted": 191,
+        "ingested": 191,
+        "faithful": 191,
+        "unfaithful": 0,
+        "rejected": 0,
+        "queried": 6,
+        "ingest_seconds": 65.54023031400001
+      },
+      "quality": {
+        "answered_queries": 6,
+        "all_queries": 6,
+        "hit_at_1": 0.6666666666666666,
+        "document_recall_at_1": 0.5833333333333334,
+        "ndcg_at_1": 0.6666666666666666,
+        "hit_at_5": 0.8333333333333334,
+        "document_recall_at_5": 0.8333333333333334,
+        "ndcg_at_5": 0.75,
+        "hit_at_10": 0.8333333333333334,
+        "document_recall_at_10": 0.8333333333333334,
+        "ndcg_at_10": 0.75,
+        "mrr_at_10": 0.7222222222222222,
+        "session_hits": {
+          "answered_queries": 6,
+          "all_queries": 6,
+          "hit_at_1": 0.8333333333333334,
+          "document_recall_at_1": 0.06944444444444443,
+          "ndcg_at_1": 0.8333333333333334,
+          "hit_at_5": 0.8333333333333334,
+          "document_recall_at_5": 0.20833333333333334,
+          "ndcg_at_5": 0.5880390554186815,
+          "hit_at_10": 0.8333333333333334,
+          "document_recall_at_10": 0.20833333333333334,
+          "ndcg_at_10": 0.381597110589496,
+          "mrr_at_10": 0.8333333333333334
+        }
+      },
+      "latency": {
+        "calls": 6,
+        "cold_first_ms": 1437.4059299999972,
+        "mean_ms": 1335.2414849999902,
+        "p50_ms": 1315.0422074999851,
+        "p95_ms": 1417.767948249992,
+        "p99_ms": 1433.478333649996,
+        "scope": "single sequential pass, all calls including first; SDK and MCP are separate interface strata"
+      },
+      "resources": {
+        "sampled_tree_peak_rss_bytes": 382373888,
+        "sampled_tree_cpu_seconds": 112.39,
+        "elapsed_seconds": 113.42005763199998,
+        "scope": "sampled worker plus child processes; peaks can be missed and shared pages counted twice"
+      },
+      "native_accounting": {
+        "submitted": 191,
+        "ingested": 191,
+        "faithful": 191,
+        "unfaithful": 0,
+        "rejected": 0,
+        "queried": 6,
+        "ingest_seconds": 65.54023031400001
+      },
+      "quality_and_latency_independently_recomputed": true
+    },
+    {
+      "tool": "basic-memory",
+      "dataset": "nfcorpus",
+      "dataset_label": "NFCorpus",
+      "status": "complete",
+      "interface": "MCP stdio",
+      "metric_scope": "ranked_original_parent_retrieval",
+      "artifact_id": 14331985162,
+      "summary_sha256": "0dc98b605d6d92b92b7843b2a457df14db8b5b797c73b06c84210fa745be543d",
+      "ranked_export_sha256": "76ef51376a135cfbea10bd7f0e07a7c6c283d14b19d8281fe608f53f50100267",
+      "labels_sha256": "2e779079b4053d605230d98964ebee355b3fe387c9611d98c51f2b271a325600",
+      "accounting": {
+        "submitted": 3633,
+        "ingested": 3633,
+        "faithful": 3633,
+        "unfaithful": 0,
+        "rejected": 0,
+        "queried": 323,
+        "ingest_seconds": 373.68687268200006
+      },
+      "quality": {
+        "answered_queries": 323,
+        "all_queries": 323,
+        "hit_at_1": 0.4148606811145511,
+        "document_recall_at_1": 0.0524531312662067,
+        "ndcg_at_1": 0.3983488132094943,
+        "hit_at_5": 0.6130030959752322,
+        "document_recall_at_5": 0.10824354885293144,
+        "ndcg_at_5": 0.3155294480300539,
+        "hit_at_10": 0.6501547987616099,
+        "document_recall_at_10": 0.12934777730265448,
+        "ndcg_at_10": 0.2819322871877624,
+        "mrr_at_10": 0.49415081822202567
+      },
+      "latency": {
+        "calls": 323,
+        "cold_first_ms": 1461.3421599999583,
+        "mean_ms": 203.1133760681096,
+        "p50_ms": 29.060137999977087,
+        "p95_ms": 1367.653778899944,
+        "p99_ms": 1452.2008013999664,
+        "scope": "single sequential pass, all calls including first; SDK and MCP are separate interface strata"
+      },
+      "resources": {
+        "sampled_tree_peak_rss_bytes": 654520320,
+        "sampled_tree_cpu_seconds": 493.60999999999996,
+        "elapsed_seconds": 449.01637764500003,
+        "scope": "sampled worker plus child processes; peaks can be missed and shared pages counted twice"
+      },
+      "native_accounting": {
+        "submitted": 3633,
+        "ingested": 3633,
+        "faithful": 3633,
+        "unfaithful": 0,
+        "rejected": 0,
+        "queried": 323,
+        "ingest_seconds": 373.68687268200006
+      },
+      "quality_and_latency_independently_recomputed": true
+    },
+    {
+      "tool": "basic-memory",
+      "dataset": "scifact",
+      "dataset_label": "SciFact",
+      "status": "complete",
+      "interface": "MCP stdio",
+      "metric_scope": "ranked_original_parent_retrieval",
+      "artifact_id": 14330908077,
+      "summary_sha256": "7ee22366079a8b8904267d019f011c150935c8a22096d40a8190d42df3e6fad1",
+      "ranked_export_sha256": "ad443590ecde6f8850f3a28bb4164deeea157a19d3abfd405d2a944758a35956",
+      "labels_sha256": "9306bf40a0ff5f3bec248a2aef0b0f0631e8ab89dcfc1da6b8fb90e3c7993857",
+      "accounting": {
+        "submitted": 5183,
+        "ingested": 5183,
+        "faithful": 5183,
+        "unfaithful": 0,
+        "rejected": 0,
+        "queried": 300,
+        "ingest_seconds": 346.510266292
+      },
+      "quality": {
+        "answered_queries": 300,
+        "all_queries": 300,
+        "hit_at_1": 0.43333333333333335,
+        "document_recall_at_1": 0.42027777777777775,
+        "ndcg_at_1": 0.43333333333333335,
+        "hit_at_5": 0.58,
+        "document_recall_at_5": 0.5680555555555555,
+        "ndcg_at_5": 0.5079438530088617,
+        "hit_at_10": 0.63,
+        "document_recall_at_10": 0.6148333333333333,
+        "ndcg_at_10": 0.5239639042491546,
+        "mrr_at_10": 0.5001216931216932
+      },
+      "latency": {
+        "calls": 300,
+        "cold_first_ms": 2578.144208000026,
+        "mean_ms": 295.9492385133293,
+        "p50_ms": 62.50022399996169,
+        "p95_ms": 1106.0495434999382,
+        "p99_ms": 1276.0505699499663,
+        "scope": "single sequential pass, all calls including first; SDK and MCP are separate interface strata"
+      },
+      "resources": {
+        "sampled_tree_peak_rss_bytes": 743370752,
+        "sampled_tree_cpu_seconds": 474.3,
+        "elapsed_seconds": 441.37575876700004,
+        "scope": "sampled worker plus child processes; peaks can be missed and shared pages counted twice"
+      },
+      "native_accounting": {
+        "submitted": 5183,
+        "ingested": 5183,
+        "faithful": 5183,
+        "unfaithful": 0,
+        "rejected": 0,
+        "queried": 300,
+        "ingest_seconds": 346.510266292
+      },
+      "quality_and_latency_independently_recomputed": true
+    },
+    {
+      "tool": "auxly",
+      "dataset": "prospective",
+      "dataset_label": "Direct facts",
+      "status": "complete",
+      "interface": "MCP stdio",
+      "metric_scope": "unordered_returned_subset",
+      "artifact_id": 14329878755,
+      "summary_sha256": "d776067d9c3e85acbb259a59348500c956c934767199761caf79f475ba48d901",
+      "ranked_export_sha256": "13936b6c21b1b8881261d26d350f89cb88660e0cbf1b7147ac672f4e40fbfaa2",
+      "labels_sha256": "d44f85fc122227e0575229515e06c30bcec0c9b36f49660586f124b030bb7d0e",
+      "accounting": {
+        "submitted": 50,
+        "ingested": 50,
+        "faithful": 50,
+        "unfaithful": 0,
+        "rejected": 0,
+        "queried": 22,
+        "ingest_seconds": 0.029802637000003074
+      },
+      "quality": {
+        "all_queries": 22,
+        "answered_queries": 16,
+        "returned_subset_hit": 0.0625,
+        "returned_subset_document_recall": 0.0625,
+        "rank_metrics": null,
+        "scope": "first ten distinct matches in native arbitrary Go map order; no ranked-retrieval claim"
+      },
+      "latency": {
+        "calls": 22,
+        "cold_first_ms": 4.111022999992997,
+        "mean_ms": 2.691319818183693,
+        "p50_ms": 2.582889000002808,
+        "p95_ms": 3.3915223000029466,
+        "p99_ms": 3.9644944499950436,
+        "scope": "single sequential pass, all calls including first; SDK and MCP are separate interface strata"
+      },
+      "resources": {
+        "sampled_tree_peak_rss_bytes": 135692288,
+        "sampled_tree_cpu_seconds": 0.84,
+        "elapsed_seconds": 1.1328231509999966,
+        "scope": "sampled worker plus child processes; peaks can be missed and shared pages counted twice"
+      },
+      "native_accounting": {
+        "submitted": 50,
+        "ingested": 50,
+        "faithful": 50,
+        "unfaithful": 0,
+        "rejected": 0,
+        "queried": 22,
+        "ingest_seconds": 0.029802637000003074
+      },
+      "quality_and_latency_independently_recomputed": true
+    },
+    {
+      "tool": "auxly",
+      "dataset": "longtext-prospective",
+      "dataset_label": "Positional long text",
+      "status": "complete",
+      "interface": "MCP stdio",
+      "metric_scope": "unordered_returned_subset",
+      "artifact_id": 14329829645,
+      "summary_sha256": "3b6403f64f73f081b6265c8f80a09dd2360a40f2fea66099c25ca3feb2662cb1",
+      "ranked_export_sha256": "af35503145778561888aeaea70997944217169d1a49ca3ee0ce6ce6e02362321",
+      "labels_sha256": "e013be8ebde702a074a71a87cf850c5a415b27cd7cfed5e3ed0528bd7f71ef28",
+      "accounting": {
+        "submitted": 15,
+        "ingested": 15,
+        "faithful": 15,
+        "unfaithful": 0,
+        "rejected": 0,
+        "queried": 9,
+        "ingest_seconds": 0.021373612999923353
+      },
+      "quality": {
+        "all_queries": 9,
+        "answered_queries": 6,
+        "returned_subset_hit": 0.0,
+        "returned_subset_document_recall": 0.0,
+        "rank_metrics": null,
+        "scope": "first ten distinct matches in native arbitrary Go map order; no ranked-retrieval claim"
+      },
+      "latency": {
+        "calls": 9,
+        "cold_first_ms": 1.8938829999797235,
+        "mean_ms": 1.1490268889120772,
+        "p50_ms": 0.9984920000079001,
+        "p95_ms": 1.7294097999865696,
+        "p99_ms": 1.8609883599810928,
+        "scope": "single sequential pass, all calls including first; SDK and MCP are separate interface strata"
+      },
+      "resources": {
+        "sampled_tree_peak_rss_bytes": 136015872,
+        "sampled_tree_cpu_seconds": 0.5800000000000001,
+        "elapsed_seconds": 0.7352813710000419,
+        "scope": "sampled worker plus child processes; peaks can be missed and shared pages counted twice"
+      },
+      "native_accounting": {
+        "submitted": 15,
+        "ingested": 15,
+        "faithful": 15,
+        "unfaithful": 0,
+        "rejected": 0,
+        "queried": 9,
+        "ingest_seconds": 0.021373612999923353
+      },
+      "quality_and_latency_independently_recomputed": true
+    },
+    {
+      "tool": "auxly",
+      "dataset": "longmemeval",
+      "dataset_label": "Inspected LongMemEval subset",
+      "status": "complete",
+      "interface": "MCP stdio",
+      "metric_scope": "unordered_returned_subset",
+      "artifact_id": 14330312959,
+      "summary_sha256": "58bde7ef74300814d82e28851f2e65938c2b82c46e4700cde665036d8dc4c8e1",
+      "ranked_export_sha256": "87e898834a62c1e8fbfb096566db9bdcf5814c336f60cb00fc2e1ce1bf283240",
+      "labels_sha256": "6a98f0d5a0d80adb6770bf2622f987197915f21d3e649acfa0068e2ebd7f1b06",
+      "accounting": {
+        "submitted": 191,
+        "ingested": 191,
+        "faithful": 191,
+        "unfaithful": 0,
+        "rejected": 0,
+        "queried": 6,
+        "ingest_seconds": 0.11211917500001789
+      },
+      "quality": {
+        "all_queries": 6,
+        "answered_queries": 6,
+        "returned_subset_hit": 0.0,
+        "returned_subset_document_recall": 0.0,
+        "rank_metrics": null,
+        "scope": "first ten distinct matches in native arbitrary Go map order; no ranked-retrieval claim"
+      },
+      "latency": {
+        "calls": 6,
+        "cold_first_ms": 1.9470629999887024,
+        "mean_ms": 1.812901666667699,
+        "p50_ms": 1.8061765000041419,
+        "p95_ms": 1.9372119999943038,
+        "p99_ms": 1.9450927999898227,
+        "scope": "single sequential pass, all calls including first; SDK and MCP are separate interface strata"
+      },
+      "resources": {
+        "sampled_tree_peak_rss_bytes": 136122368,
+        "sampled_tree_cpu_seconds": 0.6799999999999999,
+        "elapsed_seconds": 0.9452425540000036,
+        "scope": "sampled worker plus child processes; peaks can be missed and shared pages counted twice"
+      },
+      "native_accounting": {
+        "submitted": 191,
+        "ingested": 191,
+        "faithful": 191,
+        "unfaithful": 0,
+        "rejected": 0,
+        "queried": 6,
+        "ingest_seconds": 0.11211917500001789
+      },
+      "quality_and_latency_independently_recomputed": true
+    },
+    {
+      "tool": "auxly",
+      "dataset": "nfcorpus",
+      "dataset_label": "NFCorpus",
+      "status": "complete",
+      "interface": "MCP stdio",
+      "metric_scope": "unordered_returned_subset",
+      "artifact_id": 14330792327,
+      "summary_sha256": "75382966a043e4a499ef0479fb5177203878b8238e26abaf21aba1ab32c7038b",
+      "ranked_export_sha256": "38347735266d50892370fd115b684c43ac8379dadffb7aed30423f56f37b64be",
+      "labels_sha256": "2e779079b4053d605230d98964ebee355b3fe387c9611d98c51f2b271a325600",
+      "accounting": {
+        "submitted": 3633,
+        "ingested": 3633,
+        "faithful": 3633,
+        "unfaithful": 0,
+        "rejected": 0,
+        "queried": 323,
+        "ingest_seconds": 0.12745417900001144
+      },
+      "quality": {
+        "all_queries": 323,
+        "answered_queries": 323,
+        "returned_subset_hit": 0.30030959752321984,
+        "returned_subset_document_recall": 0.07048709533669557,
+        "rank_metrics": null,
+        "scope": "first ten distinct matches in native arbitrary Go map order; no ranked-retrieval claim"
+      },
+      "latency": {
+        "calls": 323,
+        "cold_first_ms": 70.17194499999846,
+        "mean_ms": 67.11213817647098,
+        "p50_ms": 66.83604299999502,
+        "p95_ms": 70.568365099993,
+        "p99_ms": 73.20766317999926,
+        "scope": "single sequential pass, all calls including first; SDK and MCP are separate interface strata"
+      },
+      "resources": {
+        "sampled_tree_peak_rss_bytes": 151977984,
+        "sampled_tree_cpu_seconds": 26.909999999999997,
+        "elapsed_seconds": 22.901365067,
+        "scope": "sampled worker plus child processes; peaks can be missed and shared pages counted twice"
+      },
+      "native_accounting": {
+        "submitted": 3633,
+        "ingested": 3633,
+        "faithful": 3633,
+        "unfaithful": 0,
+        "rejected": 0,
+        "queried": 323,
+        "ingest_seconds": 0.12745417900001144
+      },
+      "quality_and_latency_independently_recomputed": true
+    },
+    {
+      "tool": "auxly",
+      "dataset": "scifact",
+      "dataset_label": "SciFact",
+      "status": "complete",
+      "interface": "MCP stdio",
+      "metric_scope": "unordered_returned_subset",
+      "artifact_id": 14330916937,
+      "summary_sha256": "8c4c8441f9a685ea3c3f581abf6be0e0df10dc3345ec47c6c3ec2306455de667",
+      "ranked_export_sha256": "407965e47a87b2a3fa0d037104ccfbd78ea68b871bb289aadbf6ffa568028af7",
+      "labels_sha256": "9306bf40a0ff5f3bec248a2aef0b0f0631e8ab89dcfc1da6b8fb90e3c7993857",
+      "accounting": {
+        "submitted": 5183,
+        "ingested": 5183,
+        "faithful": 5183,
+        "unfaithful": 0,
+        "rejected": 0,
+        "queried": 300,
+        "ingest_seconds": 0.20333564999999965
+      },
+      "quality": {
+        "all_queries": 300,
+        "answered_queries": 300,
+        "returned_subset_hit": 0.0,
+        "returned_subset_document_recall": 0.0,
+        "rank_metrics": null,
+        "scope": "first ten distinct matches in native arbitrary Go map order; no ranked-retrieval claim"
+      },
+      "latency": {
+        "calls": 300,
+        "cold_first_ms": 111.32127199999786,
+        "mean_ms": 119.08350738666655,
+        "p50_ms": 116.94153900000259,
+        "p95_ms": 129.993176150008,
+        "p99_ms": 150.52391311999511,
+        "scope": "single sequential pass, all calls including first; SDK and MCP are separate interface strata"
+      },
+      "resources": {
+        "sampled_tree_peak_rss_bytes": 156020736,
+        "sampled_tree_cpu_seconds": 42.81,
+        "elapsed_seconds": 37.834259118,
+        "scope": "sampled worker plus child processes; peaks can be missed and shared pages counted twice"
+      },
+      "native_accounting": {
+        "submitted": 5183,
+        "ingested": 5183,
+        "faithful": 5183,
+        "unfaithful": 0,
+        "rejected": 0,
+        "queried": 300,
+        "ingest_seconds": 0.20333564999999965
+      },
+      "quality_and_latency_independently_recomputed": true
+    }
+  ],
+  "limitations": [
+    "Single serial query pass per independent hosted cell; no repeatability, general superiority or generated-answer accuracy claim.",
+    "Previously inspected direct-fact, long-text and six-query LongMemEval fixtures are bounded regressions, not independent held-out or full-population evaluations.",
+    "All submitted parents remain in original relevance denominators; unfaithful returned slots retain rank and receive no relevance credit.",
+    "Auxly's first ten distinct native matches form an unordered returned subset; ranked Hit/MRR/nDCG are unavailable.",
+    "SDK and MCP latencies are separate interface strata; ingestion contracts and dependency environments also differ.",
+    "Linux Python 3.12.16 native observations consume Windows Python 3.14/3.10 qualification snapshots; shared version equality is not identical platform or wheel-byte qualification.",
+    "Sampled tree RSS can double-count shared pages and miss peaks; sampled CPU can miss exited children.",
+    "Mesh uses overlapping window pooling; Mem0 truncates identical MiniLM assets at 256 tokens. Basic Memory and Auxly have no embeddings in these profiles."
+  ]
+}

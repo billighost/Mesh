@@ -31,8 +31,8 @@ Only the latest release line receives security fixes.
 
 | Version | Supported |
 |---|---|
-| `v0.8.x` (current) | Yes |
-| `< v0.8.0` | No — upgrade |
+| [Newest tagged release line](https://github.com/billighost/Mesh/releases/latest) | Yes |
+| Earlier release lines | No — upgrade |
 
 Mesh is pre-1.0. Security fixes may require a minor-version upgrade; see [CHANGELOG.md](CHANGELOG.md).
 
